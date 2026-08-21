@@ -58,15 +58,13 @@ type InstanceOpsRunner interface {
 }
 
 // InstanceOpsRequest is the resolved, user-consented request handed to the runner.
-// TurnID is the server-side turn identity used as the audit dedup key so a durable
-// replay of the same turn cannot re-enter the box (INV-9).
+// TurnID is the server-side audit and retry-dedup identity.
 type InstanceOpsRequest struct {
 	TurnID     string
 	InstanceID string
 	Task       string
 	// Context is the versioned, redacted reference data for the inner agent.
-	// It is intentionally independent from Task so changing observations cannot
-	// change the task hash used by the durable replay guard.
+	// It is independent from Task so observations cannot change the dedup hash.
 	Context opscontext.Context
 	// ConfirmWrite asks the user about ONE command that will change the box, and blocks until they
 	// answer. It is separate from the lane-level card: that one authorizes entering the instance and

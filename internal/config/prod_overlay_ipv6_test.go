@@ -6,13 +6,8 @@ import (
 	"testing"
 )
 
-// The internal-IPv6 route is switched on ONLY by deploy/conf/config.prod.yaml. If the overlay
-// merge does not carry a newly-added nested bool through, the flag stays false, the lane keeps
-// dialling the address production cannot reach, and nothing anywhere says so — the change would
-// ship, boot cleanly, log "enabled", and no-op. That is the failure this pins.
-//
-// It reads the SHIPPED files rather than a fixture, because a fixture would only prove the merge
-// works on a file I wrote in the same breath as the assertion.
+// Read the shipped overlay because internal IPv6 routing is production-specific;
+// a synthetic fixture would not verify the deployed configuration.
 func TestProdOverlayEnablesTheInternalIPv6Route(t *testing.T) {
 	prod, err := Load(filepath.Join("..", "..", "deploy", "conf", "config.prod.yaml"))
 	if err != nil {
@@ -36,10 +31,8 @@ func TestProdOverlayEnablesTheInternalIPv6Route(t *testing.T) {
 	}
 }
 
-// The baseline is what a developer machine and every local CLI run load. There the EIP is the only
-// reachable address and internal.api.ucloud.cn does not route at all, so the flag being absent is
-// load-bearing, not an oversight — and an absent-vs-false distinction is exactly the kind of thing
-// that gets "tidied up" by someone syncing the two files.
+// Internal address translation belongs only to deployments that have the
+// required gateway access. Local runs use the instance address as advertised.
 func TestBaselineLeavesTheInternalIPv6RouteOff(t *testing.T) {
 	base, err := Load(filepath.Join("..", "..", "deploy", "conf", "config.local.yaml"))
 	if err != nil {
@@ -49,20 +42,15 @@ func TestBaselineLeavesTheInternalIPv6RouteOff(t *testing.T) {
 		t.Error("agent.ssh_ops.internal_ipv6 must stay off in the shared baseline; " +
 			"turning it on there breaks every local run of the lane")
 	}
-	// Same reasoning for the translation prefix: a developer machine reaches instances at their
-	// EIP and has no route to any translator, so a prefix here would add two dead candidates and
-	// then REFUSE the run, turning the lane off locally.
+	// A translated public-IPv4 candidate is likewise deployment-specific.
 	if base.Agent.SSHOps.PublicIPv6Prefix != "" {
 		t.Errorf("agent.ssh_ops.public_ipv6_prefix must stay unset in the shared baseline, got %q",
 			base.Agent.SSHOps.PublicIPv6Prefix)
 	}
 }
 
-// The prefix is an experiment, so this does NOT require it to be present — clearing it once the
-// question is settled must not fail the build. What it does require is that a prefix which IS
-// present is coherent: an unparseable one, or one set without internal_ipv6, produces a lane that
-// boots and then refuses every instance, and the run would read as "the prefix does not work"
-// when nothing was ever dialled.
+// A production translation prefix is optional, but when present it must be a
+// coherent IPv6 address and internal routing must be enabled.
 func TestProdOverlayPublicIPv6PrefixIsCoherentWhenSet(t *testing.T) {
 	prod, err := Load(filepath.Join("..", "..", "deploy", "conf", "config.prod.yaml"))
 	if err != nil {

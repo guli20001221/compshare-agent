@@ -12,12 +12,11 @@ func cloneAgentContext(in AgentContext) AgentContext {
 	out := in
 	out.RecentConversation = append([]ConversationPair(nil), in.RecentConversation...)
 	out.SelectedEntities = cloneEntityHints(in.SelectedEntities)
-	out.ContinuityNotices = append([]string(nil), in.ContinuityNotices...)
 	return out
 }
 
-func cloneEntityHints(in []SemanticEntityHint) []SemanticEntityHint {
-	out := make([]SemanticEntityHint, 0, len(in))
+func cloneEntityHints(in []SelectedEntityHint) []SelectedEntityHint {
+	out := make([]SelectedEntityHint, 0, len(in))
 	for _, hint := range in {
 		hint.Kind = safeContextText(hint.Kind)
 		hint.ID = safeContextText(hint.ID)
@@ -30,36 +29,17 @@ func cloneEntityHints(in []SemanticEntityHint) []SemanticEntityHint {
 }
 
 func safeContextText(value string) string {
-	return compactSemanticText(security.RedactOperationalTokensInText(value))
+	return compactContextText(security.RedactOperationalTokensInText(value))
 }
 
-// safeConversationText redacts a replayed exchange WITHOUT compacting it.
-//
-// A restored conversation pair is a real user/assistant message, not semantic
-// memory, so the two transforms that safeContextText applies are wrong for it:
-// collapsing whitespace destroys pasted terminal output and code, and cutting at
-// maxSemanticRunes truncates the reply the model is being asked to remember.
-// Measured on the 2026-07 production exports (3867 completed exchanges): 41.8% of
-// assistant replies exceed 320 runes (median 255, p90 782), so 43% of exchanges
-// lost content on the way into the next turn. It bought little — replaying a real
-// session's whole history is 33 runes at the median and 5,764 at p99.
-//
-// Size is bounded instead by maxReplayedHistoryRunes, which drops whole older
-// exchanges. That budget, not this function, is what keeps history affordable:
-// per-request size alone cannot be compared against max_tokens_per_turn, because
-// that ceiling is cumulative over every model call in the turn and history is
-// re-sent on each one.
-//
-// Redaction is NOT part of that trade and stays. With canonical transcript off,
-// the hot engine holds raw text and this is the sole operational-token boundary.
-// With it on, historyConversationText below intentionally uses the same
-// role-aware boundaries as persistence so hot and cold history agree.
+// safeConversationText redacts replayed content without altering whitespace or
+// truncating a message. History size is bounded by whole exchanges elsewhere.
 func safeConversationText(value string) string {
 	return security.RedactOperationalTokensInText(value)
 }
 
 // canonicalConversationText is the persistence-aligned form of a conversation
-// endpoint when canonical transcript is enabled. HTTP persists user and
+// endpoint. HTTP persists user and
 // assistant rows through different redaction boundaries; using those same
 // boundaries before the hot transcript is captured keeps hot and cold endpoints
 // byte-identical without any fuzzy transcript matching.
@@ -77,29 +57,21 @@ func canonicalConversationText(role, value string) string {
 }
 
 func historyConversationText(role, value string) string {
-	if !canonicalTranscriptEnabled {
-		return safeConversationText(value)
-	}
 	return canonicalConversationText(role, value)
 }
 
-func safeContextNarrative(value string) string {
-	return compactSemanticNarrative(security.RedactOperationalTokensInText(value))
-}
-
 // isLiveSelectionHint reports whether one SelectedEntities row is live selection
-// state rather than semantic memory about the conversation.
+// state rather than an arbitrary model-inferred entity.
 //
 // CompileForTurn assembles SelectedEntities from the account's sole instance,
 // the pending selection card's numbered candidates, and the current
 // SelectedInstanceID with its provenance (user_selected or observed). They are
-// execution state, not a semantic summary of the conversation. A legacy selected
-// instance may have an empty source; it remains visible for understanding but is
+// execution state, not a semantic summary of the conversation. A selected
+// instance with empty provenance remains visible for understanding but is
 // not a write-selection proof (selection_binder has its own stricter allowlist).
 //
-// An allowlist rather than a denylist, so a semantic source added later is
-// excluded by default instead of admitted by an out-of-date list.
-func isLiveSelectionHint(hint SemanticEntityHint) bool {
+// Unknown sources are excluded by default.
+func isLiveSelectionHint(hint SelectedEntityHint) bool {
 	switch hint.Source {
 	case selectionSourceAccountSingle, selectionSourcePendingCard,
 		SelectedInstanceSourceUser, SelectedInstanceSourceObserved, "":
@@ -109,10 +81,8 @@ func isLiveSelectionHint(hint SemanticEntityHint) bool {
 }
 
 // renderAgentContextCard serializes only the context a transcript cannot carry:
-// live execution state (current selection, pending selection card) and this turn's
-// continuity notices (read-only, recovered operation). Semantic task summaries
-// were deleted; complete prior exchanges are ordinary messages in the canonical
-// transcript instead of a second, lossy card.
+// live execution state (current selection and pending selection card). Complete
+// prior exchanges live only in the canonical transcript.
 //
 // Selection filtering remains at this model-facing serialization point rather
 // than CompileForTurn. selection_binder and the write-proposal path read
@@ -120,7 +90,7 @@ func isLiveSelectionHint(hint SemanticEntityHint) bool {
 // execution-side target binding instead of only changing what the model reads.
 func renderAgentContextCard(view AgentContext) string {
 	var lines []string
-	lines = append(lines, "【本轮统一上下文；仅帮助理解，不授权任何写操作】")
+	lines = append(lines, "【本轮执行上下文；不授权任何写操作】")
 	for _, entity := range view.SelectedEntities {
 		if !isLiveSelectionHint(entity) {
 			continue
@@ -133,9 +103,6 @@ func renderAgentContextCard(view AgentContext) string {
 			}
 			lines = append(lines, fmt.Sprintf("相关对象：%s（类型=%s，来源=%s，新鲜度=%s%s）", safeContextText(label), safeContextText(entity.Kind), safeContextText(entity.Source), safeContextText(entity.Freshness), ordinal))
 		}
-	}
-	for _, notice := range view.ContinuityNotices {
-		lines = append(lines, "上下文提示："+safeContextNarrative(notice))
 	}
 	if len(lines) == 1 {
 		return ""

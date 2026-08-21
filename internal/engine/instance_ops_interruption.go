@@ -7,39 +7,19 @@ import (
 	"github.com/compshare-agent/internal/observability"
 )
 
-// A diagnosis that ends without delivering its verdict leaves the user in front of a box that may
-// have been changed, and until now the next thing they saw was an ordinary answer to whatever they
-// asked next. The lane ships with allow_writes on: "8 ran, 1 refused" is not the question, "did it
-// change anything, and what" is.
-//
-// This is the whole of the notice, and the boundaries are deliberate:
-//
-//   - It goes to the USER, as one StepEvent on the live activity stream. It is never appended to
-//     e.messages, so the model neither sees it nor can restate it. TestInterruptionNoticeNeverEnters
-//     TheModelsHistory pins that.
-//   - It does not resume anything. There is no cursor here and no "skip what already ran"; the
-//     harness that runs next starts from nothing, exactly as it does today.
-//   - It never says a command did NOT run. What it lists is what the server OBSERVED settle before
-//     the stream stopped, and the last command sent may have completed on the box with its result
-//     never arriving. The closing sentence says so, and it is not optional decoration: a list
-//     presented as complete would be the one way this notice could do harm.
-//
-// It is deliberately IN-MEMORY, on the session's Engine, and not read back from ssh_ops_audit. The
-// case it serves is a browser disconnect, where the server process and the pooled Engine both
-// survive and the user returns to the same SessionId. The case it misses is a process restart or an
-// LRU/idle eviction — and in that case the durable row is not more informative either: a killed
-// process never runs Finish, so the row is orphaned at 'started' with no steps at all, and
-// ssh_ops_audit carries no session id to look one up by. Making this durable is a real change
-// (a reader interface, a DB handle on a path that holds only InstanceOpsRunner, an index on
-// request_uuid, and a decision about tenant-vs-session scoping), not a bigger version of this one.
+// An interrupted diagnosis may already have changed the instance. The next turn
+// therefore receives one user-only activity notice containing only steps whose
+// outcome the server observed. It is not model history and never resumes work.
+// The notice is intentionally session-memory-only; process restart and eviction
+// simply lose it rather than guessing from an incomplete audit row.
 
 // maxInterruptionNoticeCommands bounds the listed commands. A run that settled more than this before
 // dying is already pathological; the count line still reports the true totals.
 const maxInterruptionNoticeCommands = 20
 
-// instanceOpsSettledStep is one command whose disposition the server actually OBSERVED. A command
-// that was sent and never reported back is, by construction, absent — which is why the notice says
-// its list may be incomplete rather than presenting it as the run's full extent.
+// instanceOpsSettledStep is one command whose disposition the server observed.
+// A sent command whose result never returned is absent, so the notice must say
+// that its list may be incomplete.
 type instanceOpsSettledStep struct {
 	Command     string
 	Tier        string // "read_only" | "mutating" | "destructive"; "" when the runner did not say

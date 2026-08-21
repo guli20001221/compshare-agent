@@ -10,13 +10,10 @@ import (
 	"github.com/compshare-agent/internal/zones"
 )
 
-// Pricing read capability (migrated from the legacy intent route, PR #3).
-//
 // Two-stage handler: stage 1 reads DescribeAvailableCompShareInstanceTypes to
 // (a) drive the GPU-name vocabulary for matching and (b) pick a default 1-GPU
 // spec per model. Stage 2 invokes the account-price API (it returns both payable
-// and list prices). The handler consumes its own typed PricingRequest — never
-// intent.Slots — and never re-reads the user's sentence.
+// and list prices).
 
 const (
 	pricingCapabilityLabel = "pricing_query"
@@ -66,8 +63,7 @@ type PricingResponse struct {
 	Rows []gpuPriceRow
 }
 
-// pricingReadSpec is the migrated pricing capability. It is registered in the
-// read catalog and dispatched through the typed kernel.
+// pricingReadSpec registers the typed pricing capability.
 func pricingReadSpec() ReadCapabilitySpec[PricingRequest, PricingResponse] {
 	return ReadCapabilitySpec[PricingRequest, PricingResponse]{
 		Label:       pricingCapabilityLabel,

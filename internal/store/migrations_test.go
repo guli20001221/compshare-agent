@@ -70,121 +70,10 @@ func TestHTTPMigrationsAddAgentTracesOutcomeColumns(t *testing.T) {
 	assert.NotContains(t, strings.ToUpper(ddl), "NOT NULL")
 }
 
-func TestHTTPMigrationsCreateTurnExecutionKernel(t *testing.T) {
-	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0005_create_turn_execution.sql")
-	data, err := os.ReadFile(sqlPath)
-	require.NoError(t, err)
-
-	ddl := string(data)
-	for _, fragment := range []string{
-		"CREATE TABLE IF NOT EXISTS chat_turns",
-		"CREATE TABLE IF NOT EXISTS conversation_leases",
-		"CREATE TABLE IF NOT EXISTS turn_actions",
-		"ADD COLUMN IF NOT EXISTS turn_id",
-		"ADD COLUMN IF NOT EXISTS turn_role",
-		"UNIQUE (top_organization_id, organization_id, session_id, client_turn_id)",
-		"PRIMARY KEY (turn_id, action_index)",
-		"active_turn_id",
-		"next_event_seq",
-		"turn_seq",
-		"UNIQUE (session_id, turn_seq)",
-		"UNIQUE (turn_id, action_name, args_hash)",
-		"action_name",
-		"args_hash",
-		"in_flight",
-		"upstream_request_id",
-		"in_flight        BOOLEAN       NOT NULL DEFAULT FALSE",
-		"status = 'reserved' OR NOT in_flight",
-	} {
-		assert.Contains(t, ddl, fragment)
-	}
-}
-
-func TestHTTPMigrationsCreateTurnProtocol(t *testing.T) {
-	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0006_create_turn_protocol.sql")
-	data, err := os.ReadFile(sqlPath)
-	require.NoError(t, err)
-
-	ddl := string(data)
-	for _, fragment := range []string{
-		"CREATE TABLE IF NOT EXISTS chat_turn_events",
-		"CREATE TABLE IF NOT EXISTS turn_interactions",
-		"PRIMARY KEY (turn_id, seq)",
-		"UNIQUE (turn_id, interaction_key)",
-		"provisional",
-		"lease_epoch",
-		"expires_at",
-		"resolution_hash",
-	} {
-		assert.Contains(t, ddl, fragment)
-	}
-	assert.NotContains(t, ddl, "response_hash", "one canonical resolution hash avoids contradictory duplicate fields")
-}
-
-func TestHTTPMigrationsAddTurnRecoveryContext(t *testing.T) {
-	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0007_add_turn_recovery_context.sql")
-	data, err := os.ReadFile(sqlPath)
-	require.NoError(t, err)
-
-	ddl := string(data)
-	for _, fragment := range []string{
-		"ADD COLUMN IF NOT EXISTS execution_envelope JSONB",
-		"ADD COLUMN IF NOT EXISTS context_hint JSONB",
-		"context_hint - 'resource_ids' - 'region' - 'zone'",
-		"idx_chat_turns_recovery",
-		"'awaiting_confirmation'",
-		"'committing'",
-	} {
-		assert.Contains(t, ddl, fragment)
-	}
-	assert.NotContains(t, ddl, "execution_envelope JSONB NOT NULL", "existing turns must remain valid")
-	assert.NotContains(t, ddl, "context_hint JSONB NOT NULL", "existing actions must remain valid")
-}
-
-func TestHTTPMigrationsAddDurableTurnRetryPolicy(t *testing.T) {
-	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0008_add_turn_retry_policy.sql")
-	data, err := os.ReadFile(sqlPath)
-	require.NoError(t, err)
-
-	ddl := string(data)
-	for _, fragment := range []string{
-		"ADD COLUMN IF NOT EXISTS retry_count INT NOT NULL DEFAULT 0",
-		"ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ",
-		"'failed_final'",
-		"ck_chat_turn_retry_schedule",
-		"jsonb_path_exists",
-		`@.type() != "string"`,
-	} {
-		assert.Contains(t, ddl, fragment)
-	}
-}
-
-func TestHTTPMigrationsAddInteractionSupersession(t *testing.T) {
-	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0009_add_interaction_supersession.sql")
-	data, err := os.ReadFile(sqlPath)
-	require.NoError(t, err)
-
-	ddl := string(data)
-	assert.Contains(t, ddl, "status = 'superseded'")
-	assert.Contains(t, ddl, "idx_turn_interactions_pending")
-	assert.Contains(t, ddl, "interaction_generation")
-	assert.Contains(t, ddl, "uq_turn_interactions_generation")
-}
-
-func TestHTTPMigrationsAddActionAbandonment(t *testing.T) {
-	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0010_add_action_abandonment.sql")
-	data, err := os.ReadFile(sqlPath)
-	require.NoError(t, err)
-
-	ddl := string(data)
-	assert.Contains(t, ddl, "'abandoned'")
-	assert.Contains(t, ddl, "ck_turn_action_status")
-}
-
 // TestHTTPMigrationsCreateSSHOpsAudit pins the 0011 fail-closed audit table to the exact columns the
 // writer (store.SSHOpsAuditStore.Begin/Finish) references and to the INV-9 replay-dedup constraint. A
 // drift on either side — a renamed/removed column, or a dropped UNIQUE — silently breaks the audit
-// INSERT (failing closed, refusing every diagnosis) or reopens the durable-replay re-entry hole.
+// INSERT (failing closed, refusing every diagnosis) or reopens duplicate re-entry.
 func TestHTTPMigrationsCreateSSHOpsAudit(t *testing.T) {
 	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0011_create_ssh_ops_audit.sql")
 	data, err := os.ReadFile(sqlPath)
@@ -226,7 +115,7 @@ func TestHTTPMigrationsAddSSHOpsContextObservability(t *testing.T) {
 }
 
 // TestHTTPMigrationsCreateFeishuOAuthTokens pins the schema used by the
-// external-group screenshot adapter. The durable fields must be ciphertexts:
+// external-group screenshot adapter. Persisted token fields must be ciphertexts:
 // a future migration must not accidentally turn the database into a plaintext
 // OAuth-token store.
 func TestHTTPMigrationsCreateFeishuOAuthTokens(t *testing.T) {

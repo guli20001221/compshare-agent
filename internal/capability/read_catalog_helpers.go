@@ -7,15 +7,10 @@ import (
 	"github.com/compshare-agent/internal/platform"
 )
 
-// read_catalog_helpers.go holds the generic JSON-shape and display helpers the
-// migrated catalog read capabilities (image tag catalog, model repository, GPU
-// specs, image list, stock) share. They are byte-identical copies of the legacy
-// intent helpers so the relocated renderer bodies compile and render unchanged;
-// the ones that have a platform-leaf equivalent forward to it. Under the P3.3
-// migration (option B) the legacy intent copies stay as dead code until P6.
+// Shared JSON-shape and display helpers for catalog read capabilities.
 
 // imageModelBrowseDisplayCap bounds how many image/model candidates the
-// catalog renderers list. Byte-identical to the legacy intent const.
+// catalog renderers list.
 const imageModelBrowseDisplayCap = 10
 
 func safeValue(v any) string { return platform.SafeValue(v) }

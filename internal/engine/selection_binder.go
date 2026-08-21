@@ -7,7 +7,7 @@ import (
 	"github.com/compshare-agent/internal/entity"
 )
 
-// selection source labels carried on a SemanticEntityHint. Only a genuine user
+// selection source labels carried on a SelectedEntityHint. Only a genuine user
 // selection ("user_selected") or the account's sole fresh instance is carried
 // context the binder may complete a bare command from.
 const (
@@ -100,15 +100,8 @@ func (e *Engine) bindInstanceTarget(view AgentContext) selectionBinding {
 	}
 
 	if snap.FreshAndCompleteAt(now) {
-		// EVERY literal id typed in the message, resolved against a trustworthy
-		// registry — all of them, not the first. This used to call
-		// findExplicitInstanceRef, which returns hits[0] and drops the rest, so
-		// "停止 uhost-a 和 uhost-b" bound silently to uhost-a: a pick-one where the
-		// contract above says conflict. The pending-candidate branch already
-		// collects them all for exactly this reason, and its comment says so; the
-		// live registry needed the same treatment. It matters more now that a
-		// resolved Tier A reference is PERSISTED as the user's designation — an
-		// ambiguity that used to last one turn would otherwise stick to the session.
+		// Resolve every literal reference. More than one distinct target is a
+		// conflict; the binder must never pick the first one.
 		hits, unresolved := snap.ResolveInstanceRefsInText(text)
 		for _, h := range hits {
 			explicit = true

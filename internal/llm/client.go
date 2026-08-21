@@ -145,16 +145,8 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 	if err != nil && isUsageUnsupportedChatError(err) {
 		resp, err = c.chat(ctx, req, false)
 	}
-	// Graceful degradation for forced tool_choice. On Modelverse the
-	// deepseek-v4-flash deployment's support for object/"required" tool_choice in
-	// THINKING mode is per-KEY: some keys honor a forced choice, others return
-	// HTTP 400 ("tool_choice ... does not support being set to required or object
-	// in thinking mode") — verified by direct probe 2026-06-10 (same model + request,
-	// only the API key differs). Forcing a tool is only ever an advisory optimization
-	// here: engine callers that force SearchKnowledge / a monitor tool also inject a
-	// system note naming it, so retry once with auto instead of failing the turn. The
-	// note keeps the intended tool highly likely. Scoped to the thinking-mode message
-	// so an absent-tool 400 ("no function named X in tools") does NOT trigger it.
+	// Some thinking-mode providers reject forced tool_choice. Retry only that
+	// specific rejection with auto; absent-tool and other 4xx errors still fail.
 	if err != nil && isForcedToolChoice(req.ToolChoice) && isForcedToolChoiceUnsupportedError(err) {
 		log.Printf("runtime: upstream rejected forced tool_choice in thinking mode; retrying with auto (configure a forced-tool-capable LLM key for deterministic forcing)")
 		auto := req
@@ -392,19 +384,8 @@ func isUsageUnsupportedChatError(err error) bool {
 	return false
 }
 
-// providerOverloadStatus reports the upstream HTTP status when the provider
-// answered "not now" rather than "your request is wrong": 429 (rate/quota) and
-// the 5xx family the ModelVerse relay returns when its account pool is
-// momentarily empty. Measured 2026-07-29: a real turn died on
-// `503 ... No available accounts`, and a direct probe with the same key and the
-// same model answered 200 minutes later — the request was never the problem.
-//
-// A 4xx deliberately does NOT match. Retrying a deterministic rejection just
-// pays for it twice, which is what TestClientChatDoesNotRetryProviderStatusError
-// pins (400). Both go-openai error shapes carry the status: APIError for a
-// decoded provider error body, RequestError for the streaming path, which is
-// where the 503 above surfaced (client.go wraps it with %w, so errors.As sees
-// through).
+// providerOverloadStatus recognizes retryable 429/5xx responses. Deterministic
+// 4xx rejections are never retried.
 func providerOverloadStatus(err error) (int, bool) {
 	status := 0
 	var apiErr *openai.APIError

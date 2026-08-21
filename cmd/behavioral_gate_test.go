@@ -1,19 +1,16 @@
 package main
 
-// In-process behavioral gate (eval P0 阶段0 §②).
+// In-process behavioral gate for recorded production-shaped conversations.
 //
 // Drives the REAL engine — same wiring as the HTTP server (configureSharedDepsFromEnv),
-// real ds-v4-flash, real CompShare executor (creds from deploy/conf/config.local.yaml) — over the recorded
+// the configured Terra model, and the real CompShare executor — over recorded
 // multi-turn probe inputs, then evaluates the machine-checkable behavioral contract
 // (eval/realism/ci_behavioral_gates_2026-06-22.jsonl). Each contract assertion checks
 // an OBSERVABLE outcome (which tool/workflow was invoked, whether a confirm frame was
-// reached, reply text) — never intent_router.intent / execution_path — so it is the
-// regression safety net for later routing / taxonomy changes (阶段2/3) rather than a
-// brittle re-test of the router internals.
+// reached, reply text), not an internal routing label.
 //
 // Why it lives in package main: the gate MUST drive an engine wired identically to
-// production. That wiring (NewSharedDeps + applySharedDepsFromEnv + the runtime
-// feature-flag setters) lives in cmd/ (configureSharedDepsFromEnv); a hand-rolled copy
+// production. That wiring lives in cmd/ (configureSharedDepsFromEnv); a hand-rolled copy
 // in eval/ would drift and the gate would test the wrong engine.
 //
 // confirm=false: the production HTTP path's session-level ConfirmFn is denyConfirm
@@ -167,7 +164,7 @@ func TestBehavioralGate(t *testing.T) {
 
 	root := behavioralRepoRoot(t)
 	// Run from repo root so the engine's relative corpus / kb-sidecar paths
-	// (deploy/kb/...) resolve exactly as they do for the server/CLI binary.
+	// (deploy/kb/...) resolve exactly as they do for the server binary.
 	if orig, err := os.Getwd(); err == nil {
 		if err := os.Chdir(root); err != nil {
 			t.Fatalf("chdir repo root %s: %v", root, err)
@@ -335,7 +332,7 @@ func runCaseInProcess(base context.Context, deps *engine.SharedDeps, mutating bo
 	return rec
 }
 
-// ---------- contract evaluation (port of ci_behavioral_gates.py checker) ----------
+// ---------- contract evaluation ----------
 
 const verdictPass, verdictFail, verdictSkipJudge, verdictNoCase = "PASS", "FAIL", "SKIP_JUDGE", "NOCASE"
 

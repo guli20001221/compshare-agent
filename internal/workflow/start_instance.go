@@ -9,10 +9,7 @@ const (
 	// Upstream StartCompShareInstance takes WithoutGpuSpec ("A"=2C/4GB or
 	// "B"=8C/16GB) directly and resizes internally before starting
 	// (applyWithoutGpuBeforeStart). Both upstream tiers are exposed: A=2C/4GB,
-	// B=8C/16GB. Pod instances support tier A only. The
-	// older separate resize-then-start pattern (a raw WithoutGpu boolean sent
-	// to ResizeCompShareInstance) is rejected outright by upstream now
-	// (RejectDeprecatedResizeWithoutGpu) — do not reintroduce it.
+	// B=8C/16GB. Pod instances support tier A only.
 	//
 	// "Resizes internally before starting" is the whole hazard, so spell it out:
 	// upstream commits the resize as its own step (saving the original spec to

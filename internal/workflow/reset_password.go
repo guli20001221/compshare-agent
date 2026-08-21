@@ -45,8 +45,7 @@ func stepQueryForReset() Step {
 			instanceType := extractInstanceType(result)
 
 			if instanceType == "Container" {
-				// Live-verified 2026-07-10: Pod (Container) reset only succeeds
-				// while Running; Stopped returns upstream RetCode 8433.
+				// Container password reset requires a running instance.
 				if state == "Running" {
 					return CheckPassed()
 				}

@@ -1,12 +1,12 @@
 name: Behavioral Gate
 
-# In-process behavioral gate (eval P0 阶段0 §②). Drives the REAL engine — same
-# wiring as the HTTP server (configureSharedDepsFromEnv), real deepseek-v4-flash —
+# In-process behavioral gate. Drives the real engine with the same wiring as the
+# HTTP server (configureSharedDepsFromEnv) and the configured production model —
 # over the recorded multi-turn probe inputs, then evaluates the machine-checkable
 # behavioral contract (eval/realism/ci_behavioral_gates_2026-06-22.jsonl). Each
 # assertion checks an OBSERVABLE outcome (which tool/workflow was invoked, whether a
 # confirm frame was reached, reply text), never the router internals — so it is the
-# regression safety net for later routing / taxonomy changes (阶段2/3).
+# regression safety net for tool and workflow behavior.
 #
 # Deliberately NOT on `pull_request`: a full run makes hundreds of real LLM calls
 # (cost + ~40-60 min + depends on api.modelverse.cn reachability). PRs stay fast and

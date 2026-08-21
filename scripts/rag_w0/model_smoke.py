@@ -23,9 +23,9 @@ except ImportError:  # pragma: no cover
 
 DEFAULT_BASE_URL = "https://api.modelverse.cn/v1"
 DEFAULT_QWEN_VL_MODEL = "qwen3-vl-flash"
-DEFAULT_DS_MODEL = "deepseek-v4-pro"
+DEFAULT_ANSWER_MODEL = "gpt-5.6-terra"
 DEFAULT_SMOKE_PROMPT_VERSION = "smoke_v1"
-EXPECTED_BEHAVIORS = {"answer", "refuse", "hard_block", "escalate"}
+EXPECTED_BEHAVIORS = {"answer", "refuse", "tool_only", "escalate"}
 FULL_BATCH_VISUAL_TYPES = {"operation_screenshot", "error_screenshot", "console_state"}
 
 
@@ -44,7 +44,7 @@ def run_smoke(
         api_key=env["MODELVERSE_API_KEY"],
     )
     qwen_model = env.get("MODELVERSE_QWEN_VL_MODEL", DEFAULT_QWEN_VL_MODEL)
-    ds_model = env.get("MODELVERSE_DS_V4_PRO_MODEL", DEFAULT_DS_MODEL)
+    answer_model = env.get("MODELVERSE_EVAL_MODEL", DEFAULT_ANSWER_MODEL)
     vl_results = _run_vl_smoke(client, qwen_model, asset_manifest, max_vl=max_vl)
     if emit_asset_notes_path:
         _write_vl_asset_notes(
@@ -55,21 +55,21 @@ def run_smoke(
             smoke_run_id=datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
         )
     public_vl_results = [_public_vl_result(result) for result in vl_results]
-    ds_results = _run_ds_smoke(client, ds_model, cases_path)
+    answer_results = _run_answer_smoke(client, answer_model, cases_path)
     summary = {
         "qwen_vl_model": qwen_model,
-        "ds_v4_pro_model": ds_model,
+        "answer_model": answer_model,
         "vl": _summarize_vl(public_vl_results),
-        "ds": _summarize_ds(ds_results),
+        "answer": _summarize_answer(answer_results),
         "vl_samples": public_vl_results,
-        "ds_samples": ds_results,
+        "answer_samples": answer_results,
     }
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     if not summary["vl"]["pass"]:
         raise RuntimeError(f"Qwen VL smoke failed: {summary['vl']}")
-    if not summary["ds"]["pass"]:
-        raise RuntimeError(f"ds v4 pro smoke failed: {summary['ds']}")
+    if not summary["answer"]["pass"]:
+        raise RuntimeError(f"answer-model smoke failed: {summary['answer']}")
     return summary
 
 
@@ -325,9 +325,9 @@ def _vl_result_to_asset_note(result: dict[str, Any], *, model: str, prompt_versi
     }
 
 
-def _run_ds_smoke(client: ModelVerseClient, model: str, cases_path: Path) -> list[dict[str, Any]]:
+def _run_answer_smoke(client: ModelVerseClient, model: str, cases_path: Path) -> list[dict[str, Any]]:
     cases = _read_jsonl(cases_path) if cases_path.exists() else []
-    samples = _ds_samples(cases)
+    samples = _answer_samples(cases)
     results: list[dict[str, Any]] = []
     system = (
         "你是 CompShare RAG 入库安全判官和改写器。只返回 JSON："
@@ -378,13 +378,13 @@ def _run_ds_smoke(client: ModelVerseClient, model: str, cases_path: Path) -> lis
 def _run_eval_generation_smoke(client: ModelVerseClient, model: str) -> list[dict[str, Any]]:
     system = (
         "You generate CompShare RAG evaluation questions. Return ONLY a valid JSON object with this shape: "
-        "{\"questions\":[{\"question\":\"...\",\"expected_behavior\":\"answer|refuse|hard_block|escalate\"}]}. "
-        "Generate exactly 5 Chinese billing_rule questions. Include at least one answer, one refuse, and one hard_block."
+        "{\"questions\":[{\"question\":\"...\",\"expected_behavior\":\"answer|refuse|tool_only|escalate\"}]}. "
+        "Generate exactly 5 Chinese billing_rule questions. Include at least one answer, one refuse, and one tool_only."
     )
     user = (
         "product_area: billing_rule\n"
         "allowed knowledge: shutdown billing rules, invoice guidance, refund rules.\n"
-        "hard block: real-time account balance, bill amount, transaction history, and invoice approval status must not be answered by RAG.\n"
+        "tool only: real-time account balance, bill amount, transaction history, and invoice approval status must use live platform tools, not RAG.\n"
         "refuse: requests to operate inside an instance or guarantee private account state."
     )
     raw = client.chat(model=model, json_mode=True, max_tokens=1000, messages=[{"role": "system", "content": system}, {"role": "user", "content": user}])
@@ -392,14 +392,14 @@ def _run_eval_generation_smoke(client: ModelVerseClient, model: str) -> list[dic
     if not parsed.get("questions"):
         retry_system = (
             "Return JSON only. Schema: {\"questions\":[{\"question\":\"Chinese question\","
-            "\"expected_behavior\":\"answer|refuse|hard_block|escalate\"}]}. "
-            "Make 5 items with answer, refuse, and hard_block all present."
+            "\"expected_behavior\":\"answer|refuse|tool_only|escalate\"}]}. "
+            "Make 5 items with answer, refuse, and tool_only all present."
         )
         raw = client.chat(model=model, json_mode=False, max_tokens=1000, messages=[{"role": "system", "content": retry_system}, {"role": "user", "content": user}])
         parsed = _extract_json(raw)
     questions = parsed.get("questions") or []
     behaviors = {str(item.get("expected_behavior") or "") for item in questions if isinstance(item, dict)}
-    passed = len(questions) >= 3 and behaviors.issubset(EXPECTED_BEHAVIORS) and {"answer", "refuse", "hard_block"}.issubset(behaviors)
+    passed = len(questions) >= 3 and behaviors.issubset(EXPECTED_BEHAVIORS) and {"answer", "refuse", "tool_only"}.issubset(behaviors)
     return [
         {
             "sample_id": "eval-gen-billing-rule",
@@ -495,7 +495,7 @@ def _expected_keywords_for_asset(asset: dict[str, Any], visual_type: str) -> lis
     return ["控制台", "Windows", "登录", "NVIDIA", "连接", "IE", "Internet Explorer", "Chrome", "关闭", "确定"]
 
 
-def _ds_samples(cases: list[dict[str, Any]]) -> list[dict[str, str]]:
+def _answer_samples(cases: list[dict[str, Any]]) -> list[dict[str, str]]:
     samples: list[dict[str, str]] = [
         {
             "sample_id": "positive-faq-billing",
@@ -668,7 +668,7 @@ def _vl_asset_note_count(results: list[dict[str, Any]]) -> int:
     return sum(1 for result in results if _vl_result_usable(result))
 
 
-def _summarize_ds(results: list[dict[str, Any]]) -> dict[str, Any]:
+def _summarize_answer(results: list[dict[str, Any]]) -> dict[str, Any]:
     negatives = [item for item in results if item["sample_id"].startswith("negative-")]
     positives = [item for item in results if item["sample_id"].startswith("positive-")]
     passed_positive = sum(1 for item in positives if item.get("pass"))

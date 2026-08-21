@@ -53,7 +53,7 @@ def main() -> int:
     parser.add_argument("--manifest", type=Path, required=True)
     parser.add_argument("--env", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--model", default="doubao-seed-2-1-pro-260628")
+    parser.add_argument("--model", default="gpt-5.6-terra")
     args = parser.parse_args()
 
     internal = load_rows(args.internal)

@@ -144,20 +144,6 @@ func (p *Pool) Lease(ctx context.Context, owner store.Owner, sessionID string) (
 	return e.eng, func() { e.mu.Unlock() }, nil
 }
 
-// Get returns the cached *engine.Engine for (owner, sessionID), building a fresh
-// one via rehydration on a cache miss. It is safe for concurrent use.
-//
-// Deprecated: HTTP-path callers should use Lease to serialize per-session engine
-// access. Get is retained for callers that do not require serialization (e.g.
-// read-only inspection, tests).
-func (p *Pool) Get(ctx context.Context, owner store.Owner, sessionID string) (*engine.Engine, error) {
-	e, err := p.getOrCreate(ctx, owner, sessionID)
-	if err != nil {
-		return nil, err
-	}
-	return e.eng, nil
-}
-
 // getOrCreate finds or builds the entry for (owner, sessionID), updating LRU state.
 // Concurrency design: the pool lock is released during the potentially-slow
 // buildEngine call. After buildEngine returns we re-acquire the lock and

@@ -39,7 +39,7 @@ func TestWorkflowRequiresInstanceTarget(t *testing.T) {
 // cutover. It lives ONLY in the Resolver's dual proof: a target is authorized
 // exactly when the server can independently show the user SELECTED it AND that it
 // EXISTS in this account this turn. Every case below therefore enters through
-// resolveActionProposalShadow — the real production path — and asserts the
+// resolveActionProposal — the production path — and asserts the
 // resolver's ReadyForConfirmation verdict. A refused target is never made ready,
 // so it can never reach executeResolvedWorkflow.
 
@@ -78,7 +78,7 @@ func TestInferredExistentTargetReachesConfirmationCard(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-unselected", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), stopInstanceProposal("turn-unselected", "uhost-a"))
+	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-unselected", "uhost-a"))
 
 	require.NoError(t, err)
 	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
@@ -105,7 +105,7 @@ func TestObservedReferentTargetReachesConfirmationCard(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-observed-pronoun", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), stopInstanceProposal("turn-observed-pronoun", "uhost-a"))
+	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-observed-pronoun", "uhost-a"))
 
 	require.NoError(t, err)
 	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
@@ -121,7 +121,7 @@ func TestProposalAuthorizesExplicitIDTarget(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-explicit", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), stopInstanceProposal("turn-explicit", "uhost-a"))
+	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-explicit", "uhost-a"))
 
 	require.NoError(t, err)
 	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
@@ -151,7 +151,7 @@ func TestOrdinalBindsToChosenCandidateNotTheSubmittedOne(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	primeOrdinalSelection(t, eng, "帮我关机第2台", "turn-ord-wrong")
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), stopInstanceProposal("turn-ord-wrong", "uhost-a"))
+	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-ord-wrong", "uhost-a"))
 
 	require.NoError(t, err)
 	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
@@ -166,7 +166,7 @@ func TestCorrectOrdinalAuthorizesChosenCandidate(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	primeOrdinalSelection(t, eng, "帮我关机第2台", "turn-ord-right")
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), stopInstanceProposal("turn-ord-right", "uhost-b"))
+	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-ord-right", "uhost-b"))
 
 	require.NoError(t, err)
 	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
@@ -180,7 +180,7 @@ func TestIdAndOrdinalConflictIsRefused(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	primeOrdinalSelection(t, eng, "停止 uhost-a 第2台", "turn-id-ord-conflict")
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), stopInstanceProposal("turn-id-ord-conflict", "uhost-a"))
+	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-id-ord-conflict", "uhost-a"))
 
 	require.NoError(t, err)
 	require.False(t, resolved.action.ReadyForConfirmation,
@@ -206,7 +206,7 @@ func TestIdAndOrdinalConflictRefusedOnColdRegistry(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-cold-conflict", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), stopInstanceProposal("turn-cold-conflict", "uhost-a"))
+	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-cold-conflict", "uhost-a"))
 
 	require.NoError(t, err)
 	require.False(t, resolved.action.ReadyForConfirmation,
@@ -224,7 +224,7 @@ func TestUniqueExactNameBindsAndAuthorizes(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-name", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), stopInstanceProposal("turn-name", "alpha"))
+	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-name", "alpha"))
 
 	require.NoError(t, err)
 	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
@@ -248,7 +248,7 @@ func TestDuplicateNameIsRefused(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-dupname", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), stopInstanceProposal("turn-dupname", "uhost-a"))
+	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-dupname", "uhost-a"))
 
 	require.NoError(t, err)
 	require.False(t, resolved.action.ReadyForConfirmation,
@@ -272,7 +272,7 @@ func TestPointQueryFailureIsDependencyFailure(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-depfail", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), stopInstanceProposal("turn-depfail", "uhost-1"))
+	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-depfail", "uhost-1"))
 
 	require.NoError(t, err)
 	require.False(t, resolved.action.ReadyForConfirmation)
@@ -311,7 +311,7 @@ func TestResizeCFSTargetVerifiedByDescribeCFS(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-cfs", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), resizeCFSProposal("turn-cfs", "cfs-a"))
+	resolved, err := eng.resolveActionProposal(context.Background(), resizeCFSProposal("turn-cfs", "cfs-a"))
 
 	require.NoError(t, err)
 	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
@@ -333,7 +333,7 @@ func TestResizeCFSRefusedWhenDescribeCFSDoesNotEcho(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-cfs-miss", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), resizeCFSProposal("turn-cfs-miss", "cfs-a"))
+	resolved, err := eng.resolveActionProposal(context.Background(), resizeCFSProposal("turn-cfs-miss", "cfs-a"))
 
 	require.NoError(t, err)
 	require.False(t, resolved.action.ReadyForConfirmation, "a DescribeCFS response that does not echo the id is not existence")
@@ -352,7 +352,7 @@ func TestResizeCFSDependencyFailureOnDescribeCFSError(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-cfs-fail", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), resizeCFSProposal("turn-cfs-fail", "cfs-a"))
+	resolved, err := eng.resolveActionProposal(context.Background(), resizeCFSProposal("turn-cfs-fail", "cfs-a"))
 
 	require.NoError(t, err)
 	require.False(t, resolved.action.ReadyForConfirmation)
@@ -389,7 +389,7 @@ func TestResizeDiskTargetVerifiedAgainstParentDiskSet(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-disk", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), resizeDiskProposal("turn-disk", "uhost-a", "disk-1"))
+	resolved, err := eng.resolveActionProposal(context.Background(), resizeDiskProposal("turn-disk", "uhost-a", "disk-1"))
 
 	require.NoError(t, err)
 	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
@@ -412,7 +412,7 @@ func TestResizeDiskRefusedWhenDiskNotInParentDiskSet(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-disk-miss", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), resizeDiskProposal("turn-disk-miss", "uhost-a", "disk-1"))
+	resolved, err := eng.resolveActionProposal(context.Background(), resizeDiskProposal("turn-disk-miss", "uhost-a", "disk-1"))
 
 	require.NoError(t, err)
 	require.False(t, resolved.action.ReadyForConfirmation, "a disk id absent from the parent's DiskSet is not existence")
@@ -437,7 +437,7 @@ func TestSameIdInstanceEvidenceDoesNotAuthorizeDisk(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-same-id", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), resizeDiskProposal("turn-same-id", "same-id", "same-id"))
+	resolved, err := eng.resolveActionProposal(context.Background(), resizeDiskProposal("turn-same-id", "same-id", "same-id"))
 
 	require.NoError(t, err)
 	require.False(t, resolved.action.ReadyForConfirmation,
@@ -469,7 +469,7 @@ func TestProposalCompletesSoleFreshInstanceTarget(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-solo", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
 		"turn_id": "turn-solo", "operation": "StopInstanceWorkflow", "slots": []any{},
 	})
 
@@ -490,7 +490,7 @@ func TestProposalDoesNotCompleteTargetOnAmbiguousAccount(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-ambiguous", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
 		"turn_id": "turn-ambiguous", "operation": "StopInstanceWorkflow", "slots": []any{},
 	})
 
@@ -521,7 +521,7 @@ func TestProposalSoleInstanceDoesNotOverrideExplicitDifferentTarget(t *testing.T
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-explicit-other", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), stopInstanceProposal("turn-explicit-other", "uhost-x"))
+	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-explicit-other", "uhost-x"))
 
 	require.NoError(t, err)
 	require.False(t, resolved.action.ReadyForConfirmation,

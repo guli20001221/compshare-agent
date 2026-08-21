@@ -163,7 +163,7 @@ func inTurnToolGroups(msgs []openai.ChatCompletionMessage) int {
 const currentFanoutQuestion = "帮我全面排查一下"
 
 // productionToolWindow is the window the deploy config actually ships:
-// mutating_tools: true and ssh_ops.enabled: true. It is 40 schemas and ~22,800
+// mutating tools and the configured SSH lane. It is 40 schemas and ~22,800
 // serialized runes — an order of magnitude larger than the system prompt, and
 // invisible in the message list, which is how it went unbudgeted.
 func productionToolWindow() []openai.Tool { return centralAgentToolWindow(true, true) }
@@ -218,7 +218,6 @@ func TestRequestBudgetHoldsAcrossToolWindowShapes(t *testing.T) {
 // turn has issued `reads` expensive reads of `perResult` runes each.
 func highFanoutEngine(t *testing.T, reads, perResult int) *Engine {
 	t.Helper()
-	withCanonicalTranscript(t, true)
 
 	e := &Engine{}
 	e.sessionStateHydrated = true

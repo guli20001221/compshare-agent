@@ -8,38 +8,10 @@ import (
 	"github.com/compshare-agent/internal/textutil"
 )
 
-// citeMarkerRE parses an optional [[chunk_id]] attribution marker. It requires
-// at least two brackets on each side so it stays unambiguous against incidental
-// single-bracket prose and consumes the
-// WHOLE of an over-bracketed marker like [[[id]]] so StripCiteMarkers leaves no
-// orphan "[]" residue.
-//
-// The bracket pairs tolerate intra-marker spaces/tabs ([ \t]* between the brackets)
-// because flash reliably emits the right chunk_id but sometimes spaces the brackets
-// — e.g. "[ [chunk_id] ]" — which a strict \[\[ would miss and wrongly refuse a
-// correctly-grounded answer (the 2026-06-08 raw-synthesis probe: a perfect 226601
-// answer cited "[ [w0-init_failure-…] ]" and was false-refused). Only spaces/tabs are
-// tolerated, NOT newlines, so the id class excluding brackets+newlines still makes a
-// line-wrapped marker fail closed (no match → refusal) rather than spanning prose.
-// The captured group is the raw chunk_id; ValidateGroundedCitations validates it
-// against the per-turn evidence ledger.
-// The captured id itself must contain NO whitespace. Spaces are still tolerated
-// AROUND it (the `[ [w0-init_failure-001] ]` case above), but a chunk_id never
-// contains a space, and allowing one made the marker indistinguishable from an
-// unfenced shell conditional: `用 [[ -f /root/m.bin ]] 判断` stripped to `用 判断`,
-// handing the user a broken command. Fenced and inline code were already safe
-// (StripCiteMarkers maps over prose only), so this closes the bare-prose case.
-//
-// The OPENING requires >=2 brackets (`\[` + `\[+`) — that doubled bracket is the
-// unambiguous "this is a cite marker" signal, since prose rarely doubles a
-// bracket. The CLOSING only requires >=1 (`\]+(?:[ \t]*\])*`), NOT the symmetric
-// >=2 an earlier version demanded: flash sometimes emits an unbalanced `[[id]`
-// (two open, one close), which the >=2-close form skipped, leaking the raw
-// internal chunk_id straight into the user's reply. Once the `[[` opener is seen,
-// consume through every trailing `]` (with optional spaces between, so `[ [id] ]`
-// leaves no ` ]` orphan) however many there are. The shell-conditional guard is
-// unaffected: `[[ -f … ]]` still fails because the id class stops at the space
-// before any `]`.
+// citeMarkerRE recognizes [[chunk_id]] markers, including spaced or unbalanced
+// closing brackets produced by models. IDs cannot contain whitespace, brackets or
+// newlines, so bare shell conditionals such as [[ -f file ]] remain ordinary prose.
+// The entire marker is consumed to avoid leaking bracket residue.
 var citeMarkerRE = regexp.MustCompile(`\[[ \t]*\[+\s*([^\[\]\s]+)\s*\]+(?:[ \t]*\])*`)
 
 // positionalCiteRE parses an optional positional citation [n] (single bracket,
@@ -51,7 +23,7 @@ var citeMarkerRE = regexp.MustCompile(`\[[ \t]*\[+\s*([^\[\]\s]+)\s*\]+(?:[ \t]*
 var positionalCiteRE = regexp.MustCompile(`\[(\d{1,2})\]`)
 
 // GroundedAnswerReport is the route-independent verdict for a free-text final
-// answer validated against a per-turn ChunkID-keyed evidence ledger (#126). It is
+// answer validated against a per-turn ChunkID-keyed evidence ledger. It is
 // produced by ValidateGroundedCitations and never mutates the answer.
 type GroundedAnswerReport struct {
 	// HasCitation is true when the answer carries >=1 [[chunk_id]] marker that
@@ -151,10 +123,7 @@ var citeStripPunct = [][2]string{
 // before stripping). Cosmetic cleanup collapses the spaces/punctuation a removed
 // marker leaves so the user reply is not ragged; newlines are preserved so
 // markdown structure (lists, tables) survives.
-// The rewrite runs on PROSE ONLY (textutil.MapOutsideCode). It used to run on
-// the whole answer, so `gpus[0]` in a fenced block lost its subscript and the
-// space-collapsing pass flattened Python indentation into unrunnable code. The
-// Confining the cleanup to prose preserves code: a citation is never inside code.
+// Cleanup runs only on prose so code remains byte-identical.
 func StripCiteMarkers(answer string) string {
 	if answer == "" {
 		return answer

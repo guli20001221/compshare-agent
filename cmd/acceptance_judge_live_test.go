@@ -136,8 +136,8 @@ type accRunView struct {
 	// right there) but not a tool-sourced one, so a correct answer built from live
 	// API data reads as an unsupported assertion — a false fabrication finding on
 	// exactly the cases a tool exists to serve. Not serialized; judge input only.
-	ToolResults []string `json:"-"`
-	Reply       string   `json:"reply"`
+	ToolResults []string   `json:"-"`
+	Reply       string     `json:"reply"`
 	Verdict     accVerdict `json:"verdict"`
 	// Repeat is a second judge call on the SAME reply, run only for run 1. It
 	// measures the judge's disagreement with itself, which is the floor any

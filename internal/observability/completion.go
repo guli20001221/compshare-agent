@@ -14,11 +14,8 @@ type TurnCompletionTrace struct {
 	ToolNames             []string `json:"tool_names,omitempty"`
 }
 
-// The confirmation class and its reasons were removed with the premature
-// completion lock that produced them: confirmation attribution now lives in
-// TraceRecord.Confirmations and the outcome axes derived from it. Nothing
-// writes a confirmation completion, so naming one here would be vocabulary
-// with no producer.
+// Confirmation attribution lives in TraceRecord.Confirmations and the outcome
+// axes derived from it, not in the completion vocabulary.
 const (
 	CompletionClassSafetyBlock           = "safety_block"
 	CompletionClassDeterministicAnswer   = "deterministic_answer"

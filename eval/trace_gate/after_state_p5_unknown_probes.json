@@ -1,6 +1,0 @@
-[
-  { "id": "ga-unknown-offtopic",  "set": "regression_unknown", "question": "今天天气怎么样",
-    "gate": "off-platform unknown: refuse pre-ReAct; MUST NOT fire SearchKnowledge" },
-  { "id": "ga-unknown-vendor",    "set": "regression_unknown", "question": "阿里云的 ECS 怎么购买",
-    "gate": "other-vendor unknown: refuse; MUST NOT fire SearchKnowledge" }
-]

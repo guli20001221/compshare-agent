@@ -203,25 +203,11 @@ check("prompt-contract::no-incident-specific-patches",
           for token in ("filebrowser", "main.py", "/start.d/", "8188", "comfyui")))
 check("prompt-contract::within-argv-safe-band",
       len(_READ_PROMPT) < 5000 and len(_WRITE_PROMPT) < 5000)
-# 2026-07-31: the write prompt used to spend 458 of its 1852 characters arbitrating between the two
-# skills — which one describes itself as read-only, which one replaces the other's section 4, which
-# one wins. A tool-call census killed that text: 11 instrumented runs across BOTH modes logged 89
-# tool calls, 100% `ssh_exec`, `Skill` ZERO times, and the staging was verified working (both
-# SKILL.md files land under <root>/.claude/skills, setting_sources=["project"], cwd is that root).
-# So the model never opens either document and the arbitration resolved a conflict it never saw.
-#
-# The one sentence inside that block which meant something on its own — that repair is authorized —
-# is kept and asserted above. These two are the REVERSE assertions that stop the rest creeping back:
-# re-adding it is a claim about model behaviour, and it needs a census, not a paragraph.
+# The prompt states authorization directly and does not arbitrate deleted playbooks.
 check("write-prompt-does-not-arbitrate-skills", "OVERRIDE" not in harness.system_prompt(True))
 check("write-prompt-names-no-skill", "skill" not in harness.system_prompt(True).lower())
 
-# --- and so does the TOOL DESCRIPTION, which is the one the model actually believes --------------
-# A live write-enabled run diagnosed the box correctly, produced the right fix command, and then
-# reported 「当前 SSH 诊断接口仅允许只读命令，无法直接执行启动/修改操作」 — a direct restatement of
-# the tool description, which still said "Read-only commands only" while the system prompt said
-# repair was authorized. The model was not being cautious; it was believing its tool. Whatever the
-# system prompt says, a tool whose own description forbids writing will not be used to write.
+# --- The tool description and system prompt must agree that confirmed repairs are available. ------
 check("write-tool-desc-does-not-forbid-writes",
       "Read-only commands only" not in harness.tool_description(True))
 check("write-tool-desc-says-changes-run",
@@ -263,11 +249,8 @@ check("tool-desc-contracts-stay-focused",
       len(harness.TOOL_DESC) < 1000 and len(harness.TOOL_DESC_WRITE) < 2000)
 
 # --- the description must not forbid what the executor allows ------------------------------------
-# The clause "no chaining/pipes/redirection" predates the 2026-07-23 deny-by-EFFECT gate and is now
-# false: measured, `nohup ... > /root/x.log 2>&1 &` classifies `mutating` (approve -> run) and
-# `ps aux | grep x` classifies `read_only`. It is not a cosmetic staleness — redirection is exactly
-# what starting a service requires, so the sentence forbade the repair itself. These two checks are
-# the gate and the text asserted TOGETHER, so the text cannot drift from the gate again silently.
+# The description must match executable policy: supported chaining, pipes and redirection cannot be
+# described as forbidden.
 check("gate-actually-allows-redirect",
       guardrails.classify("nohup python3 /root/app/start.py > /root/app.log 2>&1 &") == "mutating"
       and guardrails.is_form_violation("nohup python3 /root/app/start.py > /root/app.log 2>&1 &")
@@ -285,25 +268,7 @@ check("write-surface-has-start-and-poll-job-tools",
       all(name in harness.allowed_tools(True) for name in
           ("mcp__ssh_ops__start_background_job", "mcp__ssh_ops__poll_background_job")))
 
-# --- BOTH skills are GONE: instance-repair 2026-08-08, instance-triage 2026-08-14 ----------------
-# instance-repair existed to arbitrate one contradiction: instance-triage was read-only THROUGHOUT
-# (H1, opening job definition, section-4 verdict template), so a write-authorized run following it
-# faithfully produced 「请授权我执行安全修复」 after repair was already authorized. That arbitration
-# then moved OUT of the skills entirely — SYSTEM_PROMPT_WRITE names no skill at all
-# (`write-prompt-names-no-skill` above) — leaving a 6.9 KB playbook nothing told the model to open.
-#
-# instance-triage was different and is the harder case to argue, so state it precisely. It WAS
-# reachable: a probe with these exact options (Skill absent from allowed_tools, no permission
-# callback) loaded it and quoted its first heading verbatim. What never happened is the model
-# choosing to. Two independent censuses — 21 tool_use / 0 Skill, then 89 over 11 runs / 0 Skill, the
-# second while the read-only prompt still said `Load the instance-triage skill FIRST` — say that
-# given a symptom and a tool that acts, the model acts. A playbook that only opens when it is the
-# only permitted task is not a diagnostic asset in this lane.
-#
-# The cost is stated rather than waved away: 11 KB of GPU/service/resource triage knowledge was never
-# measured against a run that lacked it, and now never can be. Against that, all four observed
-# correct diagnoses ran with zero skills loaded. Reviving the content means a task-prompt injection —
-# a different mechanism with a different measurement — not restoring this file.
+# The lane has no skills or built-in Skill tool; policy lives in the prompt and executable tools.
 check("skills-are-gone-from-the-module", not hasattr(harness, "skills_for") and not hasattr(harness, "SKILLS"))
 check("skills-directory-is-gone",
       not os.path.exists(os.path.join(os.path.dirname(os.path.abspath(harness.__file__)), "skills")))
@@ -326,14 +291,8 @@ check("atomic-file-tool-is-hash-bound-and-backed-up",
       all(term in harness.atomic_file.TOOL_DESCRIPTION
           for term in ("SHA-256", "same-directory backup", "atomically renames")))
 
-# --- the lane repairs what it was asked about, and recommends the rest (2026-07-31) --------------
-# Two live frontend runs went past the request. On one the lane moved /workspace/ComfyUI aside and
-# downloaded upstream master over it; on the other it judged the user's own service unsafe and took
-# it down. Both were defensible reasoning and both were reported honestly — and both are bigger than
-# what the user asked. Per-command consent cannot catch this: every individual command was ordinary,
-# and the card shows a command, not a decision. So the boundary goes in the TOOL DESCRIPTION, which
-# is the channel with evidence of landing (a detach protocol added there was adopted verbatim 2/2,
-# while system-prompt rules went 0/3).
+# The lane repairs only the assigned fault; broader application replacement or shutdown requires a
+# separate user decision.
 for _name, _needle in [
     ("states the scope", "within the diagnosed fault"),
     ("names redeploying an app", "re-downloading an application"),
@@ -404,10 +363,7 @@ for _surface, _text in [("desc", _WRITE_DESC), ("prompt", _WRITE_PROMPT)]:
     check(f"write-prompts::no-facts-gate-on-console-controls::{_surface}",
           "platform facts establish" not in _text)
 
-# --- the three load-bearing rules live in the SYSTEM PROMPT, not in a skill ----------------------
-# Measured 2026-07-29: an instrumented live run logged 21 tool_use blocks — 21 ssh_exec, 0 Skill.
-# The model never loads a playbook, so a rule that only exists in SKILL.md does not exist. These are
-# the three behaviours it provably gets wrong unaided, each with a real failure behind it.
+# Load-bearing rules live in the prompt or tool description, not in a deleted skill.
 _wp = harness.system_prompt(True)
 _td = harness.tool_description(True)
 # The launcher rule was stated in the system prompt and IGNORED (the run went straight to main.py and
@@ -426,7 +382,11 @@ check("prompts-drop-product-specific-launcher-patches",
 check("tooldesc-rule-verify-every-launcher-port",
       "Verify the full service contract owned by the launcher" in _td)
 check("prompt-no-longer-carries-port-diff", "list the listening ports" not in _wp)
-check("prompt-rule-verdict-sections-inline", "已执行的修复 / 验证 / 未处理" in _wp)
+check("prompt-rule-verdict-starts-with-status",
+      all(token in _wp for token in ("`已修复`", "`部分修复`", "`未修复`")))
+check("prompt-rule-verdict-stays-compact",
+      "Then include `已完成` and, only when needed, `下一步`" in _wp and
+      "结论 / 证据 / 确证vs推测" not in _wp)
 check("prompt-rule-own-failed-commands",
       "attempts that ran but failed" in _wp and "label it as your action" in _wp and
       "pending or denied operation as executed" in _wp)
@@ -441,7 +401,7 @@ check("readonly-prompt-untouched-by-repair-rules", "start it the way the image s
 # The four rules the deleted instance-repair skill carried now have to live where the model actually
 # reads them, or deleting it lost something. Each is asserted against the live prompt/description
 # rather than against a file, which is the whole point of the move.
-check("repair-rule-executed-section-survives", "已执行的修复" in _wp)
+check("repair-rule-executed-section-survives", "In `已完成`" in _wp)
 check("repair-rule-long-job-lifecycle-survives",
       "structured background-job tools" in _td and "timed-out foreground command" in _td)
 check("repair-rule-own-failed-attempts-survives",
@@ -460,11 +420,7 @@ try:
 finally:
     os.chdir(_cwd)
 
-# --- destructive tier: blast-radius narrowing (2026-07-30) ---------------------------------------
-# Motivation is a measurement, not taste. On four live faults the agent diagnosed 4/4 root causes
-# correctly and repaired 1/4; three of the failures were THIS gate refusing the correct fix. Each
-# case below is the actual command from that run.
-#
+# Destructive versus confirmable writes.
 # What matters is WHICH TIER, not merely "not refused": `destructive` is refused outright, while
 # `mutating` still makes the operator approve that exact string on a consent card. A command that
 # slipped to `read_only` would execute with NO approval — strictly worse than the over-refusal we
@@ -512,11 +468,7 @@ for _name, _cmd in [
 ]:
     check(f"still-refused::{_name}", guardrails.classify(_cmd) == "destructive")
 
-# --- the consent gate must not be defeatable by wrapping (2026-07-30) ----------------------------
-# The gate was structurally asymmetric: the destructive scan is a regex over the WHOLE string, so
-# `nice rm -rf /x` was caught, but the mutating check read only the FIRST token, so `nice touch /x`
-# classified read_only and auto-ran with NO consent card. Wrapping is the cheapest bypass there is
-# and it beat precisely the half a human is standing in. Each of these was measured read_only.
+# Wrappers must not hide the inner command from the consent gate.
 for _name, _cmd in [
     ("nice", "nice touch /root/marker"),
     ("nice-with-value-flag", "nice -n 5 touch /root/marker"),
@@ -630,14 +582,7 @@ for _name, _cmd, _want in [
 ]:
     check(f"lockout-path-stays-readable::{_name}", guardrails.classify(_cmd) == _want)
 
-# --- two re-tierings driven by measurement, not by taste (2026-07-30) ----------------------------
-# Both were found by checking the gate against the ACTUAL repair for each high-frequency real-user
-# category (production export 2026-07-07..24, 115 retained sessions), before spending a live run.
-#
-# 系统盘写满 (file_storage_transfer, 7 sessions). Measured on a live box: a 2 GB log held open by a
-# running process. `rm` of it reclaimed ZERO bytes — df avail stayed at 75062 MB, because the open
-# fd still pinned the inode. `truncate -s 0` through /proc/<pid>/fd reclaimed all 2 GB (75062 ->
-# 77110 MB). The gate allowed the move that does not work and refused the one that does.
+# Zero-length truncation is a confirmable disk-space repair; growing a file remains destructive.
 for _name, _cmd, _want in [
     ("zero-a-log-is-the-repair", "truncate -s 0 /var/log/bigblob.bin", "mutating"),
     ("zero-via-a-held-open-fd", "truncate -s 0 /proc/633/fd/3", "mutating"),
@@ -652,13 +597,8 @@ for _name, _cmd, _want in [
 ]:
     check(f"space-reclaim-tiering::{_name}", guardrails.classify(_cmd) == _want)
 
-# SSH/RDP connectivity (23 sessions, the 3rd most common real problem). The /etc/ssh carve-out was
-# checked against a live box rather than assumed: with ONE bad directive in its config, SIGHUP to
-# sshd did NOT fail safe the way nginx does — OpenSSH re-execs on HUP, the re-exec failed, and the
-# daemon DIED (port stopped listening, connection refused). A restart with the same config also
-# refused to start. So editing sshd_config stays hard-refused, AND the reload/restart that makes a
-# bad config fatal must not be one consent-card click away either. In this category the user's
-# config is already broken, which is exactly when a reload loses the box.
+# SSH configuration edits and daemon/network restarts remain destructive: a bad configuration can
+# make the re-exec fail and permanently remove the only management path.
 for _name, _cmd, _want in [
     ("restart-with-an-already-bad-config", "systemctl restart sshd", "destructive"),
     ("reload-re-execs-and-can-die", "systemctl reload ssh", "destructive"),
@@ -674,12 +614,7 @@ for _name, _cmd, _want in [
 ]:
     check(f"ssh-channel-tiering::{_name}", guardrails.classify(_cmd) == _want)
 
-# --- a run that died AFTER changing the box must say so (2026-07-30) -----------------------------
-# Confirmed on a live run, not reasoned about: the lane installed python3-tomli and brought a
-# crash-looping systemd unit from `activating` back to `active`, the gateway then returned 500, and
-# the partial-result note told the user the conclusion was "基于已执行只读命令" — i.e. that nothing
-# had been changed. The box had been changed. A user who believes that note re-runs the repair or
-# debugs a state that no longer exists.
+# A partial run that changed the box must list those changes.
 del harness.AUDIT[:]
 harness.AUDIT.extend([
     {"command": "systemctl status infersvc", "tier": "read_only", "disposition": "ran_read_only"},
@@ -711,20 +646,13 @@ check("partial-note::read-only-run-states-no-writes", "没有执行任何写操�
 check("partial-note::read-only-run-claims-no-change", "已经被改动过" not in _note)
 del harness.AUDIT[:]
 
-# --- the box must enforce the time bound, not just us (2026-07-30) ------------------------------
-# _pump's timeout path calls chan.close() with the comment "stop the remote command from running
-# on". Measured A/B on a live box with `grep -rn <pat> / | head -20`: local-close-only left 2
-# processes alive (the grep AND the head) still running 12s after the close; the same command under
-# `timeout` left 0. The leak had a user-visible cost — an abandoned `grep -rn` over /model was still
-# scanning 1.5 HOURS later, and the next diagnosis of that instance read it as concurrent
-# modification and stopped to ask instead of repairing.
+# The remote process group, not only the local SSH channel, must enforce the time bound.
 _CMD = "grep -rn 'x' / | head -20"
 _W = ssh_transport._bounded(_CMD)
 check("remote-bound::asks-the-box-to-enforce-it", f"timeout -k 5 {ssh_transport._REMOTE_TIMEOUT}" in _W)
 check("remote-bound::bound-is-shorter-than-ours",
       ssh_transport._REMOTE_TIMEOUT < ssh_transport._EXEC_TIMEOUT)
-# bash, not sh: real runs use bash-isms (${PIPESTATUS[0]} appeared in a live run) that dash would
-# silently mis-execute.
+# bash, not sh: generated commands may use bash syntax.
 check("remote-bound::runs-under-bash", "bash -c" in _W and "sh -c" not in _W.replace("bash -c", ""))
 # On a box without `timeout` the original must still run, byte-identical to pre-wrapper behaviour.
 check("remote-bound::degrades-to-the-original", _W.rstrip().endswith(_CMD))
@@ -749,12 +677,7 @@ with confirm_stub.approving() as _io:
 check("remote-bound::card-shows-the-models-text",
       len(_io.requests) == 1 and _io.requests[0]["command"] == "echo x > /tmp/f")
 
-# --- shell keywords are wrappers too (2026-07-30) ------------------------------------------------
-# Same structural root as the binary-wrapper fix, found because the assertion above was wrong: the
-# mutating check reads token 0, and a shell reserved word can sit there. Chaining is accepted and
-# split on `;`, so `if true; then rm -f /root/x; fi` yields the segment `then rm -f /root/x` — token
-# 0 is `then`, `rm` is never looked up, and the delete AUTO-RAN with no consent card. All five of
-# these were measured read_only before the keyword strip.
+# Shell keywords are wrappers too and must not hide the first executable.
 for _name, _cmd in [
     ("if-then-delete", "if true; then rm -f /root/marker; fi"),
     ("if-then-write-to-etc", "if true; then touch /etc/x; fi"),
@@ -818,15 +741,8 @@ for _name, _cmd in [("systemctl-restart-sshd-abs", "/usr/bin/systemctl restart s
                     ("rm-rf-etc-ssh-abs", "/bin/rm -rf /etc/ssh")]:
     check(f"abs-path-cannot-soften-destructive::{_name}", guardrails.classify(_cmd) == "destructive")
 
-# --- the OVER-refusing half of the same asymmetry (2026-07-30) ------------------------------------
-# Every fix above closed a way to skip the consent card. This one closes the opposite: two commands
-# that were each fine got hard-refused TOGETHER, because a destructive rule of the shape
-# "write-verb ... sensitive-path" matched a verb in one command against a path in another. Measured
-# on a live repair run: `chmod u+rx /root/models && ...` was refused, and the model then reached the
-# same end state with `install -d -m 755 /root/models`, which passed. That is the worst outcome for
-# a consent gate — the refusal taught it to respell instead of to stop and ask, so the operator
-# never saw a card for either form. Asserted end-to-end and not only as a tier, because the point of
-# the fix is which GATE the operator meets.
+# Separate commands must not combine into a false destructive match. Assert end-to-end which gate
+# the user reaches, not only the classifier tier.
 for _name, _cmd in [
     ("perms-then-read-proc", "chmod u+rx /root/models; awk '{print}' /proc/17146/status"),
     ("kill-squatter-then-check-ssh", "pkill -f squatter.py; systemctl status sshd"),

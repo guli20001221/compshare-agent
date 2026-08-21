@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const contextCardMarker = "【本轮统一上下文"
+const contextCardMarker = "【本轮执行上下文"
 
 // Canonical replay must not reintroduce a semantic summary block. This input has
 // no live execution continuity, so it should carry only the base system prompt.

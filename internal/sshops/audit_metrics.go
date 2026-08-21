@@ -27,7 +27,7 @@ const auditTruncationMarker = "…[截断]"
 // the writer carries its own bound instead of trusting the producer's.
 const maxAuditStepRows = 120
 
-// PersistedStepSummary is the durable, redacted projection of one Step. It exists so an
+// PersistedStepSummary is the persisted, redacted projection of one Step. It exists so an
 // interrupted run can be described afterwards by NAME — which commands ran and how they ended —
 // instead of only by count.
 //

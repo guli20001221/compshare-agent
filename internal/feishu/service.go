@@ -161,13 +161,13 @@ func ValidateConfig(cfg config.FeishuConfig) error {
 			return errors.New("agent.feishu.allowed_chat_ids cannot contain an empty value")
 		}
 	}
-	if cfg.EnableConsoleHandoff {
+	if consoleHandoffEnabled(cfg) {
 		if _, err := validateConsoleAssistantURL(cfg.ConsoleAssistantURL); err != nil {
 			return err
 		}
-		if _, err := validateClientDownloadURL(cfg.ClientDownloadURL); err != nil {
-			return err
-		}
+	}
+	if _, err := validateClientDownloadURL(cfg.ClientDownloadURL); err != nil {
+		return err
 	}
 	return nil
 }
@@ -194,7 +194,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.cfg.AppSecret,
 		larkws.WithEventHandler(eventHandler),
 	)
-	log.Printf("Feishu topic bot connected: allowlist=%d, workers=%d, platform_readonly=%t, auto_reply_new_topics=%t, auto_reply_all_messages=%t, console_handoff=%t, client_handoff=%t", len(s.allowed), workers, s.cfg.EnablePlatformReadOnlyQueries, s.cfg.AutoReplyNewTopics, s.cfg.AutoReplyAllMessages, consoleHandoffEnabled(s.cfg), strings.TrimSpace(s.cfg.ClientDownloadURL) != "")
+	log.Printf("Feishu topic bot connected: allowlist=%d, workers=%d, auto_reply_new_topics=%t, auto_reply_all_messages=%t, console_handoff=%t, client_handoff=%t", len(s.allowed), workers, s.cfg.AutoReplyNewTopics, s.cfg.AutoReplyAllMessages, consoleHandoffEnabled(s.cfg), strings.TrimSpace(s.cfg.ClientDownloadURL) != "")
 	started := make(chan error, 1)
 	go func() {
 		started <- client.Start(ctx)

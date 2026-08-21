@@ -101,9 +101,6 @@ func TestTrimAssembledRequest_ShedsWholeExchangesNotMessagePrefixes(t *testing.T
 // turn's tool evidence to both. The hot/cold parity test cannot see this because
 // both sides make the same mistake.
 func TestAttachRecordedTranscripts_DoesNotReuseOneRecordForRepeatedExchanges(t *testing.T) {
-	prev := canonicalTranscriptEnabled
-	SetCanonicalTranscriptEnabled(true)
-	defer SetCanonicalTranscriptEnabled(prev)
 
 	record := func(tag string) recordedTurn {
 		return recordedTurn{
@@ -226,9 +223,6 @@ func TestBuildTranscriptV1_DoesNotSilentlyTruncateToolArguments(t *testing.T) {
 // turn 2's tool evidence, and turn 2 was shown none. The sibling test cannot
 // catch this: both of its records carry a transcript.
 func TestAttachRecordedTranscripts_ToolFreeRecordStillConsumesItsSlot(t *testing.T) {
-	prev := canonicalTranscriptEnabled
-	SetCanonicalTranscriptEnabled(true)
-	defer SetCanonicalTranscriptEnabled(prev)
 
 	eng := &Engine{recentTurns: []recordedTurn{
 		{User: "再试一次", Assistant: "已确认。", Transcript: nil}, // a turn that called no tools
@@ -319,7 +313,6 @@ func assertProjectedPairsValid(t *testing.T, msgs []openai.ChatCompletionMessage
 // unbounded, and redaction plus []rune conversion run over the whole body before
 // a single character is discarded — on the path the user is waiting on.
 func TestCaptureTurnTranscript_RejectsOversizedRawTurnWithoutScanningIt(t *testing.T) {
-	enableCanonicalTranscriptForTest(t)
 	huge := strings.Repeat("x", maxRawTurnBytes+1)
 	e := &Engine{messages: []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleUser, Content: "列一下"},
@@ -342,7 +335,6 @@ func TestCaptureTurnTranscript_RejectsOversizedRawTurnWithoutScanningIt(t *testi
 // A turn just under the raw limit is unaffected — the guard must not be a
 // tightening of the ordinary path.
 func TestCaptureTurnTranscript_KeepsTurnsUnderTheRawLimit(t *testing.T) {
-	enableCanonicalTranscriptForTest(t)
 	body := strings.Repeat("y", 4096)
 	e := &Engine{messages: []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleUser, Content: "列一下"},

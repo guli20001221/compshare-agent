@@ -125,8 +125,8 @@ func upstreamContractUserContext(cfg *config.Config, topOrg, org, account uint32
 }
 
 // guardUpstreamContractWrite makes an opt-in live probe safe by default. Its
-// workflow confirmation callback is intentionally automatic, so a separate CLI
-// acknowledgement is required before it can issue any L1 request.
+// workflow confirmation callback is intentionally automatic, so an explicit
+// test flag is required before it can issue any L1 request.
 func guardUpstreamContractWrite(action, flow string, allowWrite bool) error {
 	if strings.TrimSpace(flow) != "" {
 		if !allowWrite {

@@ -1,34 +1,29 @@
 #!/usr/bin/env python3
 """Evaluate deterministic W0 retrieval quality.
 
-Four modes (mirror internal/knowledge/retriever.go retrieval pipelines):
+Five offline modes mirror internal/knowledge/retriever.go for parity checks:
 
-  baseline (default): BM25 char 2/3-gram top-3. Matches the production
-    runtime when RAG_RETRIEVAL_MODE=bm25_only or unset+RAG_HYBRID_ENABLED
-    unset.
+  baseline (default): BM25 char 2/3-gram top-3.
 
   hybrid: BM25 top-20 -> text-embedding-3-large cosine rerank -> top-3.
-    Matches RAG_RETRIEVAL_MODE=hybrid_cosine. Requires the text-emb-3
-    sidecar from build_corpus_embeddings.py (default --embed-model).
+    Requires the text-emb-3 sidecar from build_corpus_embeddings.py
+    (default --embed-model).
 
   hybrid_rerank: BM25 top-20 -> text-emb-3 cosine top-10 ->
-    qwen3-reranker-8b cross-encoder -> top-3. Matches
-    RAG_RETRIEVAL_MODE=hybrid_rerank.
+    qwen3-reranker-8b cross-encoder -> top-3.
 
   qwen3_full: BM25 top-20 -> qwen3-embedding-8b cosine top-10 ->
-    qwen3-reranker-8b cross-encoder -> top-3. Matches
-    RAG_RETRIEVAL_MODE=qwen3_full. Requires the qwen3 sidecar from
+    qwen3-reranker-8b cross-encoder -> top-3. Requires the qwen3 sidecar from
     build_corpus_embeddings.py --embed-model qwen3-embedding-8b.
 
   qwen3_rrf: BM25 top-50 fused with qwen3-embedding-8b dense-full-corpus
     top-50 via Reciprocal Rank Fusion (k=60) -> top-10 -> qwen3-reranker-8b
-    cross-encoder -> top-3. Matches RAG_RETRIEVAL_MODE=qwen3_rrf. Reuses
+    cross-encoder -> top-3. Reuses
     the same qwen3 sidecar as qwen3_full; recovers BM25-zero-hit queries
     via the dense leg (cascade path skips embedder when BM25 returns 0).
 
 Eval fails loud on embedding/reranker API errors so regressions are
-visible (the runtime swallows these for latency safety; eval must not
-silently mask them — see memory feedback_eval_must_reflect_runtime_no_coercion).
+visible; evaluation must not silently mask them.
 """
 
 from __future__ import annotations

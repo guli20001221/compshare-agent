@@ -10,7 +10,7 @@ import (
 )
 
 // TestResolveCreateWithValidChineseZoneEndToEnd drives the full Chinese create
-// sentence through the REAL production path (resolveActionProposalShadow):
+// sentence through the production resolveActionProposal path:
 // provenance derivation + the live zone-catalog snapshot + the resolver. The valid
 // console zone "华北一C" is canonicalized and KEPT; the create opens the guided form
 // for the still-missing GPU. This is the end-to-end "valid 华北一C keeps its
@@ -21,7 +21,7 @@ func TestResolveCreateWithValidChineseZoneEndToEnd(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-cn-zone", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(zoneUserCtx(), map[string]any{
+	resolved, err := eng.resolveActionProposal(zoneUserCtx(), map[string]any{
 		"turn_id": "turn-cn-zone", "operation": "CreateInstanceWorkflow",
 		"slots": []any{map[string]any{
 			"name": "Zone", "value": "华北一C", "source": "user_explicit",
@@ -49,7 +49,7 @@ func TestResolveCreateWithInvalidChineseZoneEntersFormEndToEnd(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-cn-zone-bad", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(zoneUserCtx(), map[string]any{
+	resolved, err := eng.resolveActionProposal(zoneUserCtx(), map[string]any{
 		"turn_id": "turn-cn-zone-bad", "operation": "CreateInstanceWorkflow",
 		"slots": []any{map[string]any{
 			"name": "Zone", "value": "华北一区", "source": "user_explicit",
@@ -97,7 +97,7 @@ func TestChineseCreateProvenanceReproduction(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, sentence, "turn-repro", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(zoneUserCtx(), map[string]any{
+	resolved, err := eng.resolveActionProposal(zoneUserCtx(), map[string]any{
 		"turn_id": "turn-repro", "operation": "CreateInstanceWorkflow",
 		"slots": []any{
 			map[string]any{"name": "GpuType", "value": "4090", "source": "user_explicit", "evidence": map[string]any{"quote": "4090"}},

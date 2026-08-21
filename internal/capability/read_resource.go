@@ -9,11 +9,8 @@ import (
 	"github.com/compshare-agent/internal/readprojection"
 )
 
-// Resource-info read capability (migrated from the legacy intent route). It
-// lists / filters the account's instances via DescribeCompShareInstance and
-// renders them deterministically. Filter refs and explicit id/name refs are
-// mutually exclusive (a filter set describes "all matching", an id/name set
-// pins exact targets) — the same contract the legacy handler enforced.
+// Resource-info lists or filters account instances. Filter references and
+// explicit ID/name references are mutually exclusive.
 
 const (
 	resourceCapabilityLabel = string(intent.IntentResourceInfo)
@@ -43,17 +40,10 @@ func resourceReadSpec() ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResp
 	return ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResponse]{
 		Label:       resourceCapabilityLabel,
 		Description: "查询当前账号已有实例的列表、状态和配置，也用于按 ID 或名称核实实例。只反映账号内资源，不用于查询平台 GPU 库存。",
-		// exact, NOT required. The wanted change here was the RENDERING — the list
-		// used to read 内存=98304, 启动时间=1785315139 and was hard to scan; it now
-		// reads 96 GB / 启动于 2026-07-29 16:52. Forcing the block in as well made a
-		// targeted question worse, not better: measured live 2026-07-29,
-		// 「我那台 4090 的内存是多少」 got all 10 instances (three of them 5090s)
-		// stapled above the answer, 2/2. The list is therefore evidence for the
-		// Agent to curate, never a second server-rendered answer.
-		Params:  objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
-		Handle:  resourceHandle,
-		Render:  resourceRender,
-		Observe: resourceObserve,
+		Params:      objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
+		Handle:      resourceHandle,
+		Render:      resourceRender,
+		Observe:     resourceObserve,
 	}
 }
 
@@ -85,8 +75,7 @@ func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime
 	}
 	describeData, err := readprojection.InstancesFromDescribeResult(raw)
 	if err != nil {
-		// Parse failure carries no actionable upstream message — generic read
-		// failure, matching the legacy failureAfterToolWithTrace path.
+		// Parse failure carries no actionable upstream message.
 		return ResourceInfoResponse{}, ReadFailureAfterTool(resourceInfoAction, resourceCapabilityLabel, err)
 	}
 	// A list/filter request just received a complete account listing. Keep the

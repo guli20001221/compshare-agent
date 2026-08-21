@@ -1,4 +1,0 @@
-[
-  {"id":"coding-plan-bill","question":"Coding Plan 套餐是怎么计费的","category":"billing","expected":"knowledge_qa"},
-  {"id":"price-4090","question":"4090 现在多少钱一小时","category":"pricing","expected":"pricing_query"}
-]

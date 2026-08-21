@@ -5,26 +5,8 @@
 package opscontext
 
 const (
-	// SchemaVersion is the current wire contract for contextual SSH diagnosis.
-	// A zero value means no contextual payload was requested, preserving the
-	// legacy task-only handshake for direct callers.
-	//
-	// v2 (2026-08-14) exists because v1 shipped ONE fact, instance.reported_ports,
-	// holding two things that must never be conflated: DescribeCompShareInstance's
-	// Ports block and its TcpForwards list. "A port is configured" and "the platform
-	// forwards that port" are different claims with different failure modes, and a
-	// single key invited the model to read either as the other — and as evidence of a
-	// guest listener, which neither is. v2 splits them and adds what the lane could
-	// state but never did: the software this instance declares, and the image
-	// catalog's EXPECTED port for that software — or, when the declared list is
-	// unavailable and the catalog therefore cannot be correlated, the same data
-	// under `catalog.region_port_hints`, a name that does not claim it applies to
-	// this instance.
-	//
-	// Version compatibility is deliberately asymmetric. An older harness rejects an
-	// unknown version and degrades to a task-only run — no facts, but no misread
-	// facts either. A newer harness still accepts v1, so a rollback of the server
-	// binary alone does not silently strip the context.
+	// SchemaVersion is the current SSH context wire contract. Version 2 keeps
+	// configured ports, TCP forwards, declared software and catalog hints distinct.
 	SchemaVersion = 2
 
 	// SchemaVersionPortsMerged is v1, kept named because the harness must keep
@@ -64,7 +46,7 @@ const (
 )
 
 // Context is independent from the planner-produced Task. Keeping the two
-// separate preserves task hashing and durable replay semantics: a changing
+// separate preserves task hashing and retry-dedup semantics: a changing
 // monitor value or observation timestamp cannot turn one task into another.
 //
 // Every item that can influence the agent carries source, observed_at, and

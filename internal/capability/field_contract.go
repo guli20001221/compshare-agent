@@ -17,21 +17,15 @@ const (
 	nodeArray   nodeKind = "array"
 )
 
-// schemaNode is one node of a read capability's parameter contract. It is the
-// SINGLE source for three artifacts that used to be maintained by hand and drift
-// apart:
+// schemaNode is the single parameter contract used by three consumers:
 //
 //  1. the model-facing JSON Schema — jsonSchema()
 //  2. the runtime argument validator — validate()
 //  3. the consistency-test expectation — the test walks the rendered schema
 //     against the Go request struct
 //
-// enum members and integer bounds are declared here exactly once; the decoder,
-// the handler defaults and the tool schema all read the same tree instead of
-// each re-listing (and eventually contradicting) the constraint. Before this
-// existed, the schema advertised enum/minimum but the decoder enforced neither,
-// so an out-of-contract value (price_kind:"bogus", gpu_count:-1) silently fell
-// through to a handler default.
+// Enum members and integer bounds are declared here once so schema generation,
+// validation and tests cannot diverge.
 type schemaNode struct {
 	kind        nodeKind
 	description string
@@ -78,8 +72,7 @@ func objectParam(props map[string]schemaNode, required ...string) schemaNode {
 	return schemaNode{kind: nodeObject, props: props, req: required}
 }
 
-// --- Reusable composite fields (relocated from read_catalog.go's hand-written
-// schema helpers; enum members now come from the platform value package). --------
+// --- Reusable composite fields -------------------------------------------------
 
 func targetRefParam() schemaNode {
 	return objectParam(map[string]schemaNode{
@@ -111,9 +104,7 @@ func timeWindowParam() schemaNode {
 	}, "type", "source_span")
 }
 
-// jsonSchema renders the model-facing JSON parameter schema. Its output is
-// byte-equivalent to the previous hand-written objectSchema/enumSchema helpers,
-// so the tool the model sees is unchanged.
+// jsonSchema renders the model-facing JSON parameter schema.
 func (n schemaNode) jsonSchema() map[string]any {
 	withDescription := func(out map[string]any) map[string]any {
 		if n.description != "" {

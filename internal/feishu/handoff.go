@@ -29,7 +29,7 @@ func validateHandoffHTTPSURL(field, raw string, required bool) (string, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {
 		if required {
-			return "", fmt.Errorf("%s is required when enable_console_handoff is true", field)
+			return "", fmt.Errorf("%s is required", field)
 		}
 		return "", nil
 	}
@@ -41,7 +41,7 @@ func validateHandoffHTTPSURL(field, raw string, required bool) (string, error) {
 }
 
 func consoleHandoffEnabled(cfg config.FeishuConfig) bool {
-	return cfg.EnableConsoleHandoff && strings.TrimSpace(cfg.ConsoleAssistantURL) != ""
+	return strings.TrimSpace(cfg.ConsoleAssistantURL) != ""
 }
 
 // consumeConsoleHandoffMarker removes the protocol-only marker before reply

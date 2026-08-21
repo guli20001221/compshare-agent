@@ -3076,8 +3076,8 @@ class RagW0ScriptTests(unittest.TestCase):
             behaviors = {item["expected_behavior"] for item in questions}
             groups = {item["group"] for item in questions}
             self.assertGreaterEqual(summary["question_count"], 50)
-            self.assertTrue({"answer", "refuse", "hard_block", "escalate"}.issubset(behaviors))
-            self.assertTrue(all(item["expected_behavior"] in {"answer", "refuse", "hard_block", "escalate"} for item in questions))
+            self.assertTrue({"answer", "refuse", "tool_only", "escalate"}.issubset(behaviors))
+            self.assertTrue(all(item["expected_behavior"] in {"answer", "refuse", "tool_only", "escalate"} for item in questions))
             self.assertTrue(all(item["group"] in generate_eval_questions.EXPECTED_GROUPS for item in questions))
             self.assertTrue(generate_eval_questions.EXPECTED_GROUPS.issubset(groups))
             self.assertTrue(any(item["expected_chunk_ids"] == ["w0-login-001"] for item in questions))
@@ -3484,7 +3484,7 @@ class RagW0ScriptTests(unittest.TestCase):
             self.assertEqual(summary["top_3_hit_rate"], 1.0)
             self.assertEqual(summary["failed_questions"], [])
 
-    def test_evaluate_retrieval_excludes_hard_block(self):
+    def test_evaluate_retrieval_excludes_tool_only_questions(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             chunks_path = root / "chunks.jsonl"
@@ -3508,9 +3508,9 @@ class RagW0ScriptTests(unittest.TestCase):
                     {
                         "question_id": "q1",
                         "question": "Can you check my real-time account balance?",
-                        "group": "hard_block_account_finance",
+                        "group": "tool_only_account_finance",
                         "product_area": "billing_rule",
-                        "expected_behavior": "hard_block",
+                        "expected_behavior": "tool_only",
                         "expected_chunk_ids": [],
                         "source_refs": [],
                     }
@@ -3696,7 +3696,7 @@ class RagW0ScriptTests(unittest.TestCase):
                         "safety_failures": 0,
                         "internal_leakage": 0,
                         "failed_answers": [],
-                        "answer_model": "deepseek-v4-pro",
+                        "answer_model": "gpt-5.6-terra",
                         "judge_model": "claude-opus-4-7",
                     },
                     ensure_ascii=False,

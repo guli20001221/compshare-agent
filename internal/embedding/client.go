@@ -34,7 +34,7 @@ type ClientOptions struct {
 // Client is an OpenAI-compatible embeddings client. The hybrid retriever uses
 // it for query embeddings only — corpus embeddings are pre-built offline by
 // scripts/rag_w0/build_corpus_embeddings.py and pinned via
-// knowledge.EmbeddingDigestExpected.
+// the pinned sidecar digest in internal/knowledge.
 type Client struct {
 	httpClient *http.Client
 	baseURL    string
@@ -57,10 +57,8 @@ func NewClient(opts ClientOptions) (*Client, error) {
 	if httpClient == nil {
 		timeout := opts.Timeout
 		if timeout <= 0 {
-			// CLI smoke against production ModelVerse (2026-05-17) showed
-			// embedding p99 well above 1s; settled on 5s as a default that
-			// keeps fallback rare in steady state but still bounds tail
-			// latency. Override via ClientOptions.Timeout when calling.
+			// Keep steady-state provider latency within the normal path while
+			// still bounding the tail. Callers may override it.
 			timeout = 5 * time.Second
 		}
 		httpClient = &http.Client{Timeout: timeout}

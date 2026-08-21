@@ -125,7 +125,7 @@ func (r *chatTraceRecorder) SetTerminalSignals(signals observability.FinishSigna
 	r.terminalSignals = signals
 }
 
-// SetStateTrace records the per-turn instance-binding state (#3) read from the
+// SetStateTrace records the per-turn instance-binding state read from the
 // engine getters. Call it before Finish; an un-set recorder leaves State zero
 // (omitted, SHA-stable).
 func (r *chatTraceRecorder) SetStateTrace(state observability.StateTrace) {
@@ -135,11 +135,7 @@ func (r *chatTraceRecorder) SetStateTrace(state observability.StateTrace) {
 	r.stateTrace = state
 }
 
-// SetEngineSnapshot records the content-free context and grounding facts the
-// Engine exposes after a turn. The durable recorder has always persisted this
-// snapshot at Finish; the ordinary HTTP path is the production path today, so
-// it must carry the same facts rather than leaving its trace rows structurally
-// less useful.
+// SetEngineSnapshot records content-free context and grounding facts after a turn.
 //
 // The snapshot deliberately contains identifiers and closed-set outcomes only;
 // it does not add a prompt, reply, tool arguments, or transcript to trace
@@ -151,7 +147,7 @@ func (r *chatTraceRecorder) SetEngineSnapshot(snapshot engine.TraceSnapshot) {
 	r.record.Outcome.ContextSources = append([]string(nil), snapshot.ContextSources...)
 	r.record.Outcome.ResponseContract = snapshot.ResponseContract
 	r.record.Outcome.PromptSectionIDs = append([]string(nil), snapshot.PromptSectionIDs...)
-	r.record.Outcome.MemoryUpdateSource = snapshot.MemoryUpdateSource
+	r.record.Outcome.EvidenceUpdateSource = snapshot.EvidenceUpdateSource
 	r.record.Outcome.GroundingOutcome = snapshot.GroundingOutcome
 	r.record.Outcome.PromptMessagesRawPeak = snapshot.PromptMessagesRawPeak
 	r.record.Outcome.PromptMessagesAssembledPeak = snapshot.PromptMessagesAssembledPeak
@@ -316,7 +312,7 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 		idx, startedAt := r.matchPending(key, ev.Action, source)
 		r.record.ToolCalls[idx].Status = observability.ToolStatusError
 		// Step messages are user-facing diagnostics and may contain upstream
-		// detail. Trace keeps the closed-set error class, matching durable turns.
+		// detail. Trace records only the closed-set error class.
 		r.record.ToolCalls[idx].ErrorClass = "tool_error"
 		r.applyLatency(idx, startedAt)
 		r.applyCapFields(idx, ev)
@@ -374,9 +370,7 @@ func (r *chatTraceRecorder) Finish(chatErr error, end time.Time) error {
 	r.record.Outcome.PromptTokens = r.promptTokens
 	r.record.Outcome.CompletionTokens = r.completionTokens
 	if chatErr != nil {
-		// Keep HTTP trace semantics aligned with the durable recorder: a snapshot
-		// may describe the normal Agent contract that began the turn, but a failed
-		// turn did not deliver that contract.
+		// A failed turn did not deliver the normal Agent response contract.
 		r.record.Outcome.ResponseContract = "failure"
 	}
 	for _, call := range r.record.ToolCalls {
@@ -386,7 +380,6 @@ func (r *chatTraceRecorder) Finish(chatErr error, end time.Time) error {
 		}
 	}
 	r.record.ActualExecutionTier = r.record.DeriveActualExecutionTier()
-	r.record.ActualExecutionPath = r.record.DeriveActualExecutionPath()
 	r.record.Retrieval.RefusalType = r.record.Retrieval.DeriveRefusalType()
 	r.record.State = r.stateTrace
 	signals := r.terminalSignals

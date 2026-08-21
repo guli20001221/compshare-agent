@@ -21,10 +21,8 @@ func NewEngine(executor tools.ToolExecutor, confirmFn ConfirmFunc, onStep func(S
 	return &Engine{executor: executor, confirmFn: confirmFn, onStep: onStep}
 }
 
-// SetConfirmEditsFn wires the richer editable-form HITL gate. nil (default)
-// keeps every StepConfirm on the legacy boolean ConfirmFunc, byte-identical.
-// Only the HTTP path sets this, and only when COMPSHARE_CONFIRM_FORM is on
-// AND the client opted in via Features.
+// SetConfirmEditsFn wires the editable-form HITL gate. nil keeps the boolean
+// confirmation protocol. HTTP sets it for confirm_form_v1 clients.
 func (e *Engine) SetConfirmEditsFn(fn ConfirmEditsFunc) {
 	e.confirmEditsFn = fn
 }
@@ -187,13 +185,8 @@ func (e *Engine) recordStepFailure(result *Result, def *Definition, wfCtx *Conte
 // permission to execute — however real, and however identical to a final
 // contract, that seal looks.
 //
-// The scan starts AT i, not after it, because step i is the step that just
-// FAILED: if it is itself a gate then that gate did not pass, and a run that
-// never got through its final confirmation has authorised nothing. Scanning from
-// i+1 said otherwise. runConfirmStep normally unseals on entry, which hid this
-// for a gate that fails inside itself — but a SkipIf error is raised by the Run
-// loop before runConfirmStep is ever called, so the previous selection card's
-// seal was still live and got reported as a final create authorisation.
+// The scan starts at i because a failing confirmation step has not authorized
+// itself or anything after it.
 //
 // A gate ahead that SkipIf would have skipped still counts, and that is the safe
 // direction: the record then says "not authorised" for something that was, and a
@@ -216,22 +209,9 @@ func confirmGateUnpassed(def *Definition, i int) bool {
 // workflow fail-stops rather than executing on unconfirmed params. Returns true
 // to proceed.
 //
-// It MUST be called from inside runToolStep, after step.BuildArgs and before the
-// executor call, and this is the whole point rather than an implementation
-// detail. It used to run in the Run loop BEFORE runToolStep, so it hashed the
-// params as they were before BuildArgs — which is not what the call it guards
-// executes on. A step whose own BuildArgs rewrote a confirmed param therefore
-// passed its own check and made its call on the rewritten value; only the NEXT
-// tool step's check noticed. For CreateInstanceWorkflow the write IS the last
-// mutating step (only an Optional read-back follows), so "the next step catches
-// it" meant "the instance already exists". The guarantee this function's own
-// doc claims — that the mutating step executes exactly what the user confirmed —
-// is only true when the hash covers the state the call is actually made on.
-//
-// Calling it here also covers the re-validation path (runConfirmStep re-runs
-// earlier steps through runToolStep directly, bypassing the Run loop — see
-// revalidateFrom). That path is pre-seal today, where this is a no-op, but it is
-// no longer an unguarded write surface by construction rather than by luck.
+// It runs inside runToolStep after BuildArgs and immediately before execution,
+// so the verified arguments are exactly the arguments sent upstream. This also
+// covers steps re-run during confirmation revalidation.
 func (e *Engine) verifySealedContract(step Step, i, total int, wfCtx *Context, result *Result) bool {
 	if wfCtx.sealed == nil || wfCtx.sealed.verifyDigest(wfCtx.Params) {
 		return true
@@ -540,9 +520,9 @@ func recordFailureReason(result *Result, reason FailureReason) {
 
 // runConfirmStep runs the HITL gate. Returns true to continue the workflow.
 //
-// Two gates coexist:
-//   - Legacy boolean gate (ConfirmFunc) — used whenever the richer gate or the
-//     step's BuildForm is absent. Byte-identical to the pre-form behavior.
+// Two confirmation presentations coexist:
+//   - Plain boolean gate (ConfirmFunc) — used whenever the richer gate or the
+//     step's BuildForm is absent.
 //   - Editable-form gate (ConfirmEditsFunc) — the user may confirm as-is, deny,
 //     or submit select-only field Overrides. Overrides re-run every step from
 //     the step's RevalidateFrom boundary with the new params and re-enter the
@@ -607,7 +587,7 @@ func (e *Engine) runConfirmStep(ctx context.Context, def *Definition, step Step,
 		e.emit(step.Name, i, total, StepConfirm, "waiting", "", args, "")
 
 		if form == nil {
-			// Legacy boolean gate (CLI, saga-less HTTP, flag-off, opt-out).
+			// Plain boolean gate for clients without editable forms.
 			if e.confirmFn == nil || !e.confirmFn(def.Name, args) {
 				e.emit(step.Name, i, total, StepConfirm, "cancelled", "", nil, "用户取消了操作")
 				result.Steps = append(result.Steps, StepSummary{Name: step.Name, Status: "cancelled"})

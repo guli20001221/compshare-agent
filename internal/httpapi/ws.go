@@ -17,57 +17,19 @@ import (
 )
 
 const (
-	// minWSMachineLifetime is the FLOOR for the MACHINE half of a single chat WebSocket. The
-	// gateway opens one connection per chat turn (see frame/src/Frame/AIAssistant/service.js: a
-	// new WebSocket per chatStream call, closed on done/error/abort), so this bounds a turn, not
-	// a session. It backstops a wedged connection that the gateway never closes.
-	//
-	// It was a flat ceiling named maxWSConnLifetime until 2026-07-30, chosen before the
-	// write-enabled SSH-ops lane existed. A live frontend run showed the contradiction that
-	// created: agent.ssh_ops.timeout was 12m, this was 10m, and an in-instance repair died at
-	// exactly 10:00.0 — the user got "[NetworkError] 连接已关闭" and nothing else, after the lane
-	// had already replaced an application directory on the box. Two independent numbers governing
-	// one turn will drift; see wsConnLifetime, which derives the deadline from the lane budget so
-	// the socket always outlives the work it carries.
+	// minWSMachineLifetime bounds one chat turn, not a session, and backstops a
+	// connection the gateway never closes.
 	minWSMachineLifetime = 10 * time.Minute
 
-	// wsMachineSlack is the MACHINE work a turn does outside the harness subprocess:
-	// agent.ssh_ops.timeout bounds only the subprocess, while the same turn also retrieves
-	// knowledge and writes the verdict after the harness returns.
-	//
-	// Until 2026-08-12 this was named wsLaneSlack and its comment also charged "waits on the
-	// operator's consent cards" to these two minutes. That was the bug below: it made a person
-	// reading an authorization card share a budget sized for machine work, and 2 minutes cannot
-	// hold even one card at the current timeout. Human time is now wsInteractionAllowance.
+	// wsMachineSlack covers work around the SSH harness subprocess.
 	wsMachineSlack = 2 * time.Minute
 
-	// wsMaxConfirmationsPerTurn is the card count the human-time budget is sized from. It is
-	// workflow.MaxConfirmationsPerWorkflowTurn — DERIVED from the wizard's own step order plus its
-	// edit cap — and not a number chosen here.
-	//
-	// It was 6 for one commit, taken from the largest run seen in 30 days of agent_traces, with a
-	// comment claiming it covered every card a turn may legitimately show. That was false when it
-	// was written: guided create has eleven steps and allows three re-asks, so the code has always
-	// permitted fourteen. Sizing a bound from what users happened to do, and then describing it as
-	// what the system permits, is how a budget silently becomes the thing that fails.
+	// Derived from the workflow's step count and edit allowance.
 	wsMaxConfirmationsPerTurn = workflow.MaxConfirmationsPerWorkflowTurn
 
-	// wsInteractionAllowance is the socket headroom reserved for HUMAN time, kept deliberately
-	// separate from every machine budget above.
-	//
-	// agent.ssh_ops.timeout states how long the MACHINE may work inside an instance. It says
-	// nothing about how long a PERSON may take to read a card that authorizes writing to their
-	// box, and deriving one from the other would make a careful reader look like a slow harness.
-	// The socket has to cover the sum, so the sum is what it is built from — machine budget first,
-	// then this, never one folded into the other.
-	//
-	// What this is NOT: a guarantee that every legal turn fits. It covers the bounded flow
-	// (workflows, above) with certainty. The in-instance ops lane asks once per mutating command
-	// and has NO ceiling on how many that is — the harness's own 50-step cap is the only limit, so
-	// a repair that stopped for fifty separate approvals could still outlive the socket. That is a
-	// deliberate backstop, not an oversight: a turn parked on its fifteenth human approval is a
-	// wedged connection by any useful definition, and the connection deadline exists to end those.
-	// Stated here rather than left for someone to discover from a closed socket.
+	// Human confirmation time is independent of machine execution time. This
+	// covers bounded workflows; the SSH lane's per-command approvals remain
+	// subject to the overall connection backstop.
 	wsInteractionAllowance = wsMaxConfirmationsPerTurn * confirmWaitTimeout
 
 	// maxWSMessageBytes must fit screenshot uploads. OCR accepts up to 10 MiB raw
@@ -75,21 +37,8 @@ const (
 	maxWSMessageBytes int64 = 20 * 1024 * 1024
 )
 
-// wsConnLifetime is the deadline for one chat socket: the machine budget for the turn, PLUS the
-// human time its authorization cards may take.
-//
-// Deriving the machine half is the point. agent.ssh_ops.timeout is an operator's statement of how
-// long a single turn may legitimately spend inside an instance, so a transport deadline shorter
-// than that does not protect anything — it just kills the longest, most consequential turns, which
-// under allow_writes are the ones that have already changed the box. Deliberately NOT clamped to a
-// second ceiling: a cap that silently cut a longer configured lane short would be this same bug
-// with a bigger number.
-//
-// Adding the interaction allowance separately is the 2026-08-12 fix. Production traces showed 36
-// of 292 confirmation cards (12.3%) ending at exactly the confirm timeout, with real confirmations
-// landing 168ms before the wall — a live distribution being clipped, not users walking away.
-// Raising that timeout without giving the socket its own room for human time would just move the
-// wall onto the transport.
+// wsConnLifetime is the sum of the machine budget and independent human
+// confirmation allowance. It is not clamped below the configured SSH budget.
 func (h *Handlers) wsConnLifetime() time.Duration {
 	return h.wsMachineLifetime() + wsInteractionAllowance
 }
@@ -100,10 +49,8 @@ func (h *Handlers) wsMachineLifetime() time.Duration {
 	if h == nil || h.cfg == nil {
 		return minWSMachineLifetime
 	}
-	// Keyed off the configured budget rather than the enabled flag: the lane can also be switched
-	// on by env (COMPSHARE_SSH_OPS) with no YAML `enabled`, and an operator who wrote a timeout has
-	// declared the length of a turn either way. When the lane is off the field is unset, so this
-	// reads the floor.
+	// A configured timeout declares the maximum legitimate lane duration. When
+	// the lane is absent the field is zero and the floor applies.
 	if lane := h.cfg.Agent.SSHOps.Timeout; lane > 0 && lane+wsMachineSlack > minWSMachineLifetime {
 		return lane + wsMachineSlack
 	}
@@ -159,14 +106,6 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 	defer cancel()
 
 	writer := wsx.New(ctx, conn)
-	if h.turnCoordinator != nil {
-		// Durable mode has its own detachable subscription loop. Closing this
-		// socket only drops the observer; the coordinator owns execution and
-		// continues until it records a terminal result.
-		h.handleDurableWS(ctx, cancel, connBase, conn, writer)
-		return
-	}
-
 	// One chat turn per socket. The frontend opens a fresh WebSocket per
 	// chatStream call and closes it on done/error (service.js), and the gateway
 	// mirrors that one-to-one, so a connection serves exactly one SendCSAgentChat
@@ -346,12 +285,8 @@ func stringMapFromFrame(m map[string]any) (map[string]string, error) {
 // resolveConfirmFrame answers one ConfirmCSAgentAction: it claims the decision,
 // writes the outcome frame, and only then wakes the turn.
 //
-// The ORDER is the contract. Waking first is a race this goroutine cannot win —
-// the decision unblocks the chat goroutine, which may finish the turn, write
-// `done` and cancel the connection context before the acknowledgement reaches
-// the socket. The client would then be told that an accepted, already-executed
-// action had failed. It is a separate function so that order is testable at all:
-// driven through the real WebSocket, both orders look identical from outside.
+// The order is the contract: the client must receive the acknowledgement before
+// the decision can wake and complete the turn.
 //
 // An acknowledgement that cannot be WRITTEN is fail-closed: the decision is
 // dropped and cancelTurn ends the connection, so the waiting turn resolves as
@@ -373,13 +308,7 @@ func (h *Handlers) resolveConfirmFrame(w streamWriter, cancelTurn context.Cancel
 			// resend within the timeout window).
 			code = "InvalidParam"
 		}
-		// Name the card. The error frame used to carry only a code and a sentence,
-		// so a client could not tell which of several cards it rejected — and an
-		// expired card therefore stayed rendered as accepted while the turn went
-		// red somewhere else. Naming it was necessary and not sufficient: see
-		// confirmationErrorEventName for why this is no longer an "error" frame,
-		// and confirmationFailureMessage for why the sentinel's own English text
-		// no longer reaches the customer.
+		// Scope the failure to the affected card; it must not terminate the turn.
 		log.Printf("confirm %s: resolve rejected (%v)", confirmationID, err)
 		_ = w.WriteEvent(confirmationErrorEventName, confirmationErrorEvent{
 			Code: code, Message: confirmationFailureMessage(err), ConfirmationID: confirmationID,

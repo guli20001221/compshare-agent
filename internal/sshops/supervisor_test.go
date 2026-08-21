@@ -29,22 +29,8 @@ func writeFakeHarness(t *testing.T, body string) string {
 	return p
 }
 
-// pythonBin resolves an interpreter that will actually RUN, not one that will install one.
-//
-// On Windows, %LOCALAPPDATA%\Microsoft\WindowsApps is on PATH by default and holds
-// app-execution aliases: zero-byte reparse stubs that, when spawned, hand off to the Microsoft
-// Store / Python Install Manager. `python3` resolves to such a stub on a stock box even when a
-// real interpreter is installed under a different name, and LookPath cannot tell them apart —
-// it only checks that the name is executable.
-//
-// Spawning the stub does not fail. It INSTALLS a runtime, and because `go test` runs each package
-// with its own directory as the working directory, the manager wrote ~135MB into
-// internal/sshops/Python — untracked, not ignored, and one `git add -A` away from being committed
-// (3788 files). Observed 2026-08-05; it reappeared within seconds of being deleted, which is how it
-// was mistaken for a leftover from someone's editing session.
-//
-// A zero-byte candidate is never a real interpreter on any platform, so size is the mechanism to
-// test rather than a path heuristic that only knows today's alias directory.
+// pythonBin returns a real interpreter, not a zero-byte Windows app-execution
+// alias that would launch an installer during tests.
 func pythonBin() string {
 	for _, c := range []string{"python3", "python"} {
 		path, err := exec.LookPath(c)
@@ -59,13 +45,8 @@ func pythonBin() string {
 	return "" // no interpreter that will run; see requirePython
 }
 
-// requirePython returns a VERIFIED interpreter path, or skips the test.
-//
-// pythonBin deliberately returns "" rather than a bare name. Falling back to "python" undid the
-// whole check: exec.Command resolves a bare name through PATH itself, so on the very box this
-// guards against — a stock Windows install where BOTH python.exe and python3.exe are alias stubs,
-// which is the DEFAULT state when no interpreter is installed — it handed the just-rejected stub
-// straight back to the spawner and launched the installer anyway.
+// requirePython returns a verified interpreter path or skips the test. It never
+// falls back to a bare name that exec.Command would resolve again through PATH.
 func requirePython(t *testing.T) string {
 	t.Helper()
 	if p := pythonBin(); p != "" {

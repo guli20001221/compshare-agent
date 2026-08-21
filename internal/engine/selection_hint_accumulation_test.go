@@ -9,22 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// This file used to be about ConversationDigest.EntityHints: the digest kept its
-// own copy of the selected instance, mergeSemanticEntities keyed on (kind, id) so
-// switching instances APPENDED rather than replaced, and each copy froze the
-// Source and Freshness it was written with — outliving expireStaleSelectedInstance,
-// which only ever touches sessionState. Two successful operations therefore left
-// two user_selected entries and the next bare 关掉它 answered 目标引用不唯一.
-//
-// That storage no longer exists. The defect is now unreachable by construction
-// rather than by cleanup, and SessionState has no field that could hold such a
-// copy. What survives here is the BEHAVIOUR those tests were protecting, which is
-// about live selection and is unaffected by the digest's removal — plus one new
-// test for the only way a poisoned copy could still arrive: a row written by an
-// older binary.
-//
-// TestSinglePickPastItsTTLDoesNotBind was never a regression guard for any of
-// this; it is an invariant, kept for the reason its own comment gives.
+// Selection continuity has one current storage location: SessionState. These
+// tests ensure a newer selection replaces the old one, stale selections cannot
+// authorize a bare reference, and legacy persisted fields are ignored.
 
 // selectionEngine is a hydrated engine with no history — the smallest thing that
 // can hold a selection and compile a context view.
@@ -64,24 +51,14 @@ func TestBarePronounAfterTwoOperationsBindsTheNewestPick(t *testing.T) {
 	require.Equal(t, 1, picks, "expected exactly one carried user pick, got %d", picks)
 }
 
-// turnEntry is the production order: expire, then compile. The digest refresh that
-// used to sit between them is gone.
+// turnEntry preserves the production order: expire, then compile.
 func turnEntry(e *Engine, now time.Time) AgentContext {
 	e.expireStaleSelectedInstance(now)
 	return (ContextCompiler{}).CompileForTurn(e, "关掉它", "t", now)
 }
 
-// An invariant, NOT a regression guard: it held before the digest was removed and
-// it holds after.
-//
-// It is here because it looks like it should have been broken by the old digest
-// copy, and the reason it was not is worth keeping. With ONE instance the copy
-// shared its (kind, id) key with the live value, so the refresh that ran
-// immediately after expireStaleSelectedInstance overwrote it with the expired
-// state — the copy could not outlive the original because it was never a second
-// entry. A probe that called expireStaleSelectedInstance without that refresh
-// reported the opposite and was wrong: it skipped a step the runtime always took.
-// The real defect needed two DIFFERENT ids, which never key-collide.
+// An expired selection may remain visible for conversation continuity, but it
+// must not authorize a bare reference.
 func TestSinglePickPastItsTTLDoesNotBind(t *testing.T) {
 	base := time.Now()
 	e := selectionEngine()
@@ -100,23 +77,11 @@ func TestSinglePickPastItsTTLDoesNotBind(t *testing.T) {
 	require.False(t, binding.conflict, "an expired pick should simply not bind, not become a conflict")
 }
 
-// The one route by which a poisoned copy could still arrive: a session row written
-// by a binary that had the digest. Deleting the writer does nothing about rows
-// already in the database, and this is the assertion that could not be made from
-// our own types — a round-trip test cannot produce input its own writer can no
-// longer construct, so the fixture is hand-authored old wire format.
+// Older rows may contain fields the current schema no longer models. Decode them
+// without losing current execution state, and never write the unknown fields back.
 func TestSessionRowFromAnOlderBinaryDropsItsDigest(t *testing.T) {
-	// Exactly what an old binary persisted for a session that had run two
-	// mutating operations: two frozen user_selected picks, plus the semantic
-	// blocks and the compactor's sourced memory. selected_instance_at_unix is
-	// stamped live because the binder reads it against the wall clock — a literal
-	// would make this test pass or fail by calendar date.
-	//
-	// The field VALUES are taken from real rows, not from the Go constants: the
-	// replay database holds "user_selected" and "observed" for
-	// selected_instance_source. Writing the plausible-looking "user" here made this
-	// test fail against a binder that was working correctly, which is the whole
-	// point of using a foreign fixture rather than marshalling our own types.
+	// Hand-author the foreign wire shape because current types cannot emit it.
+	// Keep the timestamp live so the binder does not expire the retained state.
 	raw := json.RawMessage(fmt.Sprintf(`{"agent_session_state":{
 		"schema_version":"7.0",
 		"selected_instance_id":"inst-BBB",
@@ -144,14 +109,14 @@ func TestSessionRowFromAnOlderBinaryDropsItsDigest(t *testing.T) {
 	require.Equal(t, "inst-BBB", pc.AgentSessionState.SelectedInstanceID,
 		"premise: the rest of the row must survive, or this proves only that decoding failed")
 
-	// Re-serialising must not carry the digest back out.
+	// Re-serialising must not carry unknown legacy fields back out.
 	out, err := json.Marshal(pc.AgentSessionState)
 	require.NoError(t, err)
 	require.NotContains(t, string(out), "conversation_digest")
 	require.NotContains(t, string(out), "inst-AAA",
 		"the frozen pick must be gone, not merely unrendered")
 
-	// And the poisoned session binds cleanly on its next turn.
+	// The retained current selection still binds cleanly.
 	e := selectionEngine()
 	e.sessionState = pc.AgentSessionState
 	view := (ContextCompiler{}).CompileForTurn(e, "关掉它", "t", time.Now())

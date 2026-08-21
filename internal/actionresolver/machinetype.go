@@ -44,11 +44,8 @@ type machineTypeMatch struct {
 //
 // The distinction is the whole point. "4090 48G" vs the catalog's "4090_48G" is
 // the same token punctuated differently, so folding resolves it. "V100" vs a
-// catalog holding only "V100S" is a DIFFERENT NAME: whether they are the same
-// product is a platform fact this repo does not get to assert, so it stays
-// unknown and the agent asks. A hardcoded V100->V100S map would be this package
-// re-acquiring the stale platform knowledge the static gpuSpecs table was deleted
-// for.
+// catalog holding only "V100S" is a different product name and remains unknown;
+// this package never carries a platform alias table.
 func canonicalMachineType(raw string, catalog MachineTypeCatalog) machineTypeMatch {
 	value := strings.TrimSpace(raw)
 	if !catalog.Available {

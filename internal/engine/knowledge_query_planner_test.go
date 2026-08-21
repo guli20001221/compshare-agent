@@ -219,15 +219,8 @@ func TestMultiTurnKnowledgeQueryPlanningIsWiredThroughTheProductionAgentLoop(t *
 		"the internal planner must never appear as another user turn")
 }
 
-// TestPlannerNeverDropsTheAgentsOwnQuery pins the property the 2026-08-09 arms
-// bought (eval/reports/rag_retrieval_probe_2026-08-09.md §9): the planner may add
-// a written-form rewrite, but it may not take away the query the Agent chose.
-//
-// Replacing that query is the arm that regressed — 27/37 delivered against 32/37 —
-// and every case it broke carried an exact token an LLM rewrite is prone to smooth
-// away ("226604 资源不足 创建实例报错" went from 0.994 to outside the candidate pool).
-// A count assertion alone would not catch a regression that reorders the anchor to
-// the front, which matters because retrievals are charged in order.
+// The planner may add a standalone rewrite but must retain the model's precise
+// query. Order matters because retrieval queries consume budget in order.
 func TestPlannerNeverDropsTheAgentsOwnQuery(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

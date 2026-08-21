@@ -616,7 +616,7 @@ func TestClientChatFallsBackToAutoWhenForcedToolChoiceUnsupported(t *testing.T) 
 	}))
 	defer srv.Close()
 
-	client := NewClient(config.LLMConfig{BaseURL: srv.URL + "/v1", APIKey: "test-key", Model: "deepseek-v4-flash"})
+	client := NewClient(config.LLMConfig{BaseURL: srv.URL + "/v1", APIKey: "test-key", Model: "gpt-5.6-terra"})
 	resp, err := client.Chat(context.Background(), ChatRequest{
 		Messages:   []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: "hi"}},
 		Tools:      []openai.Tool{{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{Name: "SearchKnowledge", Parameters: map[string]any{"type": "object"}}}},
@@ -652,7 +652,7 @@ func TestClientChatForcedToolChoiceHonoredIsNotDegraded(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	client := NewClient(config.LLMConfig{BaseURL: srv.URL + "/v1", APIKey: "test-key", Model: "deepseek-v4-flash"})
+	client := NewClient(config.LLMConfig{BaseURL: srv.URL + "/v1", APIKey: "test-key", Model: "gpt-5.6-terra"})
 	resp, err := client.Chat(context.Background(), ChatRequest{
 		Messages:   []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: "hi"}},
 		Tools:      []openai.Tool{{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{Name: "SearchKnowledge", Parameters: map[string]any{"type": "object"}}}},

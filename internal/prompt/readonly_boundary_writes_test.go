@@ -5,11 +5,7 @@ import (
 	"testing"
 )
 
-// The read-only boundary predates the in-instance repair lane and asserts a blanket "不执行资源变更".
-// With the lane authorized that sentence is false, and it is not merely inaccurate — the agent acts
-// on it. Measured against a stopped ollama with the lane on and the tool in its window, the reply was
-// "我目前没有可直接执行实例内终端命令、修改服务或重启进程的权限，无法替你进实例修复". The prompt
-// disabled the feature the operator had turned on, and nothing failed or logged.
+// An authorized in-instance repair lane is the narrow exception to platform read-only mode.
 func TestReadOnlyBoundaryYieldsToTheInstanceRepairLane(t *testing.T) {
 	plain := BuildSystemWithOptions("ctx", BuildOptions{MutatingToolsEnabled: false})
 	withLane := BuildSystemWithOptions("ctx", BuildOptions{MutatingToolsEnabled: false, InstanceOpsWritesEnabled: true})
@@ -42,21 +38,8 @@ func TestReadOnlyBoundaryYieldsToTheInstanceRepairLane(t *testing.T) {
 	}
 }
 
-// The assertion above is one-sided: it checks that no read-only boundary LEAKS into mutating mode,
-// and never checks that the lane is still described there. It isn't. The sentence naming the lane
-// lives inside the read-only boundary, and that whole section is skipped when mutating tools are on.
-// deploy/conf/config.prod.yaml ships mutating_tools: true with ssh_ops.enabled: false, so this is latent
-// rather than live — and it fires on the first deployment that enables the lane, i.e. on rollout. The
-// fix for the measured "我目前没有…权限，无法替你进实例修复" refusal was wired into read-only mode only.
-//
-// Measured cost on the enabled-lane shape (mutating_tools: true + allow_writes: true, terra, N=15/arm
-// through the real WS path, question = VS Code forwarding fails / plain ssh works / no instance named):
-// asked which instance 0/15, offered to go in 0/15. A turn that never asks which instance can never
-// enter the lane at all, because UHostId is a required parameter of the tool.
-//
-// This asserts the lane is named in BOTH modes, and that the mutating-mode copy does not smuggle in
-// the read-only claim — in that mode platform writes really are available, so "平台侧操作当前不可
-// 执行" would be a false sentence the agent has been measured to act on.
+// Mutating mode omits the read-only section, but must still describe the independently authorized
+// repair lane without falsely claiming that platform writes are unavailable.
 func TestInstanceRepairLaneIsNamedWhenMutatingToolsAreOn(t *testing.T) {
 	both := BuildSystemWithOptions("ctx", BuildOptions{MutatingToolsEnabled: true, InstanceOpsWritesEnabled: true})
 

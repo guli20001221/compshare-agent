@@ -12,11 +12,11 @@ from typing import Any, Callable
 try:
     from . import chunk_docs
     from .common import ALLOWED_PRODUCT_AREAS
-    from .model_smoke import DEFAULT_BASE_URL, DEFAULT_DS_MODEL, ModelVerseClient, _extract_json, _load_env
+    from .model_smoke import DEFAULT_ANSWER_MODEL, DEFAULT_BASE_URL, ModelVerseClient, _extract_json, _load_env
 except ImportError:  # pragma: no cover
     import chunk_docs
     from common import ALLOWED_PRODUCT_AREAS
-    from model_smoke import DEFAULT_BASE_URL, DEFAULT_DS_MODEL, ModelVerseClient, _extract_json, _load_env
+    from model_smoke import DEFAULT_ANSWER_MODEL, DEFAULT_BASE_URL, ModelVerseClient, _extract_json, _load_env
 
 
 PROMPT_VERSION = "label_v1"
@@ -218,7 +218,7 @@ def _label_row(
         "needs_split": needs_split,
         "needs_review": needs_review,
         "status": "needs_review" if needs_review else "accepted",
-        "model": str(classified.get("model") or model or DEFAULT_DS_MODEL),
+        "model": str(classified.get("model") or model or DEFAULT_ANSWER_MODEL),
         "prompt_version": prompt_version,
         "labeled_at": datetime.now(timezone.utc).isoformat(),
         "smoke_run_id": smoke_run_id or "",
@@ -252,7 +252,7 @@ def _modelverse_classifier(*, env_path: Path, model: str | None) -> Classifier:
         base_url=env.get("MODELVERSE_BASE_URL", DEFAULT_BASE_URL),
         api_key=env["MODELVERSE_API_KEY"],
     )
-    selected_model = model or env.get("MODELVERSE_DS_V4_PRO_MODEL", DEFAULT_DS_MODEL)
+    selected_model = model or env.get("MODELVERSE_EVAL_MODEL", DEFAULT_ANSWER_MODEL)
 
     def classify(target: dict[str, Any]) -> dict[str, Any]:
         content = client.chat(

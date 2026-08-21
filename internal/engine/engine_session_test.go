@@ -1,8 +1,6 @@
 package engine
 
 import (
-	"context"
-	"errors"
 	"reflect"
 	"testing"
 
@@ -11,18 +9,6 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 )
-
-type sessionActionJournal struct {
-	calls int
-	err   error
-}
-
-func (j *sessionActionJournal) Execute(ctx context.Context, action string, args map[string]any, call tools.ActionCall) (map[string]any, error) {
-	j.calls++
-	return call(ctx, action, args)
-}
-
-func (j *sessionActionJournal) Err() error { return j.err }
 
 // newTwoSessions constructs two Engines from the same SharedDeps. Used by the
 // P0 isolation tests below. mockLLM / mockExecutor live in engine_test.go (same
@@ -158,70 +144,6 @@ func TestSessionIsolation_ConfirmFn(t *testing.T) {
 	}
 }
 
-func TestSessionIsolation_ActionJournalIsInjectedPerTurn(t *testing.T) {
-	inner := &mockExecutor{results: map[string]map[string]any{"StopCompShareInstance": {"RetCode": 0}}}
-	deps := &SharedDeps{
-		LLMClient: &mockLLM{}, RateLimiter: governance.NewInMemoryRateLimiter(governance.DefaultLimits()), ExternalExecutor: inner,
-	}
-	journalA := &sessionActionJournal{}
-	confirm := func(string, map[string]any) bool { return true }
-	engA := NewSession(deps, SessionOptions{
-		Subject: "subj-A", ConfirmFn: confirm, MutatingToolsEnabled: true,
-		ActionJournal: journalA, RequireActionJournal: true,
-	})
-	engB := NewSession(deps, SessionOptions{
-		Subject: "subj-B", ConfirmFn: confirm, MutatingToolsEnabled: true,
-		RequireActionJournal: true,
-	})
-
-	_, err := engA.safeExecutor.Execute(context.Background(), "StopCompShareInstance", map[string]any{"UHostId": "uhost-a"})
-	if err != nil {
-		t.Fatalf("session A journaled mutation: %v", err)
-	}
-	if journalA.calls != 1 {
-		t.Fatalf("session A journal calls=%d, want 1", journalA.calls)
-	}
-	_, err = engB.safeExecutor.Execute(context.Background(), "StopCompShareInstance", map[string]any{"UHostId": "uhost-b"})
-	if !errors.Is(err, tools.ErrActionJournalRequired) {
-		t.Fatalf("session B mutation error=%v, want missing journal", err)
-	}
-	if journalA.calls != 1 {
-		t.Fatalf("session B leaked into session A journal; calls=%d", journalA.calls)
-	}
-}
-
-func TestEngine_ActionJournalErrorIsCommitBarrier(t *testing.T) {
-	deps := &SharedDeps{ExternalExecutor: &mockExecutor{results: map[string]map[string]any{}}}
-	poisoned := &sessionActionJournal{err: tools.ErrActionOutcomeUncertain}
-	eng := NewSession(deps, SessionOptions{ActionJournal: poisoned, RequireActionJournal: true})
-	if !errors.Is(eng.ActionJournalError(), tools.ErrActionOutcomeUncertain) {
-		t.Fatalf("coordinator-visible journal error=%v", eng.ActionJournalError())
-	}
-	required := NewSession(deps, SessionOptions{RequireActionJournal: true})
-	if !errors.Is(required.ActionJournalError(), tools.ErrActionJournalRequired) {
-		t.Fatalf("missing required journal error=%v", required.ActionJournalError())
-	}
-	legacy := NewSession(deps, SessionOptions{})
-	if err := legacy.ActionJournalError(); err != nil {
-		t.Fatalf("legacy session unexpectedly requires journal: %v", err)
-	}
-}
-
-func TestEngine_UncertainActionReplyRequiresReconciliation(t *testing.T) {
-	eng := &Engine{safeExecutor: &tools.SafeToolExecutor{}}
-	poisoned := &sessionActionJournal{err: tools.ErrActionOutcomeUncertain}
-	eng.safeExecutor = newSafeToolExecutor(&mockExecutor{}, nil, poisoned, true)
-
-	assert := func(condition bool, message string) {
-		t.Helper()
-		if !condition {
-			t.Fatal(message)
-		}
-	}
-	assert(errors.Is(eng.ActionJournalError(), tools.ErrActionOutcomeUncertain), "the engine must expose the poisoned journal")
-	assert(actionOutcomeUncertainReply != "", "the reconciliation reply must not be empty")
-}
-
 // TestSessionIsolation_SharedPointersEqual — P0-4.
 // Sibling assertion to the per-session checks: shared fields MUST be pointer-
 // equal across sessions. If a session refactor accidentally copies an LLM
@@ -279,8 +201,8 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 6 shared + 101 per-session = 107 fields. Any drift
-// requires updating both this test AND plan §3.
+// Whitelist totals: 6 shared + 98 per-session = 104 fields. Any drift
+// requires classifying the new field here.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
 		"llmClient":          true,
@@ -428,16 +350,14 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"sessionState":                        true,
 		"sessionStateVersion":                 true,
 		"sessionStateHydrated":                true,
-		"continuityAdvisories":                true,
 		"turnContextViewThisTurn":             true,
 		"turnContextViewReady":                true,
 		"promptSectionIDsThisTurn":            true,
-		"memoryUpdateSourceThisTurn":          true,
+		"verifiedEvidenceUpdateThisTurn":      true,
 		"groundingOutcomeThisTurn":            true,
 		"promptMessagesRawPeakThisTurn":       true,
 		"promptMessagesAssembledPeakThisTurn": true,
 		"promptMessagesCapAppliedThisTurn":    true,
-		"reactResultProjectionEnabled":        true,
 		"verifiedInstanceEvidenceThisTurn":    true,
 		"platformReadEvidenceThisTurn":        true,
 		"sensitiveRepliesThisTurn":            true,
@@ -445,11 +365,10 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"actionProposalRanThisTurn":           true,
 		"actionProposalDispositionThisTurn":   true,
 		"imageContextThisTurn":                true,
-		"secretInputsThisTurn":                true,
 		"baseUserContext":                     true,
 		"displayedResourceSelectionThisTurn":  true,
 		// In-instance SSH diagnosis lane (INV-9/INV-11). instanceOps is copied from
-		// SharedDeps but is per-session-overridable via SetInstanceOps (the CLI path),
+		// SharedDeps but is per-session-overridable via SetInstanceOps for tests,
 		// so a session can hold a different runner than its siblings — classified
 		// per-session, not shared like externalExecutor. The two *ThisTurn fields are
 		// turn-local: sharing them would let one tenant's in-instance run (or its
@@ -483,7 +402,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// id plus a false claim about their own account, in one line.
 		"committedWriteRepliesThisTurn": true,
 		// The canonical transcript of the turn that just finished, held for the
-		// shadow write. It carries one tenant's tool arguments and tool results
+		// metadata write. It carries one tenant's tool arguments and tool results
 		// verbatim, so a shared field would persist tenant A's instance ids and
 		// diagnosis output onto tenant B's assistant row — precisely the leak
 		// this test exists to prevent. Its stats sibling is classified with it so
@@ -504,22 +423,22 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 101, len(perSessionFields); want != got {
+	if want, got := 98, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 107, typ.NumField(); want != got {
+	if want, got := 104, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
-			"Update plan §3 + this test's whitelists to match.", want, got)
+			"Update this test's whitelists to match.", want, got)
 	}
 	for i := 0; i < typ.NumField(); i++ {
 		name := typ.Field(i).Name
 		if sharedFields[name] || perSessionFields[name] {
 			continue
 		}
-		t.Errorf("Engine field %q is not classified as shared or per-session. "+
-			"Update §3 of console-deploy plan and this test's whitelist.", name)
+		t.Errorf("Engine field %q is not classified as shared or per-session; "+
+			"update this test's whitelist.", name)
 	}
 }
 
@@ -574,9 +493,7 @@ func TestNewWithDeps_FieldSetMatchesNewSession(t *testing.T) {
 	}
 }
 
-// TestNewSession_NilDepsPanics asserts the documented panic in NewSession.
-// Encodes WHY: passing nil deps would zero-fill shared fields and turn a
-// session into a half-broken engine — better to crash loud at construction.
+// TestNewSession_NilDepsPanics rejects a half-initialized session.
 func TestNewSession_NilDepsPanics(t *testing.T) {
 	defer func() {
 		if r := recover(); r == nil {
@@ -586,31 +503,13 @@ func TestNewSession_NilDepsPanics(t *testing.T) {
 	_ = NewSession(nil, SessionOptions{})
 }
 
-// TestSessionIsolation_NoProjectIdLeak — PR9 guard.
-//
-// Encodes WHY: pre-PR9 the engine called ExternalExecutor.SetProjectId at
-// the start of every session's Init to auto-discover a ProjectId via
-// GetProjectList. Because SharedDeps.ExternalExecutor is a process-wide
-// singleton shared across sessions, that write let session A's discovered
-// project id auto-inject into session B's subsequent tool calls — a
-// cross-tenant leak. PR9 removed the mutation surface entirely
-// (SetProjectId, the ProjectId() getter, and ensureProjectId/pickProjectId).
-//
-// This test is a structural guard: it asserts the mutating method has
-// not silently come back via a future refactor. The reflection check
-// runs on *tools.ExternalExecutor because the leak path was through
-// methods on that concrete type — TestSessionIsolation_AllEngineFieldsClassified
-// only walks Engine struct fields and does NOT recurse into shared-dep
-// struct method sets, so it can't catch a re-introduced setter here.
+// ProjectId is constructor state on the process-wide executor. A setter or
+// getter would let one session affect another tenant's later requests.
 func TestSessionIsolation_NoProjectIdLeak(t *testing.T) {
 	typ := reflect.TypeOf(&tools.ExternalExecutor{})
 	for _, banned := range []string{"SetProjectId", "ProjectId"} {
 		if _, ok := typ.MethodByName(banned); ok {
-			t.Fatalf("tools.ExternalExecutor.%s reintroduced — this re-opens "+
-				"the cross-session ProjectId leak fixed in PR9. ProjectId must "+
-				"only flow from cfg → NewExternalExecutor at construction. If "+
-				"a mutating tool genuinely needs ProjectId, plumb it via args "+
-				"or a per-session Engine field, never a SharedDeps setter.", banned)
+			t.Fatalf("tools.ExternalExecutor.%s must not expose mutable process-wide ProjectId state", banned)
 		}
 	}
 }

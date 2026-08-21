@@ -160,10 +160,8 @@ type RerankerClient interface {
 	Rerank(ctx context.Context, query string, docs []string, topN int) ([]RerankerResult, error)
 }
 
-// RerankerResult mirrors internal/reranker.Result so the knowledge package
-// stays free of the reranker package import. Reranker implementations
-// adapt their native result type via a thin wrapper (see
-// cmd/trace.go rerankerClientFromEnv).
+// RerankerResult mirrors internal/reranker.Result while keeping this offline
+// reference retriever independent of that client package.
 type RerankerResult struct {
 	Index int
 	Score float64
@@ -187,19 +185,15 @@ type RetrieverOptions struct {
 	// embedder is configured.
 	EmbeddingModel string
 	// HybridContextTimeout bounds each query embedding call. Defaults to
-	// 5s (matches internal/embedding p99 measurement) when zero or
-	// negative. The retriever swallows embedding errors and falls back
-	// to BM25 top-3 from its top-20 pool. Override in production via the
-	// RAG_HYBRID_TIMEOUT_MS env var (parsed in cmd/trace.go).
+	// 5s when zero or negative. The retriever swallows embedding errors and
+	// falls back to BM25 top-3 from its top-20 pool.
 	HybridContextTimeout time.Duration
 	// Reranker, when non-nil, engages the cross-encoder rerank stage after
 	// the cosine stage. Mode must be HybridRerank or Qwen3Full for the
 	// stage to actually run. RerankerModel labels it for trace.
 	Reranker      RerankerClient
 	RerankerModel string
-	// RerankerContextTimeout bounds each reranker call. Defaults to 5s
-	// (B.0 probe measured ~3.8s for 50-doc single batch). Override in
-	// production via RAG_RERANKER_TIMEOUT_MS.
+	// RerankerContextTimeout bounds each reranker call. Defaults to 5s.
 	RerankerContextTimeout time.Duration
 	// Mode selects the retrieval pipeline. Empty defaults to bm25_only when
 	// no embedder is supplied, hybrid_cosine when an embedder+sidecar are.
@@ -242,12 +236,10 @@ type RetrievalResult struct {
 	//             hybrid configured but BM25 pool was empty so the embed
 	//             call was skipped). Distinguishing "skipped" from a real
 	//             "0ms" round-trip is why this is *int64, not int64+omitempty.
-	//   - *0:     embedder returned in < 1ms (currently unreachable in
-	//             production but reserved for future client-side cache hits).
+	//   - *0:     embedder returned in < 1ms.
 	//   - *>0:    actual round-trip. On embedding_timeout this approximates
 	//             the configured HybridContextTimeout (ctx-cancel latency).
-	// Ops uses this to compute production p95/p99 latency distribution and
-	// pick a principled HybridContextTimeout instead of blind tuning.
+	// Offline evaluations can use this to compare latency distributions.
 	EmbeddingLatencyMS *int64
 	// EmbeddingModel labels which embedder produced the cosine scores.
 	// Examples: "text-embedding-3-large", "qwen3-embedding-8b". Empty
@@ -642,14 +634,11 @@ func (r *Retriever) collectBM25Candidates(question, productArea string) []scored
 // Returns (reranked, fallbackReason, latencyMs):
 //   - On success: reranked candidates, "", actual embed round-trip ms
 //   - On embedding error: bm25Pool unchanged, reason, time-to-error ms
-//     (reason "embedding_timeout" via errors.Is(err, ctx.DeadlineExceeded),
-//     else "embedding_error"; per user 2026-05-17 spec
-//     "embedding 失败时降级 BM25", no retry)
+//     ("embedding_timeout" for a deadline, otherwise "embedding_error"; no retry)
 //   - On empty query vector: bm25Pool unchanged, "embedding_empty", ms
 //
 // latencyMs is always measured (success or failure) and the caller wraps
-// it into RetrievalResult.EmbeddingLatencyMS (*int64) so ops can compute
-// production p95/p99 from the trace JSONL and pick a principled timeout.
+// it into RetrievalResult.EmbeddingLatencyMS (*int64) for evaluation.
 //
 // The Python eval pipeline (scripts/rag_w0/evaluate_retrieval.py --mode
 // hybrid) must produce the same final top-K chunk_id sets on the same
@@ -795,8 +784,7 @@ func (r *Retriever) denseFullSearch(question string, topN int) ([]scoredChunk, s
 //   - On empty results from server: cosinePool unchanged, "reranker_empty"
 //
 // latencyMs is always measured. Caller wraps into
-// RetrievalResult.RerankerLatencyMS so ops can tune RAG_RERANKER_TIMEOUT_MS
-// from production p95/p99.
+// RetrievalResult.RerankerLatencyMS for evaluation.
 func (r *Retriever) rerankByReranker(question string, cosinePool []scoredChunk) ([]scoredChunk, string, int64) {
 	if len(cosinePool) == 0 {
 		// Caller guards against this but defend defensively.
@@ -845,24 +833,8 @@ func (r *Retriever) rerankByReranker(question string, cosinePool []scoredChunk) 
 	return reranked, "", latencyMs
 }
 
-// rerankerDocMaxRunes caps the body in the text handed to the cross-encoder.
-//
-// It is deliberately NOT build_corpus_embeddings.py:MAX_CONTENT_RUNES_FOR_EMB
-// (1800), which this used to inherit on the reasoning that both ranking signals
-// should score the same representation so their scores stay comparable. That
-// reasoning does not survive contact with what the two models are: the
-// bi-encoder compares two independently produced vectors, so its corpus side is
-// frozen at index build time and the cap is part of the index contract; the
-// cross-encoder reads (query, document) together at request time and is bound
-// by nothing but latency. Inheriting the cap meant the highest-value ranking
-// stage scored a truncated document, and 52% of the corpus is longer than 1800
-// runes while the answer can be anywhere in the body.
-//
-// Production made this split first, in compshare-kb
-// (retrieval.defaultRerankerDocRunes, same value); that constant carries the
-// measurement. This offline path mirrors it so evaluations rank the text
-// production actually ranks — left at 1800, an offline run cannot reproduce a
-// production gain that comes from the tail of a long chunk.
+// rerankerDocMaxRunes mirrors the production KB cross-encoder input cap. It is
+// intentionally independent of the embedding index representation.
 const rerankerDocMaxRunes = 4000
 
 // chunkReprForRerank produces the text the reranker sees per chunk. It renders

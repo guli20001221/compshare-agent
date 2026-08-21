@@ -69,7 +69,7 @@ func inventoryZoneCatalog() *deployment.ZoneCatalogSnapshot {
 }
 
 // noDescribeZoneCatalog is a snapshot carrying the given zones with NO display name
-// — the manual/CLI path where the catalog has no describe, so form labels fall back
+// — the catalog-unavailable path, where form labels fall back
 // to the bare zone id.
 func noDescribeZoneCatalog(zones ...string) *deployment.ZoneCatalogSnapshot {
 	entries := make([]deployment.ZoneCatalogEntry, 0, len(zones))

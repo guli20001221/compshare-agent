@@ -1,24 +1,10 @@
 package observability
 
-// StateTrace records the per-turn "current instance" binding state (#3,
-// instance-binding cluster). It closes the observability residual left after
-// PR#300 fixed the binding bug itself: `grep SelectedInstance` over this package
-// was 0 — the selected instance was a planner input, never a recorded field, so
-// a wrong-instance answer could not be attributed after the fact.
-//
-// Populated by the recorders at Finish from engine getters (mirrors the 1a
-// FinishSignals plumbing). The block is emitted only when traceStateObserved
-// is true (any field set); a raw fixture that never ran the engine stays
-// byte-identical (SHA-stable).
-//
-// SCOPE: every engine turn sets ResolutionSource (at minimum "unresolved" via
-// refreshSystemPrompt), so the block is present on all real turns and absent on
-// fixtures. The #3 fields are inert on the CLI (SessionStateHydrated is false —
-// SetSessionState is HTTP-only), so these must be verified through the HTTP
-// server (联调), not a CLI smoke.
+// StateTrace records how the current-instance binding entered and left a turn.
+// It is populated at Finish and omitted when no state signal was observed.
 type StateTrace struct {
-	// SessionStateHydrated is the denominator. It is false on the CLI
-	// (SetSessionState is HTTP-only) and on an HTTP context parse-failure, so
+	// SessionStateHydrated is the denominator. It is false when session context
+	// was not supplied or could not be parsed, so
 	// "ResolutionSource=unresolved" can be read correctly: an un-hydrated turn
 	// could not have carried a binding, so its "unresolved" is expected, not a
 	// bug. Intentionally NOT omitempty — when the State block is present at all

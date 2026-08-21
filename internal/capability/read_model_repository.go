@@ -9,11 +9,8 @@ import (
 	"github.com/compshare-agent/internal/platform"
 )
 
-// Model-repository browse read capability (migrated from the legacy intent
-// route). The legacy handler made two upstream calls — tags then models — and
-// rendered a combined listing; it carried no evidence envelope. The typed
-// request carries the structured query + list mode, so the handler never
-// re-reads the user's sentence (the legacy path re-derived them from Slots).
+// Model-repository browse combines the live tag and model catalogs under one
+// typed request.
 
 const (
 	modelRepositoryCapabilityLabel = string(intent.IntentModelRepositoryBrowse)
@@ -30,8 +27,7 @@ type ModelRepositoryRequest struct {
 // MissingFields: none — an unfiltered browse is valid.
 func (ModelRepositoryRequest) MissingFields() []platform.MissingField { return nil }
 
-// ModelRepositoryResponse carries the rendered reply (no evidence envelope,
-// legacy parity).
+// ModelRepositoryResponse carries the rendered repository reply.
 type ModelRepositoryResponse struct {
 	Reply string
 }
@@ -39,7 +35,7 @@ type ModelRepositoryResponse struct {
 func modelRepositoryReadSpec() ReadCapabilitySpec[ModelRepositoryRequest, ModelRepositoryResponse] {
 	return ReadCapabilitySpec[ModelRepositoryRequest, ModelRepositoryResponse]{
 		Label:       modelRepositoryCapabilityLabel,
-		Description: "查询公共模型仓库中的模型和标签。不要用于一般的部署、运行、快速安装或 ComfyUI 使用问题；社区镜像目录已返回该具名模型的可用精确兼容候选时，不要调用本工具。仅在用户明确询问预置权重、下载、源码安装或 adapter/权重路径时使用；不是镜像目录，不能证明当前可直接创建或已支持该模型。",
+		Description: "查询公共模型仓库中的预置权重和标签。用于下载、源码安装、adapter 或权重路径问题，或社区镜像没有精确候选时补充信息；它不是可创建的镜像目录，不能证明平台已支持部署。",
 		Params:      objectParam(map[string]schemaNode{"query": stringParam(), "mode": enumParam(platform.ListModeValues()...)}),
 		Handle:      modelRepositoryHandle,
 		Render:      modelRepositoryRender,
@@ -74,8 +70,6 @@ func modelRepositoryRender(resp ModelRepositoryResponse) ReadResult {
 	r.ToolAction = modelRepositoryModelAction
 	return r
 }
-
-// --- Relocated from intent/routing_registry.go (Slots → typed query/mode) -------
 
 func modelRepositoryArgs(query string, mode platform.ListMode, tagRaw map[string]any) map[string]any {
 	args := map[string]any{}
@@ -161,14 +155,9 @@ func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, query string, m
 	return strings.Join(sections, "\n"), false
 }
 
-// modelRepositoryGuidanceFooter bridges a model-repository browse reply to the
-// two real follow-up actions the user can take. Repo models are pre-downloaded
-// onto the instance under the per-entry Path (verified live 2026-06-11: paths
-// sit under /model/HuggingFace, /model/ModelScope, /model/ollama, /model/llm by
-// source), so a found model is usable after deploy without re-downloading; a
-// model the repo does not carry is self-pulled inside the instance. The footer
-// points at the per-line Path field rather than hardcoding a single mount so it
-// stays correct if the layout changes.
+// modelRepositoryGuidanceFooter bridges repository results to the two supported
+// follow-ups: use the returned per-entry path, or download a missing model inside
+// an instance. It does not hardcode a repository mount layout.
 func modelRepositoryGuidanceFooter(found bool) string {
 	if !found {
 		return "仓库里暂时没有匹配的模型。你可以部署实例后自行拉取：HuggingFace / ModelScope 下载，或 Ollama 容器用 `ollama pull <模型名>`——需要具体命令可以问我。"

@@ -55,7 +55,7 @@ func engineWithCatalogSpy() (*Engine, *[]map[string]any) {
 		}
 		return map[string]any{}, nil
 	})
-	return &Engine{safeExecutor: newSafeToolExecutor(spy, nil, nil, false)}, seen
+	return &Engine{safeExecutor: newSafeToolExecutor(spy, nil)}, seen
 }
 
 // spotFailure returns the failure record a REAL sold-out create leaves behind for

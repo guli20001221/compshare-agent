@@ -2,38 +2,6 @@
   "version": 1,
   "findings": [
     {
-      "id": "884e90340644463d",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": " {2,}"
-    },
-    {
-      "id": "ca9c9c086dd81bb2",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "!\\[[^\\]]*\\]\\([^)]*\\)"
-    },
-    {
-      "id": "590e2652517db7a1",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?s)\u003c[^\u003e]+\u003e"
-    },
-    {
-      "id": "9cdd1ba90e3b09fd",
-      "kind": "regex",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "\\n{3,}"
-    },
-    {
       "id": "7d2a2e0c5ebfcc81",
       "kind": "regex",
       "path": "internal/engine/engine.go",
@@ -56,118 +24,6 @@
       "symbol": "init",
       "callee": "regexp.MustCompile",
       "value": "(?i)/(?:admin|workorder|internal)(?:/|$)"
-    },
-    {
-      "id": "fa39a5e1a0673707",
-      "kind": "regex",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile"
-    },
-    {
-      "id": "14121438514ccd70",
-      "kind": "regex",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(DAN|developer\\s+mode|jailbreak|unfiltered|uncensored|evil|opposite|no\\s+restrictions|without\\s+restrictions|different\\s+(AI|assistant|model))\\b"
-    },
-    {
-      "id": "6955d817271329b6",
-      "kind": "regex",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(ignore|disregard|forget|override|bypass)\\b"
-    },
-    {
-      "id": "f21be25c76c491c5",
-      "kind": "regex",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(previous|prior|above|all)\\s+(instruction|instructions|rule|rules|prompt|prompts|guideline|guidelines|directive|directives|constraint|constraints)\\b"
-    },
-    {
-      "id": "b4cb836472ad1c3e",
-      "kind": "regex",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(print|reveal|show|output|disclose|tell\\s+me|leak)\\b"
-    },
-    {
-      "id": "5e86ed665390ab45",
-      "kind": "regex",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(print|reveal|show|output|disclose|tell\\s+me|leak)\\b",
-      "ordinal": 2
-    },
-    {
-      "id": "6b0d2d1a582b0563",
-      "kind": "regex",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(you\\s+are\\s+now|pretend|act\\s+as|roleplay|simulate)\\b"
-    },
-    {
-      "id": "4fece724e552d8c3",
-      "kind": "regex",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(your|the)\\s+(prompt|instructions|rules|directives|guidelines)\\b\\s*([.!?]?\\s*$|in\\s+(full|detail|verbatim)\\b|you\\s+were\\s+(told|given|instructed|asked|prompted)|that\\s+you\\s+were)"
-    },
-    {
-      "id": "ff0dca370415311d",
-      "kind": "regex",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(your|the)\\s+(system|hidden|secret|underlying|initial|core|original|actual|real|true)\\s+(prompt|instructions|rules|directives|guidelines)\\b"
-    },
-    {
-      "id": "d5c27af34534867c",
-      "kind": "regex",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(之前|前面|上面|所有|你的|系统|原本|当前)?(的)?(指令|提示词|系统提示|规则|限制|约束|设定|准则)"
-    },
-    {
-      "id": "b22c67868b583549",
-      "kind": "regex",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(你不是|不受任何限制|不受任何规则|没有任何限制|没有任何规则|没有限制|不受限|不受规则|无任何限制|越狱|DAN|开发者模式|没有规则)"
-    },
-    {
-      "id": "6c8e4bd3971b3e38",
-      "kind": "regex",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(忽略|无视|忘记|忘掉|绕过|跳过)"
-    },
-    {
-      "id": "f1c2e8f628681cee",
-      "kind": "regex",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(打印|显示|告诉我|输出|展示|揭示|泄露|说出)"
-    },
-    {
-      "id": "f479f874c02f1d47",
-      "kind": "regex",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(扮演|假装|假设你是|现在你是|从现在(开始|起))"
     },
     {
       "id": "3c6d733589954be3",
@@ -272,134 +128,6 @@
       "symbol": "init",
       "callee": "regexp.MustCompile",
       "value": "\\b\\d{16,19}\\b"
-    },
-    {
-      "id": "c50016879a01c8d1",
-      "kind": "regex",
-      "path": "internal/guardrails/topic.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(I|me)\\b"
-    },
-    {
-      "id": "c196833700935ff5",
-      "kind": "regex",
-      "path": "internal/guardrails/topic.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(I|my\\s+(family|wife|husband|child|son|daughter|parent|father|mother|kid))\\b"
-    },
-    {
-      "id": "176d3abaf0b40c14",
-      "kind": "regex",
-      "path": "internal/guardrails/topic.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(buy|sell|short|long|hold|invest\\s+in)\\s+(\\w+\\s+)*(stocks?|crypto|bitcoin|ethereum|fund|etf|options|forex|gold|silver|bond)\\b|\\ba\\s+(stocks?|crypto|bitcoin|ethereum|fund|etf|options|forex|bond)\\s+to\\s+(buy|invest|sell|hold|short|long)\\b|\\b(hot\\s+)?(pick|tip|recommendation)s?\\s+(for\\s+)?\\w*\\s*(stocks?|crypto|bitcoin|ethereum|fund|etf)\\b|\\b(stocks?|crypto|bitcoin|ethereum|fund|etf|options|forex)\\s+(pick|tip|recommendation)s?\\b"
-    },
-    {
-      "id": "f0e14a667830cbe1",
-      "kind": "regex",
-      "path": "internal/guardrails/topic.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(have|has|got|am\\s+sick\\s+with|been\\s+diagnosed|diagnosed\\s+with)\\s+(\\w+\\s+){0,2}(cancer|tumou?r|diabetes|hypertension|covid|pneumonia|infection|allergy)\\b|what\\s+(medicine|medication|pill|drug)\\s+should\\s+I\\s+take\\s+(for|to\\s+(treat|cure|relieve|manage))\\s+\\w+"
-    },
-    {
-      "id": "ab4d0e6c03b454d4",
-      "kind": "regex",
-      "path": "internal/guardrails/topic.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(opinion|view|stance|position|support|oppose|endorse|criticize|criticise|think)\\b"
-    },
-    {
-      "id": "11ac635a070770fe",
-      "kind": "regex",
-      "path": "internal/guardrails/topic.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(president|prime\\s+minister|chancellor|head\\s+of\\s+state|ruling\\s+party|political\\s+party|democrat|republican|elections?|impeach|sanctions?\\s+on|Xi\\s+Jinping|Putin|Trump|Biden|Taiwan\\s+(independence|issue|question)|Hong\\s+Kong\\s+protests?|Tibet\\s+issue)\\b"
-    },
-    {
-      "id": "9ac87be4a4a5ac2c",
-      "kind": "regex",
-      "path": "internal/guardrails/topic.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(should\\s+I|recommend|advise|tip|hot\\s+pick|what\\s+to|give\\s+me)\\b"
-    },
-    {
-      "id": "5ddab55cc1688d31",
-      "kind": "regex",
-      "path": "internal/guardrails/topic.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)\\b(want\\s+to\\s+(commit\\s+suicide|kill\\s+myself|end\\s+my\\s+life)|am\\s+suicidal|am\\s+going\\s+to\\s+(kill|harm)\\s+myself|planning\\s+to\\s+(end\\s+my\\s+life|kill\\s+myself))\\b|\\bsuicide\\s+hotline\\b|\\bself[-\\s]harm\\s+(plan|intent)\\b"
-    },
-    {
-      "id": "5fe00b011aa4d62e",
-      "kind": "regex",
-      "path": "internal/guardrails/topic.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(买|入手|持有|抛|卖|清仓|建仓|加仓|减仓|定投)[^。.,;!?]{0,5}(股票|基金|期货|加密货币|比特币|以太|狗狗币|理财产品|外汇|证券)|(股票|基金|币圈|加密货币)\\s*(推荐|建议|怎么选|该不该|哪个好)"
-    },
-    {
-      "id": "36b98c45e0870f3b",
-      "kind": "regex",
-      "path": "internal/guardrails/topic.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(国家领导人|党中央|总书记|主席|总统|总理|首相|执政党|政党|政府机构|选举|大选|两党|民主党|共和党|共产党|国民党|台独|港独|疆独|藏独|新疆议题|台湾问题|涉港议题|涉疆议题|涉藏议题)"
-    },
-    {
-      "id": "a4cfe8980a6fa582",
-      "kind": "regex",
-      "path": "internal/guardrails/topic.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(怎么办|该怎么|吃什么药|要不要|要去|去哪|挂号|看医生|去医院|治疗方案|手术|化疗|放疗|住院|开刀)"
-    },
-    {
-      "id": "c5eef84c66f90be3",
-      "kind": "regex",
-      "path": "internal/guardrails/topic.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(想自杀|想结束生命|想结束自己|寻短|想割腕|想跳楼|想跳河|要自杀|要结束生命|要寻短)"
-    },
-    {
-      "id": "0eb1f7eaa15d0638",
-      "kind": "regex",
-      "path": "internal/guardrails/topic.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(我|我家|我老婆|我老公|我爸|我妈|我儿子|我女儿|我孩子|父母|家人)\\s*(得了|患了|有了|发现|查出|确诊|被诊断|生病|发烧|咳嗽|疼痛|心脏|肿瘤|癌症|糖尿病|高血压|新冠|肺炎|感染|过敏)"
-    },
-    {
-      "id": "b7a1e940da609aae",
-      "kind": "regex",
-      "path": "internal/guardrails/topic.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(我|没人|没有人爱|没人在乎)"
-    },
-    {
-      "id": "01c96147c8f7cdf1",
-      "kind": "regex",
-      "path": "internal/guardrails/topic.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(推荐|建议|该不该|要不要|帮我选|挑一个|哪个好|怎么选)"
-    },
-    {
-      "id": "1e7f4fbda794dd71",
-      "kind": "regex",
-      "path": "internal/guardrails/topic.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(评价|你觉得|怎么看|看法|意见|支持|反对|拥护|批评)"
     },
     {
       "id": "3f455e55b3a1985b",
@@ -716,35 +444,12 @@
       "value": "resourcenotenough"
     },
     {
-      "id": "a7588b85fc998908",
-      "kind": "string_heuristic",
-      "path": "internal/engine/context_assembler.go",
-      "symbol": "renderMonitorFact",
-      "callee": "strings.HasPrefix"
-    },
-    {
       "id": "85feb660b9793a35",
       "kind": "string_heuristic",
       "path": "internal/engine/create_image_recovery.go",
       "symbol": "isImageUnavailableError",
       "callee": "strings.Contains",
       "value": "CompShareImageId"
-    },
-    {
-      "id": "8589fb9c1302aef7",
-      "kind": "string_heuristic",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "extractJSONObject",
-      "callee": "strings.Index",
-      "value": "{"
-    },
-    {
-      "id": "deb5759ae49a680f",
-      "kind": "string_heuristic",
-      "path": "internal/engine/deploy_model.go",
-      "symbol": "extractJSONObject",
-      "callee": "strings.LastIndex",
-      "value": "}"
     },
     {
       "id": "a4c863c6ee04953f",
@@ -992,52 +697,6 @@
       "symbol": "deniedInternalSurfaceHost",
       "callee": "strings.HasSuffix",
       "value": ".lark.com"
-    },
-    {
-      "id": "d38a2e7810b4d189",
-      "kind": "string_heuristic",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "containsAny",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "d928849e2495c290",
-      "kind": "string_heuristic",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "isBenignPlatformJailbreakContext",
-      "callee": "strings.Contains"
-    },
-    {
-      "id": "a39d05c055de8bb5",
-      "kind": "string_heuristic",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "isBenignPlatformJailbreakContext",
-      "callee": "strings.Contains",
-      "ordinal": 2
-    },
-    {
-      "id": "9539ead1dae5d2ca",
-      "kind": "string_heuristic",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "isBenignPlatformJailbreakContext",
-      "callee": "strings.Contains",
-      "ordinal": 3
-    },
-    {
-      "id": "9db29712ac0613cd",
-      "kind": "string_heuristic",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "isBenignPlatformJailbreakContext",
-      "callee": "strings.Contains",
-      "value": "系统提示"
-    },
-    {
-      "id": "203cd5842a29de86",
-      "kind": "string_heuristic",
-      "path": "internal/guardrails/jailbreak.go",
-      "symbol": "isBenignPlatformJailbreakContext",
-      "callee": "strings.Contains",
-      "value": "系统提示词"
     },
     {
       "id": "0b05f4e1545230f9",
@@ -1313,13 +972,6 @@
       "value": "["
     },
     {
-      "id": "b8a873d4c14b0962",
-      "kind": "string_heuristic",
-      "path": "internal/httpapi/ws_durable.go",
-      "symbol": "durableImageDigest",
-      "callee": "strings.Index"
-    },
-    {
       "id": "6bda607b2defb425",
       "kind": "string_heuristic",
       "path": "internal/knowledge/evidence_adapter.go",
@@ -1413,22 +1065,6 @@
       "symbol": "normalizeMCPEndpoint",
       "callee": "strings.Contains",
       "value": "://"
-    },
-    {
-      "id": "1ad9e57b9afaae11",
-      "kind": "string_heuristic",
-      "path": "internal/llm/client.go",
-      "symbol": "NewClient",
-      "callee": "strings.Contains",
-      "value": "127.0.0.1"
-    },
-    {
-      "id": "6a84f4236f9b6963",
-      "kind": "string_heuristic",
-      "path": "internal/llm/client.go",
-      "symbol": "NewClient",
-      "callee": "strings.Contains",
-      "value": "localhost"
     },
     {
       "id": "59f7626f6e927020",
@@ -1845,62 +1481,6 @@
       "symbol": "retCodeHintForMessage",
       "callee": "strings.Contains",
       "value": "existing cfs"
-    },
-    {
-      "id": "9a54f84aacd86e69",
-      "kind": "string_heuristic",
-      "path": "internal/turncoord/action_journal.go",
-      "symbol": "decodeDefiniteActionError",
-      "callee": "strings.HasPrefix",
-      "value": "upstream_api:"
-    },
-    {
-      "id": "d37aea11c1978ea0",
-      "kind": "string_heuristic",
-      "path": "internal/turncoord/coordinator.go",
-      "symbol": "executionEnvelopeFailureReason",
-      "callee": "strings.Contains",
-      "value": "unsupported execution envelope version"
-    },
-    {
-      "id": "101f2083165afd73",
-      "kind": "string_heuristic",
-      "path": "internal/turncoord/coordinator.go",
-      "symbol": "sanitizeInteractionArgs",
-      "callee": "strings.Contains",
-      "value": "accesskey"
-    },
-    {
-      "id": "33fe60ebb4969991",
-      "kind": "string_heuristic",
-      "path": "internal/turncoord/coordinator.go",
-      "symbol": "sanitizeInteractionArgs",
-      "callee": "strings.Contains",
-      "value": "password"
-    },
-    {
-      "id": "0d9ce57f722176bc",
-      "kind": "string_heuristic",
-      "path": "internal/turncoord/coordinator.go",
-      "symbol": "sanitizeInteractionArgs",
-      "callee": "strings.Contains",
-      "value": "privatekey"
-    },
-    {
-      "id": "39e7e289cf7f4be5",
-      "kind": "string_heuristic",
-      "path": "internal/turncoord/coordinator.go",
-      "symbol": "sanitizeInteractionArgs",
-      "callee": "strings.Contains",
-      "value": "secret"
-    },
-    {
-      "id": "d020549c51ecbfbe",
-      "kind": "string_heuristic",
-      "path": "internal/turncoord/coordinator.go",
-      "symbol": "sanitizeInteractionArgs",
-      "callee": "strings.Contains",
-      "value": "token"
     },
     {
       "id": "f58f082100cd71a6",

@@ -11,9 +11,7 @@ import (
 // deploy/kb/embeddings_<corpus_digest>.jsonl. Vectors are keyed by chunk_id
 // so the hybrid retriever can look them up regardless of corpus row order.
 //
-// The sidecar is produced offline by scripts/rag_w0/build_corpus_embeddings.py
-// and its content is pinned via EmbeddingDigestExpected; the runtime hybrid
-// path refuses to load if the file's LF-normalized sha256 does not match.
+// The sidecar is produced offline and pinned for evaluation and publication.
 type EmbeddingSidecar struct {
 	Model   string
 	Dim     int
@@ -40,8 +38,8 @@ type embeddingRowWire struct {
 // error if the meta header is missing, dimensions are inconsistent, chunk_id
 // is empty, or duplicate chunk_ids appear.
 //
-// This function does NOT verify the file's digest against
-// EmbeddingDigestExpected; that check belongs to LoadPinnedCorpusWithEmbeddings.
+// This function does not verify the file digest; pinned loaders do that before
+// accepting a corpus/sidecar pair.
 func LoadEmbeddingSidecar(path string) (EmbeddingSidecar, error) {
 	f, err := os.Open(path)
 	if err != nil {
@@ -106,26 +104,13 @@ func LoadEmbeddingSidecar(path string) (EmbeddingSidecar, error) {
 	return sidecar, nil
 }
 
-// LoadPinnedCorpusWithEmbeddings loads the corpus + text-embedding-3-large
-// sidecar (pinned via EmbeddingDigestExpected). Thin wrapper preserved for
-// callers that don't need to select between sidecar models.
-func LoadPinnedCorpusWithEmbeddings(corpusPath, embeddingsPath string) (Corpus, EmbeddingSidecar, error) {
-	return LoadPinnedCorpusWithEmbeddingsDigest(corpusPath, embeddingsPath, EmbeddingDigestExpected)
-}
-
 // LoadPinnedCorpusWithEmbeddingsDigest loads the corpus + embedding sidecar
 // and verifies both against their pinned digests (corpus against
 // CorpusDigestExpected, sidecar against the caller-supplied expectedDigest).
 // It also checks that every corpus chunk has a matching embedding vector
-// and vice-versa. Any failure returns an error; the cmd-layer caller is
-// expected to log.Fatalf on hybrid paths so the runtime never serves with
-// a drifted index.
+// and vice-versa. Any failure returns an error.
 //
-// expectedDigest is parameterized so the same loader supports multiple
-// sidecar models (text-embedding-3-large via EmbeddingDigestExpected,
-// qwen3-embedding-8b via EmbeddingDigestExpectedQwen3, future via new
-// constants). The pin is enforced at load time — a sidecar produced by a
-// different model with a different digest will fail this check.
+// expectedDigest lets offline callers select an explicitly pinned artifact.
 func LoadPinnedCorpusWithEmbeddingsDigest(corpusPath, embeddingsPath, expectedDigest string) (Corpus, EmbeddingSidecar, error) {
 	return loadPinnedCorpusWithDigests(corpusPath, embeddingsPath, CorpusDigestExpected, expectedDigest)
 }
@@ -147,9 +132,7 @@ func loadCorpusVerified(corpusPath, expectedCorpusDigest string) (Corpus, error)
 
 // loadPinnedCorpusWithDigests loads one corpus + embedding sidecar, verifying
 // each against the supplied expected digests and enforcing a strict
-// chunk↔vector bijection. It is shared by LoadPinnedCorpusWithEmbeddingsDigest
-// (platform, pinned to CorpusDigestExpected) and LoadPinnedCorporaWithEmbeddings
-// (each source pinned independently).
+// chunk↔vector bijection.
 func loadPinnedCorpusWithDigests(corpusPath, embeddingsPath, expectedCorpusDigest, expectedEmbeddingDigest string) (Corpus, EmbeddingSidecar, error) {
 	corpus, err := loadCorpusVerified(corpusPath, expectedCorpusDigest)
 	if err != nil {

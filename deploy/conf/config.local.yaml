@@ -1,18 +1,10 @@
 agent:
-  executor: external
   compshare_api_url: "https://api.compshare.cn/"
-  # Legacy direct AK/SK. HTTP server mode uses these when STS service
-  # credentials are empty (local/demo fallback).
+  # Optional direct AK/SK for local development. Server production uses STS.
   public_key: ""
   private_key: ""
   region: "cn-wlcb"
-  # project_id 可选。留空时所有 read-only API 调用不带 ProjectId（CompShare
-  # 服务端会回退到账号级默认行为）。如需固定项目（mutating tools 如开关机
-  # 调度器需要），直接填写项目 ID。
-  # 注：PR9 之前留空会触发 GetProjectList 自动发现并通过 SetProjectId 写入
-  # 共享执行器；那是一条跨 session 串数据的路径，已经移除。运行时不再有
-  # mutating setter，ProjectId 只在这里设置一次。
-  # 本文件是完整部署配置；不再需要环境变量占位。
+  # Optional deployment-wide ProjectId; request-scoped values take precedence.
   project_id: ""
 
   # 飞书话题群知识问答入口。由 `compshare-agent feishu` 单独启动；
@@ -32,8 +24,6 @@ agent:
     auto_reply_new_topics: true
     # 关闭全消息模式：其他成员评论和嵌套评论只有显式 @机器人 时才会进入话题会话。
     auto_reply_all_messages: false
-    # 外部群可查询公共平台目录与实时库存；账号、实例、诊断和写操作仍不会开放。
-    enable_platform_readonly_queries: true
     max_concurrent: 4
     max_reply_runes: 3500
     max_image_bytes: 5242880
@@ -52,173 +42,44 @@ agent:
     # the platform key it is published in this repo's history, so rotate it with
     # the standing key rotation.
     api_key: "HpiGXzD7p1cuChPiCe8e5841-048D-4e73-9675-E83dD0D1"
-    # gpt-5.6-terra (ModelVerse GPT-5 Codex), default answerer since 2026-07-24:
-    # on the reranked source-gap probes it reproduced in-corpus facts verbatim and
-    # honestly declined true doc-gaps, where deepseek-v4-pro fabricated specifics;
-    # also cheaper. Rollback: deepseek-v4-pro / deepseek-v4-flash (qwen3-capable
-    # key required in LLM_API_KEY for those).
+    # Production answer model.
     model: "gpt-5.6-terra"
 
-  # ──────────────────────────────────────────────────────────────────────
-  # Runtime feature flags (previously env-only). Configure the whole agent
-  # from THIS file — no env vars needed for behavior. Precedence: a value set
-  # here WINS; if you omit a field the binary falls back to the matching env
-  # var, and if that is unset too, to the built-in default. The values below
-  # are the production deploy defaults.
-  # forward). Set a field to false / "off" to roll one back.
-  #
-  # NOTE 截图理解 (screenshot/VL) is enabled separately by agent.ocr.model
-  # below (qwen3-vl-flash) — it is already on.
-  features:
-    # Every chat turn is accepted, executed and committed through the durable
-    # global coordinator. Requires migrations 0005 through 0010 before boot.
-    # Keep this OFF while old binaries exist. Enable it only during a drained,
-    # cluster-wide backend + frontend cutover; mixed legacy/durable execution
-    # can process one conversation twice.
-    durable_turns: false
-    # Write operations: create/start/stop/reboot/reset-password/resize-disk.
-    # Destructive actions (delete / L2 terminate) stay refused REGARDLESS.
+  # Runtime authorization. Agent execution behavior has no rollout switch.
+  authorization:
+    # Enables confirmation-gated product writes. Destructive actions remain
+    # refused by policy regardless of this value.
     mutating_tools: true
-    # Editable + guided GPU create flow. Durable v2 persists the reviewed form
-    # and its validated edits, so refresh, replica changes and process restart
-    # resume the same confirmation. The client must still opt in per turn with
-    # confirm_form_v1 + guided_create_v1; selection cards remain unsupported.
-    confirm_form: true
-    guided_create: true
-    # Agentic knowledge answering is a fixed runtime capability: retrieval is
-    # chosen in-loop and every released knowledge answer uses the shared proof.
-    # Keep large read results concise before returning them to the Agent. History
-    # itself is bounded by the runtime's token budgets, not by a second feature
-    # flag or semantic summary layer.
-    react_result_projection: true
-    # ON since 2026-08-04. One switch owns the whole transcript pipeline: the
-    # turn's messages, tool calls and tool results are captured, persisted to
-    # messages.metadata (agent_transcript_v1) and replayed to the model, instead
-    # of being deleted and paraphrased back through semantic state.
-    #
-    # With it on the context card stops restating a summary of the same turns
-    # (#510) and keeps only what a transcript cannot carry: the live selection,
-    # the pending selection card, and this turn's continuity notices.
-    #
-    # The semantic layer it replaced is now DELETED, not suppressed:
-    # ConversationDigest (with its producer and persisted field), RecentFacts,
-    # and VerifiedKnowledge no longer reach the model in either flag position.
-    # RecentFacts is deleted entirely; VerifiedKnowledge survives only as
-    # evidence the answer verifier checks against. TaskSnapshot is deleted too.
-    # The state that remains is only
-    # execution workflow state: the creation form, confirmation, idempotency and
-    # write-side target binding; none of it is a second semantic memory.
-    #
-    # THIS FLAG IS THEREFORE NO LONGER A ROLLBACK. Setting it false yields a
-    # runtime with neither the transcript nor the projections it replaced; it is
-    # a migration switch now, and backing the semantic layer out means reverting
-    # the deletion commits.
-    #
-    # Cold start: capture is gated too, so sessions that ran before the flip have
-    # no stored transcript. Their plain user/assistant exchanges still replay
-    # (that path is not gated), but their old turns have no tool trace while the
-    # card is already suppressed. New sessions are unaffected and in-flight ones
-    # recover from their next turn. Flip during a low-traffic window.
-    #
-    # Size: maxReplayedHistoryRunes (48000) charges the transcript together with
-    # the exchange it belongs to. Persistence is bounded separately — per-message
-    # 6000 runes, per-turn 40000, envelope 256KB — and an oversized turn is
-    # recorded with no transcript rather than truncated before redaction. Those
-    # persistence caps do NOT bound a live request: maxAssembledRequestRunes
-    # (100000) is what keeps one assembled request inside the context window on a
-    # high-fanout tool turn.
-    #
-    # This is boot-only. An explicit YAML value wins over the environment, so
-    # change this field and restart; setting only the environment has no effect
-    # while the field is present.
-    canonical_transcript: true
 
-  # Knowledge retrieval. Query evidence now comes from the separately deployed
-  # compshare-kb service; this agent image no longer carries corpus JSONL,
-  # embedding sidecars, or the ModelVerse key used to build that index.
+  # Production knowledge comes from the separately deployed compshare-kb MCP.
   retrieval:
-    knowledge_retrieval: curated        # curated | off
-    # Production retrieval is served by the independently deployed KB.  When
-    # this endpoint is set, the agent does not open the bundled corpus.
     mcp_url: "http://compshare-kb.prj-ucompshare-prod.svc.c5.u4/mcp"
     # mcp_bearer_token: ""             # COMPSHARE_KB_MCP_BEARER_TOKEN (read token only)
     # mcp_timeout_ms: 12000             # COMPSHARE_KB_MCP_TIMEOUT_MS
 
-  # Per-turn trace/observability. sink=mysql writes one agent_traces row per
-  # turn to the PostgreSQL database. PREREQUISITE: ops must run
-  # deploy/migrations/0002 + 0004 DDL first; the writer degrades to the
-  # trace_json blob if 0004 is not applied. Set enabled: false to disable.
+  # Per-turn trace/observability. PostgreSQL persistence requires migrations
+  # 0002 and 0004.
   trace:
-    enabled: true
-    sink: mysql                        # file | mysql | both
-    dir: ""                            # JSONL dir for file/both sinks; ignored for mysql
+    sink: mysql                        # file | mysql; empty disables tracing
+    dir: ""                            # JSONL dir for the file sink
 
-  # Consent-gated, read-only in-instance SSH-ops diagnosis lane (DiagnoseInstanceInternals).
-  # Default OFF. When enabled: false the tool is absent from the model's window and nothing changes.
-  # Server path requires a non-static STS provider (INV-12); it runs on the current non-durable WS/SSE
-  # transport (no durable_turns dependency — the lane is read-only, so a disconnect just ends the probe
-  # and the user retries). CLI path needs only enabled: true. harness_path/base_url and a resolved API
-  # key are required when enabled (boot fails loudly if missing). Host deps — a Python env holding
-  # claude_agent_sdk and the claude CLI — are NOT checked at boot: a missing one first shows up as a
-  # failed user-facing diagnosis. Fill/verify against deploy/ssh_ops_harness/README.md.
+  # Consent-gated in-instance diagnosis and repair. It requires tenant-scoped
+  # STS, PostgreSQL audit schema 0011–0014 and the Python harness environment.
+  # See deploy/ssh_ops_harness/README.md for the command policy and deployment.
   ssh_ops:
-    # 🔴 enabled: true REQUIRES harness_path + base_url + an API key —
-    # buildSSHOpsService returns an error when any required value is unresolved, and the server does not start.
-    # `python` is NOT validated: empty falls back to the system python3, which has no
-    # claude_agent_sdk, and the only symptom is a diagnosis that fails after the user already
-    # approved the card.
-    enabled: true
     harness_path: "/opt/compshare-agent/deploy/ssh_ops_harness/harness.py" # baked into the production image
     base_url: "https://api.modelverse.cn" # direct Anthropic-compatible /v1/messages endpoint
     api_key: ""                        # empty = inherit agent.llm.api_key (the production Terra key)
     python: "/opt/miniforge3/envs/py313/bin/python" # production Python 3.13 env with requirements.txt installed
-    # Direct ModelVerse Anthropic smoke, 2026-07-31: gpt-5.6-terra returned HTTP 200 with the expected
-    # streaming message events and a forced tool_use; Claude CLI 2.1.218 also completed a print-mode
-    # request using ANTHROPIC_AUTH_TOKEN. This is a plain ModelVerse model id, not a router tuple.
-    #
-    # Was deepseek-v4-pro until 2026-07-31, on a paired N=3 where terra went 2/5 on repair. That
-    # table was contaminated by the GUARDRAILS, not by the model: two of terra's three failures were
-    # the gate refusing the CORRECT repair, and that gate was re-tiered the same day. The one cell
-    # that independently condemned terra — diagnosing a bad import past a stale success log — was
-    # rebuilt on a live box and does NOT reproduce: terra 3/3 = pro 3/3 on root cause, ~40% faster
-    # (57s vs 100s), and terra alone noticed the fixture's app directory had been replaced, which is
-    # a harder observation than the one being graded.
-    # What the evidence supports is "no measured quality difference on the cells tested"; the reason
-    # to move is latency, not superiority, and the tested cells are a handful of fault shapes on two
-    # boxes, not the whole space. This field is ours to set, not the deployer's; inert until enabled.
     model: "gpt-5.6-terra"
-    timeout: "12m"                     # 5m truncates a heavy diagnosis mid-run, and the symptom reads as model failure
-    # Let the agent REPAIR the box, not just describe the repair. Off = it reports fixes as optional
-    # steps; on = it runs them and verifies. Destructive commands (delete, wipe, reboot, password /
-    # account changes, ssh/network lockout) are refused either way, as is command substitution.
-    # Turning this on changes what the user is asked to authorize: the consent card, the tool
-    # description and the audit phase all switch with it, so it is one field, not a set.
-    #
-    # On since 2026-07-31 — a product decision, taken with these two facts on the record rather than
-    # against them. (1) "No rm" is not accurate: the 2026-07-30 re-tiering deliberately moved a
-    # TARGETED delete of one non-system path from destructive down to mutating, so `rm /tmp/x` is one
-    # approval away by design; `truncate -s 0` on a log likewise. Only recursive/glob/system-path
-    # deletes stay hard-refused. (2) The changes seen in practice are not all cheap to undo: two live
-    # runs moved an application directory aside and replaced it with an upstream checkout, and stopped
-    # a service the user had not asked about. Every command was carded — the card shows a command, not
-    # a decision, which is the gap. A scope boundary was added to the tool description on 2026-07-31
-    # and is NOT yet validated (0/5 vs 0/5: the behaviour did not occur in either arm).
+    timeout: "12m"
+    # Mutating commands require per-command confirmation. Destructive commands
+    # and opaque command shapes remain refused in both modes.
     allow_writes: true
-    # internal_ipv6 (dial the instance's internal IPv6 instead of the public EIP) is deliberately
-    # NOT set here. It is a production NETWORK fact, not a product setting: it is true wherever the
-    # process runs inside the UCloud private network and false on a developer machine, where the EIP
-    # is the only reachable address and internal.api.ucloud.cn does not route at all. Setting it in
-    # this shared baseline would break every local CLI run of the lane. It lives in
-    # deploy/conf/config.prod.yaml next to mysql.host_override, which is the same kind of fact.
+    # Address routing is production-network-specific and lives in config.prod.yaml.
 
-  # 0 or omitted uses the built-in defaults for llm / mutating /
-  # read_expensive. The user_turn_* and max_tokens_per_turn fields are
-  # OPT-IN test-phase guardrails — 0 / omitted = no enforcement (NOT
-  # promoted to a default). All counters are in-memory per process:
-  # a pod restart resets every tenant's daily counter, and N replicas
-  # without sticky routing yield an effective cap of N × the value below.
-  # For production rollout, replace with a Redis-backed limiter before
-  # raising the replica count.
+  # Per-tenant in-memory limits. A process restart resets daily counters;
+  # multiple replicas require a shared limiter for a global quota.
   rate_limit:
     llm_qps: 5
     llm_daily: 5000
@@ -229,25 +90,9 @@ agent:
     # Per-tenant cap on user-initiated chat turns (one user_message frame
     # = 1 turn; confirm responses and pings do NOT count).
     user_turn_qps: 2      # max 2 messages/sec per tenant; 0 = no QPS cap
-    user_turn_daily: 50   # 0 = no daily cap; per-tenant production cap (was 30 in test phase)
-    # Per-turn cap on total LLM tokens (prompt + completion summed across
-    # every LLM call in one user turn). 0 = no cap. 150000 gives headroom
-    # for heavy multi-tool diagnosis turns AND multi-turn sessions where the
-    # prior-text/history accumulation inflates input on otherwise-simple
-    # follow-ups (the 80000 cap was tripping those, fully refusing answerable
-    # questions). When the cap IS hit mid-turn, the engine now synthesizes a
-    # grounded answer from any evidence already retrieved instead of returning
-    # a bare "请简化问题";
-    # it only refuses when no evidence is in hand. Observe
-    # trace.outcome.total_tokens and tighten once steady-state is known.
-    # 200000 -> 400000 (2026-07-23): raised together with the per-turn agent
-    # budgets (ReAct rounds 10->20, SearchKnowledge calls 2->4, retrievals ->8,
-    # read-expensive 20->30). Those budgets are the ones the agent spends
-    # deliberately; this is the backstop that stops a pathological turn, and at
-    # 200000 it would have become the binding constraint on exactly the
-    # multi-hop turns the other raises are meant to enable. Still enforced at
-    # ReAct iteration boundaries, and hitting it still synthesizes from the
-    # evidence already retrieved rather than refusing outright.
+    user_turn_daily: 50   # 0 = no daily cap; per-tenant production cap
+    # Total prompt + completion tokens across all LLM calls in one user turn.
+    # When reached, the engine synthesizes from evidence already collected.
     max_tokens_per_turn: 400000
 
   # HTTP service settings (used by: compshare-agent server).
@@ -260,23 +105,9 @@ agent:
     max_input_length: 4000
     pool_capacity: 200
     pool_idle_ttl: "30m"
-    # Compatibility-path setting only. After the coordinated durable cutover,
-    # conversations continue from committed history and do not roll to an empty
-    # session at all. Until then, the legacy path still uses this cap.
-    # Keep <= config.MaxSessionTurnsCeiling (20), which the loader enforces.
-    # This used to be capped by engine.maxAgentContextPairs, on the grounds that
-    # the restored pair window WAS the model's entire cross-turn memory. That
-    # count is deleted: memory is now decided by size (engine.maxReplayedHistoryRunes).
-    # What still binds a larger value is the COLD path — agentpool.buildEngine
-    # reads a fixed 100 messages ordered oldest-first, so past ~50 turns a restart
-    # would rebuild the session from its opening and lose everything recent.
+    # Product quota. Model history is bounded separately by request size.
     max_session_turns: 20
-    # Skip the built-in CORS middleware. Default false = agent emits
-    # Access-Control-Allow-* headers itself (needed when the front-end dev
-    # server on localhost:3000 fetches 127.0.0.1:<port> directly per the
-    # front-back-local-debug skill). In production set this to true so the
-    # console gateway is the SOLE source of CORS headers — otherwise both
-    # agent and gateway add them and the browser rejects the duplicate.
+    # Production gateway owns CORS headers.
     disable_cors: true
 
   # PostgreSQL backing store (used by: compshare-agent server). The config key
@@ -292,20 +123,15 @@ agent:
     conn_max_lifetime: "1h"
 
   # Static metadata returned by GetMeta action.
-  # max_input_length should match http.max_input_length.
   meta:
     welcome: "我是 Compshare Copilot，可以问我控制台相关问题。"
     suggested_prompts:
       - "我有哪些实例"
       - "4090 现在有库存吗"
       - "创建实例的操作步骤"
-    max_input_length: 4000
 
-  # OCR / 截图理解。用于 SendCSAgentChat 携带 Image 字段时，调 VL 模型
-  # 生成结构化截图解读（场景 + 关键信息 + 错误与可能原因）。结果作为
-  # 上下文注入对话，不替代用户问题；只解读不开修复药方（修复由助手结合知识库回答）。
-  # model 留空时会读取 MODELVERSE_QWEN_VL_MODEL；二者都空则关闭该功能。
-  # base_url 和 api_key 留空时继承 agent.llm 的值。
+  # Screenshot understanding. Empty base_url/api_key inherit agent.llm;
+  # an empty model falls back to MODELVERSE_QWEN_VL_MODEL or disables OCR.
   ocr:
     model: "qwen3-vl-flash"   # VL model for screenshot OCR / multimodal diagnosis; env fallback: MODELVERSE_QWEN_VL_MODEL
     base_url: ""           # inherits from agent.llm.base_url
@@ -316,8 +142,8 @@ agent:
 
   # STS (Security Token Service) credential settings (used by: compshare-agent server).
   # service_ak/service_sk are the long-term service credentials used to mint
-  # short-lived STS tokens for per-user API calls. Leave them empty to use
-  # legacy direct AK/SK fallback before STS permission is granted.
+  # short-lived STS tokens for per-user API calls. Leave them empty when the
+  # caller already supplies request-scoped credentials.
   # default_role_urn is optional; when set it overrides the per-request role derivation.
   sts:
     service_ak: "A4r4q1hNPGc1vxPhjuHO8S11INY"
@@ -327,14 +153,6 @@ agent:
     default_session_name: "agent-cli"
     duration_seconds: 3600
     refresh_before: "5m"
-    # iam_url: internal UCloud API gateway used to auto-provision the
-    # ServiceRoleForCompshare service-linked role per tenant when the STS
-    # AssumeRole call returns RoleNotExist (11277). Without this, every new
-    # tenant has to be onboarded manually in IAM before they can use the
-    # service. Reachable only from the UCloud private network — the gateway
-    # routes by the request body's Backend field (UAccount), so the path is
-    # just "/". Same endpoint used by uhost-extension's stop_scheduler.
-    #   prod    : http://internal.api.ucloud.cn
-    #   test03  : http://internal-api-test03.service.ucloud.cn
-    # Leave empty to disable the bootstrap (RoleNotExist surfaces as-is).
+    # Internal UAccount gateway for on-demand service-linked-role bootstrap.
+    # Leave empty to surface RoleNotExist without bootstrap.
     iam_url: "http://internal.api.ucloud.cn"

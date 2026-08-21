@@ -31,13 +31,9 @@ func (e *Engine) resolvedKnowledgeQuestion(fallback string) string {
 	return resolved
 }
 
-// finalizeAgentLoopKnowledgeAnswer is the sole production agent-loop exit for a
-// SearchKnowledge answer. It is DETERMINISTIC-ONLY: no second model reviews or
-// rewrites the answer. The central Agent is the semantic decider; the runtime only
-// checks citation-marker validity (typography) — it never re-adjudicates whether
-// prose is "grounded enough", because that judgment historically deleted correct
-// answers (0/50 blocks in production were真无证据; every one shredded a correct,
-// evidence-backed answer that merely mis-cited a chunk id).
+// finalizeAgentLoopKnowledgeAnswer is the sole SearchKnowledge answer exit. No
+// second model reviews or rewrites the answer: the central Agent is the semantic
+// decider and the runtime validates citation markers only.
 //
 // Policy — fail-open, NO hard stop:
 //   - An answer carrying >=1 citation that resolves to a real per-turn ledger
@@ -46,14 +42,7 @@ func (e *Engine) resolvedKnowledgeQuestion(fallback string) string {
 //     fabricated ones) stripped. Citation typography never gets to rewrite a
 //     semantically correct answer.
 //
-// A verbatim evidence echo is RECORDED (retrieval.answer_echoed_chunk_id) and
-// never acted on. It used to replace the whole answer with a canned line on the
-// stated rationale that raw evidence "may include read-tool payloads" — but only
-// KB chunks are ever passed here, and all 1744 of them are acl=customer_safe, so
-// there was nothing to protect. What it did cost is real: it is the same
-// whole-answer-replacement failure mode as the retired grounding refusal, and it
-// fires hardest on runbook answers (36% of the corpus), where the correct fix IS
-// a command line.
+// A verbatim evidence echo is recorded for analysis and never changes the reply.
 func (e *Engine) finalizeAgentLoopKnowledgeAnswer(_ context.Context, fallbackQuestion, candidate string) string {
 	if !e.knowledgeQAAgentLoopThisTurn {
 		return candidate
@@ -90,10 +79,10 @@ func (e *Engine) acceptGroundedKnowledgeAnswer(resolved, answer string, report k
 		// verifier judged against. Storing the merge would copy prior chunks into
 		// the new entry with a fresh VerifiedAtUnix, so a chunk fetched once would
 		// be re-stamped by every later grounded answer and never leave the
-		// verifiedKnowledgeMaxTurns window. An answer grounded purely on prior
+		// verifiedEvidenceMaxTurns window. An answer grounded purely on prior
 		// evidence therefore stores nothing new — which is the intended outcome:
 		// that evidence already has an entry, and it should age out on its own.
-		e.rememberVerifiedKnowledge(resolved, e.currentTurnEvidenceLedger(resolved))
+		e.rememberVerifiedEvidence(resolved, e.currentTurnEvidenceLedger(resolved))
 	}
 	e.groundingOutcomeThisTurn = outcome
 	return display

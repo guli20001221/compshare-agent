@@ -13,12 +13,8 @@ import (
 // Why the server owns this instead of the frontend: the tool names come from
 // three unrelated places (tools.Registry, the "ReadCapability_"+intent family
 // in internal/capability, and the Request<Operation> proposal tools generated
-// from the write catalog). A hand-kept map in the console covered one source at
-// a time and missed the others three separate times — each caught only by a
-// live run, and the miss was always on the first step of the turn, i.e. the one
-// line the user reads first. Sending the label with the frame makes the server,
-// which owns the names, also own their presentation; TestStepActionLabelCovers
-// fails the build when a new tool arrives without one.
+// from the write catalog). The server owns those names and sends their display labels;
+// TestStepActionLabelCovers rejects any newly exposed tool without one.
 //
 // A missing entry is not fatal: stepActionLabel returns "" and the frame simply
 // omits Label, leaving the console on its own fallback. Degrade, never break.
@@ -126,26 +122,8 @@ func stepActionLabel(action string) string {
 	return ""
 }
 
-// serverOwnedConfirmLabel returns the title for an authorization card when the
-// SERVER is the only party that can know it, and "" when the console's own map is
-// authoritative (every workflow: its wording is fixed and already correct there).
-//
-// The console keeps a CONFIRM_LABELS map keyed on the action name alone. That is
-// fine for a workflow, whose card always says the same thing, and wrong for both
-// of the in-instance lane's cards — which is how BOTH shipped mislabelled:
-//
-//   - DiagnoseInstanceInternals: the card said 进入实例只读排查 while
-//     agent.ssh_ops.allow_writes was on. The wording depends on boot state the
-//     browser cannot see, so no client-side map can ever get it right. Consent
-//     that under-describes what it authorizes is the one defect here that cannot
-//     be repaired after the fact.
-//   - InstanceOpsWriteCommand: the console had no entry at all, so the per-write
-//     card rendered the raw English action name. A card nobody can read is not a
-//     gate; observed live on a real repair run.
-//
-// Deliberately NOT "send a label for every confirmation": that would add a key to
-// frames legacy clients receive, which TestConfirmationEvent_LegacyWireShapeUnchanged
-// pins on purpose. "" keeps those frames byte-identical via omitempty.
+// serverOwnedConfirmLabel returns labels whose wording depends on server-only
+// state. Other workflows retain the console's existing labels and wire shape.
 func serverOwnedConfirmLabel(action string) string {
 	switch action {
 	case "DiagnoseInstanceInternals":

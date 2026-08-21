@@ -126,7 +126,7 @@ func TestSupervisorSendsWriteGateOnHandshake(t *testing.T) {
 	}
 }
 
-// The audit row is the only durable record that a human authorized entering someone's machine, and
+// The audit row is the only persisted record that a human authorized entering someone's machine, and
 // under what authority. A write session recorded as read_only is not a cosmetic mislabel: it is the
 // evidence trail disagreeing with what actually happened on the box, which is exactly what the row
 // exists to prevent. Phase must follow the lane's gate, not the commands that happened to run — a

@@ -81,19 +81,15 @@ func TestConfirmBroker_DenyIgnoresOverrides(t *testing.T) {
 	assert.Nil(t, d.Overrides)
 }
 
-func TestConfirmEditsFuncFor_DoubleGate(t *testing.T) {
+func TestConfirmEditsFuncFor_ClientFeatureGate(t *testing.T) {
 	sw := &recordingSink{}
 	prepIn := &chatPrep{confirmFormOptIn: true}
 	prepOut := &chatPrep{confirmFormOptIn: false}
+	h := &Handlers{confirmBroker: NewConfirmBroker()}
 
-	flagOff := &Handlers{confirmBroker: NewConfirmBroker(), confirmFormEnabled: false}
-	flagOn := &Handlers{confirmBroker: NewConfirmBroker(), confirmFormEnabled: true}
-
-	assert.Nil(t, flagOff.confirmEditsFuncFor(context.Background(), sw, "s", testOwner, prepIn),
-		"boot flag off must disable the form gate even for opted-in clients")
-	assert.Nil(t, flagOn.confirmEditsFuncFor(context.Background(), sw, "s", testOwner, prepOut),
+	assert.Nil(t, h.confirmEditsFuncFor(context.Background(), sw, "s", testOwner, prepOut),
 		"a client that did not opt in must never receive a Form")
-	assert.NotNil(t, flagOn.confirmEditsFuncFor(context.Background(), sw, "s", testOwner, prepIn))
+	assert.NotNil(t, h.confirmEditsFuncFor(context.Background(), sw, "s", testOwner, prepIn))
 }
 
 // TestConfirmationEvent_LegacyWireShapeUnchanged pins the no-Form frame bytes:
@@ -118,22 +114,11 @@ func TestConfirmationEvent_LegacyWireShapeUnchanged(t *testing.T) {
 	assert.Contains(t, string(withForm), `"Form":{"Version":1`)
 }
 
-func TestGetMeta_FeaturesAdvertisedOnlyWhenEnabled(t *testing.T) {
-	srvOff, _, hOff := wsTestHandlers(t, chatLLM{}, denyConfirm)
-	_ = srvOff
-	dataOff, err := hOff.handleGetMeta(nil, BaseRequest{}, nil)
+func TestGetMeta_AdvertisesInteractionFeatures(t *testing.T) {
+	_, _, h := wsTestHandlers(t, chatLLM{}, denyConfirm)
+	data, err := h.handleGetMeta(nil, BaseRequest{}, nil)
 	require.NoError(t, err)
-	assert.Empty(t, dataOff.(metaData).Features, "flag off → no Features advertised (legacy GetMeta shape)")
-
-	hOff.SetConfirmFormEnabled(true)
-	dataOn, err := hOff.handleGetMeta(nil, BaseRequest{}, nil)
-	require.NoError(t, err)
-	assert.Equal(t, []string{featureConfirmForm}, dataOn.(metaData).Features)
-
-	hOff.SetGuidedCreateEnabled(true)
-	dataGuided, err := hOff.handleGetMeta(nil, BaseRequest{}, nil)
-	require.NoError(t, err)
-	assert.Equal(t, []string{featureConfirmForm, featureGuidedCreate}, dataGuided.(metaData).Features)
+	assert.Equal(t, []string{featureConfirmForm, featureGuidedCreate}, data.(metaData).Features)
 }
 
 func TestStringMapFromFrame(t *testing.T) {

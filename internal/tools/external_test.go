@@ -168,16 +168,8 @@ func TestFlattenInto_WithPrefix(t *testing.T) {
 	}
 }
 
-// --- ProjectId injection ---
-
-// TestExternalExecutor_ProjectIdFromConfig and the now-deleted
-// TestExternalExecutor_SetProjectId used to share coverage of two
-// ProjectId entry points. PR9 collapsed that to cfg-only: SetProjectId
-// is gone, ProjectId() getter is gone. We assert ProjectId reaches the
-// signed request body by inspecting captured forms instead of reading
-// the field back, since the field is now package-private with no
-// accessor (intentional: removes any reflection-survivable handle on
-// the mutation surface).
+// ProjectId is immutable constructor input. Assert its observable request
+// effect instead of exposing a mutable accessor solely for tests.
 func TestExternalExecutor_ProjectIdFromConfig(t *testing.T) {
 	apiURL, captured, cleanup := captureForm(t)
 	defer cleanup()

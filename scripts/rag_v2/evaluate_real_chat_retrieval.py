@@ -149,7 +149,7 @@ def main() -> int:
     parser.add_argument("--private-output", type=Path, required=True)
     parser.add_argument("--public-output", type=Path, required=True)
     parser.add_argument("--reranker-model", default="qwen3-reranker-8b")
-    parser.add_argument("--judge-model", default="doubao-seed-2-1-turbo-260628")
+    parser.add_argument("--judge-model", default="gpt-5.6-terra")
     parser.add_argument("--workers", type=int, default=8)
     args = parser.parse_args()
 

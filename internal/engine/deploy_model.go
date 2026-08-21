@@ -54,7 +54,7 @@ func (e *Engine) zoneCatalogSnapshot(ctx context.Context) *deployment.ZoneCatalo
 	}
 	var snapshot *deployment.ZoneCatalogSnapshot
 	// "could not obtain the catalog" is distinct from "obtained an empty catalog":
-	// only the former is unavailable. No executor (CLI, no tenant) or a query error
+	// only the former is unavailable. No executor or a query error
 	// is a failure — refuse; a successful query is available even when it lists no
 	// zones.
 	if e.externalExecutor == nil {

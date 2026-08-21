@@ -35,7 +35,6 @@ func ocrTestConfig() *config.Config {
 	return &config.Config{Agent: config.AgentConfig{
 		LLM:  config.LLMConfig{Model: "model-x"},
 		HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
-		Meta: config.MetaConfig{MaxInputLength: 4000},
 		STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
 		OCR:  config.OCRConfig{Timeout: 10 * time.Second, MaxBytes: 10 * 1024 * 1024},
 	}}
@@ -142,27 +141,4 @@ func TestChat_NoOCRClientIgnoresImage(t *testing.T) {
 
 	assert.True(t, sink.has("done"))
 	assert.NotContains(t, messages.appended[0].Content, "系统自动识别到以下内容")
-}
-
-func TestChat_OCRKeywordsDoNotTriggerPreBlock(t *testing.T) {
-	eng := engine.NewWithDeps(chatLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
-	eng.RehydrateHistory(nil)
-
-	messages := &recordingMessages{}
-	h := NewHandlers(ocrTestConfig(), ocrTestSession(), messages, mockFeedback{}, fakePool{eng: eng}, nil)
-	// OCR returns text that would trigger monitor-history hard-block
-	// if injected verbatim into the user message (contains both "监控" and "最近").
-	h.SetOCRClient(&mockOCR{text: "页面/场景：运维监控概览\n可见文字：最近访问、昨天CPU利用率"})
-
-	imgURL := makeTestDataURL([]byte("fake-img"))
-	body := `{"Action":"SendCSAgentChat","SessionId":"sess-ocr","Message":"帮我看看","Image":"` + imgURL + `","top_organization_id":1,"organization_id":2}`
-
-	sink, _ := dispatchOCR(t, h, body)
-
-	respBody := sink.body()
-	// Must NOT be the monitor-history canned refusal — the user's actual
-	// question "帮我看看" contains no monitor/time keywords.
-	assert.NotContains(t, respBody, "暂不支持指定历史时间段")
-	assert.True(t, sink.has("token"), "should reach LLM, not be hard-blocked")
-	assert.True(t, sink.has("done"))
 }

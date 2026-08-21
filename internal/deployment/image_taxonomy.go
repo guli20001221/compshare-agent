@@ -7,16 +7,7 @@ import "strings"
 // tags. It is the only grouping in this repo that is allowed to say "these tags
 // mean the same kind of thing" — because the platform says so, not because a
 // keyword table here decided it.
-//
-// Measured live 2026-07-22: 7 categories / 47 tags —
-//
-//	AIGC热门(7) 图像/视频生成(16) 语音/TTS生成(7) LLM(7) 计算机视觉(5) 科学计算(4) 其他(1)
-//
-// and it describes the COMMUNITY catalog in practice: community rows are 219/219
-// tagged and their tags are these values, while platform System images carry no
-// tags at all (0/9) and platform App images carry framework names (PyTorch,
-// Miniconda3, …) of which only ComfyUI is a taxonomy member. So an image with no
-// category is normal, not an error — see CategoryOf.
+// Images without a platform category are valid and remain uncategorized.
 
 // ImageTaxonomy is the platform's category → tags classification.
 //
@@ -116,11 +107,7 @@ func (t *ImageTaxonomy) Categories() []string {
 // CategoryOf returns the category a tag belongs to, or "" when the tag is not part
 // of the platform's classification.
 //
-// The match is case-insensitive on purpose. The catalog is not internally
-// consistent about casing — live 2026-07-22 the community catalog carries BOTH
-// "Qwen-Image" (2 rows) and "Qwen-image" (27 rows) while the taxonomy lists
-// "Qwen-Image" — so an exact match would drop the 27 rows out of 图像/视频生成 and
-// the category would silently under-report.
+// Matching is case-insensitive because catalog and taxonomy casing can differ.
 //
 // "" is an honest answer, not a failure: most platform image tags are framework
 // names that the platform never classified.

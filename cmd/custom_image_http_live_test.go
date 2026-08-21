@@ -102,7 +102,7 @@ func TestCreateCustomImageOverRealHTTP(t *testing.T) {
 	sessions := newCatalogLiveSessions()
 	sessionID := fmt.Sprintf("custom-image-http-live-%d", time.Now().UnixNano())
 	sessions.add(sessionID, topOrg, org)
-	handlers := newServerHandlers(cfg, sessions, messages, nil, pool, nil, cfg.RuntimeGetenv(os.Getenv))
+	handlers := newServerHandlers(cfg, sessions, messages, nil, pool, nil)
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.GET("/", handlers.HandleWS)

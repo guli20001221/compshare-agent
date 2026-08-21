@@ -64,7 +64,7 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 		return result
 	}
 	result.NeedsConfirm = spec.NeedsConfirm
-	result.Gate = GateContract{Executor: "SafeToolExecutor", Risk: spec.Risk, RequiresPermission: true, RequiresConfirmation: spec.NeedsConfirm, RequiresJournal: true}
+	result.Gate = GateContract{Executor: "SafeToolExecutor", Risk: spec.Risk, RequiresPermission: true, RequiresConfirmation: spec.NeedsConfirm}
 	result.Execution = spec.Execution
 	grouped := map[string][]SlotCandidate{}
 	// adjudicated records every field the resolver formed an opinion about and

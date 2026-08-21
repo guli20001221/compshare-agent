@@ -51,7 +51,7 @@ func TestContextCompilerRedactsSecretsAndNeverCarriesPriorRawToolJSON(t *testing
 			{Role: openai.ChatMessageRoleTool, ToolCallID: "old-tool", Content: `{"huge_secret_payload":"must-not-survive"}`},
 			{Role: openai.ChatMessageRoleAssistant, Content: "已处理 " + token},
 		},
-		sessionState: SessionState{VerifiedKnowledge: []VerifiedKnowledgeTurn{{
+		sessionState: SessionState{VerifiedEvidence: []VerifiedEvidenceTurn{{
 			Question: "访问 " + token,
 			Evidence: knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{{ChunkID: "c1", Snippet: token}}},
 		}}},
@@ -63,10 +63,6 @@ func TestContextCompilerRedactsSecretsAndNeverCarriesPriorRawToolJSON(t *testing
 	require.NotContains(t, rendered, "must-not-survive")
 	require.NotContains(t, rendered, "plain-token-123")
 	require.Contains(t, rendered, "[REDACTED]")
-	// The VerifiedKnowledge assertion that used to sit here checked the CARD copy,
-	// which no longer exists: the model-facing projection was deleted with the
-	// semantic injection. The stored entry survives for the verifier ledger, which
-	// the model never reads, and the assertions above still cover everything it does.
 }
 
 func TestContextCompilerHotColdSemanticEquivalence(t *testing.T) {

@@ -436,15 +436,8 @@ func imageEntryFromMap(img map[string]any, source string) (ImageCatalogEntry, bo
 	return e, true
 }
 
-// normalizeImageTags splits the compound tag strings upstream actually stores, so
-// every consumer sees one concept per tag.
-//
-// Measured live 2026-07-22 against the platform catalog: rows carry tags like
-// "pytorch，Pytorch" (17 rows), "comfyUI，ComfyUI" (8), "miniconda，Miniconda3" (5)
-// — two spellings of ONE tag joined by a full-width comma INSIDE a single tag
-// string. Left raw they do two kinds of damage: the facet card renders the literal
-// string as an option label, and an exact membership filter on "ComfyUI" fails to
-// match the very images that carry it.
+// normalizeImageTags splits compound upstream tag strings so each consumer sees
+// one concept per tag.
 //
 // This is a split, never a rename: no tag text is invented, translated or mapped
 // through a keyword table. Spellings that differ only by case collapse (first one

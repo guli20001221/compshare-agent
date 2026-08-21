@@ -213,8 +213,8 @@ func TestTheSealRecordsThePriceTheUserWasShown(t *testing.T) {
 // Upstream answers 200 with a body quoting nothing usable. Because 查询价格 is not
 // Optional, only this exact shape gets here: a transport error or a non-zero
 // RetCode has already fail-stopped the workflow. What happened next was the worst
-// available outcome — the card rendered with the 价格 row silently absent (the CLI
-// omits the whole row rather than printing a blank) and the user was invited to
+// available outcome — the card renderer silently omitted the entire 价格 row
+// rather than printing a blank, and the user was invited to
 // approve a spend nobody had priced.
 //
 // docs/workflow-tool-retcode-audit.md:68 already required otherwise, and

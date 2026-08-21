@@ -14,12 +14,8 @@ import (
 // pinned in the call args). Mutates result in place, adding "Shown" and
 // "Truncated" fields so the LLM sees the pagination signal.
 //
-// This is the ReAct-path defense-in-depth: the legacy handler route
-// path already truncated earlier, but planner
-// misclassification ("operation_lifecycle" → "unknown" jitter) can route
-// a list query through the LLM-driven ReAct loop instead. Without this
-// hook a 100-instance account would dump the full list into the token
-// budget and the model would silently abbreviate.
+// This protects the model context when a raw account-wide Describe call returns
+// more instances than the display budget.
 //
 // Returns (shown, total, truncated). When no truncation happens the
 // function is a no-op except for the return values.
@@ -77,10 +73,6 @@ func truncateDescribeResultForReAct(args, result map[string]any) (shown, total i
 //
 // Like truncateDescribeResultForReAct, this skips when UHostIds were pinned
 // — if the user already named a target there is no candidate set to filter.
-//
-// PR1 hotfix Bug 4 (2026-05-28): replaces the LLM-side "guess which subset
-// to show" heuristic with a deterministic State filter. See memory:
-// llm-filter-nondeterministic.
 func filterDescribeResultByAction(args, result map[string]any, action intent.LifecycleAction) (kept, removed int, filtered bool) {
 	if result == nil || action == "" {
 		return 0, 0, false

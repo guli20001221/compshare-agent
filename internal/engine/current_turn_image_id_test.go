@@ -61,7 +61,7 @@ func TestCurrentTurnExactImageIDCompletesOmittedProposalAcrossSources(t *testing
 			eng.turnContextViewReady = true
 
 			// Intentionally omit CompShareImageId to model the exact failure mode.
-			resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+			resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
 				"turn_id":   "turn-direct-" + tc.source,
 				"operation": "CreateInstanceWorkflow",
 				"slots":     []any{map[string]any{"name": "GpuType", "value": "4090"}},
@@ -165,7 +165,7 @@ func TestCurrentTurnExactCustomImageIDSkipsImageBrowseCardsEndToEnd(t *testing.T
 	)
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
 		"turn_id":   "turn-guided-direct-custom",
 		"operation": "CreateInstanceWorkflow",
 		// Model omission is the production failure mode.  The engine must carry

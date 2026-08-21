@@ -333,9 +333,7 @@ func TestEngine_Run_StepResultsAccumulate(t *testing.T) {
 func TestRegistry_IsDiagnosisTool(t *testing.T) {
 	assert.True(t, IsDiagnosisTool("DiagnoseBilling"))
 	assert.False(t, IsDiagnosisTool("DiagnoseSSH"), "SSH moved to the typed instance-access capability")
-	// The dormant GPU/image/port chains were deleted, not parked: an unadvertised
-	// diagnosis name must NOT resolve, so a stray or replayed tool call cannot
-	// execute it.
+	// Unadvertised diagnosis names must not resolve.
 	assert.False(t, IsDiagnosisTool("DiagnoseGPU"))
 	assert.False(t, IsDiagnosisTool("DiagnoseImageIssue"))
 	assert.False(t, IsDiagnosisTool("DiagnosePortOrFirewall"))
@@ -345,13 +343,7 @@ func TestRegistry_IsDiagnosisTool(t *testing.T) {
 	assert.False(t, IsDiagnosisTool(""))
 }
 
-// TestDiagnosisRegistryHasNoUnadvertisedChains is the safety invariant that replaces
-// the deleted dormant cohort: every resolvable chain MUST be advertised. The old
-// design kept GPU/image/port chains resolvable-but-unadvertised and relied on the
-// model never naming them — a stray or replayed tool call would still have executed
-// them. chainRegistry must equal RegisteredDiagnosisActions() exactly, so an
-// unadvertised diagnosis name cannot resolve. Re-adding a dormant chain here fails
-// this test; build a future SSH-ops capability in the typed-capability architecture.
+// Every resolvable diagnosis chain must be advertised.
 func TestDiagnosisRegistryHasNoUnadvertisedChains(t *testing.T) {
 	advertised := map[string]bool{}
 	for _, action := range RegisteredDiagnosisActions() {
@@ -371,7 +363,7 @@ func TestRegistry_GetChain(t *testing.T) {
 	assert.NotNil(t, chain)
 	assert.Equal(t, "DiagnoseBilling", chain.Name)
 
-	// Deleted dormant chains no longer resolve.
+	// Unsupported diagnosis names do not resolve.
 	for _, gone := range []string{"DiagnoseGPU", "DiagnoseImageIssue", "DiagnosePortOrFirewall"} {
 		c, okGone := GetChain(gone)
 		assert.False(t, okGone, "%s must not resolve after cohort deletion", gone)

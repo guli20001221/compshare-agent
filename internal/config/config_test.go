@@ -18,14 +18,6 @@ func writeConfig(t *testing.T, body string) string {
 	return path
 }
 
-func TestDeployConfigStagesDurableExecutionOffForSafeClusterCutover(t *testing.T) {
-	cfg, err := Load(filepath.Join("..", "..", "deploy", "conf", "config.prod.yaml"))
-	require.NoError(t, err)
-	require.NotNil(t, cfg.Agent.Features.DurableTurns)
-	assert.False(t, *cfg.Agent.Features.DurableTurns,
-		"the tracked production config must not activate durable execution during a rolling binary deploy")
-}
-
 func TestDeployConfigPinsContainerSSHOpsRuntime(t *testing.T) {
 	cfg, err := Load(filepath.Join("..", "..", "deploy", "conf", "config.prod.yaml"))
 	require.NoError(t, err)
@@ -72,7 +64,6 @@ agent:
 
 	cfg, err := Load(prodPath)
 	require.NoError(t, err)
-	assert.Equal(t, "external", cfg.Agent.Executor, "base fields must survive the overlay")
 	assert.Equal(t, "http://prod-kb/mcp", cfg.Agent.Retrieval.MCPURL)
 	assert.Equal(t, "2001:db8::1", cfg.Agent.MySQL.HostOverride)
 }
@@ -87,7 +78,6 @@ func setRequiredSecretEnv(t *testing.T) {
 func baseConfig(rateLimitYAML string) string {
 	return `
 agent:
-  executor: external
   compshare_api_url: "https://api.compshare.cn/"
   public_key: "${COMPSHARE_PUBLIC_KEY}"
   private_key: "${COMPSHARE_PRIVATE_KEY}"
@@ -96,7 +86,7 @@ agent:
   llm:
     base_url: "https://api.modelverse.cn/v1"
     api_key: "${LLM_API_KEY}"
-    model: "deepseek-v4-flash"
+    model: "gpt-5.6-terra"
 ` + rateLimitYAML
 }
 
@@ -107,7 +97,6 @@ func TestLoad_ResolvesSecretPlaceholdersFromEnvironment(t *testing.T) {
 	t.Setenv("COMPSHARE_PROJECT_ID", "project-from-env")
 	path := writeConfig(t, `
 agent:
-  executor: external
   compshare_api_url: "https://api.compshare.cn/"
   public_key: "${COMPSHARE_PUBLIC_KEY}"
   private_key: "${COMPSHARE_PRIVATE_KEY}"
@@ -116,7 +105,7 @@ agent:
   llm:
     base_url: "https://api.modelverse.cn/v1"
     api_key: "${LLM_API_KEY}"
-    model: "deepseek-v4-flash"
+    model: "gpt-5.6-terra"
 `)
 
 	cfg, err := Load(path)
@@ -132,7 +121,6 @@ func TestLoad_FailsFastWhenRequiredSecretPlaceholderEnvMissing(t *testing.T) {
 	t.Setenv("COMPSHARE_PUBLIC_KEY", "")
 	path := writeConfig(t, `
 agent:
-  executor: external
   compshare_api_url: "https://api.compshare.cn/"
   public_key: "${COMPSHARE_PUBLIC_KEY}"
   private_key: "${COMPSHARE_PRIVATE_KEY}"
@@ -141,7 +129,7 @@ agent:
   llm:
     base_url: "https://api.modelverse.cn/v1"
     api_key: "${LLM_API_KEY}"
-    model: "deepseek-v4-flash"
+    model: "gpt-5.6-terra"
 `)
 
 	_, err := Load(path)
@@ -157,7 +145,6 @@ func TestLoad_AcceptsInlineLiteralSecretValuesInYAML(t *testing.T) {
 	// deploy/conf/config.local.yaml now carries the shared deploy literals directly.
 	path := writeConfig(t, `
 agent:
-  executor: external
   compshare_api_url: "https://api.compshare.cn/"
   public_key: "ak-inline"
   private_key: "sk-inline"
@@ -166,7 +153,7 @@ agent:
   llm:
     base_url: "https://api.modelverse.cn/v1"
     api_key: "llm-inline"
-    model: "deepseek-v4-flash"
+    model: "gpt-5.6-terra"
 `)
 
 	cfg, err := Load(path)
@@ -183,7 +170,6 @@ func TestLoad_RejectsMalformedDollarSecretPlaceholder(t *testing.T) {
 	// literal secret.
 	path := writeConfig(t, `
 agent:
-  executor: external
   compshare_api_url: "https://api.compshare.cn/"
   public_key: "$COMPSHARE_PUBLIC_KEY"
   private_key: "${COMPSHARE_PRIVATE_KEY}"
@@ -192,7 +178,7 @@ agent:
   llm:
     base_url: "https://api.modelverse.cn/v1"
     api_key: "${LLM_API_KEY}"
-    model: "deepseek-v4-flash"
+    model: "gpt-5.6-terra"
 `)
 
 	_, err := Load(path)
@@ -218,15 +204,11 @@ func TestLoad_OmittedRateLimitUsesDefaults(t *testing.T) {
 	assert.Equal(t, governance.DefaultLimits(), cfg.Agent.RateLimit.Limits())
 }
 
-// The SSH-ops lane is configured under agent.ssh_ops. This loads a real config through Load (not a
-// hand-filled struct) so the whole YAML→SSHOpsConfig mapping is exercised: the tri-state Enabled *bool,
-// the harness strings, the time.Duration timeout, and the RuntimeGetenv precedence where enabled: true
-// wins as COMPSHARE_SSH_OPS=1 over the env fallback.
+// The SSH-ops lane is enabled by a configured harness path.
 func TestLoad_SSHOpsConfigParses(t *testing.T) {
 	setRequiredSecretEnv(t)
 	path := writeConfig(t, baseConfig(`
   ssh_ops:
-    enabled: true
     harness_path: /opt/harness.py
     base_url: https://api.modelverse.cn
     api_key: ssh-ops-test-key
@@ -238,34 +220,21 @@ func TestLoad_SSHOpsConfigParses(t *testing.T) {
 	cfg, err := Load(path)
 	require.NoError(t, err)
 
-	require.NotNil(t, cfg.Agent.SSHOps.Enabled)
-	assert.True(t, *cfg.Agent.SSHOps.Enabled)
 	assert.Equal(t, "/opt/harness.py", cfg.Agent.SSHOps.HarnessPath)
 	assert.Equal(t, "https://api.modelverse.cn", cfg.Agent.SSHOps.BaseURL)
 	assert.Equal(t, "ssh-ops-test-key", cfg.Agent.SSHOps.APIKey)
 	assert.Equal(t, "gpt-5.6-terra", cfg.Agent.SSHOps.Model)
 	assert.Equal(t, 5*time.Minute, cfg.Agent.SSHOps.Timeout)
-	// enabled: true must win over the env fallback (COMPSHARE_SSH_OPS unset here).
-	assert.Equal(t, "1", cfg.RuntimeGetenv(func(string) string { return "" })("COMPSHARE_SSH_OPS"))
 }
 
-// Omitted agent.ssh_ops leaves Enabled nil (tri-state), so RuntimeGetenv falls through to the env,
-// then to the built-in default (off) — the lane stays off for an unconfigured deploy.
-func TestLoad_SSHOpsOmittedFallsThroughToEnv(t *testing.T) {
+func TestLoad_SSHOpsOmittedLeavesLaneUnconfigured(t *testing.T) {
 	setRequiredSecretEnv(t)
 	path := writeConfig(t, baseConfig(""))
 
 	cfg, err := Load(path)
 	require.NoError(t, err)
 
-	require.Nil(t, cfg.Agent.SSHOps.Enabled, "omitted ssh_ops must stay tri-state nil")
-	// with the field omitted, RuntimeGetenv does not override — the env fallback is returned verbatim.
-	assert.Equal(t, "envval", cfg.RuntimeGetenv(func(k string) string {
-		if k == "COMPSHARE_SSH_OPS" {
-			return "envval"
-		}
-		return ""
-	})("COMPSHARE_SSH_OPS"))
+	assert.Empty(t, cfg.Agent.SSHOps.HarnessPath)
 }
 
 func TestLoad_OCRModelDefaultsFromModelVerseEnv(t *testing.T) {
@@ -522,25 +491,12 @@ func TestLoad_MissingMySQLDSNStillLoadsForCLICompatibility(t *testing.T) {
 
 	cfg, err := Load(path)
 
-	require.NoError(t, err, "Load must succeed without mysql.dsn for CLI compatibility")
+	require.NoError(t, err, "Load parses optional mysql.dsn; the server validates it at startup")
 	assert.Equal(t, "", cfg.Agent.MySQL.DSN)
-}
-
-func TestLoad_MetaDefaultsInheritHTTPMaxInputLength(t *testing.T) {
-	setRequiredSecretEnv(t)
-	path := writeConfig(t, baseConfig("")) // no meta section
-
-	cfg, err := Load(path)
-	require.NoError(t, err)
-
-	// meta.max_input_length should default to http.max_input_length (4000)
-	assert.Equal(t, cfg.Agent.HTTP.MaxInputLength, cfg.Agent.Meta.MaxInputLength)
-	assert.Equal(t, 4000, cfg.Agent.Meta.MaxInputLength)
 }
 
 func TestLoad_MetaSectionFromYAML(t *testing.T) {
 	setRequiredSecretEnv(t)
-	// Both http and meta max_input_length must agree to avoid the mismatch error.
 	path := writeConfig(t, baseConfigWithHTTPMySQLMeta(`
   http:
     max_input_length: 3000
@@ -549,7 +505,6 @@ func TestLoad_MetaSectionFromYAML(t *testing.T) {
     suggested_prompts:
       - "How do I create an instance?"
       - "Show my GPU inventory"
-    max_input_length: 3000
 `))
 
 	cfg, err := Load(path)
@@ -558,7 +513,7 @@ func TestLoad_MetaSectionFromYAML(t *testing.T) {
 	meta := cfg.Agent.Meta
 	assert.Equal(t, "Hello from agent", meta.Welcome)
 	assert.Equal(t, []string{"How do I create an instance?", "Show my GPU inventory"}, meta.SuggestedPrompts)
-	assert.Equal(t, 3000, meta.MaxInputLength)
+	assert.Equal(t, 3000, cfg.Agent.HTTP.MaxInputLength)
 }
 
 // ---------------------------------------------------------------------------
@@ -619,7 +574,7 @@ func TestLoad_DSNBadPlaceholderFormatReturnsError(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Negative numeric values — HTTPConfig / MySQLConfig / MetaConfig (item 3)
+// Negative numeric values — HTTPConfig / MySQLConfig
 // ---------------------------------------------------------------------------
 
 func TestLoad_RejectsNegativeHTTPValues(t *testing.T) {
@@ -736,65 +691,6 @@ func TestLoad_RejectsNegativeMySQLValues(t *testing.T) {
 	}
 }
 
-func TestLoad_RejectsNegativeMetaValues(t *testing.T) {
-	setRequiredSecretEnv(t)
-	path := writeConfig(t, baseConfig(`
-  meta:
-    max_input_length: -1
-`))
-
-	_, err := Load(path)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "agent.meta.max_input_length")
-	assert.Contains(t, err.Error(), "must be non-negative")
-}
-
-// ---------------------------------------------------------------------------
-// max_input_length mismatch between http and meta (item 4)
-// ---------------------------------------------------------------------------
-
-func TestLoad_RejectsMaxInputLengthMismatch(t *testing.T) {
-	setRequiredSecretEnv(t)
-	path := writeConfig(t, baseConfig(`
-  http:
-    max_input_length: 4000
-  meta:
-    max_input_length: 2000
-`))
-
-	_, err := Load(path)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "max_input_length")
-	assert.Contains(t, err.Error(), "conflict")
-}
-
-func TestLoad_NoErrorWhenMetaMaxInputLengthInheritsDefault(t *testing.T) {
-	setRequiredSecretEnv(t)
-	// meta section is absent — it inherits from http; no mismatch error expected
-	path := writeConfig(t, baseConfig(`
-  http:
-    max_input_length: 4000
-`))
-
-	cfg, err := Load(path)
-	require.NoError(t, err)
-	assert.Equal(t, 4000, cfg.Agent.Meta.MaxInputLength)
-}
-
-func TestLoad_NoErrorWhenBothMaxInputLengthMatch(t *testing.T) {
-	setRequiredSecretEnv(t)
-	path := writeConfig(t, baseConfig(`
-  http:
-    max_input_length: 2000
-  meta:
-    max_input_length: 2000
-`))
-
-	cfg, err := Load(path)
-	require.NoError(t, err)
-	assert.Equal(t, 2000, cfg.Agent.Meta.MaxInputLength)
-}
-
 // ---------------------------------------------------------------------------
 // STS config tests
 // ---------------------------------------------------------------------------
@@ -858,13 +754,12 @@ func TestLoadWithoutPublicPrivateKeySucceeds(t *testing.T) {
 
 	path := writeConfig(t, `
 agent:
-  executor: external
   compshare_api_url: "https://api.compshare.cn/"
   region: "cn-wlcb"
   llm:
     base_url: "https://api.modelverse.cn/v1"
     api_key: "${LLM_API_KEY}"
-    model: "deepseek-v4-flash"
+    model: "gpt-5.6-terra"
 `)
 
 	cfg, err := Load(path)
@@ -900,7 +795,7 @@ func TestValidateSTSConfigRejectsNegativeRefreshBefore(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Runtime feature flags — YAML sections + RuntimeGetenv overlay
+// Runtime operational settings — YAML sections + environment fallback
 // ---------------------------------------------------------------------------
 
 func boolPtr(b bool) *bool { return &b }
@@ -908,56 +803,45 @@ func boolPtr(b bool) *bool { return &b }
 func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
 	setRequiredSecretEnv(t)
 	path := writeConfig(t, baseConfig(`
-  features:
+  authorization:
     mutating_tools: true
-    confirm_form: true
-    guided_create: true
-    react_result_projection: true
   retrieval:
-    knowledge_retrieval: curated
     mcp_url: http://compshare-kb.example/mcp
     mcp_bearer_token: read-only-test-token
     mcp_timeout_ms: 12000
   trace:
-    enabled: true
     sink: mysql
 `))
 
 	cfg, err := Load(path)
 	require.NoError(t, err)
 
-	f := cfg.Agent.Features
+	f := cfg.Agent.Authorization
 	require.NotNil(t, f.MutatingTools)
 	assert.True(t, *f.MutatingTools)
 
 	assert.Equal(t, "http://compshare-kb.example/mcp", cfg.Agent.Retrieval.MCPURL)
 	assert.Equal(t, "read-only-test-token", cfg.Agent.Retrieval.MCPBearerToken)
 	assert.Equal(t, 12000, cfg.Agent.Retrieval.MCPTimeoutMS)
-	require.NotNil(t, cfg.Agent.Trace.Enabled)
-	assert.True(t, *cfg.Agent.Trace.Enabled)
 	assert.Equal(t, "mysql", cfg.Agent.Trace.Sink)
 }
 
 func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	cfg := &Config{Agent: AgentConfig{
 		LLM: LLMConfig{APIKey: "resolved-llm-key"},
-		Features: FeaturesConfig{
+		Authorization: AuthorizationConfig{
 			MutatingTools: boolPtr(true), // YAML true → "1"
-			DurableTurns:  boolPtr(true),
 		},
 		Retrieval: RetrievalConfig{
 			MCPURL:         "http://kb.example/mcp",
 			MCPBearerToken: "read-only-test-token",
 			MCPTimeoutMS:   9000,
-			// KnowledgeRetrieval omitted → base env fallback
 		},
 		Trace: TraceConfig{Sink: "file"},
 	}}
 
 	base := func(key string) string {
 		switch key {
-		case "USE_KNOWLEDGE_RETRIEVAL":
-			return "off"
 		case "SOME_UNMAPPED_VAR":
 			return "passthrough"
 		}
@@ -966,11 +850,9 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	getenv := cfg.RuntimeGetenv(base)
 
 	assert.Equal(t, "1", getenv("COMPSHARE_ENABLE_MUTATING_TOOLS"), "YAML true wins")
-	assert.Equal(t, "1", getenv("COMPSHARE_DURABLE_TURNS"), "production durable-turn switch is sourced from YAML")
 	assert.Equal(t, "http://kb.example/mcp", getenv("COMPSHARE_KB_MCP_URL"), "remote knowledge endpoint comes from YAML")
 	assert.Equal(t, "read-only-test-token", getenv("COMPSHARE_KB_MCP_BEARER_TOKEN"), "read-only MCP token comes from YAML")
 	assert.Equal(t, "9000", getenv("COMPSHARE_KB_MCP_TIMEOUT_MS"), "remote knowledge timeout comes from YAML")
-	assert.Equal(t, "off", getenv("USE_KNOWLEDGE_RETRIEVAL"), "omitted string → env fallback")
 	assert.Equal(t, "file", getenv("COMPSHARE_TRACE_SINK"))
 	assert.Equal(t, "resolved-llm-key", getenv("LLM_API_KEY"), "resolved answer-model secret is exposed")
 	assert.Equal(t, "passthrough", getenv("SOME_UNMAPPED_VAR"), "unmapped key → base passthrough")
@@ -1000,8 +882,6 @@ func TestLoadRejectsSessionTurnCapAboveTheQuota(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "agent.http.max_session_turns=21")
 	assert.Contains(t, err.Error(), "session quota")
-	assert.NotContains(t, err.Error(), "replayed-history window",
-		"the engine no longer has a replay window to exceed")
 }
 
 func TestLoadAcceptsSessionTurnCapAtTheQuota(t *testing.T) {
@@ -1014,10 +894,4 @@ func TestLoadAcceptsSessionTurnCapAtTheQuota(t *testing.T) {
 	cfg, err := Load(path)
 	require.NoError(t, err, "the boundary value itself must remain loadable")
 	assert.Equal(t, MaxSessionTurnsCeiling, cfg.Agent.HTTP.MaxSessionTurns)
-}
-
-// The fallback used when max_session_turns is omitted is subject to the same
-// quota, but never passes through validateHTTPConfig.
-func TestDefaultTurnCapFitsSessionQuota(t *testing.T) {
-	assert.LessOrEqual(t, DefaultMaxSessionTurns, MaxSessionTurnsCeiling)
 }

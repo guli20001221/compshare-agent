@@ -66,7 +66,7 @@ func NewExternalExecutor(cfg config.AgentConfig) *ExternalExecutor {
 		region:    cfg.Region,
 		projectId: cfg.ProjectId,
 		// 60s is the last-resort safety net; per-action TimeoutMS in
-		// ToolExecutionPolicy (PR #5) is the primary deadline applied
+		// ToolExecutionPolicy is the primary deadline applied
 		// via context.WithTimeout in SafeToolExecutor.executeWithRetry.
 		// Keeping the client timeout above the largest per-action
 		// budget (monitor = 30s) means policy-level deadlines dominate
@@ -87,13 +87,8 @@ func NewExternalExecutorWithProvider(apiURL, region, projectId string, provider 
 	}
 }
 
-// SetProjectId and ProjectId getters were removed in PR9 to close a
-// cross-session leak: ExternalExecutor lives in SharedDeps process-wide
-// across sessions, so a runtime setter let session A's auto-discovered
-// project id auto-inject into session B's tool calls. ProjectId now only
-// comes from cfg at construction time. If mutating tools later need a
-// per-session ProjectId, pass it via args["ProjectId"] in the call path
-// (per-session field on Engine), NOT by re-introducing a setter here.
+// ExternalExecutor has no mutable project ID. Request-scoped values come from
+// UserContext or explicit arguments so shared dependencies remain tenant-safe.
 
 func (e *ExternalExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
 	if usesJSONBody(action) {

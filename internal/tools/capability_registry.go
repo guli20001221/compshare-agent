@@ -17,16 +17,9 @@ const (
 	ResultContractWorkflowResult   ResultContract = "workflow_result"
 )
 
-type CapabilityStage string
-
-const (
-	CapabilityStageActive CapabilityStage = "active"
-	CapabilityStageShadow CapabilityStage = "shadow"
-)
-
 type CapabilityDefinition struct {
-	Tool  openai.Tool
-	Stage CapabilityStage
+	Tool           openai.Tool
+	ExposedToAgent bool
 }
 
 // Capability is the runtime-owned contract for one tool or internal action.
@@ -37,7 +30,6 @@ type Capability struct {
 	Name             string
 	Tool             openai.Tool
 	ExposedToAgent   bool
-	Stage            CapabilityStage
 	Policy           ToolExecutionPolicy
 	ResultContract   ResultContract
 	ResultOwner      string
@@ -52,7 +44,7 @@ type CapabilityRegistry struct {
 func BuildCapabilityRegistry(toolDefinitions []openai.Tool, policies map[string]ToolExecutionPolicy) (*CapabilityRegistry, error) {
 	definitions := make([]CapabilityDefinition, 0, len(toolDefinitions))
 	for _, tool := range toolDefinitions {
-		definitions = append(definitions, CapabilityDefinition{Tool: tool, Stage: CapabilityStageActive})
+		definitions = append(definitions, CapabilityDefinition{Tool: tool, ExposedToAgent: true})
 	}
 	return BuildCapabilityRegistryFromDefinitions(definitions, policies)
 }
@@ -74,11 +66,7 @@ func BuildCapabilityRegistryFromDefinitions(definitions []CapabilityDefinition, 
 		}
 		capability := capabilityFromPolicy(name, policy)
 		capability.Tool = tool
-		capability.ExposedToAgent = true
-		capability.Stage = definition.Stage
-		if capability.Stage == "" {
-			capability.Stage = CapabilityStageActive
-		}
+		capability.ExposedToAgent = definition.ExposedToAgent
 		capability.AgentInstruction = tool.Function.Description
 		registry.ordered = append(registry.ordered, capability)
 		registry.byName[name] = capability
@@ -169,7 +157,7 @@ func (r *CapabilityRegistry) VisibleCapabilities(mutatingEnabled bool) []Capabil
 
 	visible := make([]Capability, 0, len(r.ordered))
 	for _, capability := range r.ordered {
-		if !capability.ExposedToAgent || capability.Stage != CapabilityStageActive {
+		if !capability.ExposedToAgent {
 			continue
 		}
 		if !mutatingEnabled && (capability.Policy.Route == ActionRouteWorkflow || capability.Policy.Class == ActionClassMutating) {
@@ -201,11 +189,11 @@ var (
 
 func DefaultCapabilityRegistry() *CapabilityRegistry {
 	defaultCapabilitiesOnce.Do(func() {
-		definitions := make([]CapabilityDefinition, 0, len(Registry)+len(ShadowCapabilityDefinitions))
+		definitions := make([]CapabilityDefinition, 0, len(Registry)+len(InternalCapabilityDefinitions))
 		for _, tool := range Registry {
-			definitions = append(definitions, CapabilityDefinition{Tool: tool, Stage: CapabilityStageActive})
+			definitions = append(definitions, CapabilityDefinition{Tool: tool, ExposedToAgent: true})
 		}
-		definitions = append(definitions, ShadowCapabilityDefinitions...)
+		definitions = append(definitions, InternalCapabilityDefinitions...)
 		defaultCapabilities, defaultCapabilitiesErr = BuildCapabilityRegistryFromDefinitions(definitions, buildToolExecutionPolicies())
 		if defaultCapabilitiesErr == nil {
 			defaultCapabilitiesErr = defaultCapabilities.ValidateSafety()

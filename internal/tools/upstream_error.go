@@ -13,21 +13,14 @@ import (
 // ("API error (RetCode=N): MSG"), because the saga step wrappers embed it via %v
 // and that text reaches user-facing narration. Do NOT change Error()'s format.
 //
-// Classification, however, must NOT go through this string. Callers deciding what
-// to DO about a failure read the typed fields: engine.isImageUnavailableError
-// checks Code == 230 as an integer. It used to grep Error() for the "230" and
-// "CompShareImageId" substrings, which matched any "230" anywhere in the sentence
-// (a memory size, a byte count, part of an id) and could trigger an image swap on
-// an unrelated failure.
+// Classification must use the typed fields, never this display string.
 //
-// Hint carries optional recovery guidance (P0 阶段1B). It is NOT part of Error()
+// Hint carries optional recovery guidance. It is not part of Error()
 // and is surfaced to the model/user separately, so reading it can never leak the
 // raw upstream tokens ("RetCode=230" / "not available" / "CompShareImageId") that
 // the reply_not_contains regression gate forbids. The same Hint serves two
-// consumers: the ReAct path appends it to the tool result so the model
-// self-corrects (engine.go), and the direct-dispatch path uses it as the
-// user-facing reply via UserMessage() (no model round runs there). The hint
-// wording is therefore kept actionable for BOTH audiences.
+// consumers: the ReAct observation and the typed read-capability failure
+// renderer. The wording must remain actionable for both audiences.
 type UpstreamAPIError struct {
 	Code    int
 	Message string
@@ -38,12 +31,9 @@ func (e *UpstreamAPIError) Error() string {
 	return fmt.Sprintf("API error (RetCode=%d): %s", e.Code, e.Message)
 }
 
-// UserMessage implements the intent package's userFacingError interface so the
-// direct-dispatch failure path (intent.failureAfterToolForError) replies with
-// the recovery hint instead of the generic "查询暂时失败" — the common real 230 /
-// capacity codes are bound to direct-dispatched read routes (stock / gpu_specs /
-// pricing), which never reach the ReAct hint branch. Returns "" for codes without
-// a hint so the caller falls back to the generic friendly reply.
+// UserMessage implements capability's userFacingError contract. It returns the
+// recovery hint for known codes and lets the caller use its generic fallback for
+// unhinted errors.
 func (e *UpstreamAPIError) UserMessage() string {
 	return e.Hint
 }
@@ -85,11 +75,9 @@ func failedGuidance(hint string) retCodeGuidance {
 	return retCodeGuidance{Hint: hint, Disposition: AgentToolStatusFailed}
 }
 
-// retCodeGuidanceByCode is pinned to the upstream gateway source
-// (uhost-compshare-api internal/errors/code.go), audited 2026-06-26. Hints
-// deliberately avoid raw upstream tokens so they can be surfaced to both the
-// Agent and direct-dispatch user replies without reopening the reply_not_contains
-// regression gate. Unknown RetCodes intentionally have no policy entry.
+// retCodeGuidanceByCode mirrors uhost-compshare-api/internal/errors/code.go.
+// Hints avoid raw upstream tokens because both the Agent and direct-dispatch
+// replies may display them. Unknown RetCodes intentionally have no policy entry.
 var retCodeGuidanceByCode = map[int]retCodeGuidance{
 	120:    retryLaterGuidance("上游数据异常：请稍后重试，若持续失败请联系平台支持。"),
 	150:    retryLaterGuidance("服务暂时不可用：请稍后重试。"),

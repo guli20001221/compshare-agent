@@ -18,25 +18,9 @@ const (
 	instanceContextSourceDescribe = "DescribeCompShareInstance"
 	instanceContextSourceMonitor  = "GetCompShareInstanceMonitor"
 	instanceContextSourceCatalog  = "DescribeCompShareSoftwarePort"
-	// 2s, and NOT because the monitor fact never goes missing: it does, on roughly half the live UHost
-	// calls. The cause is not this budget. Measured 2026-08-14 through the production executor,
-	// GetCompShareInstanceMonitor answered in 81ms..1.25s over 12 samples (max on the UHost) — and the
-	// runs that lost the fact answered in ~140ms with RetCode 0 and `Data.List[0].Metrics: []`, an
-	// EMPTY metric list, seconds after the same call for the same instance had returned 8 scalars.
-	// A live 2s-loses-it / 10s-keeps-it pair had made this look like a deadline; it was the same
-	// intermittent empty window, and raising the budget would have shipped a 2.5x change against a
-	// falsified cause. Two consecutive empty responses ~1s apart also say an immediate retry would
-	// not help. So the budget only has to clear the measured latency (1.6x), the empty payload is
-	// reported honestly as `monitor: unavailable` / unknown — never as 0%/healthy — and monitorFacts
-	// logs elapsed plus which of the three (deadline / upstream error / empty) actually happened,
-	// so a future change here is driven by production numbers rather than by one coincidence.
+	// Empty monitor payloads are reported as unavailable, never as zero/healthy.
 	instanceContextMonitorTimeout = 2 * time.Second
-	// The software-port catalog is a different endpoint with no latency history in this lane, so it
-	// carries its own budget rather than inheriting the monitor's justification. It is fetched
-	// SEQUENTIALLY after the monitor on purpose: running the two concurrently would save at most the
-	// smaller of two sub-second calls on a lane the user has already consented to and that then runs
-	// for minutes, and it would make the upstream call ORDER — which is itself an assertion about
-	// what this lane touches — untestable.
+	// The independent software-catalog call has its own timeout.
 	instanceContextCatalogTimeout  = 2 * time.Second
 	maxInstanceContextMonitorFact  = 16
 	maxInstanceContextSoftware     = 12
@@ -54,9 +38,7 @@ const (
 // explicit unknown fact and cannot prevent a consented SSH diagnosis from
 // starting.
 func enrichInstanceOpsContext(ctx context.Context, d Describer, base opscontext.Context, inst map[string]any, instanceID string) opscontext.Context {
-	// Endpoint targets are a private capability payload rather than model context, so they remain
-	// useful on the legacy task-only path too. An older harness ignores the additive handshake key;
-	// a newer harness never renders the URL/host into the prompt.
+	// Endpoint targets are private probe input and never enter model context.
 	base.EndpointTargets = instanceEndpointTargets(inst)
 	if !base.Enabled() {
 		return base

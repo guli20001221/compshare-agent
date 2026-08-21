@@ -124,7 +124,6 @@ type GateContract struct {
 	Risk                 security.Level `json:"risk"`
 	RequiresPermission   bool           `json:"requires_permission"`
 	RequiresConfirmation bool           `json:"requires_confirmation"`
-	RequiresJournal      bool           `json:"requires_journal"`
 }
 
 type ConfirmationPreview struct {

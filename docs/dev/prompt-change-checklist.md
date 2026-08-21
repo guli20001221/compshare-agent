@@ -1,10 +1,11 @@
 # Prompt Change Checklist
 
-Before changing the central Agent (ReAct) prompt text (assembled by `internal/prompt/segments.go`; the pre-P6 standalone planner prompt was deleted):
+Before changing the central Agent prompt assembled by `internal/prompt/`:
 
-1. Decide whether the change is byte-stable or intentionally byte-changing.
-2. For byte-stable refactors, run the prompt snapshot tests and keep SHA values unchanged.
-3. For byte-changing edits, update the snapshot baseline in the same commit with a short reason.
-4. Add or update a golden case covering intent, allowed/forbidden tools, and boundary text. (Do not key cases on the retired "runtime form" — there is one execution shape now, the central Agent loop.)
-5. Keep safety in code gates: tool whitelist, parameter validation, confirmation, and destructive-action refusal.
-6. For rollout changes, compare baseline and candidate trace `outcome.prompt_tokens`; do not default on unless golden pass rate is unchanged and prompt tokens are reduced.
+1. State the behavior being changed and keep the wording as small as possible.
+2. Add or update a behavior test for routing, tool availability or a safety boundary;
+   do not pin the complete prompt byte-for-byte.
+3. Keep authorization and safety in code gates: tool allowlists, parameter
+   validation, confirmation and destructive-action refusal.
+4. Compare representative traces when the change can affect routing or token
+   cost, and explain any material regression.

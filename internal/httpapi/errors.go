@@ -72,20 +72,8 @@ var (
 // AsAPIError converts any error into an *APIError. Returns nil if err is nil.
 // If the error already is an *APIError (or wraps one), that value is returned.
 // Otherwise an ErrInternal copy is returned with the original error attached as
-// its cause — NOT as its message.
-//
-// It used to be the message. An unclassified error here is whatever the process
-// happened to fail on, and that text is written for operators: a dead database
-// produced `get session: dial tcp <host>:<port>: connectex: No connection could
-// be made because the target machine actively refused it` verbatim in the chat
-// UI. That tells the user nothing they can act on and tells them where the
-// database lives. The condition is not exotic either — a pool exhausted, a
-// failover window, a restart all land here.
-//
-// The classified errors above already model what a user can be told; the default
-// branch is precisely the set of failures we have NOT decided how to explain, so
-// the honest answer is the generic one plus a request id to correlate with the
-// log. sql.ErrNoRows is canonicalized by writeError before it reaches this.
+// its cause, never as its user-facing message. Unclassified internal details
+// remain available to logs through Unwrap.
 func AsAPIError(err error) *APIError {
 	if err == nil {
 		return nil

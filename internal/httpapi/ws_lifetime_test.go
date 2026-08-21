@@ -133,7 +133,7 @@ func TestInteractionAllowanceIsSizedFromTheCodeBound(t *testing.T) {
 // real deadline needs a test-only lifetime override plus a >10-minute integration test, which is
 // more machinery than this bug is worth — so treat these as pinning the RULE, not its wiring.
 
-// A handler with no config at all must not panic and must keep the floor: the CLI/test paths
+// A handler with no config at all must not panic and must keep the floor: test paths
 // construct Handlers without one.
 func TestWSConnLifetimeWithoutConfig(t *testing.T) {
 	if got := (&Handlers{}).wsMachineLifetime(); got != minWSMachineLifetime {

@@ -2,7 +2,6 @@ package tools
 
 import (
 	"fmt"
-	"os"
 	"strings"
 	"testing"
 )
@@ -59,10 +58,9 @@ func TestRetCodeGuidance_KnownAndUnknown(t *testing.T) {
 	}
 }
 
-// TestRetCodeHint_NoForbiddenTokens guards the reply_not_contains regression gate
-// (eval/regression_6cat_cases.json): a hint is surfaced to BOTH the model (ReAct
-// tool result) and the user (direct-dispatch reply via UserMessage), so it must
-// never carry the raw upstream tokens or they could reach the reply.
+// TestRetCodeHint_NoForbiddenTokens guards both model-visible tool results and
+// user-visible direct-dispatch replies. Raw upstream tokens must not cross either
+// boundary.
 func TestRetCodeHint_NoForbiddenTokens(t *testing.T) {
 	forbidden := []string{"RetCode=230", "RetCode", "not available", "CompShareImageId", "zone_id", "az_group"}
 	for code, guidance := range retCodeGuidanceByCode {
@@ -124,20 +122,8 @@ func TestRetCodeGuidanceCoversThePreviouslyDriftedCodes(t *testing.T) {
 	}
 }
 
-func TestRetCodeHint_AuditDateCommentMatches(t *testing.T) {
-	src, err := os.ReadFile("upstream_error.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(src), "audited 2026-06-26") {
-		t.Fatal("upstream RetCode audit date comment must match the test pin: audited 2026-06-26")
-	}
-}
-
-// TestUpstreamAPIError_UserMessage is the direct-dispatch contract: UserMessage()
-// returns the hint for a hinted code (so intent.failureAfterToolForError replies
-// with it) and "" for an un-hinted code (so the caller falls back to the generic
-// friendly reply rather than answering blank).
+// TestUpstreamAPIError_UserMessage verifies that typed read failures expose a
+// known recovery hint and let callers use their generic fallback otherwise.
 func TestUpstreamAPIError_UserMessage(t *testing.T) {
 	if msg := NewUpstreamAPIError(230, "Params [Zone] not available").UserMessage(); msg == "" {
 		t.Error("expected a user-facing message for a hinted code (230)")

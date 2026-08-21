@@ -9,10 +9,6 @@ Set-Location $root
 
 $forbiddenPathPatterns = @(
     '^deploy/conf/agent\.yaml$',
-    '^eval/shadow_qa/agent\.ya?ml$',
-    '^eval/shadow_qa/.*/agent\.ya?ml$',
-    '^eval/shadow_qa/shadow_qa_agent\.ya?ml$',
-    '^eval/shadow_qa/.*/shadow_qa_agent\.ya?ml$',
     '^.*\.env$'
 )
 

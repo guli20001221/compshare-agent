@@ -5,11 +5,8 @@ import (
 	"strings"
 )
 
-// CFS create size bounds (GB). Hand-maintained platform limits: upstream
-// exposes no CFS-limits API, so these are pinned from the CreateCFS spec
-// (verified 2026-07-11). The same 50–2048 range is surfaced verbatim in the
-// CFS tool descriptions (internal/tools/registry.go) — keep them in sync if the
-// platform changes the bounds.
+// CFS create size bounds (GB). Upstream exposes no limits API, so these values
+// are pinned to the CreateCFS contract and mirrored in the tool descriptions.
 const (
 	minCFSSizeGB = 50
 	maxCFSSizeGB = 2048
@@ -474,10 +471,8 @@ func firstCFSPrice(result map[string]any, keys ...string) any {
 // payable price lives in PriceDetails[0].Disks (CFS is a single dimension;
 // upstream pod/get_compshare_cfs_price.go fills Disks and leaves Instance nil).
 // Returning a formatted string keeps the confirm card from emitting the raw
-// PriceDetails array, which the frontend renders as "[object Object]" (same
-// class as the instance-create #249 fix). This mirrors the read-only CFS price
-// route's cfsPriceFromDetails (internal/intent) — bare "¥X.XX", no period unit,
-// since the confirm card already shows ChargeType/Quantity separately.
+// PriceDetails array, which the frontend renders as "[object Object]". It emits
+// bare "¥X.XX" because the confirm card already shows ChargeType/Quantity.
 func cfsCreatePriceText(priceResult map[string]any) string {
 	if priceResult == nil {
 		return ""

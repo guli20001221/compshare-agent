@@ -17,8 +17,8 @@ type ConversationPair struct {
 	User      string
 	Assistant string
 	// Transcript is the tool work that produced Assistant, projected back to
-	// well-formed chat messages. Populated only when the canonical transcript is
-	// enabled; nil for tool-free turns and for rows written before it existed.
+	// well-formed chat messages. It is nil for tool-free turns and rows written
+	// before canonical transcripts existed.
 	Transcript []openai.ChatCompletionMessage
 }
 
@@ -29,8 +29,7 @@ type AgentContext struct {
 	TurnID             string
 	CurrentQuestion    string
 	RecentConversation []ConversationPair
-	SelectedEntities   []SemanticEntityHint
-	ContinuityNotices  []string
+	SelectedEntities   []SelectedEntityHint
 	BuiltAtUnix        int64
 }
 
@@ -70,7 +69,7 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 	if e != nil {
 		view.RecentConversation = e.recentCompleteConversationPairs()
 		if id, name := e.singleRegistryInstance(); id != "" {
-			view.SelectedEntities = append(view.SelectedEntities, SemanticEntityHint{
+			view.SelectedEntities = append(view.SelectedEntities, SelectedEntityHint{
 				Kind: "instance", ID: id, Name: name, Source: "account_registry_single", Freshness: ContinuityFreshnessFresh,
 			})
 		}
@@ -78,13 +77,9 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 	if e == nil || !e.sessionStateHydrated {
 		return cloneAgentContext(view)
 	}
-	view.ContinuityNotices = compactSemanticItems(append([]string(nil), e.continuityAdvisories.Notices...))
-	if e.continuityAdvisories.ReadOnly {
-		view.ContinuityNotices = compactSemanticItems(append(view.ContinuityNotices, "本轮上下文只读，不得执行写操作"))
-	}
 	if !isPersistedSelectionExpired(buildAt.Unix(), e.sessionState) {
 		for _, item := range e.sessionState.PendingSelectionItems {
-			view.SelectedEntities = append(view.SelectedEntities, SemanticEntityHint{
+			view.SelectedEntities = append(view.SelectedEntities, SelectedEntityHint{
 				Kind: "instance", ID: item.ID, Name: item.Name, Ordinal: item.Index,
 				Source: "pending_selection", Freshness: ContinuityFreshnessFresh,
 			})
@@ -94,7 +89,7 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 		// Carry the binding's provenance (observed vs user_selected) so the write
 		// verifier can tell an OBSERVED referent — read-only, never a selection —
 		// from an instance the user genuinely chose.
-		view.SelectedEntities = append(view.SelectedEntities, SemanticEntityHint{
+		view.SelectedEntities = append(view.SelectedEntities, SelectedEntityHint{
 			Kind:      "instance",
 			ID:        id,
 			Name:      e.sessionState.SelectedInstanceName,
@@ -109,10 +104,8 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 // recentCompleteConversationForTaskSpec projects only complete plain-text
 // user/assistant pairs. The current unanswered user message and raw tool
 // transcripts are excluded. This is understanding-only context; the renderer's
-// factual validator still receives EvidenceEnvelope alone.
-// It takes no count limit. The one it used to take (maxAgentContextPairs) was a
-// second decider in front of the rune budget below, and the budget is strictly
-// better informed: it knows what an exchange costs, and a count does not.
+// factual validator still receives EvidenceEnvelope alone. A rune budget, not a
+// message count, bounds the result.
 func (e *Engine) recentCompleteConversationPairs() []ConversationPair {
 	if e == nil || len(e.messages) == 0 {
 		return nil
@@ -159,14 +152,10 @@ func (e *Engine) recentCompleteConversationPairs() []ConversationPair {
 // later same-text record slide forward into its place, which is the same
 // misattribution by another route. Match on text, then attach only if there is
 // anything to attach.
-// Matching is indexed rather than nested. The nested scan was O(pairs x records),
-// which was harmless while both lists were capped at 20 exchanges; with the count
-// caps deleted, both are bounded by maxRawHistoryRunes instead, and a long session
-// of short turns can hold hundreds. Indexing preserves the semantics exactly —
-// records for one text are consumed front to back, and both lists are
-// chronological, so first-unused is still the right one.
+// Matching is indexed because rune-bounded histories may contain many short
+// turns. Records for one text are consumed in chronological order.
 func (e *Engine) attachRecordedTranscripts(pairs []ConversationPair) []ConversationPair {
-	if !canonicalTranscriptEnabled || e == nil || len(e.recentTurns) == 0 {
+	if e == nil || len(e.recentTurns) == 0 {
 		return pairs
 	}
 	unconsumed := make(map[string][]int, len(e.recentTurns))

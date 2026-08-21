@@ -79,9 +79,8 @@ type stepEvent struct {
 // resolve it (over the same WebSocket).
 //
 // Form is the optional editable selection form (create-flow 表单化). It is
-// emitted ONLY when COMPSHARE_CONFIRM_FORM is on AND the client opted in via
-// SendCSAgentChat Features ("confirm_form_v1") — absent otherwise, keeping the
-// frame byte-identical for legacy clients. A client that received a Form may
+// emitted only when the client opts in through SendCSAgentChat Features
+// ("confirm_form_v1"). A client that received a Form may
 // attach select-only Overrides to its ConfirmCSAgentAction.
 // Label is the card's title when the server is the only party that can know it
 // (serverOwnedConfirmLabel). Absent for every workflow, whose title the console
@@ -96,19 +95,7 @@ type confirmationEvent struct {
 	Form           *workflow.ConfirmForm `json:"Form,omitempty"`
 }
 
-// confirmationAckEvent is the POSITIVE outcome of a ConfirmCSAgentAction frame,
-// carrying back the id it resolved so a client can tell WHICH card it applies to.
-//
-// It exists because the WS transport had no success reply at all: only failures
-// wrote a frame, so a client's only honest option was to treat "the bytes left
-// the socket" as "the server accepted it". The console did exactly that and
-// marked cards 已处理 on ws.send(), which is how an expired card could sit next
-// to a [NotFound] error saying the opposite. The POST transport has always
-// returned this (confirmResponse); this is the same acknowledgement on the
-// socket the console actually uses.
-//
-// Additive: a client that ignores unknown events is unaffected, and no existing
-// frame changes shape.
+// confirmationAckEvent identifies the card whose decision the server accepted.
 type confirmationAckEvent struct {
 	ConfirmationID string `json:"ConfirmationId"`
 	Accepted       bool   `json:"Accepted"`
@@ -121,54 +108,19 @@ type confirmationErrorEvent struct {
 	ConfirmationID string `json:"ConfirmationId"`
 }
 
-// confirmationErrorEventName is deliberately NOT "error". A card-scoped failure is
-// not a failure of the turn — whatever the card was gating is still running behind
-// it — and the durable path has always said so with a name of its own
-// ("interaction_error", ws_durable.go::writeDurableInteractionError, whose comment
-// reads "without ending the observed turn"). The legacy path, the one production
-// runs, kept "error".
-//
-// That cost a customer a 30-minute diagnosis on 2026-08-17. They clicked 确认 on an
-// SSH authorization card that had already timed out; the server answered "error" /
-// NotFound; the console does settled = true plus ws.close() on ANY "error" frame,
-// which cancelled the still-running in-instance run; and the raw English sentence
-// "confirmation not found or already resolved" was left standing as the answer.
-//
-// #548 added ConfirmationId to the frame so a client COULD scope it, and kept the
-// event name for compatibility. The compatibility was the bug: a client that does
-// not know about the id cannot ignore the frame, it can only fail the turn. A
-// distinct name inverts the default — an unknown event is dropped by every client
-// we have (the console's switch has a default that ignores unknown frames; wsprobe
-// prints them) — so an old client now survives the late click instead of being
-// killed by it, and a new client can put the message on the card it names.
-//
-// COORDINATION: console/frame@feature/confirm-lifecycle already routes an "error"
-// frame that carries a ConfirmationId to its card (service.js::routeStreamError),
-// which is the design #548 was written for. That branch must accept this name too
-// — otherwise it falls into the same default that saves the OLD console, and the
-// card-marking work on it silently stops happening. Deploying this server ahead of
-// that branch is safe; landing that branch without the extra name is not.
+// Card failures use their own event name because they do not terminate the turn.
+// ConfirmationId lets the client update only the affected card.
 const confirmationErrorEventName = "confirmation_error"
 
-// confirmationFailureMessage is what a PERSON reads when their click on an
-// authorization card did not take effect. The sentinels' own Error() strings are
-// developer English and were being forwarded to the console verbatim.
-//
-// What every branch may say is that THIS click changed nothing. What only some
-// branches may say is that nothing ran at all — see ErrConfirmationNotFound.
+// confirmationFailureMessage never infers whether an already-resolved card ran;
+// ErrConfirmationNotFound covers both expiry and an earlier accepted click.
 func confirmationFailureMessage(err error) string {
 	switch {
 	case errors.Is(err, ErrConfirmationOwner):
 		// The card is untouched: the claim was rejected before anything moved.
 		return "这张授权卡片不属于当前会话，本次点击没有生效。"
 	case errors.Is(err, ErrConfirmationNotFound):
-		// NOT "nothing ran". This sentinel is returned whenever the id is no longer
-		// pending, and ClaimResolution removes it on the FIRST successful claim
-		// (confirm_broker.go) — so "the card timed out and nothing happened" and
-		// "an earlier click was accepted and may already be running inside the box"
-		// come back identically. There is no third state to read: telling the user
-		// nothing ran would be a guess, and a guess in the direction that invites
-		// them to submit the same thing again.
+		// The id may have expired or an earlier click may already be executing.
 		return "这次点击没有生效。该授权卡已失效或已被处理，本轮结果请以后续输出为准，请勿重复提交。"
 	default:
 		// Override validation: the card is still pending and still answerable, so
@@ -177,24 +129,8 @@ func confirmationFailureMessage(err error) string {
 	}
 }
 
-// confirmWaitTimeout is how long the server waits for a person to answer ONE
-// authorization card. It is a single number on purpose: a plain y/N card and a
-// form-bearing card are both "a human is reading something before authorizing
-// it", and the split (60s plain / 120s form) had no reader-side justification —
-// it only meant the cards that authorize writing to a customer's box got the
-// SHORTER window.
-//
-// 60 -> 120 on 2026-08-12, from production traces rather than taste: over 30
-// days, 36 of 292 cards (12.3%) ended at exactly 60000ms, while real answers
-// landed at 59832ms and 59760ms — 168ms and 240ms before the wall — and one
-// user actively DECLINED at 59292ms. A distribution that is still dense right
-// up against a boundary is being clipped by it, not abandoned before it. The
-// per-write cards inside the in-instance lane were worst hit (24 of 140 =
-// 17.1%), which is the wrong place to lose a turn: the box has usually already
-// been changed by then.
-//
-// Raising this cost the transport nothing only because wsInteractionAllowance
-// now buys the socket its own room for human time; the two must move together.
+// All confirmation cards share one human-response budget. The WebSocket
+// interaction allowance is derived from this value.
 const confirmWaitTimeout = 120 * time.Second
 
 // confirmTimeoutSeconds is the same budget as it appears on the wire, so the
@@ -205,9 +141,7 @@ const confirmTimeoutSeconds = int(confirmWaitTimeout / time.Second)
 // opt in to form-bearing confirmations (and Overrides on resolve).
 const featureConfirmForm = "confirm_form_v1"
 
-// featureGuidedCreate opts an eligible client into the guided GPU-create order
-// flow. The backend only honors it when COMPSHARE_CONFIRM_FORM and
-// COMPSHARE_GUIDED_CREATE are both on.
+// featureGuidedCreate opts an eligible client into guided GPU creation.
 const featureGuidedCreate = "guided_create_v1"
 
 // featureKnowledgeOnly is an authorization-reducing client feature for
@@ -245,13 +179,7 @@ func stepTypeString(t engine.StepType) string {
 	case engine.StepError:
 		return "error"
 	case engine.StepUserNotice:
-		// Its own wire word, not "blocked": the console renders this as a notice, and a client
-		// that counts errors must not count it.
-		//
-		// This is a NEW ENUM VALUE on the existing step frame — not a new frame, not a new
-		// handshake, and nothing negotiates it. A frontend that predates it falls through its own
-		// switch and shows the frame's Label alone, which loses the notice's detail but breaks
-		// nothing; the frontend's one-line `case 'user_notice'` is what recovers the detail.
+		// A notice is not a blocked or failed tool call.
 		return "user_notice"
 	default:
 		return "unknown"
@@ -277,10 +205,8 @@ type chatPrep struct {
 	sessionStatePersistable bool
 	start                   time.Time
 
-	// confirmFormOptIn is set by the WS read loop when the turn's
-	// SendCSAgentChat carried Features:["confirm_form_v1"]. Combined with the
-	// boot flag (Handlers.confirmFormEnabled) it gates the editable confirm
-	// form; the SSE POST path never sets it.
+	// confirmFormOptIn is set when the client advertises confirm_form_v1. The
+	// SSE POST path does not opt in.
 	confirmFormOptIn bool
 	// guidedCreateOptIn is set by the WS read loop when the client supports the
 	// guided GPU-create cards.
@@ -367,21 +293,9 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 		return nil, AsAPIError(err)
 	}
 
-	// Hydrate SessionState from the envelope persisted in sessions.context.
-	// Order matters:
-	//   (1) ClearSessionState wipes whatever the cached Engine carried from
-	//       a prior turn — agentpool reuses *engine.Engine across turns, so
-	//       without this clear a parse failure below would leave the prior
-	//       turn's hydrated=true sticky and §6.2 would persist stale state
-	//       on top of the broken row.
-	//   (2) ParsePersistedContext returns 3 outcomes: success (hydrate +
-	//       persist on done), malformed JSON (log + skip persist), unknown
-	//       schema version (log + skip persist — defends forward rollout
-	//       where a v2 binary's envelope must NOT be downgraded by an
-	//       older binary).
-	// sessionStatePersistable is the single boolean the success branch
-	// checks before calling UpdateContext. Both error paths set it to
-	// false; only a successful parse + SetSessionState sets it to true.
+	// Clear cached state before parsing the persisted envelope. A malformed or
+	// unknown-version row must not inherit state from the previous lease and must
+	// not be overwritten by this binary.
 	agent.ClearSessionState()
 	var clientCtxPreserve json.RawMessage
 	sessionStatePersistable := false
@@ -417,15 +331,12 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	model := h.cfg.Agent.LLM.Model
 	reqUUID := base.RequestUUID
 
-	// Persist user message with OCR context included (so the DB record
-	// shows what the engine saw). The shared durable redaction covers both OCR
-	// text and the user's original message.
+	// Persist the same OCR-wrapped input shape the engine saw, after applying the
+	// shared conversation redaction boundary.
 	persistContent := message
 	if ocrText != "" {
-		// Same wrapper the engine uses for the live turn, so the rehydrated
-		// copy re-fed to the LLM on later turns matches the live-turn framing
-		// (the durable conversation boundary below additionally scrubs the
-		// user-message portion).
+		// Match the wrapper the engine saw so persisted replay has the same
+		// framing. The persistence boundary below also redacts the user text.
 		persistContent = engine.WrapScreenshotContext(ocrText, message)
 	}
 	if err := h.messages.Append(ctx, store.Message{
@@ -589,11 +500,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		})
 		stepIndex++
 	}, engine.ChatOptions{
-		// Legacy (non-durable) transport turn identity. Durable turns carry a
-		// client/gateway turn id; this path has none, so pass the per-request uuid
-		// as a real correlation id for the engine's evidence-binding turn id. The
-		// engine backfills an ephemeral id if this is ever empty, so correctness
-		// never depends on this line — it only makes the id meaningful.
+		// Use the request UUID as the evidence-binding turn identity.
 		TurnID:       base.RequestUUID,
 		ImageContext: prep.ocrText,
 		OnTextDelta: func(s string) {
@@ -604,9 +511,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			_ = sw.WriteEvent("token", tokenEvent{Text: s})
 		},
 		OnUsage: func(u llm.TokenUsage) { usage = u },
-		GuidedCreate: h.confirmFormEnabled &&
-			h.guidedCreateEnabled &&
-			prep.confirmFormOptIn &&
+		GuidedCreate: prep.confirmFormOptIn &&
 			prep.guidedCreateOptIn,
 		ConfirmResultFunc: func(action string, args map[string]any) engine.ConfirmationResult {
 			if h.confirmBroker == nil {
@@ -731,45 +636,20 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		}
 	}
 
-	// Shadow-persist the canonical tool transcript. LAST: after the done frame so
-	// the client never waits on it, and after SessionState so an optional
-	// migration probe can never delay a write the next turn actually depends on.
-	// Swallowing the error was never enough on its own — an unbounded statement
-	// against a blocked database withheld `done` for as long as the database
-	// took, which is a user-visible hang rather than a silent failure.
-	//
-	// Note this still runs while the per-session engine lease is held (released
-	// by `defer prep.release()` in the WS turn goroutine), so a blocked database
-	// can still delay THIS session's next turn by up to shadowPersistTimeout.
-	// Bounding it caps that at 3s; taking it fully off the lease means
-	// snapshotting the payload and writing after release, which is a larger
-	// change to the turn's shape and deliberately not folded in here.
-	// replyPersistErr keeps its historical ignored-error semantics on the main
-	// path; it is consulted only to avoid stamping metadata onto a row whose
-	// reply never landed.
-	h.shadowPersistTranscript(base.Owner, assistantMsgID, agent, replyPersistErr)
+	// Persist replay metadata after the reply and SessionState. It is bounded and
+	// skipped when the assistant row itself did not land.
+	h.persistTurnTranscript(base.Owner, assistantMsgID, agent, replyPersistErr)
 }
 
-// assistantPersistTimeout bounds every assistant-row write on the turn path.
-//
-// These three writes used to run on context.Background() with no deadline. That
-// is not a slow path, it is an unbounded one: a stalled database holds the
-// SUCCESS write open before the `done` frame and the ERROR write open before the
-// error frame, so the client is told nothing at all for as long as the database
-// takes — and the per-session engine lease is held throughout, so the user's
-// next turn queues behind it too. Every turn does one of these writes, so the
-// blast radius is the whole service rather than one optional probe.
-//
-// Five seconds is chosen to be longer than any healthy write and short enough
-// that a user gets an answer. Losing the row is the lesser failure: the reply
-// itself is already computed and is delivered from memory, so a timeout costs
-// history, not the response.
+// assistantPersistTimeout prevents a stalled database write from withholding the
+// response and the per-session engine lease. The in-memory reply can still be
+// delivered if persistence times out.
 const assistantPersistTimeout = 5 * time.Second
 
 // persistAssistant applies one bounded assistant-row patch. It returns the
 // store error unchanged so callers keep their existing semantics — the two that
 // discarded it still discard it, and the success path still reports it to the
-// shadow write.
+// transcript metadata write.
 func (h *Handlers) persistAssistant(owner store.Owner, msgID string, patch store.AssistantPatch) error {
 	ctx, cancel := context.WithTimeout(context.Background(), assistantPersistTimeout)
 	defer cancel()
@@ -820,16 +700,15 @@ func mustUserContext(h *Handlers, base BaseRequest) tools.UserContext {
 
 // sanitizeConfirmArgs projects workflow confirm args to a safe subset for the
 // frontend confirmation dialog. Sensitive fields (passwords, tokens) are excluded.
-// confirmEditsFuncFor builds the editable-form confirm gate for this turn, or
-// returns nil when either gate is closed (boot flag COMPSHARE_CONFIRM_FORM /
-// client Features opt-in) — nil keeps the engine on the legacy boolean
-// ConfirmFunc, so legacy clients see byte-identical confirmation frames.
+// confirmEditsFuncFor builds the editable-form confirm gate when the client
+// opts into confirm_form_v1. Clients without that feature keep the boolean
+// confirmation protocol.
 //
 // Each call round (including post-edit re-confirms) registers a FRESH
 // ConfirmationId carrying the round's form; the broker validates Overrides
 // against exactly that form before delivering them.
 func (h *Handlers) confirmEditsFuncFor(streamCtx context.Context, sw streamWriter, sessionID string, owner store.Owner, prep *chatPrep) workflow.ConfirmEditsFunc {
-	if !h.confirmFormEnabled || prep == nil || !prep.confirmFormOptIn || h.confirmBroker == nil {
+	if prep == nil || !prep.confirmFormOptIn || h.confirmBroker == nil {
 		return nil
 	}
 	return func(action string, args map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {

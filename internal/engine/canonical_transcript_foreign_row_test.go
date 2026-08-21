@@ -205,7 +205,6 @@ func TestRequireProviderLegalItselfRejectsWhatItClaims(t *testing.T) {
 // ProjectTranscript is exported and takes a value, not a row, so it cannot rely
 // on the parse boundary having screened its input.
 func TestProjectTranscriptRejectsAnIllegalValueDirectly(t *testing.T) {
-	enableCanonicalTranscriptForTest(t)
 
 	cases := map[string]*TranscriptV1{
 		"system role": {V: 1, Messages: []TranscriptMessage{
@@ -399,7 +398,6 @@ func foreignRows() []foreignRow {
 }
 
 func TestForeignRowsNeverProduceAnIllegalRequest(t *testing.T) {
-	enableCanonicalTranscriptForTest(t)
 
 	for _, row := range foreignRows() {
 		t.Run(row.name, func(t *testing.T) {
@@ -427,7 +425,6 @@ func TestForeignRowsNeverProduceAnIllegalRequest(t *testing.T) {
 // The producer cannot emit these, so nothing else asserts the projector is what
 // removes them rather than the fixture never containing them.
 func TestForeignRowIllegalShapesAreActuallyPresentBeforeProjection(t *testing.T) {
-	enableCanonicalTranscriptForTest(t)
 
 	shapes := map[string]func(*TranscriptV1) bool{
 		"a tool result ordered BEFORE the call it answers": func(tr *TranscriptV1) bool {
@@ -502,7 +499,6 @@ func TestForeignRowIllegalShapesAreActuallyPresentBeforeProjection(t *testing.T)
 // "no transcript" is correct; degrading to "no conversation" would be the
 // amnesia this whole program exists to remove.
 func TestForeignVersionRowStillReplaysItsExchange(t *testing.T) {
-	enableCanonicalTranscriptForTest(t)
 
 	cold := &Engine{}
 	cold.RehydrateHistory([]HistoryMessage{
@@ -521,7 +517,6 @@ func TestForeignVersionRowStillReplaysItsExchange(t *testing.T) {
 // Bounding markers the producer writes must survive a round trip through a
 // foreign reader too — a v1 row from another binary may carry them.
 func TestForeignRowTruncationMarkerIsReplayedAsAnOmission(t *testing.T) {
-	enableCanonicalTranscriptForTest(t)
 
 	raw := fmt.Sprintf(`{"agent_transcript_v1":{"v":1,"messages":[`+
 		`{"role":"user","content":"列一下"},`+

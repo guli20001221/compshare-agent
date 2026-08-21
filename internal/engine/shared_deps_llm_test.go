@@ -28,7 +28,7 @@ func TestNewSharedDeps_EmptyBaseModelReturnsError(t *testing.T) {
 }
 
 func TestNewSharedDepsBuildsConfiguredLLMClient(t *testing.T) {
-	deps, err := NewSharedDeps(validLLMCfg("deepseek-v4-flash"))
+	deps, err := NewSharedDeps(validLLMCfg("gpt-5.6-terra"))
 	if err != nil {
 		t.Fatalf("NewSharedDeps: %v", err)
 	}

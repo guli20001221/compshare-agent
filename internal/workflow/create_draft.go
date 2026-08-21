@@ -267,15 +267,7 @@ func parseEstimatedPrice(rawPrice map[string]any) (*EstimatedPriceSnapshot, erro
 
 // cloneDiskList returns a disk list that shares no structure with the one given.
 //
-// Disks is the only part of a draft that lives behind a reference. Every other
-// field is a string, a number or a bool, which a plain struct copy already
-// separates — so this one list is the whole of the draft's aliasing surface, and
-// TestDisksAreTheOnlyAliasableFieldOnADraft fails if that ever stops being true.
-//
-// copy() or append() would not be enough: the elements are map[string]any, so
-// copying the slice duplicates the interface headers while leaving every caller
-// pointing at the same inner map. deepCopyValue recurses, which is what makes the
-// copy real; it is the same primitive sealDraft already trusts for this data.
+// Disk entries are nested maps, so a shallow slice copy is insufficient.
 func cloneDiskList(disks []any) []any {
 	if len(disks) == 0 {
 		return nil

@@ -57,7 +57,7 @@ func selfElectStopEngine(t *testing.T, confirm ConfirmFunc) (*Engine, *mockExecu
 func TestSelfElectedExistentTargetReachesConfirmationCard(t *testing.T) {
 	eng, _ := selfElectStopEngine(t, func(string, map[string]any) bool { return true })
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(),
+	resolved, err := eng.resolveActionProposal(context.Background(),
 		stopInstanceProposal("turn-selfelect", "uhost-a"))
 
 	require.NoError(t, err)

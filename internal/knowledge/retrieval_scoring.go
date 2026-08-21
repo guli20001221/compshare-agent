@@ -104,29 +104,8 @@ func (field bm25FieldIndex) score(chunkIndex int, queryTokens []string) float64 
 	return score
 }
 
-// tokenizeRetrievalText splits on SCRIPT boundaries, not on whitespace.
-//
-// Whitespace used to be the segmenter, which made retrieval depend on how a
-// question happened to be spaced. Two consequences, both measured:
-//
-//   - "监听 端口" and "监听端口" produced different token multisets, because the
-//     spaced form n-grams each half separately and the joined form also yields
-//     the cross-boundary grams. Chinese does not delimit words with spaces, so
-//     the two are the same question.
-//   - "https 地址" tokenized as the whole word "https" plus "地址", while
-//     "https地址" fell into the n-gram branch and produced junk like "s地" with
-//     no "https" token at all — a different query to BM25 entirely.
-//
-// The planner's rewrites differ in exactly these cosmetic ways run to run
-// (TestBM25SensitivityToCosmeticQueryRewrites), and real users type both forms,
-// so this was two users asking the same thing and getting different evidence.
-//
-// Segmenting by script makes whitespace irrelevant: ASCII alphanumeric runs
-// become whole tokens, CJK runs become 2/3-gram multisets, and everything else
-// is already dropped by NormalizeQuery. Note that NormalizeQuery drops
-// punctuation without substituting a space, so CJK either side of a comma was
-// already being joined into one run — this makes spaces behave the same way
-// rather than introducing a new joining rule.
+// tokenizeRetrievalText makes cosmetic whitespace irrelevant: ASCII runs remain
+// whole tokens and CJK runs become 2/3-gram multisets.
 func tokenizeRetrievalText(value string) []string {
 	normalized := NormalizeQuery(value)
 	if normalized == "" {
@@ -178,7 +157,7 @@ func cjkNgrams(run string) []string {
 	return out
 }
 
-// NormalizeQuery is shared by the runtime retriever and eval parity tests; keep
+// NormalizeQuery is shared by the Go and Python reference retrievers; keep
 // its preprocessing semantics aligned with the BM25 scorer in this file.
 func NormalizeQuery(value string) string {
 	value = strings.ToLower(norm.NFKC.String(value))

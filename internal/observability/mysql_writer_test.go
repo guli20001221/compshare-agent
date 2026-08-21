@@ -21,12 +21,9 @@ import (
 // len of ToolCalls. Field-routing drift = lost data once in prod.
 func TestRowFromTrace_PopulatesAllColumnsFromCanonicalSources(t *testing.T) {
 	rec := TraceRecord{
-		TraceID:   "req-uuid-123",
-		TurnIndex: 7,
-		Timestamp: "2026-05-21T03:00:00Z",
-		IntentRouter: RouterTrace{
-			Intent: "resource_info",
-		},
+		TraceID:         "req-uuid-123",
+		TurnIndex:       7,
+		Timestamp:       "2026-05-21T03:00:00Z",
 		EngineHardBlock: EngineHardBlockTrace{Hit: false},
 		ToolCalls: []ToolCallTrace{
 			{Action: "DescribeCompShareInstance"},
@@ -66,7 +63,7 @@ func TestRowFromTrace_PopulatesAllColumnsFromCanonicalSources(t *testing.T) {
 	assertColEq(t, row, 4, 7, "turn_index")
 	assertColEq(t, row, 5, "2026-05-21T03:00:00Z", "created_at")
 	assertColEq(t, row, 6, "success", "status")
-	assertColEq(t, row, 7, "resource_info", "intent")
+	assertColEq(t, row, 7, "", "retired intent")
 	assertColEq(t, row, 8, 2, "tool_count")
 
 	citedJSON, ok := row[9].([]byte)
@@ -128,9 +125,8 @@ func TestRowFromTrace_EmptyCitedChunkIDsBecomesEmptyJSONArray(t *testing.T) {
 // not a raw field copy, so it is exercised through a real refusal reason.
 func TestPromotedColumnValues_ProjectsDerivedAxesInColumnOrder(t *testing.T) {
 	rec := TraceRecord{
-		IntentRouter: RouterTrace{RouteStatus: "dispatched_agent"},
-		Retrieval:    RetrievalTrace{RefusedReason: "no_evidence"}, // → corpus_gap
-		State:        StateTrace{ResolutionSource: "explicit_id"},
+		Retrieval: RetrievalTrace{RefusedReason: "no_evidence"}, // → corpus_gap
+		State:     StateTrace{ResolutionSource: "explicit_id"},
 		Outcome: OutcomeTrace{
 			TerminatedBy: TerminatedByError,
 			AbortCause:   "client_disconnect",
@@ -144,7 +140,7 @@ func TestPromotedColumnValues_ProjectsDerivedAxesInColumnOrder(t *testing.T) {
 		"client_disconnect", // abort_cause
 		"upstream_5xx",      // error_class
 		"blocked",           // resolution
-		"dispatched_agent",  // route_status
+		nil,                 // retired route_status
 		"corpus_gap",        // refusal_type (DERIVED)
 		"explicit_id",       // resolution_source
 	}

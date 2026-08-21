@@ -14,7 +14,7 @@ func TestDefaultCapabilityRegistryOwnsEveryAgentToolAndPolicy(t *testing.T) {
 
 	exposed := 0
 	for _, capability := range registry.All() {
-		if !capability.ExposedToAgent || capability.Stage != CapabilityStageActive {
+		if !capability.ExposedToAgent {
 			continue
 		}
 		exposed++

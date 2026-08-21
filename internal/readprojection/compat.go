@@ -2,18 +2,14 @@
 // Resource/Monitor deterministic read projection: raw API payload → normalized
 // facts → evidence envelope → customer-safe display text.
 //
-// It depends only on entity, platform, envelope and the standard library — never
-// on the intent router, the capability catalog or the engine. The intent package
-// keeps thin forwarders so the legacy handlers and their tests compile
-// unchanged; new read capabilities call this package directly.
+// It depends only on entity, platform, envelope and the standard library.
 package readprojection
 
 import (
 	"github.com/compshare-agent/internal/platform"
 )
 
-// Metric mirrors the platform metric vocabulary so the relocated projection code
-// references Metric / MetricCPU / … unchanged.
+// Metric mirrors the shared platform vocabulary within this package.
 type Metric = platform.Metric
 
 const (
@@ -23,14 +19,12 @@ const (
 	MetricVRAM   = platform.MetricVRAM
 )
 
-// TargetRef / TargetRefFilter mirror the platform value-object vocabulary so the
-// relocated resource-filter code references TargetRef / TargetRefFilter unchanged.
+// TargetRef mirrors the shared platform vocabulary within this package.
 type TargetRef = platform.TargetRef
 
 const TargetRefFilter = platform.TargetRefFilter
 
-// TimeWindow mirrors the platform monitor-window value object so the relocated
-// time-window interpreter references TimeWindow / TimeWindowPreset / … unchanged.
+// TimeWindow mirrors the shared platform vocabulary within this package.
 type TimeWindow = platform.TimeWindow
 
 const (
@@ -39,16 +33,14 @@ const (
 	TimeWindowAbsolute = platform.TimeWindowAbsolute
 )
 
-// Exported views of the projection's canonical labels / empty-result replies so
-// the intent compatibility layer (and its tests) resolve to a single source.
+// Exported canonical labels and empty-result replies.
 const (
 	ResourceLabelInstanceID = resourceLabelInstanceID
 	ResourceLabelName       = resourceLabelName
 	NoMonitorValuesReply    = noMonitorValuesReply
 )
 
-// safeValue / safeValueMap / mapSliceAt forward to platform so the relocated
-// bodies keep their original call sites verbatim.
+// Small local aliases keep projection code focused on rendering.
 func safeValue(v any) string { return platform.SafeValue(v) }
 
 func safeValueMap(v map[string]any) map[string]any { return platform.SafeValueMap(v) }

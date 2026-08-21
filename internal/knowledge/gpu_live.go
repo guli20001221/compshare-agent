@@ -6,18 +6,8 @@ import (
 	"strings"
 )
 
-// gpu_live.go reads the platform's GPU facts from the upstream catalog.
-//
-// It once hedged: a live path plus a hand-maintained gpuSpecs table as an
-// "offline fallback" for when the query failed. Both are gone. The table was
-// deleted (it drifts every time the platform adds, retires or renames a card),
-// and with it RecommendGPUTypeLive — which turned out to have had ZERO production
-// callers, so the "live GPU sizing" it advertised never actually ran. What
-// remains is the part that IS wired: parsing the catalog, and picking fallback
-// cards from it when a create hits a sold-out tier.
-//
-// There is deliberately no fallback left. A caller that cannot reach the catalog
-// must say it cannot confirm, not answer from a local copy.
+// gpu_live.go parses GPU facts from the upstream catalog and chooses alternatives
+// from that live result. There is no local platform-spec fallback.
 //
 // Upstream contract (pkg/api/describe_available_compshare_instance_types.go):
 // AvailableInstanceTypes[] entries carry Name (== CreateInstance GpuType), Status
@@ -38,15 +28,10 @@ type AvailableGPU struct {
 // ParseAvailableGPUs extracts the available GPU candidates from a
 // DescribeAvailableCompShareInstanceTypes result map, restricted to the given zone.
 //
-// The response spans MULTIPLE zones (verified 2026-05-31: region cn-wlcb returns
-// both cn-wlcb-01 AND the Shanghai cn-sh2-02 zone — the upstream returns every
-// zone's machine types when no ZoneID is filtered). The deploy saga creates in ONE
-// zone, so we keep only that zone's cards; otherwise a card offered solely in
-// another zone (e.g. 2080Ti only in cn-sh2-02) would be recommended and then
-// rejected by the saga's zone-scoped capacity check. zone=="" disables the filter
-// (keep all zones). Entries without a Name or positive VRAM, or whose Status marks
-// them unavailable, are skipped; duplicate Names collapse (keeping the larger
-// MaxGPU). Returns nil for a nil/empty result so callers fall back to the static table.
+// Upstream can return machine types from multiple zones, while creation targets
+// one zone. Filtering prevents recommending a card that the later capacity check
+// must reject. zone=="" keeps all zones. Invalid and unavailable entries are
+// skipped; duplicate names keep the larger MaxGPU. A nil result yields no cards.
 func ParseAvailableGPUs(result map[string]any, zone string) []AvailableGPU {
 	if result == nil {
 		return nil
@@ -182,7 +167,6 @@ func filterAvailableByNames(available []AvailableGPU, allowed []string) []Availa
 	}
 	return out
 }
-
 
 // WithoutGPUTypes drops the named cards from a recommendation list.
 //

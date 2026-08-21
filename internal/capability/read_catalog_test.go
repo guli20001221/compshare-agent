@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/platform"
 	"github.com/stretchr/testify/require"
 )
 
@@ -48,7 +49,7 @@ func TestReadRequestDecodingIsStrictAndTyped(t *testing.T) {
 	pricingTool := ReadToolName(intent.IntentPricingQuery)
 	_, request, err := DecodeReadRequest(pricingTool, map[string]any{"gpu_type": "4090", "gpu_count": 8, "price_kind": "account"})
 	require.NoError(t, err)
-	require.Equal(t, PricingRequest{GPUType: "4090", GPUCount: 8, Kind: intent.PriceKindAccount}, request)
+	require.Equal(t, PricingRequest{GPUType: "4090", GPUCount: 8, Kind: platform.PriceKindAccount}, request)
 
 	_, _, err = DecodeReadRequest(pricingTool, map[string]any{"search_query": "4090"})
 	require.Error(t, err, "旧通用槽位字段必须被拒绝")

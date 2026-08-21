@@ -134,7 +134,7 @@ func TestSoldOutAlternativesStayInTheUsersZone(t *testing.T) {
 	}}
 	confirm := func(string, map[string]any) bool { return true }
 	eng := NewWithDeps(&mockLLM{}, executor, confirm)
-	eng.safeExecutor = newSafeToolExecutor(executor, confirm, nil, true)
+	eng.safeExecutor = newSafeToolExecutor(executor, confirm)
 
 	// A real record from a real run: 4090 sold out in the zone the workflow chose.
 	wfEng := workflow.NewEngine(soldOutExecutor{}, confirm, nil)
@@ -172,7 +172,7 @@ func TestSoldOutAlternativesStayInTheUsersPodZone(t *testing.T) {
 	}}
 	confirm := func(string, map[string]any) bool { return true }
 	eng := NewWithDeps(&mockLLM{}, executor, confirm)
-	eng.safeExecutor = newSafeToolExecutor(executor, confirm, nil, true)
+	eng.safeExecutor = newSafeToolExecutor(executor, confirm)
 
 	wfEng := workflow.NewEngine(podSoldOutExecutor{}, confirm, nil)
 	result, err := wfEng.Run(context.Background(), workflow.CreateInstanceDef(), map[string]any{
@@ -300,7 +300,7 @@ func TestOnlyASoldOutOffersAlternatives(t *testing.T) {
 	}}
 	confirm := func(string, map[string]any) bool { return true }
 	eng := NewWithDeps(&mockLLM{}, executor, confirm)
-	eng.safeExecutor = newSafeToolExecutor(executor, confirm, nil, true)
+	eng.safeExecutor = newSafeToolExecutor(executor, confirm)
 
 	// A real record from a real run whose capacity failed "spec not found" — a full
 	// draft (GpuType + Zone both resolved), but no sold-out reason.
@@ -356,7 +356,7 @@ func TestNoTargetMeansNoSuggestionAtAll(t *testing.T) {
 	}}
 	confirm := func(string, map[string]any) bool { return true }
 	eng := NewWithDeps(&mockLLM{}, executor, confirm)
-	eng.safeExecutor = newSafeToolExecutor(executor, confirm, nil, true)
+	eng.safeExecutor = newSafeToolExecutor(executor, confirm)
 
 	msg := "4090 1 卡 / 16C / 64GB 当前库存不足（售罄），请换一个规格或稍后再试。"
 

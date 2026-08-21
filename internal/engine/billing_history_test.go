@@ -39,7 +39,6 @@ func billingHistoryExecutor() *mockExecutor {
 // transforms before RehydrateHistory reads it back.
 func runBillingHistoryTurn(t *testing.T, tail string) (*Engine, string, json.RawMessage) {
 	t.Helper()
-	withCanonicalTranscript(t, true)
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("tc1", "DiagnoseBilling", `{"UHostId":"uhost-bill-001"}`)}},
 		{Content: tail},
@@ -137,7 +136,6 @@ func TestMixedBillingCardRehydratesTheModelTailNotTheDisplayCard(t *testing.T) {
 }
 
 func TestOlderPureBillingTranscriptFailsClosedWithoutReplayingItsCard(t *testing.T) {
-	withCanonicalTranscript(t, true)
 	observation := agentToolObservation("DiagnoseBilling", fmt.Sprintf(
 		`{"observation":%q,"verbatim_delivered":true}`, verbatimBlockObservation))
 	transcript := &TranscriptV1{V: transcriptSchemaVersion, Messages: []TranscriptMessage{
@@ -164,7 +162,6 @@ func TestOlderPureBillingTranscriptFailsClosedWithoutReplayingItsCard(t *testing
 }
 
 func TestOnlyDiagnoseBillingVerbatimMarkerChangesColdAssistantContent(t *testing.T) {
-	withCanonicalTranscript(t, true)
 	observation := agentToolObservation("DescribeCompShareInstance", `{"verbatim_delivered":true}`)
 	transcript := &TranscriptV1{V: transcriptSchemaVersion, Messages: []TranscriptMessage{
 		{Role: openai.ChatMessageRoleUser, Content: "查实例"},

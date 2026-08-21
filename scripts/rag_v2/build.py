@@ -202,8 +202,7 @@ def main(argv: list[str] | None = None) -> int:
                 "semantic_split": args.semantic_model,
                 "embedding": "qwen3-embedding-8b",
                 "reranker": "qwen3-reranker-8b",
-                "judge": "doubao-seed-2-1-pro-260628",
-                "judge_fallback": "doubao-seed-2-1-turbo-260628",
+                "judge": "gpt-5.6-terra",
             },
         )
 

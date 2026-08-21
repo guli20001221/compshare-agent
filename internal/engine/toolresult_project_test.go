@@ -140,7 +140,7 @@ func TestProjectToolResultForReAct_ReturnsFalseWhenNothingShrinks(t *testing.T) 
 	assert.NotContains(t, result, agentResultProjectionMetadataKey)
 }
 
-func TestExecuteTool_ProjectionFlagOnlyChangesLLMVisibleResult(t *testing.T) {
+func TestExecuteTool_ProjectionOnlyChangesLLMVisibleResult(t *testing.T) {
 	fat := map[string]any{
 		"RetCode": 0,
 		"AvailableInstanceTypes": []any{
@@ -165,20 +165,14 @@ func TestExecuteTool_ProjectionFlagOnlyChangesLLMVisibleResult(t *testing.T) {
 		},
 	}
 
-	flagOff := eng.executeTool(context.Background(), tc, func(ev StepEvent) { events = append(events, ev) })
-	require.Contains(t, flagOff, "HugeMatrix")
+	visible := eng.executeTool(context.Background(), tc, func(ev StepEvent) { events = append(events, ev) })
+
 	require.NotEmpty(t, events)
 	require.Contains(t, events[len(events)-1].TraceResult, "AvailableInstanceTypes")
-	assert.False(t, events[len(events)-1].Projected, "flag off: no projection signal")
-
-	events = nil
-	eng.SetReactResultProjectionEnabled(true)
-	flagOn := eng.executeTool(context.Background(), tc, func(ev StepEvent) { events = append(events, ev) })
-
-	assert.NotContains(t, flagOn, "HugeMatrix")
-	assert.Contains(t, flagOn, "RTX4090")
-	assert.True(t, events[len(events)-1].Projected, "flag on: projection signal recorded for trace")
-	assertFormattedProjectionMetadata(t, flagOn)
+	assert.NotContains(t, visible, "HugeMatrix")
+	assert.Contains(t, visible, "RTX4090")
+	assert.True(t, events[len(events)-1].Projected, "projection signal is recorded for trace")
+	assertFormattedProjectionMetadata(t, visible)
 	traceJSON, err := json.Marshal(events[len(events)-1].TraceResult)
 	require.NoError(t, err)
 	assert.Contains(t, string(traceJSON), "HugeMatrix",
@@ -191,10 +185,6 @@ func TestExecuteTool_ProjectionFlagOnlyChangesLLMVisibleResult(t *testing.T) {
 // into a future request. Otherwise a later model reads a partial catalog as if
 // it were complete.
 func TestProjectedToolResultMarksCanonicalTranscript(t *testing.T) {
-	prev := canonicalTranscriptEnabled
-	SetCanonicalTranscriptEnabled(true)
-	defer SetCanonicalTranscriptEnabled(prev)
-
 	result := map[string]any{
 		"RetCode": 0,
 		"ImageSet": []any{map[string]any{

@@ -38,10 +38,7 @@ func TestStepTrace_MarshalKeys(t *testing.T) {
 
 // TestTraceRecord_NoStepsByteIdentity is the reserved-slot byte-identity guard:
 // a populated TraceRecord with Steps == nil must marshal to JSON that does NOT
-// contain the substring "steps". This proves B6.1 is zero-behavior — adding the
-// omitempty Steps field cannot change any existing (non-agent) trace line.
-// Mirrors the B1 task_tier reserved-slot precedent (which also did not bump the
-// SchemaVersion because the field was omitempty and never populated).
+// contain the substring "steps".
 func TestTraceRecord_NoStepsByteIdentity(t *testing.T) {
 	rec := TraceRecord{
 		SchemaVersion: SchemaVersion,
@@ -50,7 +47,6 @@ func TestTraceRecord_NoStepsByteIdentity(t *testing.T) {
 		TurnIndex:     0,
 		Timestamp:     "2026-05-31T00:00:00Z",
 		UserMsgHash:   "sha256:abc",
-		IntentRouter:  RouterTrace{Enabled: true, Intent: "resource"},
 		ToolCalls:     []ToolCallTrace{{ID: "tc-1", Action: "DescribeCompShareInstance", Source: ToolSourceMainReAct}},
 		Retrieval:     RetrievalTrace{Enabled: true, Hits: 2},
 		// Steps intentionally nil — the non-agent turn case.

@@ -9,22 +9,8 @@ import (
 // DefaultMaxInstancesPerDisplay caps how many instances are surfaced to the
 // LLM and user in a single resource-list reply.
 //
-// It was 10, chosen to align with console pagination and to keep large accounts
-// out of the token budget. That cost was measured on a real 18-instance account
-// 2026-07-30 and it is not a display cost — the cap runs BEFORE the read result
-// is built (read_resource.go), so instances 11..18 reach neither the reply nor
-// the Agent. Three separate failures, all one root cause:
-//
-//   - 「host-不要删除验证七天回收」 is the account's only uniquely-named instance and
-//     sorts 18th. Asked for its state, the Agent answered 「暂时无法按这个名称定位到
-//     实例」 5 runs out of 5. It was not a reasoning failure; the row was gone.
-//   - 「我那台 4090 的内存是多少」 could only ever see 7 of the 12 4090s.
-//   - 「我有哪些实例」 answered 10/18 and sent the user to the console.
-//
-// 50 because the token pressure that motivated 10 no longer binds, and because a
-// cap that silently removes the answer is worse than a long reply. The truncation
-// notice still fires above it, so a genuinely large account is told what it did
-// not see rather than shown a short list that looks complete.
+// The truncation notice reports omitted rows so large accounts never see a short
+// list presented as complete.
 const DefaultMaxInstancesPerDisplay = 50
 
 // stateDisplayRank orders instance states so the most likely operation

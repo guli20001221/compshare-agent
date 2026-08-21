@@ -1,14 +1,11 @@
 # Tool/Workflow RetCode Audit
 
-Last audited: 2026-06-26
-
 This table tracks the runtime contract between agent workflows/tools and the
 CompShare upstream API. When adding or changing a tool/workflow, update this
 file together with tests.
 
-Audit source: `G:\下载\uhost-compshare-api-master\uhost-compshare-api-master`
-(`pkg/api`, `internal/api`, and upstream error-code definitions). Keep this
-document aligned with the source implementation, not only public docs.
+Keep this document aligned with the upstream implementation and error-code
+definitions, not only public docs. Tests remain authoritative when prose drifts.
 
 ## Workflow Matrix
 

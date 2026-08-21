@@ -62,7 +62,7 @@ func TestProposalMayCarryPriorRecommendedIDAndDetectsCommunitySource(t *testing.
 	}}
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
 		"turn_id": "turn-image-context", "operation": "CreateInstanceWorkflow",
 		"slots": []any{
 			map[string]any{"name": "GpuType", "value": "4090"},
@@ -114,7 +114,7 @@ func TestStaleHistoricalImageIDIsRejectedWithoutClaimingCatalogOutage(t *testing
 	}}
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
 		"turn_id": "turn-stale-image", "operation": "CreateInstanceWorkflow",
 		"slots": []any{
 			map[string]any{"name": "GpuType", "value": "4090"},
@@ -166,7 +166,7 @@ func TestLocalizedUserImageSourceIsAConstraint(t *testing.T) {
 	}}
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(),
+	resolved, err := eng.resolveActionProposal(context.Background(),
 		proposalArgsForOperation("CreateInstanceWorkflow", map[string]any{
 			"GpuType":                         "4090",
 			"ImageSource":                     "platform",
@@ -225,7 +225,7 @@ func TestCurrentImageNameKeepsRelatedHistoricalIDAsSuggested(t *testing.T) {
 	}}
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
 		"turn_id": "turn-related-history-image", "operation": "CreateInstanceWorkflow",
 		"slots": []any{
 			map[string]any{"name": "GpuType", "value": "4090"},
@@ -290,7 +290,7 @@ func TestCurrentImageShorthandKeepsHistoricalIDAsSuggested(t *testing.T) {
 	}}
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
 		"turn_id": "turn-infinite-talk-shorthand", "operation": "CreateInstanceWorkflow",
 		"slots": []any{
 			map[string]any{"name": "GpuType", "value": "4090"},
@@ -347,7 +347,7 @@ func TestCurrentImageNameDropsUnrelatedHistoricalID(t *testing.T) {
 	}}
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
 		"turn_id": "turn-unrelated-history-image", "operation": "CreateInstanceWorkflow",
 		"slots": []any{
 			map[string]any{"name": "GpuType", "value": "4090"},
@@ -401,7 +401,7 @@ func TestUngroundedButValidImageIDIsDiscardedBeforeCatalogLookup(t *testing.T) {
 	)
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
 		"turn_id": "turn-ungrounded-image", "operation": "CreateInstanceWorkflow",
 		"slots": []any{
 			map[string]any{"name": "GpuType", "value": "4090"},
@@ -459,7 +459,7 @@ func TestCurrentImageReadEvidenceMayGroundExactID(t *testing.T) {
 	require.NoError(t, err)
 	eng.toolResultsByCallThisTurn = map[string]string{"read-image": string(payload)}
 
-	resolved, err := eng.resolveActionProposalShadow(context.Background(), map[string]any{
+	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
 		"turn_id": "turn-read-grounded-image", "operation": "CreateInstanceWorkflow",
 		"slots": []any{
 			map[string]any{"name": "GpuType", "value": "4090"},

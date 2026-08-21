@@ -1,228 +1,204 @@
-# CLAUDE.md
+# Compshare Agent
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This repository contains the Go service behind the 优云智算 assistant. The
+production entrypoint is the HTTP/WebSocket server in `cmd/`; there is no CLI
+chat runtime.
 
-## Repository
-
-Go 1.25 assistant service ("优云算力共享 AI 助手") for the CompShare GPU platform. Single binary built from `cmd/`, with Python scripts under `scripts/rag_w0/` used only to build/eval the RAG corpus.
-
-## Build & run
+## Build and test
 
 ```bash
-go build -o agent ./cmd                # Linux/macOS
-go build -o agent.exe ./cmd            # Windows / cross-build via GOOS
+go build ./...
+go vet ./...
+go test ./... -count=1
 
-# The only runtime entrypoint (reads deploy/conf/config.local.yaml by default)
-./agent server --addr 0.0.0.0:7429 [-c path/to/config.yaml]
+# Run the server with the checked-in baseline configuration.
+go run ./cmd server -c deploy/conf/config.local.yaml
 ```
 
-There is **no interactive `cli` subcommand**. It was a pre-production demo and was deleted once it
-had been established that nothing in production used it: every symbol it defined was referenced only
-by itself and its own tests, including a duplicate of the server's
-`internal/httpapi/trace_recorder.go`. It had also been silently broken — `cliUserContextFromConfig`
-installed no `tools.UserContext` unless `agent.sts.default_role_urn` or `COMPSHARE_USER_EMAIL` was
-set, and the shipped config sets neither while `public_key`/`private_key` are empty, so every
-upstream call from it failed with `no user in context`. To exercise the agent locally, run `server`
-and drive it over the HTTP/WS API — that is the path production actually takes.
-
-`deploy/conf/config.local.yaml` is the shared baseline. `deploy/conf/config.prod.yaml`
-inherits it and contains only production network overrides. Runtime flags, model keys,
-CompShare credentials, and PostgreSQL DSN stay in the shared baseline.
-Do not add new `.env` / `*.example` deployment flows.
-
-`project_id` may be left empty for read-only calls; HTTP requests can also pass `ProjectId` per request.
-
-## Tests
-
-```bash
-go test ./... -count=1                       # full Go suite — required green before merge
-go test ./internal/engine                    # one package
-go test ./internal/engine -run TestName$     # one test
-go test ./internal/entity -race -count=1     # entity package is race-checked in CI (.github/workflows/entity-race.yml)
-
-# RAG corpus / scripts (Python; only when touching scripts/rag_w0/ or deploy/kb/)
-python -m pytest scripts/test_rag_w0_scripts.py -q
-```
-
-`eval/golden_test.go::TestGoldenScripts` drives the ENGINE against a live model with a mock executor
-(never the deleted CLI, despite the name). It **skips itself unless `-model` is passed**, so it
-contributes nothing to a plain `go test ./...` run — treat it as a manual harness, not a gate. What
-does run there is `TestGoldenCatalogIntegrity`, which only validates the case catalogs, and
-`eval/evaluate_test.go::TestEval`, the offline intent eval. `eval/real_cli_golden_cases.json` +
-`FormatRealCLIGoldenChecklist` are a **manual** checklist and are now the only thing in the tree
-still named for the CLI.
-
-## Pre-commit hook
-
-`.githooks/pre-commit` runs `scripts/secret_scan.ps1` and **requires PowerShell** (`pwsh` or `powershell`) on PATH. If the hook is missing on a fresh clone:
+Before committing, also run `git diff --check`. The pre-commit hook invokes
+`scripts/secret_scan.ps1` and needs PowerShell on `PATH`:
 
 ```bash
 git config core.hooksPath .githooks
 ```
 
-## Runtime feature flags
+Live-model tests and PostgreSQL integration tests are opt-in. Their test files
+name the required flags and credentials; a normal `go test ./...` must not make
+external calls.
 
-**Config is YAML (`config.local.yaml` plus a `config.prod.yaml` overlay).** Runtime flags have typed fields under `agent.features` / `agent.retrieval` / `agent.trace` (see `internal/config/runtime.go`). The shared baseline carries LLM key, STS service AK/SK, role URN, and PostgreSQL DSN; the production overlay carries only production network differences. The env-var names below are still the historical parser names in code, but deployment must set the matching YAML fields instead of exporting environment variables. The default answer path uses **gpt-5.6-terra** (ModelVerse GPT-5 Codex) with qwen3 RRF retrieval.
+## Runtime architecture
 
-**Two-key setup (answer vs retrieval):** `gpt-5.6-terra`'s ModelVerse key is authorized only for terra, **not** for `qwen3-embedding-8b` / `qwen3-reranker-8b`, so the answer model and the retrieval stack use separate keys. `agent.llm.api_key` is the answer key (terra); `agent.retrieval.api_key` is the qwen3 embed/rerank key (`RuntimeGetenv` exposes it as `MODELVERSE_API_KEY`, which `cmd/trace.go::modelverseAPIKeyFromEnv` reads before `LLM_API_KEY`). Both are inlined in `deploy/conf/config.local.yaml` per deploy convention — like the platform key they live in the repo's git history, so rotate them with the standing key rotation. When `agent.retrieval.api_key` is empty, embed/rerank inherit `agent.llm.api_key` (single-key mode — the pre-terra behavior, e.g. for a `deepseek-v4-pro`/`-flash` answerer whose key also does qwen3).
+The semantic runtime has one path:
 
-| Var | Values | Effect |
-|---|---|---|
-| `COMPSHARE_ENABLE_MUTATING_TOOLS` | `1` | Enables start/stop/reboot/reset-password/create. Default off — read-only mode. |
-| `USE_KNOWLEDGE_RETRIEVAL` | `curated` (default), `off` | Enables or disables the remote knowledge MCP adapter. |
-| `COMPSHARE_KB_MCP_URL` | complete `http(s)://.../mcp` URL | Required whenever knowledge retrieval is enabled. |
-| `COMPSHARE_KB_MCP_BEARER_TOKEN` | read-only token | Optional on trusted in-cluster endpoints; never use an `/admin/mcp` token. |
-| `COMPSHARE_KB_MCP_TIMEOUT_MS` | positive milliseconds | Per-call MCP timeout; default 12 seconds. |
-| `COMPSHARE_CONFIRM_FORM` | `1` | **Server-only.** Boot half of the editable-confirm-form double gate (create-flow 表单化): with it on AND the client opting in per turn (`SendCSAgentChat` `Features:["confirm_form_v1"]`), `confirmation` frames for `CreateInstanceWorkflow` carry a select-only `Form` (GPU/zone/image/charge-type whitelists) and `ConfirmCSAgentAction` may return `Overrides`; every edit re-runs the stock+price steps and re-confirms a refreshed card (≤3 edits). Off → confirmation frames stay byte-identical, Overrides rejected. The deploy_model saga is unaffected either way. **Go code default off; deploy config ships it on.** |
-| `COMPSHARE_GUIDED_CREATE` | `1` | **Server-only.** Boot half of the guided GPU create order, paired with the client's per-turn `guided_create_v1` opt-in. Requires `COMPSHARE_CONFIRM_FORM=1` — `cmd/server.go` logs a warning and treats guided create as off otherwise. **Go code default off; deploy config ships it on.** |
-| `COMPSHARE_CANONICAL_TRANSCRIPT` | `1` | **Boot-only; deploy config ships it on.** Enables capture, persistence and replay of canonical tool transcripts. See [Canonical transcript and context](#canonical-transcript-and-context); this is not a semantic-layer rollback switch. |
-| `COMPSHARE_DURABLE_TURNS` | `1` | **Server-only; shipped config is `false`.** Durable turn persistence is not part of the current production path. Unknown values are a hard error at boot, not a warning (`cmd/server.go`). |
-| `COMPSHARE_TRACE_ENABLED` | `1` | Writes per-turn traces. Sink is chosen by `COMPSHARE_TRACE_SINK` (`file` \| `mysql` \| `both`); `file` writes JSONL to `COMPSHARE_TRACE_DIR`. |
-| `COMPSHARE_SSH_OPS` | `1` | Enables the consent-gated, **read-only in-instance SSH-ops** lane (`DiagnoseInstanceInternals`). The model self-elects the tool; entry is gated by an authorization card; a Python Agent-SDK harness SSHes into the box and runs only read-only commands (mutating/destructive refused), streaming each command's metadata as a live activity event and returning a Chinese root-cause verdict. **Go code default off; the deploy config ships `enabled: true` AND `allow_writes: true`** (`deploy/conf/config.local.yaml`), so production runs the lane with repair authorized — read the `allow_writes` note at the end of this row before assuming the consent card says 只读排查. **Server path requires a non-static STS provider** (`agent.sts.service_ak/sk`; static AK/SK is refused — no per-tenant instance scoping, INV-12) and a DB (fail-closed `ssh_ops_audit`, migration 0011). It runs on the **current non-durable transport** (WS/SSE via `chatStream`, which carries the confirm card + step stream); it does **not** require `COMPSHARE_DURABLE_TURNS` — the lane is read-only, so a mid-diagnosis disconnect just ends the probe and the user retries (durable, when on, additionally makes the harness survive a disconnect). The harness uses ModelVerse's Anthropic-compatible endpoint directly; non-bool settings live under `agent.ssh_ops` (`harness_path`, `base_url`, optional `api_key`, `python`, `model`, `timeout`). An empty SSH-ops key inherits `agent.llm.api_key`. YAML `agent.ssh_ops.enabled: false` wins over the env. **`agent.ssh_ops.allow_writes`** (default false) is a separate gate that lets the harness EXECUTE the `mutating` tier instead of refusing it, so the agent repairs rather than only describes the repair; it rides the same one-shot stdin handshake as the credential. Destructive commands and command substitution / multi-line input stay refused in BOTH modes — the shape gate is the prompt-injection firewall (classify() only sees the literal string), not part of the read-only policy. **The read tier is not deny-by-default and the file no longer claims it is**: a command matching no rule falls through to `read_only`. Since 2026-08-16 the only shape left in that gap is an unknown **bare name** resolved through the remote `PATH` (`evil`, `frobnicate --all`) — tracked as its own decision, because closing it needs an IDENTITY rule and was measured at 95/221 corpus cases and 16/20 realistic commands changing tier. Executing a **file** is out of the gap, under one deliberately small rule: script extensions and relative paths (`./x`, `../x`) were always refused, and since 2026-08-16 a program named by ABSOLUTE path auto-runs as a read only from the four system program directories — `/bin`, `/sbin`, `/usr/bin`, `/usr/sbin` (`_is_system_program_path`). Everything else — `/tmp/x`, `/root/payload`, `/opt/app/bin/run`, `/usr/local/bin/nvidia-smi`, `/root/<venv>/bin/python` — gets a **confirmation card, not a refusal**: the agent still runs them and still finishes a repair, it just asks first. Before that, `/tmp/x` auto-ran purely because `./x` and `/tmp/x` are the same act spelled differently. **The rule deliberately does not try to establish that a path is trustworthy.** An earlier version did — `bin`/`sbin`-shaped directory minus shared temp — and it was abandoned because `/root/x/bin/payload` and `/root/x/payload` carry the same real risk: separating them needs a growing list of exceptions for bin-shaped dirs, temp dirs, symlinks, venvs and toolchain paths, and none of it ever proves a remote file is safe to execute unattended. **System programs auto-read, user and application paths confirm first.** Measured cost over the 434 pinned cases: **3 change tier**, all `read_only` → `mutating`, all venv/conda `python` probes (`/root/badenv/bin/python -c 'import torch'` and two siblings) — a card each, never a refusal. `F15` in `test_guardrails.py` pins the four directories, that everything else cards, that a system directory is no blank cheque (`/usr/bin/rm -rf /` is still destructive), that `/root/x/bin/payload` and `/root/x/payload` are treated identically, and that the rule is about the CONTAINING directory rather than a prefix (`/usr/bin/sub/tool`). It deliberately does **not** enumerate bypass spellings — that was the previous design's obligation, not this one's. Flipping it also switches the consent-card label, the tool description and the audit `phase` (`read_only` -> `read_write`), all off `tools.SetInstanceOpsWritesEnabled`, frozen once in `cmd/instance_ops.go`: a card that says 只读排查 while the harness writes is consent that was never given. **`agent.ssh_ops.internal_ipv6`** (YAML only, no env; Go default off, **and set ONLY in `deploy/conf/config.prod.yaml`** since 2026-08-06 — it is a production network fact like `mysql.host_override` beside it, not a product setting, and the baseline has to stay usable from a developer machine, where the EIP is the only reachable address and `internal.api.ucloud.cn` does not route; `internal/config/prod_overlay_ipv6_test.go` pins both halves, because an overlay key that silently fails to merge would leave production dialling the unreachable address with nothing saying so) decides WHICH ADDRESS is dialled: on, only the HOST from `SshLoginCommand` is replaced by the instance's internal IPv6 (`tools.InstanceIPv6Resolver` → `UVPCFEGO.TransformIPv4ToIPv6` over `agent.sts.iam_url`, with `RegionId` read from the public `DescribeCompShareSupportZone` so no region table is hardcoded); the user and port still come from `SshLoginCommand`, because they belong to the image — a container image runs with `--net host`, so its sshd on 23 is bound on the machine's own stack, which is the same reason `EIP:23` works. Production runs in-cluster and has **no route to customer EIPs**: on 2026-08-06 three instances × two ports × two regions all timed out from the deployment while the identical transport connected in ≤1.20s from a normal network (and one box actively REFUSED that port from outside, so arriving packets would have come back refused, not silent). Pods are never rewritten — the rewrite fires only when the advertised host is a bare IPv4 literal, and a pod advertises `<podId>.podtcp.compshare.cn` with a cluster-side forwarded port. It **requires `agent.sts.iam_url`** and a failed rewrite is a **refusal, not a fallback** (`sshops.ErrInternalAddressUnavailable` → `engine.ErrInstanceOpsAddressUnavailable` → its own 「无法换算该实例的内网地址…与实例本身无关」 reply): dialling the address the setting exists because it cannot reach would report the timeout as the customer's firewall, the wrong-layer diagnosis #516/#522 removed. Note the address is a **VPC fabric mapping, not an address on the guest** — measured from inside two instances, `/proc/net/if_inet6` holds only `::1` and a link-local `fe80::`, so SSHing in to "check the IPv6" finds nothing and proves nothing; what the same probe did establish is that sshd LISTENs on the `::` wildcard for both 22 and 23. **`agent.ssh_ops.public_ipv6_prefix`** (YAML only, no env; empty = off, and empty is what the baseline ships) adds a SECOND candidate tried only when the internal address does not answer: the instance's public IPv4 expressed under a translation prefix, in both the simple low-32-bit form (`2002:a40:2e05::203.0.113.9`) and the RFC 6052 §2.2 /48 form (`2002:a40:2e05:cb00:7100:900::`) — examples use RFC 5737 documentation addresses, never a real instance EIP, because this repo is public, because "prefix + IPv4" names two different addresses and the one real mapping in this tree — `mysql.host_override` — embeds its IPv4 at bits 64–95, which is neither. It exists for a measured gap: `internal_ipv6` reaches cn-wlcb-01 and not cn-sh2-02, because the deployment runs in c5 and cn-sh2 sits behind c3 with no fabric route, so the mapping resolves and the dial goes nowhere. **The prefix was measured in-cluster on 2026-08-16** (two runs, no disagreement) and it closes exactly that gap: cn-sh2-02 answers on the simple low-32-bit form in ~30ms with an sshd banner while its internal address burns the full 4s timeout, and the control that makes it a ZONE result rather than one lucky machine is that an `Initializing` box in the same zone REFUSED the prefix address in ~34ms — a refusal is a packet that arrived and came back. It is also not a claim about the network: **the platform publishes the same prefix and the same encoding itself**, since every `*.podtcp.compshare.cn` name resolves to that prefix with the zone pod ingress's public IPv4 in the low 32 bits. (The old provenance doubts — reported from a document nobody can locate, decodes as the 6to4 block (RFC 3056) of a *private* `10.64/16` address, announced by no AS per RIPEstat `origins: []` / 0/320 RIS peers, no mention of 6to4/NAT64/SIIT in this repo or `uhost-compshare-api` — are all still true and all beside the point: this is a fabric-internal translator, not a public route. Instances carry no global IPv6 at all — measured in-guest, `/proc/net/if_inet6` holds only `::1` and a link-local `fe80::` — yet answer on the mapped address.) **`public-v6-rfc6052` has never answered anywhere** and is kept anyway on its measured cost: it fails `ENETUNREACH` in under a millisecond rather than timing out, and is only reached after `simple` has already failed, so deleting it saves nothing and removes the fallback if a zone ever uses the other layout. Ordering is the safety property, not the flag: the internal address is always the first candidate so a zone that works today dials the same address it dials today, and **the advertised public EIP is never a candidate in any position**. Candidates are chosen by a 4s TCP connect each (`perCandidateDialTimeout`; working dials connect in ≤1.2s, and three candidates still cost less than the 15.6–16.3s a single silent timeout used to burn), the probe closes immediately without authenticating, and if nothing answers the run REFUSES with each address and its failure class in the log rather than picking one hopefully. The **known, accepted** cost of that fixed order is a full 4s burnt on every cn-sh2-02 run, whose internal address never answers: a per-zone candidate table is the rules layer this design exists to avoid, caching the winning candidate would make a network change sticky (exactly what the EIP control catches), and a shorter timeout would start cutting off slow-but-working dials — so if the 4s ever has to go, the fix is racing the candidates concurrently and taking the first to answer, never reordering them per zone. Requires `internal_ipv6` and a parseable IPv6 — both are **boot errors**, because a setting that is present and silently doing nothing would let a failed edit be reported as a failed experiment. Candidates *after* the winner are then probed **detached and after the decision** (`probeRemaining`, `context.WithoutCancel`, log-only, zero added latency): first-reachable-wins means the prefix is otherwise never exercised on a zone the internal route already reaches — and that zone is the one that can judge it, since a prefix failure on a box known reachable from here is the prefix's, while a failure on a zone with no route at all is ambiguous between "no translator" and "translator that also cannot reach that cluster". The same diagnostic list also carries the **advertised EIP as a control** (`advertised-eip-CONTROL-never-dialled`): "this deployment has no route to customer EIPs" is the premise the whole design rests on, and any single measurement of it goes stale within the day because the fleet it was taken against turns over that fast (re-measured 2026-08-16: timeout on every target in both regions), so re-measuring it free on every run means a network change that opened that route shows up as a log line instead of leaving us routing around a fixed problem. The separation is structural — `diagnosticProbes` is built AFTER the address is chosen and its only consumer is `probeRemaining`, which logs; `dialCandidatesFor` never sees it and `TestTheAdvertisedEIPIsMeasuredButNeverDialled` asserts both halves against the same inputs. **What the tiers actually permit was re-measured on 2026-08-08** against the commands a real repair issues, and three things moved. (1) `fuser` was in no set in `guardrails.py` and in none of the 353 classification cases, so **every kill spelling classified `read_only` — executing with no consent card, and executing in READ-ONLY mode under a card that says 只读排查** (10/10 forms, including `sudo`/`nice`-wrapped and chained; `kill 6934` and `pkill -f x` beside them were correctly `mutating` the whole time). It is now `_KILL_FLAG_BINARIES`, the same shape as `_OUTPUT_FLAG_WRITERS` — a binary that reads by default whose side effect hides in a flag — anchored to the kill flag so `fuser 8188/tcp` / `-v` / `-n` stay reads. `apt-get clean`, `yum clean all`, `pip cache purge` and `systemd-tmpfiles --clean` were `read_only` for the same reason (no verb list named the verb) and are now `mutating`. (2) `rm -rf` was refused in every form, which made clearing a package or model cache — the most common real disk-full repair — reachable only one file at a time, each behind its own card; it now falls to `mutating` for **regenerable trees only** (`_REGENERABLE_TREE`: dot-caches, `__pycache__`, `/tmp/<x>`, `/var/tmp/<x>`, `/var/cache/<x>`), one absolute target, no metachars, unknown flags failing closed. A directory merely *named* `cache` is deliberately excluded. Measured over the 20 pinned must-refuse cases: 17 are rejected by `_is_regenerable_recursive_delete` itself and 3 (`/usr/.cache`, `/var/lib/.cache`, `/etc/.cache`) get the exemption and are still refused by the untouched system-path rule. (3) The `@@STEP` wire gained **`reason`**, carrying the harness's fine-grained disposition beside the three-valued `disposition` it collapses into: the server had nothing to read and answered every write-mode refusal with one sentence covering the destructive tier, the shape gate, an over-long command and the user's own decline, so neither the user nor the model could act on it. `instanceOpsRefusalReason` now maps the specific value and degrades to the old sentence on an empty/unknown one, so either side may be older. **The per-command write card carries its terminal reason too** (2026-08-14): `ConfirmWrite` answers `ConfirmationResult`, not a bool, so `user_declined` / `timeout` / `client_disconnect` / `delivery_failed` / `broker_cancelled` cross into the harness on the confirm reply and come back as their own `refused_confirmation_*` dispositions — the lane card had already been fixed for this (9 timeouts against 2 declines over 30 days) while the per-command card was still telling a user whose card expired that they had refused. `refused_not_approved` remains the honest degrade for an EOF, a malformed reply, or a supervisor/harness pairing where one half predates the field, and it must never be worded as a decision by the user; the two halves are separate deploy artifacts, so that pairing is a normal rolling-upgrade state, and the Go↔Python spelling contract is pinned by `TestHarnessAndEngineAgreeOnEveryConfirmationDisposition`, which reads the mapping out of `harness.py`. `TOOL_DESC_WRITE` additionally states the 25-second remote command bound and that anything slower (installs, downloads, builds) must be detached and polled — previously the detach protocol was stated only for image service launchers, so `pip install` was sent in the foreground and died at `exit 124` — and that a repair needing a reboot must stop, say under 未处理 that 需要重启实例才能继续, and **ask whether the user wants it restarted** — in those plain terms, because which layer performs the restart is a fact the MODEL needs (it is why the guest shell is off limits) and jargon to the customer; `平台级重启` / `platform-level restart` are pinned as forbidden on both write-mode surfaces, since an English phrase in the prompt is an invitation to translate it straight into the verdict. That boundary is deliberately narrow: the FileBrowser lesson is "never invent an application-specific platform entry, port, path or authentication scheme", NOT "never name a platform operation". Requiring supplied platform facts to establish a console control makes the reboot handoff unsayable — no fact key describes one — and turns the single correct handoff into 未核实. The question is load-bearing rather than decorative, because the verdict returns behind `finalReplyPrefix` and ENDS the turn: a statement alone leaves the user holding a diagnosis with no next move, while a question is something they answer on the following turn and the outer agent then serves with the existing `RebootInstanceWorkflow` (reachable — the shipped baseline sets `mutating_tools: true`). Do not "fix" this by routing the verdict back into the ReAct loop; that trades a one-turn handoff for the model restating or reinterpreting its own diagnosis. `instance-repair/SKILL.md` was **deleted**: `SYSTEM_PROMPT_WRITE` names no skill at all, so nothing could reach it; the read-only prompt's `Load the instance-triage skill FIRST` sentence was deleted too, since the tool-call census (89 calls over 11 runs, 0 `Skill`) shows it instructs an action that never happens. **`instance-triage/SKILL.md` and the `Skill` tool itself then went on 2026-08-14.** Unlike the repair playbook it WAS reachable — a probe with the harness's exact options loaded it and quoted its first heading verbatim, even though `Skill` is absent from `allowed_tools` and no permission callback is wired — so the question was never capability, it was election: two censuses (21/0, then 89 over 11 runs/0) found the model never chooses to open a playbook when it has a symptom and a tool that acts on the box. `TOOLS_BASE` is back to `[]` (no built-in EXISTS on the control-plane host, the original INV-9 posture) and `setting_sources` to `[]` (it was `["project"]` only so the CLI could discover the staged skill by walking up from cwd — the same walk that leaked this repo's CLAUDE.md and the operator's `~/.claude` into a customer-facing agent). `stage_skills` survives as `stage_clean_workdir`: it stages nothing now, but the chdir to an empty root outside the repo and `$HOME` is the second half of that leak defence and must not be folded away with the skills. Its acceptance test is the invariant itself — no `CLAUDE.md` reachable by walking up from the chosen root — and a candidate that leaks is rejected in favour of the next, with a REFUSAL if none is clean; `_stage_candidates` is what guarantees a next one exists when TEMP itself is the poisoned directory, and it must keep naming the platform's shared temp dirs (`/tmp`, `/var/tmp`, `%SystemRoot%\Temp`) explicitly rather than leaving the volume-root `.sshops-stage` as the only escape — that directory is a Windows-only hatch and an unprivileged Linux user cannot create it, which CI demonstrated by refusing to run at all. The lane now diagnoses from the two system prompts, the tool descriptions, the server-injected platform facts and the model's own knowledge — which is what all four observed correct diagnoses already ran on, every one with zero skills loaded. Stated cost: the file's ~11 KB of GPU/service/resource triage knowledge was never measured against a run lacking it, and now cannot be; reviving it means a task-prompt injection, not restoring the file. **Since 2026-08-14 the lane also ships a versioned REFERENCE CONTEXT** (`internal/opscontext`, `schema_version` 2) carried BESIDE the planner Task on the same stdin handshake — never inside it, so `hashTask` and the replay identity cannot change because a monitor value or an `observed_at` moved. It holds the user's own words (current + up to two prior reports, assistant prose deliberately excluded — it can carry an outer agent's unsupported inferences) and an allowlisted projection of the Describe response already fetched for the credential, plus `GetCompShareInstanceMonitor` and `DescribeCompShareSoftwarePort` (each 2s, sequential, best-effort: neither can fail a consented diagnosis, and each says so as its own `unknown` fact). Every item carries `source` / `observed_at` / `status`, and `unknown` / `not_observed` are values rather than omissions, because an absent fact must never read as a healthy one. **v2 exists because v1 shipped one key, `instance.reported_ports`, holding two claims at once**: it is split into `platform.instance_port_hints` (Describe's `Ports`) and `platform.tcp_forwards`, joined by `instance.declared_software` (`Softwares[].Name` and **nothing else** — the sibling `URL` embeds a live Jupyter token, so the harness independently drops the fact unless it is a list of plain strings) and `catalog.expected_software_ports` (`DescribeCompShareSoftwarePort`, correlated down to the software this instance declares, status permanently `reported`). None of the four proves a process is listening; only `guest.listeners` does, and it starts at `not_observed`. That endpoint takes **no instance argument** — its answer is the whole region's catalog, and the correlation against `Softwares[].Name` is the only thing making it about this instance — so when the declared list is unavailable the same data ships under a **different key**, `catalog.region_port_hints`, with its own coverage bit and a fence note saying the software in it is not known to be installed here; published under the instance-scoped name it would send the diagnosis after another image's FileBrowser. Version handling is asymmetric on purpose: an older harness rejects an unknown version and degrades to task-only (no facts, but no misread facts), a newer harness still accepts v1, and a FUTURE version is refused rather than guessed. The audit's honesty rule is that **only a row with `finished_at IS NOT NULL` states what was APPLIED** — `Begin` records what was REQUESTED before the harness exists, and `Finish` zeroes the context columns unless the harness emitted `@@OUTCOME context_applied`, which it does from INSIDE the SDK loop on the first message that PROVES a model turn began — an `AssistantMessage` with no `error`, or a `ResultMessage` with `is_error=false` and `num_turns>0`. Neither a `SystemMessage(init)` nor merely "an AssistantMessage arrived" qualifies: in the pinned SDK the CLI's own failures come back AS messages rather than exceptions (`AssistantMessage.error` carries `authentication_failed` / `rate_limit` / …, and `ResultMessage.is_error`/`num_turns` are required fields), so a rejected token surfaces as an error-tagged assistant message followed by `is_error=true, num_turns=0` and would otherwise attest that the context reached a model that never ran. Requires migration `0013`, and the audit INSERT is fail-closed, so the migration job must run BEFORE the binary deploys. **Migration `0014` adds `ssh_ops_audit.steps` (JSONB)** — the per-command detail behind `commands_ran`/`commands_refused`, so a run killed by a disconnect can be described by NAME rather than only by count, which matters because the shipped config sets `allow_writes: true` and the counts alone cannot separate an approved write that landed from a read that did. It stores the REDACTED display command (`guardrails.RedactPII` then `RedactOutputLeak`, the same two the live activity stream already applied, capped at 200 **runes** INCLUDING its 「…[截断]」 marker, so a stored command never exceeds the stated bound), plus tier, disposition, the fine-grained `reason`, exit code and byte count. Redaction happens at the PRODUCER (`summarizeAuditStepDetail`), not in the SQL writer where the task's redaction lives, so no `AuditWriter` — including the in-memory one — ever holds a raw command. Command OUTPUT is absent and must stay absent (INV-6), and `TestPersistedStepSummaryCarriesNoOutput` fails on ANY added field so the decision is made in review rather than by accretion. It is **not a resume cursor**: bounded at 120 rows and lossy by construction, it says what a past run did so a human can be told — and since 2026-08-16 the telling exists: a diagnosis that ends **without delivering its verdict** stashes what the server watched settle, and the NEXT turn emits it as one deterministic `StepEvent` (`InstanceOpsInterrupted`) on the activity stream. The boundaries are the design: it goes to the **user** and is never appended to `e.messages`, so the model cannot see, restate or act on it (`TestInterruptionNoticeNeverEntersTheModelsHistory`); it resumes nothing; and it **never says a command did not run** — what it lists is what SETTLED, the last command sent may have completed with its result never arriving, and the closing sentence 「可能不完整…无法确认」 is load-bearing rather than decorative (`TestInterruptionNoticeNeverClaimsACommandDidNotRun`). A `failed` **write** reads 「可能已修改实例，结果不确定」; an unknown tier is never asserted as either, since the two halves of the lane deploy separately. Counts are taken over every settled step, not over the (20-line) listing, and accumulation sits OUTSIDE `maxInstanceOpsStepEvents` — that cap is a UI budget and must not become a cap on what the user is told a killed run did. `InstanceOpsProgress` gained `Tier` for this: the audit row had carried it since 0014 while the live stream dropped it, leaving the engine unable to tell a read from an approved write it had just watched go by. It is deliberately **in-memory on the pooled Engine, not read back from `ssh_ops_audit`**: the case it serves is a browser disconnect, where the process and the session both survive; the case it misses (process restart, LRU/idle eviction) is one where the durable row is no more informative anyway — a killed process never runs `Finish`, so the row is orphaned at `started` with no steps, and the table carries no session id to look one up by. Making it durable is a different build (a reader interface, a DB handle on a path that holds only `InstanceOpsRunner`, an index on `request_uuid`, and a tenant-vs-session scoping decision), not a bigger version of this one. The wire carries it as `Type: "user_notice"` — a **new enum value on the existing step frame**, not a new frame or handshake, and nothing negotiates it: a frontend that predates it falls through its own switch and shows the frame's `Label` alone, which loses the detail and breaks nothing (`frame` console: one `case 'user_notice'` in `AIAssistant/formatters.js` recovers it). The trace recorder records a `StepUserNotice` as **nothing**, in an explicit case rather than by falling off the end of its switch: sent as `StepBlocked` it synthesized a `ToolCallTrace` for a tool that never ran and stamped it error/blocked, so every turn after an interruption read as a turn where a tool had been refused — and tool error counts are what an incident is triaged from. **Boundary, not a gap to close later**: it does not survive a process restart or an LRU/idle eviction, and that is where it stops, and "skip what already ran" would need a complete record attesting each command's EFFECT rather than its exit status. Ordering is the same as `0013` — apply BEFORE the binary — because `Finish` is one `UPDATE` and a missing column fails the whole statement, losing the disposition and counts and orphaning the row at `started`; the reverse (old binary, migrated DB) just leaves NULL. **That ordering is now checked rather than only documented**: with the lane enabled, `serverInstanceOpsRunner` runs `store.VerifySSHOpsAuditSchema` — one `SELECT <every writer column> FROM ssh_ops_audit LIMIT 0` — and any failure logs `ssh-ops disabled: audit schema unavailable…` and **disables the lane, leaving the server running**. The un-probed failure was silent, late and on the wrong side of the safety boundary: `Begin` names only 0011's columns, so on a partially migrated table it SUCCEEDS, the harness enters the instance (and under `allow_writes` changes it), and only `Finish` errors — losing the disposition, err_class and counts together. **Which failures are fatal is a deliberate layering**: core tables missing → boot failure (`store.VerifySchema` at `OpenMySQL`); SSH-ops *configuration* wrong (`harness_path`, `base_url`, key, `internal_ipv6` without `iam_url`, unparseable `public_ipv6_prefix`) → boot failure, because the artifact is broken and restarting reproduces it; the `ssh_ops_audit` table or a column missing → lane disabled, because nothing is wrong with the artifact and one migration job fixes it without a new image. The boundary the audit exists for is *audit unavailable → do not enter a user's instance*, not *→ nobody may chat*, and a nil runner delivers the first completely (tool absent from `centralAgentToolWindow`, write mode unadvertised in the prompt, INV-10's inert refusal on a replayed call, no credential fetched, no SSH dialled). Failing the boot would instead be a full outage: `deploy/k8s/deployment.yaml` is `replicas: 1` with `strategy: Recreate`, so the old Pod is gone before the new one starts and there is no version left serving. Recovery from a deploy that landed before its migration is run-the-migration-then-redeploy; the probe is **boot-only and nothing polls**, deliberately — a background re-check would add a moving part to buy an action the operator is already taking. The probe deliberately is NOT part of `store.VerifySchema`, since the lane is optional and a deployment that never enables it must not be blocked on its migrations (same posture as `agent_traces` / `VerifyTraceSchema`). `internal/store/ssh_ops_audit_postgres_test.go` runs the real write against PostgreSQL — the unit tests cover JSON encoding, redaction and the size ceiling, none of which touch a database, so nothing had ever executed the statement that stores the detail; it asserts the column is `jsonb` (not a bytea-escaped or double-encoded string), that no steps stores NULL rather than `[]`, and reproduces the orphaned-at-`started` row on a database missing 0014 before asserting the probe refuses first. |
-| `USE_REACT_RESULT_PROJECTION` | `1` | Compresses large read tool results (list endpoints) before re-feeding ReAct. **Go code default off; deploy template ships it on.** |
-| `MYSQL_DSN` | DSN string | PostgreSQL libpq URL (env var name kept for compat). Required by `compshare-agent server`, the only entrypoint. |
+```text
+HTTP/WS request
+  -> session engine from internal/agentpool
+  -> engine.ChatWithOptions
+  -> internal/agentruntime ReAct loop
+  -> model tool call / tool result / final answer
+  -> response gateway
+  -> assistant row + canonical transcript metadata
+```
 
-#### SSH-ops executable classification
+`internal/agentruntime` owns round progression and runtime events. `Engine`
+assembles product tools, context and policy around that loop. Do not add a
+second planner, semantic router, hidden answerer or alternate turn executor.
 
-The interpreter rule in this subsection supersedes the older venv/Conda examples in the long
-`COMPSHARE_SSH_OPS` history row above.
+Canonical transcript replay is always enabled. Each completed turn persists a
+bounded `agent_transcript_v1` containing the model-visible user, assistant,
+tool-call and tool-result messages. A later turn replays that transcript; it
+does not reconstruct semantic history from summaries.
 
-Unknown programs outside `/bin`, `/sbin`, `/usr/bin` and `/usr/sbin` require a confirmation card;
-their path alone is not evidence of a read-only effect. An application interpreter is classified by
-the effect of its invocation instead: a Python/Conda `-c` or `-m` probe may run immediately when
-`_is_readonly_py_invocation` structurally proves it read-only, regardless of the environment path.
-That proof covers the expressed Python payload, not the executable's identity: `/tmp/python` and a
-Conda interpreter are intentionally treated alike inside the tenant's own guest. Unproved interpreter
-payloads and other unknown executables still require confirmation; production write mode does not
-confirm commands classified `read_only`.
+The model-visible context card contains only current execution context such as
+a selected instance or a pending candidate. It is not a second memory, and
+semantic summaries or fact caches must not be injected beside the transcript.
+The answer verifier keeps a model-invisible evidence ledger. Workflow forms,
+confirmations, idempotency records and selected-instance provenance are
+transaction/authorization state, not semantic memory, and remain deterministic.
 
-The write gate follows an operations boundary rather than treating every high-impact action as
-unavailable: observe the pre-state, show the exact change, preserve a rollback where practical, and
-verify afterwards. Reversible guest-local changes such as disabling a non-management service,
-`swapoff`, a single `chmod`/`chattr`, or a removable `sudoers.d` drop-in are `mutating` and therefore
-require confirmation. Hard refusal is reserved for data/metadata destruction with no reliable undo,
-boot/login/SSH/network recovery loss, raw-device operations, power actions, credential-bearing command
-text, and actions that leave the guest for another control plane. The main `/etc/sudoers` remains a
-recovery boundary; `/etc/sudoers.d/<file>` does not inherit that blanket rule.
+History is bounded by size, not message or exchange counts:
 
-### Canonical transcript and context
+- `maxReplayedHistoryRunes` budgets prior exchanges.
+- `maxAssembledRequestRunes` charges messages plus the serialized tool window.
+- assembly removes oldest history before oldest current-turn tool groups;
+  system messages, the current question and tool-call/result pairing remain
+  intact.
 
-`canonical_transcript` owns one complete pipeline: capture, persistence in the
-assistant row's `messages.metadata` (`agent_transcript_v1`), and replay.  A
-retained history exchange contains its user/assistant text and, when applicable,
-the captured tool-call/tool-result sequence.  That transcript is the sole
-history for **tool semantics**; no parallel digest or fact cache reconstructs
-what the model previously did.
+ReAct result projection is always enabled for supported large read results. It
+changes only the model-visible copy; trace keeps the full structured result and
+records whether projection occurred.
 
-The current user message remains raw for routing and tool selection. Historical
-user and assistant text are replayed through the same role-aware redaction used
-by persistence, so a hot process and a cold rebuild see the same endpoint text.
-This deliberately means a later turn cannot recover a previously redacted email,
-phone number, credential, or protected operational value from history.
+## Tool and workflow boundaries
 
-This is intentionally **not** Pi-style LLM summary compaction yet. History is
-bounded by rune budgets: it keeps the newest complete exchanges, sheds older
-tool detail before plain dialogue, and finally drops whole oldest exchanges if
-plain dialogue alone exceeds the budget. It emits no compressed summary prefix
-and does not revive `ConversationDigest`, `RecentFacts`, `TaskSnapshot`,
-`UpdateTaskState`, or model-visible `VerifiedKnowledge`. `renderAgentContextCard`
-contains only execution/interaction state a transcript cannot carry: live
-selection, pending selection cards, and per-turn continuity notices.
+The model chooses read capabilities and knowledge retrieval in the loop.
+Production knowledge retrieval always uses the remote MCP configured at
+`agent.retrieval.mcp_url`. The in-process retriever is for tests and offline
+evaluation only.
 
-The flag is frozen at boot by `engine.SetCanonicalTranscriptEnabled`. With it
-off, nothing is captured, redacted, serialized, or read as a transcript, and no
-old semantic layer comes back. An explicit YAML value outranks `os.Getenv`, so
-changing it requires editing the YAML and restarting. Durable `CommitTurn` and
-`hashCommit` intentionally remain outside this legacy-path transcript pipeline;
-durable turns are currently off.
+There is no keyword topic router or lexical jailbreak/off-topic pre-block in
+front of the Agent. Scope belongs in the system prompt. Deterministic early exits
+are reserved for explicit product protocols such as a user asking to transfer to
+human support.
 
-Unknown values for any of the above are logged as warnings and treated as off — do **not** silently coerce them. The exception is `COMPSHARE_DURABLE_TURNS`, where an unknown value fails the boot outright.
+Model-visible read capabilities live in `internal/capability/`. Each capability
+owns its typed request, schema contract, handler and renderer. Do not recreate a
+parallel route registry.
 
-**STS credentials are not env vars in the current deploy.** `agent.sts.service_ak` / `service_sk` / `default_role_urn` are written literally into `deploy/conf/config.local.yaml`. The loader does support `${VAR}` substitution (`internal/config/config.go`), so `COMPSHARE_SERVICE_PUBLIC_KEY` / `COMPSHARE_SERVICE_PRIVATE_KEY` / `COMPSHARE_DEFAULT_ROLE_URN` still work as placeholder names — but the shipped config uses none of them.
+Mutating operations live in `internal/workflow/` and are proposed through the
+central Agent. They remain subject to all of these controls:
 
-## Knowledge base — offline fixtures
+1. the deployment authorization `agent.authorization.mutating_tools`;
+2. exact target resolution and selected-instance provenance;
+3. permission and policy checks;
+4. a user confirmation card;
+5. workflow idempotency and write-side revalidation.
 
-Production no longer loads or packages `deploy/kb/`; `compshare-kb` owns corpus composition, embedding, reranking, releases and digests. The directory remains only for offline retrieval evaluations and historical rebuild scripts. Its artifacts are byte-pinned by LF-normalized SHA256 in `internal/knowledge/corpus_digest.go`:
+Destructive/L2 actions stay refused regardless of the mutating-tools setting.
+Do not turn these controls into prompt instructions or let the model attest its
+own authorization.
 
-- `stage2b_w0.jsonl` → `CorpusDigestExpected`
-- `embeddings_<digest>.jsonl` (text-embedding-3-large, 3072d) → `EmbeddingDigestExpected`
-- `embeddings_<digest>_qwen3-embedding-8b.jsonl` (qwen3, 4096d) → `EmbeddingDigestExpectedQwen3`
+Editable confirmation forms and guided creation are stable protocol features.
+The server advertises `confirm_form_v1` and `guided_create_v1`; a client must opt
+in on the turn before it receives those shapes. They are not server rollout
+flags.
 
-Offline loaders reject digest mismatches. New production knowledge releases must be built and published through `compshare-kb`.
+Malformed model-owned read-tool arguments use
+`status=needs_input,next_step=correct_tool_call` only with
+`INVALID_TOOL_ARGUMENTS`. They must not be converted into a question to the
+user. Incomplete provider output (`finish_reason` truncation or partial tool
+calls) is never persisted or executed as a normal answer.
 
-## Architecture
+## In-instance diagnosis
 
-### Entry path
-`cmd/agent.go` is `main()` and nothing else; `cmd/server.go` is the single entrypoint. HTTP、缓存冷建和 durable rehydrate 都通过 `engine.NewSession` 创建同一个中心 AgentRuntime。`cmd/trace.go` 只负责 trace writer 与各运行开关的解析，不再创建独立 Router。
+`DiagnoseInstanceInternals` is an optional SSH-ops lane. It requires:
 
-### Engine (`internal/engine/`)
-Runs a single central agent loop (`maxReActRounds=20`) with per-turn budgets: `maxReadExpensiveCallsPerTurn=30` for read tools, and for retrieval `maxSearchKnowledgeCallsPerTurn=4` (Agent decisions to search) against `maxRetrievalQueriesPerTurn=8` (actual retrievals). A `SearchKnowledge` call is not one fixed query: when the turn has prior conversation, `planKnowledgeQuery` (`internal/engine/knowledge_query_planner.go`) resolves references against that history and fans the call out into 1–3 contextualized retrieval queries, merged into one evidence ledger; a first-turn question or any planner failure (transport, parse, empty result) falls back to the Agent-supplied query unchanged, so retrieval availability never depends on the planner call succeeding.
+- tenant-scoped STS credentials;
+- a configured Python/Agent-SDK harness;
+- audit migrations `0011`, `0013` and `0014`;
+- explicit entry confirmation and, when writes are enabled, per-command write
+  confirmation.
 
-**Context is bounded by size, not a history-count ceiling.** `maxReplayedHistoryRunes` (48,000) budgets replayed exchanges at turn entry; `maxAssembledRequestRunes` (100,000) bounds one assembled request — messages **plus the serialized tool window**; and `maxRawHistoryRunes` (twice the replay budget) ensures neither raw source list silently becomes the smaller memory window. Assembly sheds history before oldest in-turn tool groups; it never sheds the current question or leading system block, and an assistant `tool_calls` message always travels with its results. This is bounded replay, not an LLM summary prefix: do not call it “完整对话” or “Pi compaction”.
+The lane fails closed when audit storage is unavailable. A missing audit schema
+disables only this lane and logs the missing migration; it does not take chat
+down. Destructive commands, multiline/opaque command shapes and guest-shell
+reboot remain refused. The definitive command policy and deployment contract
+live in `deploy/ssh_ops_harness/README.md` and its tests—do not duplicate their
+full history in config comments.
 
-`config.MaxSessionTurnsCeiling` remains 20, but it is now a product quota rather than a model-history window. Raising it still needs cold-rebuild work: `agentpool.buildEngine` reads a fixed 100 oldest persisted messages, so a restart / 30-minute idle / LRU eviction would lose recent context beyond roughly 50 turns. Durable has a separate `committedTailTurnLimit = 61` and is off. The Agent receives compiled `AgentContext`, selects read capabilities or proposes writes, and observes tool results in the same loop. Read capabilities may return deterministic evidence/rendering after the Agent selects them. Mutating operations remain blocked unless `COMPSHARE_ENABLE_MUTATING_TOOLS=1` and must pass resolver, confirmation, permission and action-journal gates.
+Production address routing is configured in `config.prod.yaml`: UHost internal
+mapping first, the translated public-IPv4 candidate second. The advertised public
+EIP is diagnostic-only and is never selected as a dial target.
 
-Malformed model-owned read-tool arguments return `needs_input` with `next_step=correct_tool_call`, not a user-facing clarification; that next step is valid only for `INVALID_TOOL_ARGUMENTS`. Provider `finish_reason` values other than normal completion/tool-call reasons fail closed: incomplete content and partial tool calls are never persisted or executed, the loop makes at most one recovery attempt, then returns a clear truncation refusal.
+If a browser disconnects during a diagnosis, the current process may show a
+bounded deterministic notice on the next turn. It does not resume or replay
+commands, does not enter model history, and does not survive process/LRU loss.
 
-Force-tool / hard-block priority chain (highest first) is documented inline in `engine.go` and **must be kept in sync** when adding new force paths: unsupported-historical-monitor canned reply > monitor-recall force tool (the account-billing-unsupported keyword hard-block was removed 2026-06-10 — that intent now dispatches to ReAct). Forced `tool_choice` is guarded at **runtime**, not by a per-model table. `llm.Client.Chat` retries once with `auto` when the provider rejects a forced tool_choice in thinking mode, and reports the silent degrade via `ChatResponse.ForcedToolChoiceDegraded` (`internal/llm/client.go`). A new force-tool path should read that flag and fall back, rather than pre-checking a capability. The static `llm.Capability` matrix that used to serve this was **deleted 2026-07-31**: it had no production reader, no production code sets `ChatRequest.ToolChoice`, its `ds-v4-flash` row had already needed a manual re-probe to flip `false`→`true` (2026-05-08 → 2026-06-08), and `gpt-5.6-terra` — the default answerer since 2026-07-24 — never had a row at all, so `LookupCapability` returned the zero value for it. The retry cannot go stale on a model nobody re-probed; the table could, and had.
+## Configuration
 
-### Read capability catalog (`internal/capability/`, `internal/intent/`)
-Model-visible read capabilities live in `internal/capability/read_*.go`. Each owns its own typed request struct, its field contract (a `schemaNode` in `field_contract.go` that is the **single source** for the model tool schema, runtime enum/minimum validation, and the consistency test), its handler and its renderer; `ReadDefinitions()` (`read_catalog.go`) is the catalog. The engine dispatches a read tool through `executeConcreteReadCapability` → `capability.MigratedRead(action)` → `RegisteredRead.Run` — there is **no separate route registry**. The legacy intent-based route stack (`internal/routing`, `cmd/routegen`, the `route.yaml` manifests, `DispatchRoute` / `IsRoutingIntent` / `RoutingPromptFragments`, `RouteHandlerForKey`) was **physically deleted in P6**: adding a read capability now means authoring a `ReadCapabilitySpec` vertical, not a route manifest, and nothing generates or reads `routing.GeneratedRoutes()` anymore. The diagnosis chains are now a hand-written registry (`internal/diagnosis/registry.go`); the old `internal/skills/<name>/SKILL.md` + `cmd/skillgen` generate-from-frontmatter path was deleted in P6 along with the route stack (no `internal/skills`, `cmd/skillgen`, or `SKILL.md` remains in the tree). The legacy `capabilityRegistry` / `capability_registry.go` / `IsCapabilityIntent` / `DispatchCapability` were retired in #115; **capability** now names a typed read/action Capability (`internal/capability`) or model capability (`llm.Capability`, e.g. `supportsObjectToolChoice`).
+`deploy/conf/config.local.yaml` is the shared deployment baseline.
+`config.prod.yaml` extends it with production-network overrides. YAML is the
+source of truth; environment variables remain compatibility fallbacks for the
+small number of operational controls implemented by `RuntimeGetenv`.
 
-### Workflow engine (`internal/workflow/`)
-Multi-step mutating flows (create/start/stop/reboot/reset-password/rename) live as `*Workflow` types. Confirmation is delivered via the `engine.ConfirmFunc` callback; the only implementation is the server's, which brokers the decision back over the WS/SSE transport (`internal/httpapi/confirm_broker.go`).
+Only genuine operational or authorization choices remain configurable:
 
-**`StartCompShareInstance`'s `WithoutGpuSpec` is not a boot flag** — it is a resize wearing one, and that is the whole reason the 2026-08-18 incident (`uhost-1twm1ph0l7of`) was possible. Upstream commits a resize to 0 GPU / 2C/4GB (archiving the original into the instance's `SrcInstanceConfig` resource label) and only then boots; the resize is not rolled back if the boot fails, and restoring the original needs the zone to have that GPU again. So the parameter is most attractive in exactly the situation where it cannot be undone — which is what happened: a customer's 3090 had no capacity, the Agent explained that correctly, asked whether to retry, and answered their bare 「要」 with `WithoutGpuSpec:"A"`.
+| Setting | Purpose |
+|---|---|
+| `agent.authorization.mutating_tools` | authorize confirmation-gated product writes |
+| `agent.retrieval.mcp_*` | remote knowledge MCP endpoint/token/timeout |
+| `agent.trace.*` | completed-turn trace sink and retention inputs |
+| `agent.ssh_ops.*` | optional in-instance lane, permissions and network routing |
+| `agent.ocr.*` | screenshot interpretation |
+| `agent.feishu.*` | Feishu adapter and public-channel scope |
+| `agent.rate_limit.*` | tenant request/token budgets |
 
-**The control point is the confirmation card, and that is a deliberate choice measured against the alternatives.** A per-field provenance gate was built and deleted: it answered "this field" rather than "this class of behavior", and any gate of that shape must recognize the user's intent from their words — a keyword matcher, however short the word list gets.
+Do not add a feature flag for code that has only one supported production
+behavior. A rollback that requires restoring deleted semantics is a code revert,
+not a boolean branch kept forever.
 
-- **The card.** `extractInstanceSummary` describes the instance as it is NOW, so on the incident's card the console's one labelled spec row read `GPU 3090 × 1` — on the very card that removed the 3090 — while the four `without_gpu_*` keys carrying the replacement had no console label at all and rendered as raw field names (`without_gpu_memory 4096`). The card was not merely thin, it actively said the opposite of what it was about to do. Those keys are gone, replaced by one `规格变更` before→after line plus a `注意` sentence, with `GpuType`/`GPU` deleted from that card; a plain start's card is unchanged (`TestStartInstance_NormalStartConfirmIsUnchanged`). This **depends on the console rendering an unmapped key under its own name** (`formatSummaryEntries`' fallback branch), which is why the two new keys are Chinese: derived from `AIAssistant/formatters.js`, not verified in a browser. A console-side label map would make it independent of that fallback.
-- **One shared prompt rule**, in `segmentCentralAgentBehavior` where the repo puts rules common to every write (`WorkflowAgentDescription` deliberately carries only per-operation boundaries — `TestWorkflowAgentDescriptionsContainOnlyOperationBoundaries`). The pre-existing line was widened from 「可选筛选条件」 to 「可选参数」, since 筛选条件 reads as query facets and this parameter was optional but not a filter; a new line states that a failed operation is reported and handed back rather than made to succeed by changing 规格/机型/卡数/可用区/镜像/计费方式/运行模式. **Measured NOT to change this scenario** — see below. Keep it as a correctly-scoped general rule; do not cite it as the protection.
+## HTTP and persistence
 
-**What was measured, and what was not.** A replay probe (real model, real prompt and tool window, mock executor, history seeded through `RehydrateHistory`) put the incident's four prior turns and the bare 「要」 to `gpt-5.6-terra`, 10 runs per arm: unmodified main proposed `WithoutGpuSpec:"A"` in **8/8** completed runs with a reply byte-identical to the incident's; with the prompt rule **8/10**, and neither miss was the rule (both were an unrelated target-verification failure); with the deleted gate **0/10**, but 2 of 3 inspected runs then dead-ended on the one-write-per-turn guard with an internal message, because `executeActionProposal` marks the turn's write as spent BEFORE resolving, so a rejected proposal the model wants to correct cannot be re-proposed. That last one is a **general defect worth fixing on its own** — it applies to every rejection channel, not to this parameter. The probe **could not test the card at all**: its `confirmFn` returns true unconditionally, which hard-codes away the very control point the fix relies on. Whether an accurate card stops a user is not measured and is not measurable from here.
+`cmd/server.go` exposes `POST /`, WebSocket chat, and `GET /healthz`. Gateway
+identity comes from `top_organization_id`, `organization_id` and `request_uuid`;
+business fields use the existing PascalCase API contract.
 
-`WithoutGpuSpec`'s own schema description now states what it does (a resize, the archived original, recovery depending on availability) rather than only listing the tiers, and the tool description no longer says 「用于普通开机或无卡开机」, which framed a spec change as a second flavour of the same act.
+Per-session engines live in `internal/agentpool` (bounded LRU with idle expiry).
+Persisted user/assistant rows rebuild a cold engine, and assistant metadata
+reattaches the canonical tool transcript. PII/credential redaction must remain
+centralized in `internal/security` and `internal/sanitizer`, with the same
+role-specific representation on hot and cold paths.
 
-Two things this deliberately does NOT do. There is no mechanical guarantee — the model can still choose to fill the parameter, and the confirmation card is the backstop; that is the trade taken over a provenance gate, which would have refused any user who asked for no-GPU mode without using the word 无卡. And nothing was done about recovery, where the finding is: `SrcInstanceConfig` is not surfaced by `readprojection`, a 0-GPU instance's projection drops `gpu_type` entirely, and no call in this repo passes `WithoutGpu: true`. Measured before deciding: of 2252 real sessions, 48 mention 无卡 and 7 are recovery-shaped, and **none of the 7 needs the original numbers** — a plain start on a 0-GPU instance makes upstream read the archive back itself (`resizeInstanceNormal`), and two sampled production replies already tell users exactly that. Projecting the archive cannot help in the only case where that fails, because both read the same label.
+The store is PostgreSQL via `database/sql` and `lib/pq`. Historical names such
+as `mysql`, `MYSQL_DSN`, `OpenMySQL` and `MySQLMessageStore` remain API/config
+compatibility names; do not infer the database type from them. Apply all SQL
+migrations in lexical order before deployment. See
+`deploy/migrations/README.md`.
 
-### Knowledge / RAG (`internal/knowledge/`)
-Production uses `MCPRetriever` exclusively. `SearchKnowledge` calls `search_knowledge`; `ReadChunk` presents the corresponding short-lived `search_id` to `read_knowledge_chunk`. The in-process Retriever remains for offline evaluations and unit tests, not runtime fallback. The production Agent's **system prompt** is built from the Go segments in `internal/prompt/segments.go` (assembled by `builder.go`).
+SSE final answers are attempt-atomic and final-answer-atomic, not true upstream
+token streaming: failed retries and incomplete output must never leak as a
+prefix. Tool/confirmation activity uses separate step frames.
 
-### Diagnosis (`internal/diagnosis/`)
-Read-only diagnostic chains. **`DiagnoseBilling` is the only model-visible one** — `registeredDiagnosisActions` and `chainRegistry` in `registry.go` both hold exactly that one entry, so an unadvertised diagnosis name cannot resolve to a chain (`TestDiagnosisRegistryHasNoUnadvertisedChains`; model-invisible ≠ unreachable). The init-failure, GPU-not-detected, image-issue, and port/firewall chains were deleted outright in the pre-P7 convergence (no diagnosis value, or superseded by the central Agent gathering evidence via `SearchKnowledge` + `DescribeCompShareInstance`).
+## Observability
 
-The SSH chain is the exception worth knowing: `SSHFailureChain` / `SSHFailureChainWithDescribeResult` still exist and still run, but **not as a `DiagnoseSSH` tool** — `internal/capability/read_instance_access.go` constructs the chain directly, so SSH reaches the model as `ReadCapability_instance_access`. A `DiagnoseSSH` name grants nothing (`TestVisibleRegistryForSubset_DiagnosisToolsOnly`).
+`internal/httpapi/trace_recorder.go` writes one content-free trace per completed
+turn through `internal/observability`. Trace may contain model/provider IDs,
+finish reasons, token counts, tool actions/error classes/latencies, prompt
+section IDs, request-size peaks, selected-instance provenance and workflow
+outcomes. It must not become a second conversation database: no raw prompt,
+reply, tool payload, credential or canonical transcript.
 
-Boundary rule baked into prompts: read-only self-check commands may be suggested as user actions; commands that change environment must be marked as **optional fixes**, never auto-executed. Source-of-truth notes:
-- The SSH precheck is **cloud-side**, not an end-to-end reachability test: it does not open a TCP connection or enter the guest OS. It must match the exact requested `UHostId` (`instanceAccessHostForID`); a non-empty `SshLoginCommand` counts as an endpoint only when its host/port are complete and agree with `IPSet` (UHost) or the internal-port-23 `TcpForwards` mapping (Pod, `podTCPForwardPresent`). `DescribeCompShareSoftwarePort` exposes image application ports, not SSH.
-- Current upstream initialization state is `Initializing`; legacy `Install` is accepted only for response compatibility. CPU/memory/system-disk monitoring values are risk signals, not causal proof. Missing monitoring data must surface as "无法确认", never as 0%/healthy.
+When adding a tool failure, use the existing closed error-code/error-class
+contracts rather than parsing error messages. Preserve three-state metrics where
+absence differs from zero.
 
-### Observability (`internal/observability/`)
-`observability.Writer` writes one completed-turn record (JSONL or PostgreSQL). `chatTraceRecorder` in `internal/httpapi/trace_recorder.go` wires retrieval, renderer, tool, workflow, token-usage and the Engine's content-free context snapshot into that record; `cmd/trace.go` only builds the writer (`traceWriterFromEnv`, `multiTraceWriter`) and parses runtime flags. Workflow steps remain on the per-turn recorder and are folded into the same completed-turn record — trace sinks never receive independent step events. Trace intentionally does not persist raw prompts, replies, tool payloads, or canonical transcripts; use the authorized message/transcript records for a semantic incident investigation. It does retain context-source IDs, prompt-section IDs, message-assembly peaks and trim status so request-shape failures can be diagnosed without making trace a second conversation database. `trace.v0.11` additionally records the configured model ID, OpenAI-compatible client family, provider finish reasons (including `unspecified` after a successful response with no native reason), paired tool latency, and the selected instance's source/freshness at both turn start and end. Tool latency is absent rather than zero when one endpoint was not observed; a present zero is a real sub-millisecond measurement. HTTP and durable recorders use the same closed-set tool-error classes. The PostgreSQL sink logs content-free health counters every 100 enqueues, once on first queue loss, and at shutdown, so queue/insert loss cannot silently bias later optimization or create a log storm under overload. Retention: `DefaultTraceRetentionDays`, cleaned on each run. Historical router fields remain readable for old trace records but are no longer produced by the current runtime.
+## Repository conventions
 
-### Other notable boundaries
-- `internal/security/secret_boundary.go` + `internal/sanitizer/` — keep redaction logic centralized; do not inline new redaction in tools.
-- `internal/policy/leakage.go` — citation-leakage guards used by the cited-strip pass in the engine.
-- `internal/governance/ratelimit.go` — QPS/daily limits live in `agent.rate_limit` config and are enforced for LLM, mutating, and read-expensive call classes.
-- `internal/entity/` — only Go package run with `-race` in CI; concurrent registry access is a known concern there.
-- `internal/ocr/` (screenshot understanding, server/WS-only) — when `SendCSAgentChat` carries an `Image`, a Qwen3-VL call (`agent.ocr.model`, e.g. `qwen3-vl-flash`; empty = disabled) interprets the screenshot to **structured text** that is injected as context (it is NOT plain OCR, and the raw image never reaches the main model). The vision prompt is `ocr.DefaultPrompt`, overridable via `agent.ocr.prompt` (empty/whitespace = default, never an empty instruction). Trust boundary: recognized screenshot text is **untrusted reference context** — fenced via `engine.WrapScreenshotContext` (the single producer for both the live turn and the persisted/rehydrated copy), interprets-but-does-not-prescribe-fixes, runs through `RedactPII`, and feeds only conversation history (never routing/force-tool/hard-block, which use the raw user message). It must never auto-drive a mutating action; the confirmation gate / `COMPSHARE_ENABLE_MUTATING_TOOLS` remains the hard stop.
-
-## HTTP service
-
-`compshare-agent server` is the only entrypoint; it creates the central AgentRuntime via `engine.NewSession` over the engine/knowledge core (the standalone Planner/intent-router was deleted in P6, and the `cli` demo subcommand in 2026-08).
-
-- Entry: `cmd/server.go`. Routes: `POST /` (Action-routed) + `GET /healthz`.
-- Identity is taken from the request body (gateway-injected), not headers: `top_organization_id` / `organization_id` (uint32, snake_case) and `request_uuid` (string, snake_case, auto-generated if missing). Business fields stay PascalCase (`Action`, `SessionId`, `Message`).
-- Phase-1 Actions: `GetSession` / `CreateSession` / `Chat` (SSE) / `GetMeta` / `Feedback`. `SessionId` is mandatory on every session-scoped Action; the frontend persists it in localStorage.
-- Per-session `*engine.Engine` lives in `internal/agentpool` (LRU 200 / 30min idle). HTTP path skips `engine.Init()` and rehydrates history from PostgreSQL via `engine.RehydrateHistory`.
-- SSE uses the same `OnTextDelta` chain, but it is **attempt-atomic and final-answer-atomic**, not live upstream token streaming. The LLM client buffers each upstream attempt until a successful EOF; the engine buffers that accepted response until the response gateway accepts or replaces it; only then are final-answer chunks written to SSE. Failed retry prefixes, partial length-stopped output, tool-call text, and intermediate ReAct `StepEvent`s are never exposed in phase 1.
-- Persistence: PostgreSQL via `database/sql + lib/pq` (migrated from MySQL/TiDB; the `store.OpenMySQL` symbol, `internal/store/mysql.go` file, `mysql` config key, and `MYSQL_DSN` env var name are all kept for compat but open a `postgres` connection). Schema in `deploy/migrations/0001_init.sql` (PG-dialect; apply with `psql`). `messages` is INSERTed twice per turn (user immediately, assistant placeholder before LLM call) and UPDATEd once on SSE done — never per-token. DDL is run by ops, not the binary.
-- Credentials: HTTP path prefers STS AssumeRole when `agent.sts.service_ak/service_sk` are set. If they are empty, it falls back to legacy `agent.public_key/private_key` for local/demo use. Rate limiting is keyed by `(top_organization_id, organization_id)` pair, not by static public key.
-
-## Conventions specific to this repo
-
-- The runtime is **read-only by default in Go code** (the binary refuses mutating tools unless the runtime parser sees `COMPSHARE_ENABLE_MUTATING_TOOLS=1`). The production `deploy/conf/config.prod.yaml` inherits `agent.features.mutating_tools: true`, and `RuntimeGetenv` maps that YAML field to the parser. Destructive / L2 actions (delete, terminate) stay refused regardless (`internal/tools/safe_executor.go`). Never set the flag in tests; mutating tests use the workflow registry directly.
-- Static FAQ text was removed from the ReAct prompt — platform knowledge flows only through the RAG retriever. Do not reintroduce `FAQContent` / `ReadOnlyFAQContent` injection (`internal/prompt/builder_test.go` has reverse assertions).
-- Shadow QA per-round configs under `eval/shadow_qa/**/agent.yaml` and `.env` files are git-ignored and contain real keys — never commit anything matching those globs.
-- The intent-router Planner and its grouped prompt examples were removed in P6 (`internal/intent/planner.go` and `planner_prompt_test.go` no longer exist). The central Agent's system prompt is assembled from `internal/prompt/segments.go`; change it behind the prompt-snapshot tests (see `docs/dev/prompt-change-checklist.md`).
-- `SecurityToken` must be included in API signing params before computing the HMAC-SHA1 signature. See `internal/tools/README.md` §6 for the six common pitfalls.
+- The central system prompt is assembled from `internal/prompt/segments.go`.
+  Follow `docs/dev/prompt-change-checklist.md` for prompt changes.
+- Platform facts come from tools or RAG. Do not add static FAQ text or model-name
+  mappings to the system prompt.
+- `internal/entity` is race-tested in CI; keep registry access synchronized.
+- `SecurityToken` participates in API signing parameters before HMAC-SHA1. See
+  `internal/tools/README.md`.
+- Preserve unrelated dirty-worktree changes. Stage explicit files, never
+  `git add -A` in a shared workspace.

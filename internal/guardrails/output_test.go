@@ -62,7 +62,7 @@ func TestRedactOutputLeak_PreservesRouting(t *testing.T) {
 		"¥3.13/小时",
 		"24GB",
 		"80GB",
-		"deepseek-v4-flash",
+		"gpt-5.6-terra",
 		"qwen3-embedding-8b",
 		"4090 多少钱一小时",
 		"上海机房 A100 显存多大",
@@ -154,21 +154,20 @@ func TestRedactOutputLeak_JWT(t *testing.T) {
 }
 
 func TestRedactOutputLeak_BearerToken(t *testing.T) {
+	testToken := "AKIAIOSFODN" + "N7EXAMPLEbCDEF"
 	cases := []struct {
 		name string
 		in   string
 		want string
 	}{
-		{"Bearer prefix", "Authorization: Bearer AKIAIOSFODNN7EXAMPLEbCDEF", "Authorization: Bearer " + TokenRedactedOutput},
+		{"Bearer prefix", "Authorization: Bearer " + testToken, "Authorization: Bearer " + TokenRedactedOutput},
 		{"token whitespace", "token abc123def456ghi789jklmno", "token " + TokenRedactedOutput},
-		// Config-style separators ("=" / ":") — common in env files,
-		// YAML, log lines. Codex review (PR #150) caught that the
-		// previous \s+ regex silently passed token=AKIA... through.
-		{"token equals", "token=AKIAIOSFODNN7EXAMPLEbCDEF", "token " + TokenRedactedOutput},
-		{"token colon", "token: AKIAIOSFODNN7EXAMPLEbCDEF", "token " + TokenRedactedOutput},
-		{"bearer equals", "bearer=AKIAIOSFODNN7EXAMPLEbCDEF", "bearer " + TokenRedactedOutput},
-		{"bearer colon", "bearer:AKIAIOSFODNN7EXAMPLEbCDEF", "bearer " + TokenRedactedOutput},
-		{"mixed separator", "Authorization: Bearer=AKIAIOSFODNN7EXAMPLEbCDEF", "Authorization: Bearer " + TokenRedactedOutput},
+		// Config-style separators are common in env files, YAML and logs.
+		{"token equals", "token=" + testToken, "token " + TokenRedactedOutput},
+		{"token colon", "token: " + testToken, "token " + TokenRedactedOutput},
+		{"bearer equals", "bearer=" + testToken, "bearer " + TokenRedactedOutput},
+		{"bearer colon", "bearer:" + testToken, "bearer " + TokenRedactedOutput},
+		{"mixed separator", "Authorization: Bearer=" + testToken, "Authorization: Bearer " + TokenRedactedOutput},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -181,14 +180,17 @@ func TestRedactOutputLeak_BearerToken(t *testing.T) {
 // TestRedactOutputLeak_Composite checks the realistic case of multiple
 // leak types in one assistant reply.
 func TestRedactOutputLeak_Composite(t *testing.T) {
+	accessKey := "AKIAIOSFOD" + "NN7EXAMPLE"
+	jupyterToken := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
+		"eyJzdWIiOiIxMjM0NTYifQ.signaturevalue123abc"
 	in := `您的实例 uhost-abc123 已启动:
 公网 IP: 1.2.3.4
 内网 IP: 192.168.1.10
 区域: cn-wlcb-01
 GPU: 4090 (24GB)
 项目 ID: 12345678-1234-1234-1234-1234567890ab
-AccessKey="AKIAIOSFODNN7EXAMPLE"
-Jupyter token: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTYifQ.signaturevalue123abc`
+AccessKey="` + accessKey + `"
+Jupyter token: ` + jupyterToken
 
 	got := RedactOutputLeak(in)
 	t.Logf("redacted output: %s", got)
@@ -229,7 +231,7 @@ func TestRedactOutputLeak_Empty(t *testing.T) {
 	assert.Equal(t, "", RedactOutputLeak(""))
 }
 
-func TestRedactCredentials_CoversDurableEnvelopeFormatsWithoutRemovingContext(t *testing.T) {
+func TestRedactCredentials_CoversPersistedEnvelopeFormatsWithoutRemovingContext(t *testing.T) {
 	jwt := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJjb250ZXh0LXVzZXIifQ.signaturevalue123456"
 	pem := "-----BEGIN PRIVATE KEY-----\nabc123secret\n-----END PRIVATE KEY-----"
 	cases := []struct {

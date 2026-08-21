@@ -6,16 +6,6 @@ typed read capabilities, the action resolver, sealed workflows, typed
 observations, the response gateway, RAG-as-a-tool, guardrails, and MCP —
 separate in both code and review language.
 
-> **History.** An earlier design split execution into three runtime *forms*
-> (`routing` / `terminal_rag` / `agent`), used a Planner to predict a
-> `planned_execution_path`, and carried model-read *true skills* with progressive
-> disclosure under `internal/skills`. That whole stack — `internal/routing`,
-> `cmd/routegen`, route manifests, `internal/skills`, `cmd/skillgen`, the
-> terminal-RAG prompt — was **physically deleted in P6**. There is now a single
-> central Agent loop; the terms below describe what actually runs. Retired terms
-> (`routing`, `terminal_rag`, `true skill`, `planned_execution_path`) should be
-> used only when discussing history, and marked as such.
-
 ## Terms
 
 ### Tool
@@ -43,7 +33,7 @@ A read capability is a typed, model-visible read vertical
 contract** (`field_contract.go`'s `schemaNode` — the single source for the tool
 schema, runtime validation, and the consistency test), its handler, and its
 renderer. `ReadDefinitions()` is the catalog; the engine dispatches through
-`executeConcreteReadCapability` → `capability.MigratedRead(action)` →
+`executeConcreteReadCapability` → `capability.RegisteredReadForTool(action)` →
 `RegisteredRead.Run`. There is no route registry.
 
 ### Action Resolver
@@ -95,9 +85,10 @@ not a terminal answer form. The Agent chooses when to search and supplies the
 user-facing retrieval intent. When a turn has prior conversation,
 `planKnowledgeQuery` may resolve references and produce 1–3 contextualized
 retrieval queries; planning failure, an empty plan, or a first-turn question
-falls back to the Agent-supplied query unchanged. Retrieval
-(`internal/knowledge/`, qwen3 RRF) returns cited chunks the Agent grounds its
-answer in. Citation discipline is **fail-open**:
+falls back to the Agent-supplied query unchanged. Production retrieval goes to
+the configured CompShare KB MCP endpoint; local retrieval code is retained for
+tests and offline evaluation. The result contains cited chunks the Agent grounds
+its answer in. Citation discipline is **fail-open**:
 if the Agent cannot cite, the original answer ships with citation markers stripped
 — citation formatting never regenerates user-facing prose. The only hard stop is
 a raw-evidence leak (security). Citation-marker leakage into the final text is
@@ -117,34 +108,32 @@ public port or inspect the guest OS. Symptoms without a dedicated chain
 (GPU/init/port/image) are handled by the central Agent gathering evidence via
 `SearchKnowledge` + `DescribeCompShareInstance`.
 
-### Memory
+### Conversation History and Execution State
 
-Semantic memory is the ordered conversation and canonical tool transcript.
-Persisted session state holds only execution continuity (selection provenance,
-pending selection, form/confirmation state) plus verifier-only evidence; it
-does not preserve a second summary of decisions or tool facts. Current-state
-verification remains mandatory before a write.
+The ordered conversation and canonical tool transcript are the model's semantic
+history. Persisted session state holds only execution continuity (selection
+provenance, pending selection, form/confirmation state) plus verifier-only
+evidence; it does not preserve a second summary of decisions or tool facts.
+Current-state verification remains mandatory before a write.
 
 ### Guardrail
 
 A guardrail is a code-enforced safety rule: destructive-action blocks, mutating
-confirmation, tool policy checks, provenance gates, citation validation, input
-interception, output redaction. Model-generated risk assessments are
-observability signals; they must not become the source of truth for write safety.
+confirmation, tool policy checks, provenance gates, citation validation and
+output redaction. It protects an execution or data boundary; it does not classify
+the user's topic before the Agent. Model-generated risk assessments are
+observability signals, not the source of truth for write safety.
 
-### MCP Server / Client
+### MCP Client
 
-MCP is a transport protocol — not a tool, capability, workflow, or RAG system. An
-MCP *server* would expose selected read tools first (destructive actions never by
-default, mutating workflow exposure requires confirmation support); an MCP
-*client* consumes external MCP servers with allowlisting, namespacing, and
-injection protection. Neither exists in the tree yet.
+MCP is a transport protocol, not another Agent layer. This service is an MCP
+client only for the configured CompShare knowledge endpoint. It does not expose a
+general MCP tool server or dynamically import arbitrary remote tools.
 
 ## Runtime Shape
 
 ```text
 user request
-  -> input guard (inputguard / guardrails)
   -> central Agent loop (engine): each round selects one of
        read capability  |  SearchKnowledge  |  propose write -> resolver -> sealed workflow
   -> response gateway (safety invariants / sensitive credential delivery)
@@ -165,5 +154,3 @@ pipelines.
 - Use `RAG evidence` for retrieval consumed inside the loop (`SearchKnowledge`).
 - Use `tool` for typed callable actions.
 - Use `MCP server` / `MCP client` by direction; do not call MCP an agent layer.
-- Do not use `routing`, `terminal_rag`, `true skill`, or `planned_execution_path`
-  except when explicitly discussing the retired pre-P6 design.

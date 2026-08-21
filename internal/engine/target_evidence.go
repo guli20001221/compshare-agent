@@ -23,10 +23,8 @@ import (
 // the Agent understands the user and proposes a concrete target; the server verifies
 // existence and shows a card naming the exact id; the user's confirm authorizes it.
 //
-// There is NO source-based gate before the card: a deterministic binding, a carried
-// referent and a fresh inference are all verified UNIFORMLY (a source check —
-// "is this in SelectedEntities" — would re-introduce candidate-set-membership as a
-// trust signal, the exact bug class the P0 dual-proof closed). The SelectionBinder's
+// There is no source-based gate before the card: a deterministic binding, a carried
+// referent and a fresh inference are all verified uniformly. The SelectionBinder's
 // only jobs are to (1) bind/correct a target the user referenced explicitly by
 // id/name/ordinal, (2) refuse when two explicit references conflict, and (3) leave the
 // Agent's proposed concrete target alone when the user made no deterministic reference.
@@ -38,7 +36,7 @@ import (
 
 // targetEvidence is the bound existence snapshot the engine produces for a write
 // target BEFORE the pure resolver runs. It binds the account, the observation time
-// and the exact id so a journal/trace entry can show which account and when
+// and the exact id so an audit or trace entry can show which account and when
 // established the target's existence verdict. The model can neither forge it nor
 // promote it — it is server-owned.
 type targetEvidence struct {
@@ -48,7 +46,7 @@ type targetEvidence struct {
 	ExactID      string `json:"exact_id,omitempty"`
 	// Kind is the resource kind (instance/cfs/disk) this evidence is for; Oracle is
 	// the read interface that established it. Both are carried so a downstream
-	// journal/trace entry can name WHICH interface proved WHICH kind of target
+	// audit or trace entry can name WHICH interface proved WHICH kind of target
 	// existed — the "由哪个接口" half of the existence-proof audit.
 	Kind    string                  `json:"kind,omitempty"`
 	Oracle  string                  `json:"oracle,omitempty"`

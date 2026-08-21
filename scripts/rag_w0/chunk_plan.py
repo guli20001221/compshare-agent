@@ -12,11 +12,11 @@ from typing import Any, Callable
 
 try:
     from .common import ALLOWED_PRODUCT_AREAS
-    from .model_smoke import DEFAULT_BASE_URL, DEFAULT_DS_MODEL, ModelVerseClient, _extract_json, _load_env
+    from .model_smoke import DEFAULT_ANSWER_MODEL, DEFAULT_BASE_URL, ModelVerseClient, _extract_json, _load_env
     from .parse_sections import load_sections
 except ImportError:  # pragma: no cover
     from common import ALLOWED_PRODUCT_AREAS
-    from model_smoke import DEFAULT_BASE_URL, DEFAULT_DS_MODEL, ModelVerseClient, _extract_json, _load_env
+    from model_smoke import DEFAULT_ANSWER_MODEL, DEFAULT_BASE_URL, ModelVerseClient, _extract_json, _load_env
     from parse_sections import load_sections
 
 
@@ -123,14 +123,14 @@ def _plan_one_doc(
     normalized = _normalize_plan(payload, raw_plan)
     if normalized.get("chunk_plan_error"):
         normalized["attempts"] = attempts
-        normalized["model"] = str(raw_plan.get("model") or model or DEFAULT_DS_MODEL)
+        normalized["model"] = str(raw_plan.get("model") or model or DEFAULT_ANSWER_MODEL)
         normalized["prompt_version"] = prompt_version
         normalized["planned_at"] = datetime.now(timezone.utc).isoformat()
         return normalized
     normalized.update(
         {
             "attempts": attempts,
-            "model": str(raw_plan.get("model") or model or DEFAULT_DS_MODEL),
+            "model": str(raw_plan.get("model") or model or DEFAULT_ANSWER_MODEL),
             "prompt_version": prompt_version,
             "planned_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -287,7 +287,7 @@ def _mixed_row(
         "chunks": [],
         "chunk_plan_error": error,
         "attempts": attempts,
-        "model": str(model or DEFAULT_DS_MODEL),
+        "model": str(model or DEFAULT_ANSWER_MODEL),
         "prompt_version": prompt_version,
         "planned_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -296,7 +296,7 @@ def _mixed_row(
 def _modelverse_classifier(*, env_path: Path, model: str | None, bootstrap_examples: list[dict[str, Any]]) -> Classifier:
     env = _load_env(env_path)
     client = ModelVerseClient(base_url=env.get("MODELVERSE_BASE_URL", DEFAULT_BASE_URL), api_key=env["MODELVERSE_API_KEY"])
-    selected_model = model or env.get("MODELVERSE_DS_V4_PRO_MODEL", DEFAULT_DS_MODEL)
+    selected_model = model or env.get("MODELVERSE_EVAL_MODEL", DEFAULT_ANSWER_MODEL)
 
     def classify(payload: dict[str, Any]) -> dict[str, Any]:
         content = client.chat(

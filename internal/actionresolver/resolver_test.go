@@ -53,7 +53,6 @@ func TestResolverRequiresServerVerifiedTargetProvenance(t *testing.T) {
 	require.Equal(t, SourceUserExplicit, resolved.Provenance["UHostId"].Source)
 	require.NotNil(t, resolved.Confirmation)
 	require.Equal(t, "SafeToolExecutor", resolved.Gate.Executor)
-	require.True(t, resolved.Gate.RequiresJournal)
 
 	unverified := New(catalog, nil, MachineTypeCatalog{}).Resolve(proposal)
 	require.False(t, unverified.ReadyForConfirmation)

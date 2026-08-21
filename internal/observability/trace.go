@@ -16,17 +16,16 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-const SchemaVersion = "trace.v0.11"
+const SchemaVersion = "trace.v0.12"
 
 const (
-	ToolSourceMainReAct         = "main_react"
-	ToolSourceWorkflowInternal  = "workflow_internal"
-	ToolSourceDiagnosisInternal = "diagnosis_internal"
-	ToolSourceKnowledgeLocal    = "knowledge_local"
-	ToolSourceKnowledgeMCP      = "knowledge_mcp"
-	ToolSourceInitContext       = "init_context"
-	ToolSourceShadowOnly        = "shadow_only"
-	ToolSourcePlannerHandler    = "planner_handler"
+	ToolSourceMainReAct          = "main_react"
+	ToolSourceWorkflowInternal   = "workflow_internal"
+	ToolSourceDiagnosisInternal  = "diagnosis_internal"
+	ToolSourceKnowledgeLocal     = "knowledge_local"
+	ToolSourceKnowledgeMCP       = "knowledge_mcp"
+	ToolSourceInitContext        = "init_context"
+	ToolSourceCapabilityInternal = "capability_internal"
 )
 
 const (
@@ -56,26 +55,17 @@ type WriterOptions struct {
 	Now func() time.Time
 }
 
-// Writer is the trace sink abstraction. Implementations append one completed
-// turn record: FileWriter writes JSONL under <dir>/<date>.jsonl and MySQLWriter
-// inserts into agent_traces. Workflow steps are accumulated by the per-turn
-// recorder before that single write; sinks do not receive independent step
-// events.
+// Writer appends one completed turn. Steps are accumulated by the per-turn
+// recorder; sinks do not receive independent events.
 //
-// Dir() returns the on-disk root for file-backed implementations. Backends
-// without an on-disk dir (MySQLWriter) return "" so the existing trace-dir
-// cleanup logic can skip them. Close is invoked at process shutdown so
-// MySQLWriter can drain its buffered queue; FileWriter has no long-lived
-// resources and returns nil immediately.
+// Dir returns the file root or "" for database sinks. Close drains any queue.
 type Writer interface {
 	Append(record TraceRecord) error
 	Dir() string
 	Close(ctx context.Context) error
 }
 
-// FileWriter is the JSONL-on-disk implementation of Writer. Used by the CLI
-// path and any environment that wants a local audit trail. Server path
-// typically chooses MySQLWriter; see cmd/trace.go for the env-driven choice.
+// FileWriter writes one JSONL file per day.
 type FileWriter struct {
 	dir string
 	now func() time.Time
@@ -88,35 +78,9 @@ type TraceRecord struct {
 	TurnIndex     int    `json:"turn_index"`
 	Timestamp     string `json:"timestamp"`
 	UserMsgHash   string `json:"user_msg_hash"`
-	// TaskTier is the work-tier axis (fast / knowledge / agent; see the
-	// ActualExecutionTier* consts) the planner PREDICTS for this turn — an input,
-	// the predicted twin of ActualExecutionTier. RESERVED SCHEMA SLOT, NOT YET
-	// WIRED: no production code emits it (planner-predicted task_tier is
-	// B4b, still pending), so outside tests it is always empty. Added early
-	// as a reserved field so consumers (analytics SQL, dashboards) can treat
-	// its eventual presence as the signal to switch from legacy per-turn
-	// rows to tier-aware aggregation. Memory: attribution-observable-only —
-	// empty means "tier not known for this turn", never default-to-agent.
-	TaskTier string `json:"task_tier,omitempty"`
-	// ActualExecutionTier is the work-tier axis: the task-complexity tier the turn
-	// ACTUALLY ran on (fast / knowledge / agent), DERIVED from observed dispatch signals.
-	// It is distinct from TaskTier, which is the planner's PREDICTED tier
-	// (an input): predicted and realized diverge whenever the planner picks
-	// a tier but the turn falls through to a different path, so the two are
-	// kept in separate fields to preserve both the prediction and the
-	// outcome. Set by the recorders via DeriveActualExecutionTier at Finish, after
-	// every signal is final. Empty when the tier is not observable for the
-	// turn (no-tool ReAct answer, hard-block / canned reply) — empty means
-	// "tier not known", never default-to-agent (attribution-observable-only).
-	ActualExecutionTier string `json:"actual_execution_tier,omitempty"`
-	// ActualExecutionPath is the LEGACY runtime-form axis (routing / terminal_rag /
-	// agent) — see the ExecutionPath* const note. It is retained for trace/dashboard
-	// continuity across the P6 cutover, NOT the current architecture (which has one
-	// execution form, the central Agent loop). Derived from observed signals, not
-	// from any planner (the planner was deleted). Empty means not observable.
-	ActualExecutionPath string               `json:"actual_execution_path,omitempty"`
-	Runtime             RuntimeTrace         `json:"runtime"`
-	IntentRouter        RouterTrace          `json:"intent_router"`
+	// ActualExecutionTier is derived from observed retrieval and tool activity.
+	// Empty means the tier was not observable; it never defaults to Agent.
+	ActualExecutionTier string               `json:"actual_execution_tier,omitempty"`
 	EngineHardBlock     EngineHardBlockTrace `json:"engine_hard_block"`
 	EntityRegistry      EntityRegistryTrace  `json:"entity_registry"`
 	ToolCalls           []ToolCallTrace      `json:"tool_calls"`
@@ -126,7 +90,6 @@ type TraceRecord struct {
 	Retrieval           RetrievalTrace       `json:"retrieval"`
 	Diagnosis           DiagnosisTrace       `json:"diagnosis"`
 	State               StateTrace           `json:"state"`
-	Continuity          ContinuityTrace      `json:"continuity"`
 	Completion          TurnCompletionTrace  `json:"completion"`
 	Outcome             OutcomeTrace         `json:"outcome"`
 	// Confirmations records every human confirmation gate that reached a terminal
@@ -151,11 +114,7 @@ type traceRecordJSON struct {
 	TurnIndex           int                   `json:"turn_index"`
 	Timestamp           string                `json:"timestamp"`
 	UserMsgHash         string                `json:"user_msg_hash"`
-	TaskTier            string                `json:"task_tier,omitempty"`
 	ActualExecutionTier string                `json:"actual_execution_tier,omitempty"`
-	ActualExecutionPath string                `json:"actual_execution_path,omitempty"`
-	Runtime             *RuntimeTrace         `json:"runtime,omitempty"`
-	IntentRouter        *RouterTrace          `json:"intent_router,omitempty"`
 	EngineHardBlock     *EngineHardBlockTrace `json:"engine_hard_block,omitempty"`
 	EntityRegistry      *EntityRegistryTrace  `json:"entity_registry,omitempty"`
 	ToolCalls           []ToolCallTrace       `json:"tool_calls,omitempty"`
@@ -165,7 +124,6 @@ type traceRecordJSON struct {
 	Retrieval           *RetrievalTrace       `json:"retrieval,omitempty"`
 	Diagnosis           *DiagnosisTrace       `json:"diagnosis,omitempty"`
 	State               *StateTrace           `json:"state,omitempty"`
-	Continuity          *ContinuityTrace      `json:"continuity,omitempty"`
 	Completion          *TurnCompletionTrace  `json:"completion,omitempty"`
 	Outcome             *OutcomeTrace         `json:"outcome,omitempty"`
 	Confirmations       []ConfirmationTrace   `json:"confirmations,omitempty"`
@@ -181,15 +139,7 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 		TurnIndex:           r.TurnIndex,
 		Timestamp:           r.Timestamp,
 		UserMsgHash:         r.UserMsgHash,
-		TaskTier:            r.TaskTier,
 		ActualExecutionTier: r.ActualExecutionTier,
-		ActualExecutionPath: r.ActualExecutionPath,
-	}
-	if traceRuntimeObserved(r.Runtime) {
-		out.Runtime = &r.Runtime
-	}
-	if tracePlannerObserved(r.IntentRouter) {
-		out.IntentRouter = &r.IntentRouter
 	}
 	if traceEngineHardBlockObserved(r.EngineHardBlock) {
 		out.EngineHardBlock = &r.EngineHardBlock
@@ -218,9 +168,6 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	if traceStateObserved(r.State) {
 		out.State = &r.State
 	}
-	if traceContinuityObserved(r.Continuity) {
-		out.Continuity = &r.Continuity
-	}
 	if traceCompletionObserved(r.Completion) {
 		out.Completion = &r.Completion
 	}
@@ -239,122 +186,16 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// ContinuityTrace records the durable turn protocol around one execution
-// attempt. It deliberately contains only identity checks, counters, versions
-// and closed-set outcomes: no user text, model text, tool payload or persisted
-// session JSON is allowed across this observability boundary.
-type ContinuityTrace struct {
-	SessionIdentityMatch   bool   `json:"session_identity_match"`
-	TurnSequence           int64  `json:"turn_sequence"`
-	LeaseEpoch             int64  `json:"lease_epoch"`
-	SnapshotContextVersion int    `json:"snapshot_context_version"`
-	EnvelopeParseOutcome   string `json:"envelope_parse_outcome"`
-	ContextParseOutcome    string `json:"context_parse_outcome"`
-	RetryCount             int    `json:"retry_count"`
-	RecoveryAttempt        bool   `json:"recovery_attempt"`
-	CommitOutcome          string `json:"commit_outcome"`
-	CommitReason           string `json:"commit_reason,omitempty"`
-}
-
-func traceContinuityObserved(trace ContinuityTrace) bool {
-	return trace.TurnSequence != 0 || trace.LeaseEpoch != 0 ||
-		trace.SnapshotContextVersion != 0 || trace.EnvelopeParseOutcome != "" ||
-		trace.ContextParseOutcome != "" || trace.RetryCount != 0 ||
-		trace.RecoveryAttempt || trace.CommitOutcome != "" || trace.CommitReason != ""
-}
-
-// LEGACY TRACE COMPAT: these two axes describe records produced before the
-// central-Agent cutover. They do not select a model or execution path today.
-// Keep them readable until the stored trace schema is retired.
-// TestActualExecutionTierAndExecutionPathAreSeparateAxes pins the divergence.
-//
-//   - Work-tier axis (TaskTier predicted / ActualExecutionTier realized): WHAT KIND of
-//     work the turn did, on the complexity scale fast < knowledge < agent.
-//   - Runtime-form axis (PlannedExecutionPath / ActualExecutionPath): the LEGACY
-//     runtime-form label — routing / terminal_rag / agent (see the ExecutionPath*
-//     const note). Retained for trace continuity; the current runtime has one form
-//     (the central Agent loop), so this axis is legacy trace-compat, not current.
-//
-// The axes correspond only loosely (fast↔routing, knowledge↔terminal_rag,
-// agent↔agent): a turn can do knowledge-tier WORK on the agent FORM — a
-// knowledge_qa turn forced through the ReAct loop, or diagnosis that retrieves
-// mid-flow, both realize knowledge while their runtime form is agent (see
-// DeriveActualExecutionTier / DeriveActualExecutionPath).
-
-// ActualExecutionTier* are the work-tier-axis values for TraceRecord.ActualExecutionTier (and
-// the predicted TaskTier). Mirror the task-complexity tiers.
+// ActualExecutionTier values describe observed work, not a planner prediction.
 const (
-	ActualExecutionTierFast      = "fast"
 	ActualExecutionTierKnowledge = "knowledge"
 	ActualExecutionTierAgent     = "agent"
 )
 
-// LEGACY TRACE COMPAT (post-P6). The routing / terminal_rag / agent runtime-form
-// taxonomy predates the central-Agent cutover. The CURRENT runtime has a single
-// execution form — the central Agent loop — so these values are retained ONLY so
-// trace storage, dashboards, and the eval harness keep reading historical and
-// cutover-era records. Do NOT treat them as the current architecture: P7 (and any
-// new acceptance) must judge a turn by its real tools / steps / observations /
-// final answer, not by a derived form label. Removing them is a wire-visible
-// trace-schema migration, not a comment/test cleanup.
-//
-// ExecutionPath* are the runtime-form-axis values for TraceRecord.ActualExecutionPath
-// (and PlannedExecutionPath). NOTE: "terminal_rag" is the odd value out vs the
-// rest of the routing/agent vocabulary; renaming it to "rag" is a wire-visible
-// trace-schema change and must be done as its own compatibility-aware migration,
-// not folded into a comment/test cleanup.
-const (
-	ExecutionPathRouting     = "routing"
-	ExecutionPathTerminalRAG = "terminal_rag"
-	ExecutionPathAgent       = "agent"
-)
-
-// DeriveActualExecutionTier computes the tier the turn ACTUALLY ran on from observed
-// trace signals, returning "" when the tier is not observable. It is pure
-// (depends only on the record) and is invoked by the recorders at Finish —
-// after every signal is final — so the result reflects the turn's terminal
-// state. The HTTP/MySQL sink bypasses FileWriter.Append/withDefaults, so this
-// must be called in the recorders (not in Append) to populate both sinks.
-//
-// Derivation is priority-ordered, NOT a flat prefix sweep of cutover_status
-// (which has 13 values and is set only on the Phase-1 route path — see
-// internal/intent/handler.go RouteStatus*). It maps the unambiguous route
-// dispositions, then falls through to what actually executed:
-//
-//  1. dispatched_retrieval            -> knowledge (RAG handler ran)
-//  2. dispatched / selection_required -> fast      (deterministic handler ran;
-//     selection returned a clarify prompt,
-//     still no RAG / ReAct)
-//  3. else retrieval produced hits    -> knowledge (RAG path that never went
-//     through routing)
-//  4. else a main_react tool fired    -> agent     (ReAct loop ran)
-//  5. else                            -> ""        (not observable: no-tool
-//     ReAct answer, or hard-block / canned
-//     reply)
-//
-// Route fallbacks (fallback_*) and failure_after_tool are deliberately NOT
-// mapped by status name: they mean the route attempt declined and the turn
-// continued, so the real tier is whatever steps 3-4 observe (typically agent).
-// Returning "" rather than defaulting to agent keeps the realized mix honest —
-// it under-counts no-tool agent turns instead of mis-labelling refusals as
-// agent (memory: attribution-observable-only). A future "ReAct loop ran"
-// signal (e.g. a round counter) could promote step 5 from "" to agent.
+// DeriveActualExecutionTier returns the strongest work tier observable from a
+// completed trace. Retrieval with evidence is knowledge work; otherwise a main
+// ReAct tool call is agent work. Tool-free answers remain unknown.
 func (r TraceRecord) DeriveActualExecutionTier() string {
-	// route_status literals mirror internal/intent/handler.go:42-58
-	// (RouteStatus*); pinned by TestDeriveActualExecutionTier.
-	switch r.IntentRouter.RouteStatus {
-	case "dispatched_retrieval", "dispatched_knowledge_agent_loop":
-		// dispatched_knowledge_agent_loop is a knowledge_qa turn forced through the
-		// knowledge agent loop: the realized work is still
-		// knowledge retrieval, so the realized-tier attribution stays comparable
-		// across the terminal→agent-loop migration even though the runtime FORM
-		// becomes agent (see DeriveActualExecutionPath).
-		return ActualExecutionTierKnowledge
-	case "dispatched_agent":
-		return ActualExecutionTierAgent
-	case "dispatched", "selection_required":
-		return ActualExecutionTierFast
-	}
 	if r.Retrieval.Enabled && r.Retrieval.Hits > 0 {
 		return ActualExecutionTierKnowledge
 	}
@@ -366,160 +207,11 @@ func (r TraceRecord) DeriveActualExecutionTier() string {
 	return ""
 }
 
-// DeriveActualExecutionPath computes the LEGACY runtime-form label for a turn
-// (see the ExecutionPath* const note). It maps a trace's router status to the
-// retired routing / terminal_rag / agent taxonomy for trace/dashboard continuity;
-// it is NOT the current architecture (one central Agent form). Kept coarse:
-// terminal RAG is only a final-answer retrieval workflow; retrieval used inside
-// diagnosis or another agent path remains agent.
-func (r TraceRecord) DeriveActualExecutionPath() string {
-	switch r.IntentRouter.RouteStatus {
-	case "dispatched_agent", "dispatched_knowledge_agent_loop":
-		// dispatched_knowledge_agent_loop: a knowledge_qa turn forced through the
-		// shared ReAct loop. It runs the agent
-		// loop (a SearchKnowledge tool call fires), so the runtime FORM is agent —
-		// the migration's whole point (terminal_rag → agent). The engine projects
-		// PlannedExecutionPath=agent for the same turn so planned==actual.
-		return ExecutionPathAgent
-	case "dispatched_retrieval":
-		return ExecutionPathTerminalRAG
-	case "dispatched", "selection_required":
-		return ExecutionPathRouting
-	}
-	if len(r.Steps) > 0 {
-		return ExecutionPathAgent
-	}
-	for _, call := range r.ToolCalls {
-		switch call.Source {
-		case ToolSourceMainReAct, ToolSourceWorkflowInternal, ToolSourceDiagnosisInternal, ToolSourceKnowledgeLocal, ToolSourceKnowledgeMCP:
-			return ExecutionPathAgent
-		}
-	}
-	if r.Retrieval.Enabled && r.Retrieval.Hits > 0 {
-		return ExecutionPathTerminalRAG
-	}
-	for _, call := range r.ToolCalls {
-		if call.Source == ToolSourcePlannerHandler {
-			return ExecutionPathRouting
-		}
-	}
-	return ""
-}
-
-func (r TraceRecord) ExecutionPathMismatch() (bool, bool) {
-	planned := strings.TrimSpace(r.IntentRouter.PlannedExecutionPath)
-	actual := strings.TrimSpace(r.ActualExecutionPath)
-	if actual == "" {
-		actual = strings.TrimSpace(r.DeriveActualExecutionPath())
-	}
-	if planned == "" || actual == "" {
-		return false, false
-	}
-	return planned != actual, true
-}
-
-type RuntimeTrace struct {
-	RouterMode   string   `json:"router_mode"`
-	RouteIntents []string `json:"route_intents"`
-}
-
-type RouterTrace struct {
-	Enabled              bool                `json:"enabled"`
-	Model                string              `json:"model"`
-	LatencyMS            int64               `json:"latency_ms"`
-	InputTokens          int                 `json:"input_tokens"`
-	OutputTokens         int                 `json:"output_tokens"`
-	SchemaValid          bool                `json:"schema_valid"`
-	Intent               string              `json:"intent"`
-	PlannedExecutionPath string              `json:"planned_execution_path,omitempty"`
-	Skills               []PlannerSkillTrace `json:"skills,omitempty"`
-	Slots                PlannerSlots        `json:"slots"`
-	Confidence           float64             `json:"confidence"`
-	HardBlockHint        bool                `json:"hard_block_hint"`
-	RouteStatus          string              `json:"route_status"`
-
-	// Why the router fell back — the question route_status alone cannot answer.
-	//
-	// When validation fails on every attempt, ProjectPlannerTrace overwrites Intent
-	// with "unknown" and the engine reports route_status=fallback_invalid. Both the
-	// intent the model actually chose and the reason it was rejected were then
-	// discarded, so `fallback_invalid` has been an opaque bucket. On real 6.26-7.9
-	// traffic it is 6.0% of follow-up turns vs 1.0% of opening turns — a 6x
-	// multi-turn degradation that nothing in the system could explain.
-	//
-	// ValidationCode is an ErrorCode enum and ValidationField a schema path
-	// (e.g. "slots.target_refs[0].value"). Neither carries user text, so this is
-	// safe to leave on in production — the same counts-and-enums-only rule
-	// PlannerSlots follows.
-	ValidationCode  string `json:"validation_code,omitempty"`
-	ValidationField string `json:"validation_field,omitempty"`
-	// RejectedIntent is the intent the model chose on the final failing attempt —
-	// preserved BEFORE the unknown-overwrite above, so a rejected-but-correct route
-	// is distinguishable from a genuinely off-platform one.
-	RejectedIntent string `json:"rejected_intent,omitempty"`
-	Attempts       int    `json:"attempts,omitempty"`
-}
-
-type PlannerSkillTrace struct {
-	Name       string `json:"name,omitempty"`
-	Resolution string `json:"resolution"`
-}
-
-// PlannerSlots projects intent.Slots for the trace. Nothing here may carry raw
-// model- or user-supplied text, so each slot is recorded under one of two
-// classes, following the TargetRef/TimeWindow precedent already established in
-// this file:
-//
-//   - verbatim, when the value is provably confined to a closed set. Those slots
-//     ARE the router's decision variable, and a trace that hides them cannot
-//     explain why a turn was refined the way it was.
-//   - hashed, when the value is free-form. A hash still shows whether the slot
-//     was populated and whether it was stable across runs, without carrying the
-//     raw text.
-//
-// "Provably confined" means confined by the time it reaches here — not merely
-// enum-typed in Go. ImageSource/ListMode/PriceKind/CFSKind/ChargeType/DetailLevel
-// and SizeGB used to be checked by intent.ValidateRoute, which was deleted with
-// the route stack (it had zero production callers by then, so the check it is
-// credited with here had already stopped running before it was removed). Their
-// confinement now rests on whatever produces the plan, not on a validator — if a
-// producer is ever added that does not confine them, this projection would record
-// unconfined text verbatim, so re-establish the check before trusting it. Action is
-// NOT: the router schema deliberately omits slots.action and is non-strict, so a
-// model that volunteers an arbitrary string still produces a SchemaValid plan
-// (see internal/intent/router_schema.go). It is therefore closed at projection
-// time against the known LifecycleAction constants — a known verb is recorded
-// verbatim, anything else is hashed, exactly as a non-canonical TimeWindow is.
-type PlannerSlots struct {
-	TargetRefs []any    `json:"target_refs"`
-	Metrics    []string `json:"metrics"`
-	TimeWindow any      `json:"time_window"`
-
-	// Validator-constrained / bounded — verbatim.
-	ImageSource string `json:"image_source,omitempty"`
-	ListMode    string `json:"list_mode,omitempty"`
-	PriceKind   string `json:"price_kind,omitempty"`
-	CFSKind     string `json:"cfs_kind,omitempty"`
-	ChargeType  string `json:"charge_type,omitempty"`
-	DetailLevel string `json:"detail_level,omitempty"`
-	SizeGB      int    `json:"size_gb,omitempty"`
-
-	// Closed at projection time: verbatim iff a known LifecycleAction.
-	Action     string `json:"action,omitempty"`
-	ActionHash string `json:"action_hash,omitempty"`
-
-	// Free-form user-derived slots — hashed, never raw.
-	SearchQueryHash string `json:"search_query_hash,omitempty"`
-	ZoneHash        string `json:"zone_hash,omitempty"`
-}
-
 // EngineHardBlock TriggeredBy enum values. Single-source attribution
 // (no "both") — see EngineHardBlockTrace.TriggeredBy doc.
 const (
-	HardBlockTriggerKeyword       = "keyword"
-	HardBlockTriggerPlannerIntent = "planner_intent"
-	HardBlockTriggerPostLLM       = "post_llm"
-	HardBlockTriggerTokenBudget   = "token_budget"
+	HardBlockTriggerKeyword     = "keyword"
+	HardBlockTriggerTokenBudget = "token_budget"
 )
 
 // EngineHardBlock Category values the outcome derivation special-cases. They are
@@ -540,14 +232,7 @@ type EngineHardBlockTrace struct {
 	Hit      bool   `json:"hit"`
 	Category string `json:"category"`
 	// TriggeredBy records the actually-executed stage that produced the
-	// hard-block — single-source (no "both"), since short-circuited stages
-	// are unobservable. Allowed values:
-	//   "keyword"        — Chat() head inputguard.PreBlock keyword match
-	//   "planner_intent" — planner-classified intent hard-block (e.g. the
-	//                      account-billing-unsupported refusal)
-	//   "post_llm"       — post-LLM gate (currently cited_contract_violation)
-	// Empty when Hit=false. Joins with planner.hard_block_hint downstream
-	// for cross-source analytics — the join is observability, not routing.
+	// hard-block. Empty when Hit=false.
 	TriggeredBy string `json:"triggered_by,omitempty"`
 }
 
@@ -594,8 +279,8 @@ const (
 
 // ConfirmationTrace is the terminal observation for one confirmation card.
 // State and TerminalReason are closed-set values above. ElapsedMS measures the
-// wait from presenting the card to its terminal outcome; it may be zero for a
-// synchronous CLI confirmation.
+// wait from presenting the card to its terminal outcome; it may be zero for an
+// immediately resolved confirmation.
 type ConfirmationTrace struct {
 	Action         string `json:"action"`
 	State          string `json:"state"`
@@ -607,10 +292,8 @@ type ConfirmationTrace struct {
 // target a mutating action acted on this turn, it captures WHICH read interface
 // (oracle) established the target's existence, WHEN, for WHICH account, with what
 // VERDICT (the ExistenceProof), plus whether the user's confirmation authorized
-// execution (the SelectionProof outcome). It exists so a post-hoc audit can answer
-// "由哪个接口、在什么时间、为哪个账户证明了这个目标存在" — which the target's
-// existence evidence (engine.targetEvidence) established but which was previously
-// consumed only as a resolver gate and then discarded.
+// execution (the SelectionProof outcome). It lets an audit answer which interface
+// proved a target existed, when, and for which account.
 //
 // Content-free by the same rule as the rest of the trace: the target id and the
 // account are HASHED (never raw uhost-/cfs-/disk- ids or org ids), the kind /
@@ -677,14 +360,8 @@ func MergeFreshnessTrace(current, next FreshnessTrace) FreshnessTrace {
 	return current
 }
 
-// MergeRetrievalTrace folds a new per-turn retrieval into the recorded one. A turn
-// can retrieve more than once (e.g. the knowledge agent loop's forced
-// SearchKnowledge first hop, then a voluntary re-query later in the same ReAct loop).
-// The recorders historically kept only the LAST retrieval, so a trailing no-hit
-// re-query would clobber the forced hop's substantive retrieval and make it look like
-// nothing was retrieved. Preserve the substantive one: keep the existing hits-bearing
-// retrieval when the incoming one has no hits; otherwise the latest (substantive or
-// first-ever) wins. Terminal RAG retrieves once, so its trace is unchanged.
+// MergeRetrievalTrace folds repeated searches into one turn record without letting
+// a trailing no-hit search erase earlier substantive evidence.
 func MergeRetrievalTrace(current, next RetrievalTrace) RetrievalTrace {
 	if next.TurnAggregate || len(next.CitedChunkIDs) > 0 || len(next.CitedRefs) > 0 {
 		if !traceRetrievalObserved(current) {
@@ -741,10 +418,8 @@ func MergeRetrievalTrace(current, next RetrievalTrace) RetrievalTrace {
 	return mergeRetrievalAvailability(next, current, next)
 }
 
-// mergeRetrievalAvailability preserves an outage observed during any retrieval
-// hop even when the evidence-bearing trace comes from another hop. This keeps
-// the historical "substantive hits win" projection without erasing a useful
-// operational signal from a partial remote-KB outage.
+// mergeRetrievalAvailability preserves an outage from any retrieval hop even
+// when another hop supplies the evidence-bearing trace.
 func mergeRetrievalAvailability(merged, current, next RetrievalTrace) RetrievalTrace {
 	if !current.Unavailable && !next.Unavailable {
 		return merged
@@ -839,11 +514,8 @@ type RetrievalTrace struct {
 	FloorValue            float64 `json:"floor_value,omitempty"`
 	WeakEvidence          bool    `json:"weak_evidence,omitempty"`
 	RankingErrorCandidate bool    `json:"ranking_error_candidate,omitempty"`
-	// AnswerEchoedChunkID names the chunk whose body the final answer reproduced
-	// verbatim (>=32 contiguous runes), empty when it paraphrased. Trace-only: a
-	// customer-safe corpus makes an echo a synthesis-quality signal, not a leak,
-	// and it must never gate the answer — it used to, and replaced whole correct
-	// runbook answers with a canned line. Query it to measure copy-instead-of-write.
+	// AnswerEchoedChunkID records a >=32-rune verbatim match with a customer-safe
+	// chunk. It is a synthesis-quality signal and never gates the answer.
 	AnswerEchoedChunkID string `json:"answer_echoed_chunk_id,omitempty"`
 	// HybridMode mirrors internal/knowledge/retriever.RetrievalResult.HybridMode.
 	// One of "bm25_only" | "hybrid_cosine" | "hybrid_rerank" | "qwen3_full"
@@ -874,8 +546,8 @@ type RetrievalTrace struct {
 	// when no embedder was invoked (bm25_only or bm25_fallback path).
 	EmbeddingModel string `json:"embedding_model,omitempty"`
 	// RerankerMode labels which reranker model produced the final ranking.
-	// Empty when the reranker stage was not engaged (legacy hybrid_cosine,
-	// bm25_only, or reranker fallback to cosine). Non-empty example:
+	// Empty when the reranker stage was not engaged (hybrid_cosine, bm25_only,
+	// or reranker fallback to cosine). Non-empty example:
 	// "qwen3-reranker-8b". Distinguishes "reranker not configured for this
 	// mode" (empty) from "reranker invoked" (model name).
 	RerankerMode string `json:"reranker_mode,omitempty"`
@@ -985,21 +657,8 @@ func redactDiagnosisTraceText(text string) string {
 	return text
 }
 
-// prepareForPersist is the single, sink-agnostic choke point every persistence
-// sink MUST run a record through before serializing it. It fills defaults
-// (schema_version, timestamp, empty slices via withDefaults) and redacts the
-// entire query-derived tree (QueryRaw + QueryNormalized + QueryExpansions[] via
-// RedactQueryDerivedFields). Both operations are idempotent, so a record fanned
-// out to multiple sinks (cmd.multiTraceWriter) is safe to prepare more than once.
-//
-// History: redaction + withDefaults previously lived ONLY inside
-// FileWriter.Append. The MySQL sink (MySQLWriter.Enqueue → worker → rowFromTrace)
-// bypassed both, so server traces persisted raw user queries — real PII such as
-// staff names — into trace_json with an empty schema_version. Centralizing here
-// (called by FileWriter.Append AND MySQLWriter.Enqueue) means a leak is
-// impossible unless a future sink bypasses this function entirely
-// (memory: sanitization-covers-all-derived-fields — cover the whole derivation
-// tree from one choke point, never patch a single field).
+// prepareForPersist is the sink-independent defaulting and redaction boundary.
+// It is idempotent so fan-out writers may call it more than once.
 func prepareForPersist(record TraceRecord, now time.Time) TraceRecord {
 	record = record.withDefaults(now)
 	RedactQueryDerivedFields(&record.Retrieval)
@@ -1011,11 +670,11 @@ func prepareForPersist(record TraceRecord, now time.Time) TraceRecord {
 type OutcomeTrace struct {
 	// Continuity contract metadata is bounded and content-free. It proves which
 	// inputs and answer path were used without persisting prompts or user text.
-	ContextSources     []string `json:"context_sources,omitempty"`
-	ResponseContract   string   `json:"response_contract,omitempty"`
-	PromptSectionIDs   []string `json:"prompt_section_ids,omitempty"`
-	MemoryUpdateSource string   `json:"memory_update_source,omitempty"`
-	GroundingOutcome   string   `json:"grounding_outcome,omitempty"`
+	ContextSources       []string `json:"context_sources,omitempty"`
+	ResponseContract     string   `json:"response_contract,omitempty"`
+	PromptSectionIDs     []string `json:"prompt_section_ids,omitempty"`
+	EvidenceUpdateSource string   `json:"memory_update_source,omitempty"`
+	GroundingOutcome     string   `json:"grounding_outcome,omitempty"`
 	// PromptMessages* are content-free context-assembly telemetry. They show
 	// whether the final request had to shed prior messages, without storing the
 	// prompt or transcript itself. Prompt token usage remains in PromptTokens.
@@ -1198,28 +857,6 @@ func dateOnly(t time.Time) time.Time {
 	return time.Date(year, month, day, 0, 0, 0, 0, t.Location())
 }
 
-func traceRuntimeObserved(trace RuntimeTrace) bool {
-	return trace.RouterMode != "" || len(trace.RouteIntents) > 0
-}
-
-func tracePlannerObserved(trace RouterTrace) bool {
-	return trace.Enabled ||
-		trace.Model != "" ||
-		trace.LatencyMS != 0 ||
-		trace.InputTokens != 0 ||
-		trace.OutputTokens != 0 ||
-		trace.SchemaValid ||
-		trace.Intent != "" ||
-		trace.PlannedExecutionPath != "" ||
-		len(trace.Skills) > 0 ||
-		len(trace.Slots.TargetRefs) > 0 ||
-		len(trace.Slots.Metrics) > 0 ||
-		trace.Slots.TimeWindow != nil ||
-		trace.Confidence != 0 ||
-		trace.HardBlockHint ||
-		trace.RouteStatus != ""
-}
-
 func traceEngineHardBlockObserved(trace EngineHardBlockTrace) bool {
 	return trace.Hit || trace.Category != ""
 }
@@ -1310,7 +947,7 @@ func traceOutcomeObserved(trace OutcomeTrace) bool {
 		len(trace.ContextSources) > 0 ||
 		trace.ResponseContract != "" ||
 		len(trace.PromptSectionIDs) > 0 ||
-		trace.MemoryUpdateSource != "" ||
+		trace.EvidenceUpdateSource != "" ||
 		trace.GroundingOutcome != "" ||
 		trace.PromptMessagesRawPeak != 0 ||
 		trace.PromptMessagesAssembledPeak != 0 ||
@@ -1324,15 +961,6 @@ func (r TraceRecord) withDefaults(now time.Time) TraceRecord {
 	}
 	if r.Timestamp == "" {
 		r.Timestamp = now.Format(time.RFC3339)
-	}
-	if r.Runtime.RouteIntents == nil {
-		r.Runtime.RouteIntents = []string{}
-	}
-	if r.IntentRouter.Slots.TargetRefs == nil {
-		r.IntentRouter.Slots.TargetRefs = []any{}
-	}
-	if r.IntentRouter.Slots.Metrics == nil {
-		r.IntentRouter.Slots.Metrics = []string{}
 	}
 	if r.ToolCalls == nil {
 		r.ToolCalls = []ToolCallTrace{}

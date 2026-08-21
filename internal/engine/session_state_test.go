@@ -106,8 +106,8 @@ func TestLegacySemanticFieldsDecodeButNeverWriteBack(t *testing.T) {
 	assert.Contains(t, string(rewritten), "user_selected")
 }
 
-func TestVerifiedKnowledgePersistsEvidenceNotAnswerText(t *testing.T) {
-	state := SessionState{SchemaVersion: SessionStateSchemaCurrent, VerifiedKnowledge: []VerifiedKnowledgeTurn{{
+func TestVerifiedEvidencePersistsEvidenceNotAnswerText(t *testing.T) {
+	state := SessionState{SchemaVersion: SessionStateSchemaCurrent, VerifiedEvidence: []VerifiedEvidenceTurn{{
 		Question: "终端怎么粘贴",
 		Evidence: knowledge.EvidenceLedger{Query: "终端怎么粘贴", Items: []knowledge.EvidenceItem{{
 			ChunkID: "terminal-paste-001", Title: "终端粘贴", Snippet: "使用 Ctrl+Shift+V 粘贴",

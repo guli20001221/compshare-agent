@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -37,53 +36,17 @@ import (
 )
 
 const (
-	// maxReActRounds bounds the agent loop. Raised 10 -> 20 together with the
-	// retrieval budgets below: a genuine multi-hop knowledge turn now costs
-	// several rounds (search -> read the gap -> search again -> answer), and at
-	// 10 the ceiling was close enough to that path to truncate it. The real cost
-	// ceiling stays agent.rate_limit.max_tokens_per_turn, which is enforced
-	// per turn and trips before an unproductive loop can spend without bound.
+	// maxReActRounds bounds the loop; the token budget remains the primary cost ceiling.
 	maxReActRounds = 20
-	// The raw-history ceiling used to live here as maxHistoryMessages = 120. It is
-	// now maxRawHistoryRunes (direct_render_context.go), a size, and the comment
-	// that stood here is preserved as the reason: it said in as many words that
-	// "counting messages rather than tokens is still the wrong unit", and that it
-	// was raising a ceiling out of the way "without pretending to fix that". The
-	// unit is what is fixed here.
-	//
-	// What it was working around, kept because the numbers are measured: at 40 the
-	// ceiling was ~8 agent-loop turns — INSIDE observed session lengths (the traffic
-	// sample is truncated at 10 turns, so 10 is a floor, not a max) — because
-	// e.messages holds every tool response, so an agent-loop turn costs ~4-6
-	// messages against ~2 on the fast path. Routing everything through the agent
-	// loop would have re-introduced amnesia at turn 8, silently. A per-turn cost
-	// that varies by 3x is exactly what a message count cannot express.
+	// Expensive reads are separately bounded because one turn may contain many tool results.
 	maxReadExpensiveCallsPerTurn = 30
-	// maxSearchKnowledgeCallsPerTurn bounds how many times the agent may CALL
-	// SearchKnowledge in a single turn. On a corpus-gap query the retriever
-	// returns only weak hits (dropped by the relevance floor), so the model sees
-	// "no relevant docs" and re-searches with new phrasings round after round —
-	// up to maxReActRounds, each round re-sending a growing context — until the
-	// per-turn token budget trips and the user gets the bare "请简化问题" instead
-	// of an honest "no specific docs" answer. Past this cap SearchKnowledge is
-	// withdrawn from the tool list so the model must answer from what it has (or
-	// decline) well within budget.
-	//
-	// This bounds agent decisions to search, rather than the query variants a
-	// single contextualized search fans out into. A separate retrieval budget
-	// prevents one wide rewrite from consuming every later corrective hop.
+	// Search calls and their query variants have independent budgets. At the call cap the
+	// tool is withdrawn so a corpus gap cannot become an unbounded re-query loop.
 	maxSearchKnowledgeCallsPerTurn = 4
 	maxRetrievalQueriesPerTurn     = 8
 )
 
-const actionOutcomeUncertainReply = "上游请求已发出，但本次没有收到可确认的结果。为避免重复操作，系统不会自动重试；请先查询资源当前状态，再决定下一步。"
-
 const mutatingToolsDisabledMessage = "当前阶段不直接执行开机、关机、重启、重置密码、创建实例等变更操作。我可以告诉你在控制台怎么操作，具体执行请到控制台完成。"
-
-// monitor_history refusal text moved to internal/refusal/templates.go in the
-// C2 hard-block 归一 refactor. Call sites import refusal directly; this file no
-// longer declares it. (account_billing canned reply removed 2026-06-10 — that
-// intent now dispatches to the central Agent loop, not a keyword hard-block.)
 
 const (
 	rateLimitQPSMessage   = "请求过于频繁，请稍后再试。"
@@ -96,8 +59,8 @@ const (
 	// its tool_result on the wire before this frame.
 	tokenBudgetExceededMessage = "本次问题消耗的算力已超过单次上限，请简化问题或拆分提问。"
 	// emptyReplyFallbackMessage is the honest fallback when a turn completes
-	// WITHOUT an error (err == nil) but the model produced no text and no tool
-	// call — flash intermittently returns empty content. A blank reply must
+	// WITHOUT an error (err == nil) but the provider produced no text and no tool
+	// call. A blank reply must
 	// never reach the user (it reads as a silent failure / "空回复"). This does
 	// not mask real errors: an LLM/tool error returns a non-nil err on a
 	// separate path and is surfaced as such; this only substitutes for a
@@ -129,30 +92,6 @@ const (
 	maxTruncatedOutputRecoveriesPerTurn = 1
 )
 
-// Deterministic preblocks are limited to non-routing safety and support
-// policies. Read-only monitor/history routing is planner-owned.
-//
-// (human_agent_transfer keyword preblock added 2026-06-29 — 转人工短语
-// 命中即返回客服二维码 canned reply，跳过 LLM/ReAct；窄白名单避免"人工
-// 智能/人工费"等误触发。规则注册在 internal/engine/preblock.go 的
-// enginePreBlock 链末尾。)
-//
-// Model feature gating: a force-tool path that emits object tool_choice is
-// guarded at RUNTIME, not by a static per-model table. llm.Client retries once
-// with auto when the provider rejects forced tool_choice in thinking mode, and
-// reports it via ChatResponse.ForcedToolChoiceDegraded. A new force path should
-// read that flag rather than pre-checking a capability: the retry cannot go
-// stale on a model nobody re-probed, and the table it replaced had none.
-//
-// shouldForceBillingDiagnosis was removed 2026-05-08: ds v4 flash returns 400
-// on object tool_choice in thinking mode, and auto-routing achieves the same
-// success rate as required (5/6). See eval/smoke/2026-05-08-ds-v4-flash-
-// tool-choice-probe.md.
-//
-// Each force step is short-circuited by a higher one. When adding a new
-// force-tool path, update this comment and extract a single pickForcedTool()
-// decision point when the priority chain grows beyond this narrow bridge set.
-
 var (
 	beijingZone = time.FixedZone("CST", 8*3600)
 )
@@ -160,18 +99,14 @@ var (
 // ConfirmFunc asks the user to confirm an L1 operation. Returns true if confirmed.
 type ConfirmFunc func(action string, args map[string]any) bool
 
-// ConfirmationResult is the richer per-turn confirmation outcome used by
-// transports that can distinguish an explicit decline from a timeout,
-// disconnect or card-delivery failure. Legacy ConfirmFunc callers remain fully
-// supported; their false result is conservatively classified as user_declined.
+// ConfirmationResult preserves whether a confirmation ended by decline,
+// timeout, disconnect or delivery failure.
 type ConfirmationResult struct {
 	Confirmed      bool
 	TerminalReason string
 }
 
 // ConfirmationResultFunc is the outcome-preserving variant of ConfirmFunc.
-// It is intentionally scoped to ChatOptions so existing Engine construction and
-// CLI callers retain the simple boolean interface.
 type ConfirmationResultFunc func(action string, args map[string]any) ConfirmationResult
 
 // LLMClient abstracts the LLM chat interface for testability.
@@ -191,14 +126,8 @@ type HistoryMessage struct {
 	Content string
 	// Transcript is the raw messages.metadata document for an assistant row,
 	// carrying the turn's canonical agent_transcript_v1 when one was persisted.
-	// It is plumbed through so a cold rebuild can reconstruct the same turn the
-	// hot engine held. The raw column is always carried — metadata is a
-	// general-purpose column and other keys may live beside agent_transcript_v1 —
-	// but PARSING it is gated by COMPSHARE_CANONICAL_TRANSCRIPT (default off);
-	// see transcriptFromRow, which owns that decision because a check inside
-	// recordTurn would run after Go had already evaluated the parse. Empty for
-	// user rows, for turns with no tool traffic, and for every row written before
-	// the transcript existed.
+	// It lets a cold rebuild reconstruct the same turn the hot engine held. Empty
+	// for user rows, plain turns and rows written before transcript capture.
 	Transcript json.RawMessage
 }
 
@@ -208,7 +137,7 @@ type HistoryMessage struct {
 // is returned verbatim, or as a single override chunk when engine guards
 // rewrite the reply.
 type ChatOptions struct {
-	// TurnID is the durable server turn identity. When the transport does not
+	// TurnID is the server turn identity. When the transport does not
 	// provide one, ChatWithOptions creates an engine-local identity for this
 	// turn. It is trace/context metadata only and grants no execution authority.
 	TurnID string
@@ -216,16 +145,14 @@ type ChatOptions struct {
 	// original chunk order, never intermediate ReAct/tool-call text. It is
 	// intentionally emitted after the response gateway rather than speculatively
 	// token-by-token, so the rendered stream cannot disagree with persisted text.
-	// Canned-reply branches (monitor_history, etc.) skip the LLM entirely and
-	// therefore never call this.
+	// Deterministic reply branches skip the LLM and therefore never call this.
 	OnTextDelta func(string)
 	// OnUsage, if non-nil, is called once after the final LLM call returns its
 	// usage data.
 	OnUsage func(llm.TokenUsage)
 	// ImageContext, if non-empty, is a structured caption extracted from a
-	// user-uploaded image. It is added to the LLM-facing message after
-	// pre-block keyword checks so screenshot UI labels (e.g. "运维监控",
-	// "最近访问") do not trigger false-positive hard blocks.
+	// user-uploaded image. It is fenced as untrusted reference data and is not
+	// used as the user's own words for target binding or product protocols.
 	ImageContext string
 	// ConfirmFunc, if non-nil, overrides the engine's stored ConfirmFunc for
 	// this turn only. Used by the HTTP path to inject an SSE-backed confirm
@@ -235,23 +162,16 @@ type ChatOptions struct {
 	// observability. When present it takes precedence over ConfirmFunc.
 	ConfirmResultFunc ConfirmationResultFunc
 	// ConfirmEditsFunc, if non-nil, additionally enables the editable confirm
-	// form for workflow StepConfirms that declare one (create-flow 表单化).
-	// Only the HTTP path sets it, and only when COMPSHARE_CONFIRM_FORM is on
-	// AND the client opted in via Features — nil keeps the boolean confirm
-	// path byte-identical.
+	// form for workflow StepConfirms that declare one. HTTP sets it only when the
+	// client opted into confirm_form_v1.
 	ConfirmEditsFunc workflow.ConfirmEditsFunc
 	// GuidedCreate switches CreateInstanceWorkflow to the guided multi-step
-	// order flow for this turn. Only the HTTP path sets it after both backend
-	// and client feature gates are open.
+	// order flow for this turn. HTTP sets it for guided_create_v1 clients.
 	GuidedCreate bool
-	// SecretInputs are turn-scoped values supplied through the durable secret
-	// channel. They are consumed only by deterministic workflows, never added to
-	// model messages, session state, traces, or assistant output.
-	SecretInputs map[string]string
 	// KnowledgeOnly restricts this turn to the knowledge-base capabilities used
 	// by public chat integrations. It is an authorization reduction: platform
 	// reads, diagnoses and all mutating proposals are removed from the model's
-	// tool window regardless of the process-wide feature flags.
+	// tool window regardless of process-wide write authorization.
 	KnowledgeOnly bool
 	// PublicPlatformReadOnly exposes the fail-closed public platform catalog
 	// window for untrusted chat transports. KnowledgeOnly takes precedence when
@@ -298,8 +218,8 @@ type Engine struct {
 	rateLimitObserver                func(governance.Decision)
 	readExpensiveCallsThisTurn       int
 	lastConfirmationAcceptedThisCall bool
-	// searchKnowledgeRanThisTurn / searchKnowledgeHitsThisTurn track the agentic
-	// SearchKnowledge tool (P3) so the final-answer citation check runs against
+	// searchKnowledgeRanThisTurn / searchKnowledgeHitsThisTurn track the
+	// SearchKnowledge tool so the final-answer citation check runs against
 	// exactly the evidence the agent was shown. Reset per turn.
 	searchKnowledgeRanThisTurn  bool
 	searchKnowledgeHitsThisTurn []knowledge.RetrievalHit
@@ -328,11 +248,8 @@ type Engine struct {
 	// call budget so one rewrite cannot hide the availability of later searches.
 	searchKnowledgeQueriesThisTurn int
 	// searchKnowledgeLedgerThisTurn is the per-turn ChunkID-keyed, deduped
-	// evidence ledger (the union of every SearchKnowledge call's items this turn,
-	// #126). The route-independent grounded-answer validator checks the final
-	// synthesis cites only ChunkIDs present here. Reset per turn; populated only
-	// when the agentic tool runs AND the grounded validator is on — empty (inert)
-	// otherwise, keeping flag-off byte-identical.
+	// evidence ledger: the union of every SearchKnowledge call's items this turn.
+	// The grounded-answer validator accepts only ChunkIDs present here.
 	searchKnowledgeLedgerThisTurn knowledge.EvidenceLedger
 	// resolvedKnowledgeQuestionThisTurn is the standalone answer target produced
 	// by the query planner. Retrieval queries may be narrower variants, but answer
@@ -340,18 +257,9 @@ type Engine struct {
 	resolvedKnowledgeQuestionThisTurn   string
 	searchKnowledgeActivitiesThisTurn   []observability.RetrievalActivity
 	searchKnowledgeActivityIDsByChunkID map[string][]string
-	// knowledgeQAAgentLoopThisTurn records that SearchKnowledge ran this turn —
-	// because the Agent chose it. It is set where SearchKnowledge actually
-	// executes, so it is a
-	// post-hoc marker, NOT a routing decision — P6 deleted the intent router and
-	// nothing classifies a turn as "knowledge" before the Agent acts (see the
-	// deliberate no-router note in cmd/shared_deps.go). Anything that wants to
-	// gate on "this is a knowledge turn" ahead of time does not have that signal
-	// and must express itself in the prompt instead. Read by the ReAct loop,
-	// executeSearchKnowledge, and the citation finalizer (which is why citation
-	// markers can only appear on turns where they are also stripped). The legacy
-	// PlannedExecutionPath=agent trace projection is emitted for trace continuity
-	// (see the ExecutionPath* legacy note). Reset per turn.
+	// knowledgeQAAgentLoopThisTurn records that SearchKnowledge ran because the
+	// Agent chose it. Citation finalization uses this post-hoc fact; there is no
+	// pre-turn knowledge classifier. Reset per turn.
 	knowledgeQAAgentLoopThisTurn bool
 	// maxTokensPerTurn caps total LLM tokens (prompt + completion) per
 	// user turn. 0 = disabled. Copied from SharedDeps in NewSession.
@@ -361,15 +269,15 @@ type Engine struct {
 	// Chat. Read at ReAct loop iteration boundaries to enforce
 	// maxTokensPerTurn — never mid tool_call / tool_result pair.
 	turnTokensConsumed int
-	// reactRoundsThisTurn counts the ReAct loop rounds entered this turn (0 when
-	// the turn never ran the loop — routing / RAG / pre-block). reactCeilingHit
+	// reactRoundsThisTurn counts the ReAct loop rounds entered this turn (zero
+	// for deterministic exits such as an explicit human handoff). reactCeilingHit
 	// ThisTurn is set when the loop exhausted maxReActRounds without a final
 	// answer (that path emits no hard-block, so the trace's budget terminus is
 	// otherwise underivable). Both reset at the top of Chat; read post-turn by the
 	// trace recorder via ReactRoundsThisTurn / ReactCeilingHitThisTurn.
 	reactRoundsThisTurn     int
 	reactCeilingHitThisTurn bool
-	// Context-assembler observability (P2). Peak raw history size and peak
+	// Context-assembler observability. Peak raw history size and peak
 	// assembled request size across this turn's rounds, plus whether the
 	// conservative message cap ever shed anything. Content-free; reset at the top
 	// of Chat, read post-turn via the Prompt* accessors.
@@ -391,13 +299,9 @@ type Engine struct {
 	hardBlockTraceThisTurn    observability.EngineHardBlockTrace
 	hardBlockObserver         func(observability.EngineHardBlockTrace)
 	confirmFn                 ConfirmFunc
-	// confirmEditsFn is the editable-form HITL gate (create-flow 表单化).
-	// Set per-turn via ChatOptions.ConfirmEditsFunc by the HTTP path only when
-	// COMPSHARE_CONFIRM_FORM is on AND the client opted in; nil everywhere
-	// else (CLI, flag-off) so every confirm stays on the boolean ConfirmFunc.
+	// confirmEditsFn is the per-turn editable-form HITL gate.
 	confirmEditsFn workflow.ConfirmEditsFunc
-	// guidedCreate is a per-turn HTTP feature gate; false keeps
-	// CreateInstanceWorkflow on the legacy final-card flow.
+	// guidedCreate is a per-turn client capability.
 	guidedCreate                       bool
 	messages                           []openai.ChatCompletionMessage // conversation history
 	userTurn                           int                            // incremented at start of each Chat() call
@@ -411,9 +315,7 @@ type Engine struct {
 	pendingResourceSelection           *pendingResourceSelection
 	displayedResourceSelectionThisTurn *pendingResourceSelection
 	// lastTurnTranscript holds the canonical agent_transcript_v1 document for
-	// the turn that just finished, for shadow persistence only. It is produced
-	// on every turn and read back into model context by nothing — see
-	// canonical_transcript.go for why that separation is deliberate.
+	// persistence on the assistant row.
 	lastTurnTranscript      json.RawMessage
 	lastTurnTranscriptStats TranscriptStats
 	// recentTurns is the cross-turn memory the canonical transcript replaces the
@@ -422,9 +324,7 @@ type Engine struct {
 	// the two agree by construction. Bounded by size (maxRawHistoryRunes), not by
 	// a count of exchanges.
 	recentTurns []recordedTurn
-	// mutatingToolsEnabled controls whether instance-changing workflows and
-	// L1 mutating API actions are exposed and executable. Production defaults
-	// to read-only until these operations are product-ready.
+	// mutatingToolsEnabled is the deployment authorization boundary for instance-changing tools.
 	mutatingToolsEnabled bool
 	// verifiedInstanceEvidenceThisTurn is current-turn existence evidence for the
 	// ActionProposal target verifier: exact instance IDs a resource read confirmed
@@ -454,20 +354,8 @@ type Engine struct {
 	// sensitiveRepliesThisTurn contains credentials intentionally withheld from
 	// model context. The response gateway delivers each one once.
 	sensitiveRepliesThisTurn []string
-	// committedWriteRepliesThisTurn holds one model-free sentence per mutating
-	// workflow that COMMITTED this turn, in execution order.
-	//
-	// Data-bearing writes (create instance / CFS / custom image) deliberately do
-	// not short-circuit narration — their ids and next steps are worth a model
-	// round (see deterministicWorkflowReply). That leaves a window in which the
-	// write is already irreversible upstream and the only thing left is prose.
-	// Measured 2026-07-29: a create committed (cpod-…, spot 4090, billing) and
-	// the closing model call then died on a provider 503, so the turn ended as an
-	// error and the console rendered 「创建实例 — 未创建成功」 — the user was told the
-	// opposite of what happened, and the obvious next move is to create it again.
-	// This record is what lets the error path tell the truth without a model.
-	//
-	// Per-turn; reset at the top of Chat.
+	// committedWriteRepliesThisTurn preserves truthful, model-free completion
+	// text if narration fails after an upstream write has committed.
 	committedWriteRepliesThisTurn []string
 	// Tool progress is turn-local. Replaying an identical read cannot create new
 	// evidence, so the runtime returns the prior observation and withdraws that
@@ -478,7 +366,6 @@ type Engine struct {
 	// mid-turn.
 	lastUserMsg          string
 	imageContextThisTurn string
-	secretInputsThisTurn map[string]string
 	baseUserContext      string
 	// currentCtx holds the context for the current ChatWithOptions call.
 	// Set at the start of ChatWithOptions and cleared (nil) on return.
@@ -501,24 +388,16 @@ type Engine struct {
 	sessionState         SessionState
 	sessionStateVersion  int
 	sessionStateHydrated bool
-	// continuityAdvisories is a turn-local, read-only view supplied by the
-	// coordinator. It is intentionally not part of SessionState: transport and
-	// execution truth remain in chat_turns / turn_actions, not in a second JSON
-	// snapshot.
-	continuityAdvisories ContinuityAdvisories
-	// turnContextViewThisTurn is the immutable understanding projection shared by
-	// routing fallbacks and the agent context card. It is rebuilt exactly once after
+	// turnContextViewThisTurn is the immutable execution-context projection shared
+	// by target resolution and the Agent context card. It is rebuilt exactly once after
 	// turn-entry expiry/refresh and before the current user message is appended.
 	turnContextViewThisTurn AgentContext
 	turnContextViewReady    bool
-	// Bounded, content-free continuity metadata for the durable turn trace.
-	promptSectionIDsThisTurn   []string
-	memoryUpdateSourceThisTurn string
-	groundingOutcomeThisTurn   string
-	// reactResultProjectionEnabled shrinks selected bulky tool results before
-	// they are formatted back into the ReAct model-visible history. Default off.
-	reactResultProjectionEnabled bool
-	// Per-turn instance-binding observability (#3 StateTrace). Captured at turn
+	// Bounded, content-free metadata for the turn trace.
+	promptSectionIDsThisTurn       []string
+	verifiedEvidenceUpdateThisTurn string
+	groundingOutcomeThisTurn       string
+	// Per-turn instance-binding observability. Captured at turn
 	// entry / refreshSystemPrompt, read post-turn by the trace recorder. Per-turn
 	// by design (reset every turn) — a shared value would attribute one tenant's
 	// binding to another's turn.
@@ -534,8 +413,7 @@ type Engine struct {
 	// instanceOps runs the read-only in-instance SSH diagnosis lane. nil = lane
 	// off, and the tool is then absent from the model window
 	// (centralAgentToolWindow). Copied from SharedDeps.InstanceOps in NewSession
-	// and overridable per session via SetInstanceOps (the CLI path has no
-	// SharedDeps handle). Per-session by classification: the slot is independently
+	// and overridable by tests via SetInstanceOps. Per-session by classification: the slot is independently
 	// settable, so a session can hold a different runner than its siblings — it is
 	// not treated as a shared singleton.
 	instanceOps InstanceOpsRunner
@@ -562,7 +440,7 @@ type Engine struct {
 	// ReAct loop that consumes it are the same goroutine.
 	lastConfirmationTerminalReason string
 	// currentTurnID is the server-side turn identity for THIS turn, the audit dedup
-	// key the in-instance lane uses so a durable replay cannot re-enter the box
+	// key the in-instance lane uses so a retried request cannot re-enter the box
 	// (INV-9). Set at ChatWithOptions entry from the resolved turnID, cleared on
 	// return. Per-session/per-turn — it is one turn's identity.
 	currentTurnID string
@@ -574,10 +452,7 @@ type Engine struct {
 }
 
 // SharedDeps groups Engine fields that are safe to share across sessions.
-// All fields here are either stateless wrappers (LLM/Renderer
-// clients), read-only data (knowledge corpus), or internally-locked state
-// (RateLimiter has its own mutex). See plan §3.1 / §5 for the full
-// classification rationale.
+// Fields are stateless wrappers, immutable dependencies, or internally locked.
 //
 // KnowledgeRetriever is exported so server bootstrap
 // can assign it on immutable process-wide dependencies before sessions start.
@@ -588,45 +463,25 @@ type SharedDeps struct {
 	// MaxTokensPerTurn caps total LLM tokens summed across one user turn.
 	// 0 = disabled. Process-wide constant; copied into every NewSession.
 	MaxTokensPerTurn int
-	// ReactResultProjectionEnabled enables deterministic LLMResult projection
-	// for selected bulky read-only tools. Default false.
-	ReactResultProjectionEnabled bool
 	// ExternalExecutor is the underlying tool executor shared across sessions
 	// (holds AK/SK + HTTP client). Each NewSession wraps it in a fresh
 	// SafeToolExecutor so per-session confirmFn stays isolated.
 	ExternalExecutor tools.ToolExecutor
-	// InstanceOps is the shared read-only in-instance SSH diagnosis runner (nil =
-	// lane off). The server wires it here; the CLI injects it per session via
-	// Engine.SetInstanceOps (it has no SharedDeps handle). It is NOT a
-	// mutating-setter leak vector: the concrete sshops.Service is constructed once
-	// in cmd and never mutated through a shared setter (see the leak audit's
-	// nonAuditableFields entry — deliberately kept out of sharedDepConcreteTypes so
-	// the ported sshops package is not subjected to the mutating-verb scan).
+	// InstanceOps is the shared in-instance diagnosis runner; nil disables the lane.
 	InstanceOps InstanceOpsRunner
 }
 
-// SessionOptions configures a per-session Engine. Server passes a freshly
-// derived Subject + per-connection ConfirmFn; CLI passes a process-wide
-// Subject and a terminal-stdin-based ConfirmFn.
+// SessionOptions configures one server-side session Engine.
 type SessionOptions struct {
 	Subject              string
 	ConfirmFn            ConfirmFunc
 	MutatingToolsEnabled bool
-	// InitialCommittedTurns is the authoritative number of turns preceding
-	// this private engine. ChatWithOptions increments userTurn at entry, so a
-	// durable turn with sequence N must construct with N-1.
-	InitialCommittedTurns int
-	// ActionJournal belongs to exactly one durable v2 turn. It must never be
-	// stored in SharedDeps because its action index and lease are turn-local.
-	ActionJournal        tools.ActionJournal
-	RequireActionJournal bool
 }
 
 // NewSharedDeps assembles the always-shared engine dependencies from config.
 // Call once at process startup; share the result across every NewSession.
-// KnowledgeRetriever is NOT populated here — it is env-driven and the caller
-// assigns it on the returned struct
-// (server) or via Engine setters post-NewSession (CLI).
+// KnowledgeRetriever is assigned by server bootstrap after its remote MCP
+// dependency has been constructed.
 func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
 	if cfg == nil {
 		return nil, errors.New("engine.NewSharedDeps: cfg is nil")
@@ -666,45 +521,22 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		maxTokensPerTurn:   deps.MaxTokensPerTurn,
 
 		// ── per-session (fresh instance every call) ──
-		confirmFn:                    opts.ConfirmFn,
-		registry:                     entity.NewRegistry(),
-		rateLimitSubject:             opts.Subject,
-		mutatingToolsEnabled:         opts.MutatingToolsEnabled,
-		userTurn:                     max(opts.InitialCommittedTurns, 0),
-		reactResultProjectionEnabled: deps.ReactResultProjectionEnabled,
-		lastInstanceQueryTurn:        -1,
-		lastMonitorTurn:              -1,
+		confirmFn:             opts.ConfirmFn,
+		registry:              entity.NewRegistry(),
+		rateLimitSubject:      opts.Subject,
+		mutatingToolsEnabled:  opts.MutatingToolsEnabled,
+		userTurn:              0,
+		lastInstanceQueryTurn: -1,
+		lastMonitorTurn:       -1,
 		// messages, userTurn, lastUserMsg, currentMonitor*, pendingResourceSelection,
 		// readExpensiveCallsThisTurn,
 		// *Observer fields all start at zero values which is correct.
 	}
-	eng.safeExecutor = newSafeToolExecutor(deps.ExternalExecutor, opts.ConfirmFn, opts.ActionJournal, opts.RequireActionJournal)
+	eng.safeExecutor = newSafeToolExecutor(deps.ExternalExecutor, opts.ConfirmFn)
 	eng.safeExecutor.SetMutatingToolsEnabled(opts.MutatingToolsEnabled)
 	eng.externalExecutor = deps.ExternalExecutor
 	eng.instanceOps = deps.InstanceOps
 	return eng
-}
-
-// New is the legacy CLI constructor. It assembles SharedDeps from cfg, derives
-// the rate-limit subject from the public key (process-wide, since CLI has
-// only one identity), and returns a single Engine. Server path MUST NOT use
-// this — it must call NewSharedDeps once and NewSession per connection so
-// each tenant gets its own session.
-func New(cfg *config.Config, confirmFn ConfirmFunc) *Engine {
-	deps, err := NewSharedDeps(cfg)
-	if err != nil {
-		// Preserve original New() error-free contract for CLI callers.
-		panic(fmt.Sprintf("engine.New: %v", err))
-	}
-	subject, ok := governance.SubjectKeyFromPublicKey(cfg.Agent.PublicKey)
-	if !ok {
-		fmt.Fprintln(os.Stderr, "warning: rate limiter using anonymous subject (public key missing)")
-	}
-	return NewSession(deps, SessionOptions{
-		Subject:              subject,
-		ConfirmFn:            confirmFn,
-		MutatingToolsEnabled: false,
-	})
 }
 
 // NewWithDeps creates an Engine with injected dependencies (for testing).
@@ -718,14 +550,13 @@ func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn Confir
 		lastMonitorTurn:       -1,
 		mutatingToolsEnabled:  true,
 	}
-	eng.safeExecutor = newSafeToolExecutor(executor, confirmFn, nil, false)
+	eng.safeExecutor = newSafeToolExecutor(executor, confirmFn)
 	eng.externalExecutor = executor
 	return eng
 }
 
-// SetMutatingToolsEnabled explicitly enables or disables instance-changing
-// workflows and L1 mutating API actions. The CLI leaves this disabled unless
-// COMPSHARE_ENABLE_MUTATING_TOOLS=1 is set.
+// SetMutatingToolsEnabled changes write authorization on an isolated Engine.
+// Production sets this through SessionOptions; direct engine tests use this setter.
 func (e *Engine) SetMutatingToolsEnabled(v bool) {
 	e.mutatingToolsEnabled = v
 	if e.safeExecutor != nil {
@@ -733,18 +564,10 @@ func (e *Engine) SetMutatingToolsEnabled(v bool) {
 	}
 }
 
-// SetInstanceOps injects the read-only in-instance SSH diagnosis runner for this
-// session. The CLI needs this because it builds its Engine through New() and has
-// no SharedDeps handle to populate InstanceOps; the server sets it via SharedDeps
-// instead. A nil runner leaves the lane off — the DiagnoseInstanceInternals tool
-// then stays out of the model's window (centralAgentToolWindow).
+// SetInstanceOps injects an in-instance diagnosis runner. A nil runner keeps the
+// tool out of the model's window.
 func (e *Engine) SetInstanceOps(r InstanceOpsRunner) {
 	e.instanceOps = r
-}
-
-// SetReactResultProjectionEnabled toggles deterministic ReAct LLMResult projection.
-func (e *Engine) SetReactResultProjectionEnabled(v bool) {
-	e.reactResultProjectionEnabled = v
 }
 
 func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
@@ -761,9 +584,6 @@ func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
 }
 
 func (e *Engine) SetKnowledgeRetriever(retriever KnowledgeRetriever) {
-	// Engine treats a non-nil retriever as the Stage 2B retrieval gate. CLI
-	// code owns env parsing and only calls this after USE_KNOWLEDGE_RETRIEVAL
-	// and corpus loading succeed.
 	e.knowledgeRetriever = retriever
 }
 
@@ -851,7 +671,7 @@ func (e *Engine) recordAgentRuntimeEvent(event agentruntime.Event) {
 
 // SelectedInstanceIDAtTurnStart returns the carried SelectedInstanceID captured
 // at the start of the most recent turn, before any mid-turn re-bind. Read
-// post-turn by the trace recorder for the #3 StateTrace.
+// post-turn by the trace recorder.
 func (e *Engine) SelectedInstanceIDAtTurnStart() string { return e.selectedInstanceIDAtTurnStart }
 
 // SelectedInstanceProvenanceAtTurnStart returns the carried instance source and
@@ -877,16 +697,6 @@ func (e *Engine) SetRateLimitObserver(observer func(governance.Decision)) {
 
 func (e *Engine) RateLimitSubjectKey() string {
 	return e.rateLimitSubject
-}
-
-// ActionJournalError must be checked by the durable turn coordinator before
-// CommitTurn. It carries in-memory uncertainty that cannot always be inferred
-// from database rows after a transaction acknowledgement failure.
-func (e *Engine) ActionJournalError() error {
-	if e == nil || e.safeExecutor == nil {
-		return nil
-	}
-	return e.safeExecutor.ActionJournalError()
 }
 
 // SetRateLimitSubject overrides the subject derived at Engine.New so the
@@ -991,7 +801,7 @@ func (e *Engine) RateLimiterPointer() governance.RateLimiter { return e.rateLimi
 // can assert that two sessions hold DIFFERENT registries. Test-only.
 func (e *Engine) RegistryPointer() *entity.EntityRegistry { return e.registry }
 
-func newSafeToolExecutor(executor tools.ToolExecutor, confirmFn ConfirmFunc, journal tools.ActionJournal, requireJournal bool) *tools.SafeToolExecutor {
+func newSafeToolExecutor(executor tools.ToolExecutor, confirmFn ConfirmFunc) *tools.SafeToolExecutor {
 	var safeConfirm tools.ConfirmFunc
 	if confirmFn != nil {
 		safeConfirm = tools.ConfirmFunc(confirmFn)
@@ -999,57 +809,7 @@ func newSafeToolExecutor(executor tools.ToolExecutor, confirmFn ConfirmFunc, jou
 	return tools.NewSafeToolExecutor(
 		executor,
 		tools.WithConfirmFunc(safeConfirm),
-		tools.WithActionJournal(journal),
-		tools.WithRequireActionJournal(requireJournal),
 	)
-}
-
-// Init performs first-turn context injection:
-// calls DescribeCompShareInstance and builds the system prompt.
-// Returns opening suggestions.
-func (e *Engine) Init(ctx context.Context) ([]prompt.Suggestion, error) {
-	// PR9: removed automatic ProjectId discovery (was: e.ensureProjectId(ctx)).
-	// Discovery mutated a SharedDeps singleton and leaked across sessions.
-	// ProjectId now flows from cfg → ExternalExecutor at construction only.
-	// When mutating tools that need ProjectId (e.g. UpdateCompShareStopScheduler)
-	// open up, plumb a per-session value through args, not via a setter.
-
-	// Auto-inject user instance context
-	userCtx := "暂无用户信息"
-	result, err := e.refreshRegistry(ctx, entity.RefreshReasonInit)
-	if err != nil {
-		if msg, ok := friendlyToolErrorMessage(err); ok {
-			fmt.Fprintln(os.Stderr, msg)
-		}
-		// Context injection is best-effort; continue with default context.
-		_ = err
-	} else {
-		userCtx = prompt.FormatInstanceContext(result)
-	}
-
-	e.baseUserContext = userCtx
-	systemPrompt := prompt.BuildSystemWithOptions(userCtx, e.reactPromptBuildOptions())
-	e.messages = []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
-	}
-
-	// Determine suggestions based on user state
-	stage := prompt.NewUser
-	if err == nil {
-		stage = prompt.ClassifyUser(result)
-	}
-	return prompt.GetSuggestions(stage), nil
-}
-
-func (e *Engine) refreshRegistry(ctx context.Context, reason entity.RefreshReason) (map[string]any, error) {
-	if e.registry == nil {
-		return e.executeRawTool(ctx, "DescribeCompShareInstance", map[string]any{"Limit": 100}, tools.OriginDirectLLM)
-	}
-	result, err := e.registry.RefreshResult(ctx, e.toolExecutorFor(tools.OriginDirectLLM), reason)
-	if err == nil {
-		e.lastInstanceQueryTurn = e.userTurn
-	}
-	return result, err
 }
 
 // syncRegistryFromDescribe adopts a full DescribeCompShareInstance listing that
@@ -1098,8 +858,8 @@ func (e *Engine) RegistryTraceState(now time.Time) observability.EntityRegistryT
 }
 
 // RegistrySnapshot returns an immutable entity snapshot for the central Agent's
-// reference resolution / action-proposal validation (the pre-P6 shadow planner
-// is gone). It does not expose the registry object, maps, or lock to callers.
+// reference resolution and action-proposal validation. It does not expose the
+// registry object, maps, or lock to callers.
 func (e *Engine) RegistrySnapshot() entity.RegistrySnapshot {
 	if e == nil || e.registry == nil {
 		return entity.RegistrySnapshot{SyncEvent: string(entity.SyncEventUnavailable)}
@@ -1107,8 +867,7 @@ func (e *Engine) RegistrySnapshot() entity.RegistrySnapshot {
 	return e.registry.Snapshot()
 }
 
-// InitWithContext performs context injection with a pre-built user context string,
-// bypassing the DescribeCompShareInstance API call. Used for testing.
+// InitWithContext initializes an isolated Engine with test context.
 func (e *Engine) InitWithContext(userCtx string) {
 	e.baseUserContext = userCtx
 	systemPrompt := prompt.BuildSystemWithOptions(userCtx, e.reactPromptBuildOptions())
@@ -1139,7 +898,7 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 			transcript := transcriptFromRow(msg.Transcript)
 			assistantContent := msg.Content
 			// A verbatim billing block is deliberately a USER-display projection:
-			// the durable assistant row contains its exact amounts so the UI can
+			// the persisted assistant row contains its exact amounts so the UI can
 			// reload the reply, while the live model saw only an amount-free tool
 			// observation. Replaying the display text here would make a restart or
 			// replica hand the model figures it never saw on the hot path. When the
@@ -1171,13 +930,10 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 // restate, extrapolate or treat as current. The canonical transcript already
 // records the latter view. Do not identify cards by their display text: that
 // would make a formatting change alter model semantics. The typed observation
-// is the durable, narrow discriminator.
+// is the persisted, narrow discriminator.
 //
-// A pure billing turn historically ended at its tool result because the model
-// intentionally returned no user-facing prose. New turns append
-// verbatimBillingHistoryCompletion before capture; for an older row without
-// that terminal assistant message, use the same amount-free completion rather
-// than falling back to the persisted card.
+// Rows without a terminal assistant message use the same amount-free completion
+// rather than falling back to the persisted display card.
 func verbatimBillingModelHistoryContent(transcript *TranscriptV1) (string, bool) {
 	projected := ProjectTranscript(transcript)
 	if len(projected) == 0 || !containsVerbatimBillingObservation(projected) {
@@ -1209,36 +965,12 @@ func containsVerbatimBillingObservation(messages []openai.ChatCompletionMessage)
 	return false
 }
 
-// SetSessionState installs the prior persisted SessionState and the
-// context_version that was read together with it. Must be called BEFORE
-// ChatWithOptions. Safe to call once per Lease — caller (handleChat) is
-// already serialized via agentpool.Lease.
-//
-// The state is treated as immutable input for the current turn; mutations
-// during the turn produce a new state visible via SessionStateSnapshot.
-//
-// When this engine already has hydrated state with a higher-or-equal version,
-// the incoming state is treated as stale. Locally accumulated verification
-// provenance is merged, while selection and pending-card fields keep the
-// in-memory values.
-//
-// When does the merge path fire?
-//
-//   - Cross-replica race: replica A wrote at v=N, then replica B's
-//     next-turn hydrate sees v=N from a stale read while B has newer
-//     in-memory verification provenance.
-//   - Defense-in-depth: handlers_chat.go always calls ClearSessionState
-//     before SetSessionState, so the merge path is rarely triggered in
-//     single-replica today. But a future buggy caller skipping the clear
-//     would step exactly on the cached-Engine reuse bug M1 prevented;
-//     this guard is the secondary defense.
-//
-// Single-replica behavior unchanged: ClearSessionState resets hydrated
-// to false, so SetSessionState always takes the !hydrated branch and
-// fully overwrites — exactly the M1 contract.
+// SetSessionState installs persisted execution state before ChatWithOptions.
+// A stale version may contribute verifier evidence, but cannot overwrite newer
+// in-memory selection or pending-confirmation state.
 func (e *Engine) SetSessionState(state SessionState, version int) {
 	if e.sessionStateHydrated && version <= e.sessionStateVersion {
-		e.sessionState.VerifiedKnowledge = mergeVerifiedKnowledge(e.sessionState.VerifiedKnowledge, state.VerifiedKnowledge)
+		e.sessionState.VerifiedEvidence = mergeVerifiedEvidence(e.sessionState.VerifiedEvidence, state.VerifiedEvidence)
 		// SelectedInstance{ID,Name} / PendingSelection* /
 		// SchemaVersion: keep the in-memory value. The local engine has not
 		// yet persisted, so its scalars are at-or-newer than the incoming row.
@@ -1286,8 +1018,7 @@ func (e *Engine) SessionStateSnapshot() (state SessionState, version int, hydrat
 // This solves the HTTP timing issue: RehydrateHistory builds the initial
 // system prompt with empty userContext because SessionState isn't
 // available yet; refreshSystemPrompt patches it once state is hydrated.
-// CLI path (hydrated=false): rebuilds from baseUserContext without
-// appending instance info, so the result is identical to the Init prompt.
+// An unhydrated test Engine rebuilds from baseUserContext only.
 func (e *Engine) refreshSystemPrompt() {
 	if len(e.messages) == 0 || e.messages[0].Role != openai.ChatMessageRoleSystem {
 		return
@@ -1298,7 +1029,7 @@ func (e *Engine) refreshSystemPrompt() {
 	}
 	hasSessionBinding := e.sessionStateHydrated && e.sessionState.SelectedInstanceID != ""
 	singleID, _ := e.singleRegistryInstance()
-	// #3 StateTrace: record how the turn-start instance binding was determined.
+	// Record how the turn-start instance binding was determined.
 	// An explicit prior selection is strongest, then the single-host shortcut;
 	// otherwise it is unresolved. This is trace-only.
 	switch {
@@ -1322,16 +1053,14 @@ func (e *Engine) Chat(ctx context.Context, userMsg string, onStep func(StepEvent
 }
 
 // ephemeralTurnID returns a non-empty, turn-local identity for a turn whose
-// transport supplied none (legacy WS/HTTP, CLI, tests). userTurn is incremented
+// transport supplied none (older clients and direct tests). userTurn is incremented
 // once per turn at ChatWithOptions entry, so it is unique within the session. The
 // value is trace / evidence-binding metadata only and grants no execution
 // authority (see ChatOptions.TurnID) — it exists so this turn's current-turn
 // evidence can be tied to this turn rather than stamped with an empty id the
 // verifier then rejects.
 //
-// This is the SINGLE producer of that fallback id. ChatWithOptions used to compute
-// its own copy inline, which is how one turn could end up labelled two ways in the
-// same trace; the prefix here is the one cede00d4's engine_test pins.
+// This is the single producer of fallback turn identities.
 func (e *Engine) ephemeralTurnID() string {
 	return fmt.Sprintf("engine-turn-%d", e.userTurn)
 }
@@ -1374,17 +1103,14 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	defer func() { e.publicPlatformReadOnlyThisTurn = false }()
 	e.feishuConsoleHandoffThisTurn = opts.FeishuConsoleHandoff
 	defer func() { e.feishuConsoleHandoffThisTurn = false }()
-	e.secretInputsThisTurn = opts.SecretInputs
-	defer func() { e.secretInputsThisTurn = nil }()
 	defer e.emitTurnCompletion()
 	if u, ok := tools.UserFrom(ctx); ok {
 		if subject, ok := governance.SubjectKeyFromOrganization(u.TopOrganizationID, u.OrganizationID); ok {
 			e.rateLimitSubject = subject
 		}
 	}
-	// Per-turn confirmation wrapper records the terminal state of every card.
-	// It preserves the legacy boolean ConfirmFunc while allowing HTTP/durable
-	// transports to distinguish decline, timeout, disconnect and delivery errors.
+	// Per-turn confirmation wrapper records the terminal state of every card while
+	// preserving the boolean ConfirmFunc used by workflow code.
 	if opts.ConfirmResultFunc != nil || opts.ConfirmFunc != nil || e.confirmFn != nil {
 		origConfirm := e.confirmFn
 		confirm := e.confirmFn
@@ -1413,7 +1139,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			e.safeExecutor.SetConfirmFunc(tools.ConfirmFunc(origConfirm))
 		}()
 	}
-	// Per-turn editable-form gate (HTTP path, flag+opt-in only).
+	// Per-turn editable-form gate; HTTP wires it only for clients that advertise support.
 	if opts.ConfirmEditsFunc != nil || e.confirmEditsFn != nil {
 		origEdits := e.confirmEditsFn
 		confirmEdits := e.confirmEditsFn
@@ -1451,7 +1177,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.hardBlockStandingThisTurn = false
 	e.hardBlockTraceThisTurn = observability.EngineHardBlockTrace{}
 	e.promptSectionIDsThisTurn = nil
-	e.memoryUpdateSourceThisTurn = "none"
+	e.verifiedEvidenceUpdateThisTurn = evidenceUpdateNone
 	e.groundingOutcomeThisTurn = "unavailable"
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
@@ -1493,25 +1219,21 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	}()
 	continuityNow := time.Now()
 	e.expireStaleSelectedInstance(continuityNow)
-	// Every turn must carry a non-empty server-side turn identity. The durable
-	// transport supplies one (client turn id / request uuid, see ws_durable.go);
-	// the legacy WS/HTTP and CLI paths pass none. Without one,
+	// Every turn must carry a non-empty server-side identity. A caller may supply
+	// one; otherwise the engine derives one before compiling current-turn evidence.
+	// Without one,
 	// deriveProposalProvenance stamps this turn's current-turn evidence with an
 	// empty MessageID that verifyCurrentQuestionEvidence then rejects — the server
 	// disowning its own evidence — which surfaces as a bogus unverified_source
 	// rejection on any standalone user_explicit field (ImageName/GpuType/Zone/…)
 	// and dead-ends the create card.
 	//
-	// The backfill now happens once at the top of the turn (turnID, above), which
-	// is the same guarantee one step earlier — so opts.TurnID is mirrored to it
-	// here rather than being filled a second time. Two independent fallbacks for
-	// one identity is how a turn ends up labelled two different ways in the trace.
-	// It grants no execution authority (see ChatOptions.TurnID); it only binds
-	// this turn's evidence to this turn.
+	// The fallback happens once at turn entry. It grants no execution authority;
+	// it only binds this turn's evidence and trace to the same identity.
 	opts.TurnID = turnID
 	e.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(e, userMsg, turnID, continuityNow)
 	e.turnContextViewReady = true
-	// #3 StateTrace: snapshot the carried instance binding at turn entry (before
+	// Snapshot the carried instance binding at turn entry (before
 	// any mid-turn re-bind), and reset the per-turn binding observables that
 	// refreshSystemPrompt fills next.
 	e.selectedInstanceIDAtTurnStart = e.sessionState.SelectedInstanceID
@@ -1527,13 +1249,12 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// Trim before appending to guarantee the new user message is never dropped.
 	e.trimHistory()
 
-	// Pre-LLM hard-block chain — runs on raw userMsg only, BEFORE OCR
-	// image context is prepended. This prevents screenshot UI labels
-	// (e.g. "运维监控", "最近访问") from triggering false-positive blocks.
-	if decision := enginePreBlock.Decide(userMsg); decision.Matched {
+	// An explicit support handoff is a product protocol, not a semantic route.
+	// All other input reaches the central Agent.
+	if isHumanAgentTransferRequest(userMsg) {
 		e.emitKnowledgeHardBlock(observability.EngineHardBlockTrace{
 			Hit:         true,
-			Category:    decision.Category,
+			Category:    refusal.CategoryHumanAgent,
 			TriggeredBy: observability.HardBlockTriggerKeyword,
 		})
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
@@ -1542,13 +1263,13 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		})
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
-			Content: decision.Reply,
+			Content: refusal.HumanAgentTransfer,
 		})
-		return decision.Reply, nil
+		return refusal.HumanAgentTransfer, nil
 	}
 
-	// Build LLM-facing message: raw userMsg + optional image context.
-	// userMsg stays immutable for all keyword/regex routing below;
+	// Build the LLM-facing message from the user's text and optional image context.
+	// userMsg remains the authoritative text for deterministic target binding;
 	// llmUserMsg carries image evidence into conversation history so the
 	// ReAct LLM can reference it. The recognized text is fenced as untrusted
 	// reference data (see WrapScreenshotContext) — the httpapi persist path
@@ -1584,13 +1305,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// any tool_call → tool_result pair emitted in the previous
 		// iteration has already completed and been appended to history
 		// before we stop. This preserves the WS protocol invariant that
-		// every tool_call is followed by a tool_result on the wire —
-		// breaking mid-pair would leave the client with an orphan
-		// tool_call frame. (Historically round 0 also saw token usage
-		// pre-loaded from a separate planner LLM call; that planner was
-		// deleted in P6, so the central Agent's first LLM call is in-loop.)
+		// every tool_call is followed by a tool_result on the wire.
 		if e.tokenBudgetExceeded() {
-			// PR2 budget policy: if a prior round's SearchKnowledge already
+			// If a prior round's SearchKnowledge already
 			// gathered evidence this turn, write the final answer from it
 			// (disciplined cited synthesis) instead of discarding the turn for
 			// a bare "请简化问题". Only fall back to the budget refusal when
@@ -1738,7 +1455,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// response it knows is incomplete.
 			runtimeRound.ModelStep(0, false)
 			// A write may have completed in an earlier tool round and this response is
-			// only its narration. That durable result outranks a generic retry or
+			// only its narration. That committed result outranks a generic retry or
 			// refusal: telling the user an already-created instance failed invites a
 			// duplicate billable request. This path uses only the committed record, not
 			// the partial model output.
@@ -1860,21 +1577,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		}
 		return synth, nil
 	}
-	// Neither recovery had anything to synthesize from, so the user gets the bare
-	// refusal — and it MUST enter the history like every other terminal reply.
-	//
-	// This was the one exit in ChatWithOptions that returned a reply without
-	// appending it (verified by scanning every terminal return in this function
-	// and each try* handler it delegates to). The HTTP layer stores whatever
-	// Chat returns, so the row went to the DB regardless. The result: this
-	// engine's in-memory history and the history a cold rebuild reads back from
-	// the DB disagreed by exactly one assistant turn. On the next turn the hot
-	// engine saw the user's new message land straight after a run of tool
-	// results with no answer between them — a malformed conversation the model
-	// then had to interpret — while a rebuilt engine saw the correct one.
-	//
-	// The divergence was manufactured entirely in memory, so no amount of
-	// storage correctness could have fixed it.
+	// Neither recovery had evidence to synthesize. Record the refusal so hot and
+	// rebuilt histories contain the same completed exchange.
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleAssistant,
 		Content: reactCeilingRefusal,
@@ -1950,8 +1654,7 @@ func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, 
 		}
 
 		// Only this normal-result path can be supplied to a later Agent round.
-		// Keep every such observation on the P2 control-plane contract even when
-		// an older handler still returns its native JSON payload.
+		// Keep every normal result on the common AgentTool control-plane contract.
 		toolResult = agentToolObservation(tc.Function.Name, toolResult)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:       openai.ChatMessageRoleTool,
@@ -2003,8 +1706,7 @@ func projectEvidenceTraceHits(evidences []envelope.Evidence, items []knowledge.R
 		}
 		hits = append(hits, observability.RetrievalHit{
 			ChunkID: view.ChunkID,
-			// SourceArea is the chunk's declared product_area, staging the #5
-			// wrong-domain visibility (empty when item is unset / undeclared).
+			// SourceArea is the chunk's declared product_area.
 			SourceArea: item.Chunk.ProductArea,
 			Score:      view.RetrievalScore,
 			Kept:       kept,
@@ -2148,21 +1850,11 @@ func citedRefsFromChunkIDs(chunkIDs []string, refs []observability.RetrievalRefe
 // isWeakEvidence reports whether the top hit's score is below the weak-evidence
 // threshold for the retrieval path that produced it. hybridMode comes from
 // knowledge.RetrievalResult.HybridMode and tracks the actual scoring path used
-// (including bm25_fallback when a hybrid mode degraded to BM25 mid-flight),
-// not the user-configured RAG_RETRIEVAL_MODE. Treat unknown / empty values as
-// BM25 — that preserves pre-mode-aware test fixtures whose mock RetrievalResult
-// leaves HybridMode unset.
+// (including bm25_fallback when a hybrid mode degraded to BM25 mid-flight).
+// Treat unknown or empty values as BM25 for conservative score handling.
 //
-// rerankerScored says whether the qwen3-reranker actually produced these scores.
-// It matters for exactly one mode: qwen3_rrf KEEPS its "qwen3_rrf" label on a
-// reranker fallback (unlike the cascade modes, which relabel to hybrid_cosine /
-// bm25_fallback), but its Score then reverts from the reranker [0,1] scale to the
-// RRF-fusion scale (~0.03). Applying the 0.5 reranker floor to those fusion
-// scores rejects every query, empties the ledger, and forces the agent to
-// fabricate from prior — the failure the floor_reranker probe demonstrated. So
-// when qwen3_rrf's reranker did NOT score, skip the floor and keep the RRF top-k:
-// a degraded ledger is far better than an empty one. The reranker fallback is
-// still observable via RerankerFallbackReason.
+// rerankerScored distinguishes qwen3_rrf reranker scores from its fallback RRF
+// scores. The latter use a different scale, so no reranker floor is applied.
 func isWeakEvidence(items []knowledge.RetrievalHit, hybridMode string, rerankerScored bool) bool {
 	floor, judged := appliedFloor(items, hybridMode, rerankerScored)
 	if !judged {
@@ -2175,25 +1867,12 @@ func isWeakEvidence(items []knowledge.RetrievalHit, hybridMode string, rerankerS
 // hits, and what was it". Both the verdict (isWeakEvidence) and the trace
 // (RetrievalTrace.FloorValue) read it, so they cannot describe different events.
 //
-// Two consumers deriving the same conditions independently is what produced the
-// defect this replaced: FloorValue reported weakEvidenceThresholdFor(mode) while
-// isWeakEvidence had already declined to compare, so a qwen3_rrf turn whose
-// reranker timed out recorded "0.031 judged against 0.5" for a comparison that
-// never happened — pointing an operator at scores when the fault was a reranker
-// fallback. Keeping the conditions in sync across two functions would have fixed
-// that instance and left the shape intact.
-//
 // judged is false in every case where no comparison occurs:
 //   - no hits: there is nothing to compare.
 //   - unknown score scale: a remote reported a scoring path this build never
 //     calibrated. Guessing picks BM25's 55.0, which rejects an entire [0,1]
 //     scale — see normalizeRemoteScoreScale.
-//   - qwen3_rrf without reranker scores: the mode KEEPS its label on a reranker
-//     fallback while its scores revert to the RRF fusion scale (~0.03), so the
-//     0.5 reranker floor would reject every query. The floor_reranker probe
-//     measured that emptying the ledger forces the agent to fabricate from
-//     prior; a degraded ledger is far better than an empty one. Observable via
-//     RerankerFallbackReason.
+//   - qwen3_rrf without reranker scores: fallback scores use the RRF scale.
 func appliedFloor(items []knowledge.RetrievalHit, hybridMode string, rerankerScored bool) (float64, bool) {
 	if len(items) == 0 {
 		return 0, false
@@ -2273,10 +1952,7 @@ func (e *Engine) emitTokenUsage(usage llm.TokenUsage) {
 	total := tokenUsageTotal(usage)
 	if total > 0 {
 		// Track regardless of observer wiring so the per-turn budget
-		// check sees every LLM call's usage, not just turns that happen
-		// to have an observer attached. (The pre-P6 planner made a separate
-		// LLM call observed outside emitTokenUsage; that planner is gone, so
-		// all current LLM usage flows through here via accumulateTokenUsage.)
+		// check sees every LLM call's usage, not just turns with an observer.
 		e.turnTokensConsumed += total
 	}
 	if e.tokenUsageObserver == nil || total == 0 {
@@ -2334,25 +2010,25 @@ func (x capabilityHandlerExecutor) execute(ctx context.Context, action string, a
 		Origin: origin,
 		Hooks: tools.SafeToolHooks{
 			OnConfirmNeeded: func(action string, args map[string]any) {
-				x.emit(StepEvent{Type: StepConfirmNeeded, Action: action, Source: observability.ToolSourcePlannerHandler, Args: x.engine.safeExecutor.RedactArgs(action, args), Message: "此操作需要您确认"})
+				x.emit(StepEvent{Type: StepConfirmNeeded, Action: action, Source: observability.ToolSourceCapabilityInternal, Args: x.engine.safeExecutor.RedactArgs(action, args), Message: "此操作需要您确认"})
 			},
 			OnBeforeCall: func(action string, args map[string]any) {
-				x.emit(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourcePlannerHandler, Args: x.engine.safeExecutor.RedactArgs(action, args)})
+				x.emit(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceCapabilityInternal, Args: x.engine.safeExecutor.RedactArgs(action, args)})
 			},
 		},
 	})
 	if err != nil {
 		if msg, ok := friendlyToolErrorMessage(err); ok {
-			x.emit(blockedStepEvent(action, observability.ToolSourcePlannerHandler, x.engine.safeExecutor.RedactArgs(action, args), msg, err))
+			x.emit(blockedStepEvent(action, observability.ToolSourceCapabilityInternal, x.engine.safeExecutor.RedactArgs(action, args), msg, err))
 			return nil, friendlyEngineError{cause: err, message: msg}
 		}
-		x.emit(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourcePlannerHandler, Message: fmt.Sprintf("API 调用失败: %v", err)})
+		x.emit(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceCapabilityInternal, Message: fmt.Sprintf("API 调用失败: %v", err)})
 		return nil, err
 	}
 	event := StepEvent{
 		Type:        StepToolResult,
 		Action:      action,
-		Source:      observability.ToolSourcePlannerHandler,
+		Source:      observability.ToolSourceCapabilityInternal,
 		Message:     "调用成功",
 		TraceResult: result.TraceResult,
 		Attempts:    result.Attempts,
@@ -2531,23 +2207,8 @@ func isFinalReply(result string) (string, bool) {
 	return "", false
 }
 
-// verbatimReplyPrefix marks a tool result whose text must reach the user
-// BYTE-IDENTICAL but which must NOT end the turn.
-//
-// finalReplyPrefix couples two separate guarantees — "deliver this text exactly"
-// and "stop here" — and the second one silently destroyed answers. A real turn
-// ("这台 CPU 一直 100% 跑满，而且费用也一直在扣") had the Agent gather the CPU evidence
-// first, then call DiagnoseBilling; the billing result ended the turn, so the user
-// got a price card, the CPU question went unanswered, and the monitoring evidence
-// already fetched was thrown away.
-//
-// This marker keeps the verbatim guarantee and drops the termination: the block is
-// handed straight to the user and the loop continues, so the Agent still answers
-// everything else. The model's context receives a short amount-free note in place
-// of the block, so the three failures the deterministic exit was built to stop
-// (re-summing periods, extrapolating an hourly quote into monthly spend, inferring
-// a free quota from a zero price) stay impossible by construction — they all
-// require seeing the figures, and the figures are never in its context.
+// verbatimReplyPrefix delivers an exact user-visible block without terminating
+// the turn. The model receives an amount-free observation instead.
 const verbatimReplyPrefix = "\x00VERBATIM:"
 
 // isVerbatimReply checks if a tool result is a verbatim, non-terminal user block.
@@ -2558,16 +2219,8 @@ func isVerbatimReply(result string) (string, bool) {
 	return "", false
 }
 
-// verbatimBlockObservation is what the model sees instead of a verbatim block. It
-// states the fact (the user already has the detail) and withholds the figures, so
-// the Agent neither re-derives an amount nor claims it cannot look pricing up.
-// Each clause answers a failure observed live, and the length was measured rather than
-// assumed. The structural half (finalizeResponse treating a delivered block as a
-// non-empty turn) is necessary but NOT sufficient: with it in place and this string cut
-// back to one factual sentence, the Agent went straight back to padding the card with
-// generic prose in 5/5 live runs (128–235 chars of tail). Naming "add nothing" and "stop"
-// as outcomes is what actually buys tail=0 in 5/5. Do not trim this without re-measuring;
-// the pure-billing shape is the property at stake.
+// verbatimBlockObservation tells the model that the user has already received
+// the authoritative detail while withholding figures that must not be derived.
 const verbatimBlockObservation = "费用明细已按上游结构化数据逐字呈现给用户，本结果不含金额。" +
 	"不要自行给出金额，也不要复述或补充通用费用说明；若用户没有其他问题需要处理，直接结束本回合、不要再输出文字。"
 
@@ -2600,17 +2253,8 @@ func (e *Engine) composeWithVerbatimBlocks(reply string) string {
 // same turn reads as one run-on paragraph live and two paragraphs after a reload.
 const verbatimBlockSeparator = "\n\n"
 
-// executeTool handles security check + execution for one tool call.
-// executeSearchKnowledge runs the agentic-RAG SearchKnowledge tool (P3): it
-// retrieves from the merged platform+external corpus and returns a SUBSTANTIVE
-// EvidenceLedger (bounded content snippets) for the agent to ground its answer
-// on — on a symptom tool-ops turn the retrieved evidence is the PRIMARY base, so
-// the content-free diagnosis ledger would not suffice. Read-only by
-// construction; never touches SafeToolExecutor. Shares the orchestrator lane's
-// param name (query) + result wrapper ({"EvidenceLedger": ...}); the orchestrator
-// stays content-free by design (its lane has instance data as primary evidence),
-// P5 unifies further. Records hits so the final-answer no-raw-leak guard can
-// validate the synthesis.
+// executeSearchKnowledge retrieves bounded evidence for the Agent to cite. It is
+// read-only and does not pass through SafeToolExecutor.
 func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any, onStep func(StepEvent)) string {
 	query := strings.TrimSpace(searchKnowledgeArg(args, "query"))
 	hint := strings.TrimSpace(searchKnowledgeArg(args, "context_hint"))
@@ -2961,13 +2605,8 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	// Parse args first (needed for all paths)
 	var args map[string]any
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
-		// Record the concise parse error for telemetry (error_class grouping stays
-		// byte-identical), but return a corrective hint so the agent's next ReAct
-		// round re-emits the call with valid JSON. Production traces show ~4% of
-		// SearchKnowledge calls fail here — flash occasionally emits a leaked tag or
-		// a bare query string instead of a JSON object, and the bare error alone did
-		// not always steer the retry. No coercion: the malformed arguments are
-		// rejected; the tool-arg contract is unchanged.
+		// Reject malformed arguments and give the model one precise correction;
+		// never coerce a non-object into a tool call.
 		errClass := fmt.Sprintf("parameter parse error: %v", err)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errClass})
 		return tools.MarshalAgentToolResult(tools.AgentToolInvalidToolCall(
@@ -2982,16 +2621,6 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: message})
 		return tools.MarshalAgentToolResult(tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{}))
 	}
-
-	// The local GPU knowledge tools (GetGPUSpecs / GetGPURecommendation /
-	// GetModelVRAMRequirement) used to execute here, straight off a hand-maintained
-	// spec table with — as the deleted comment put it — "no security check needed".
-	// They are gone: every GPU fact now comes from the upstream catalog via
-	// ReadCapability_gpu_specs_query. The entry point went with them, because
-	// leaving it was not harmless. centralAgentToolWindow never advertised those
-	// names, but this branch would still have run them had the model emitted one
-	// from memory — a retired, drift-prone answer path reachable by hallucination,
-	// at an UNMEASURED rate.
 
 	// SearchKnowledge executes through the engine's configured retriever (remote
 	// MCP in production), never through SafeToolExecutor. The knowledge-route
@@ -3030,10 +2659,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	}
 	if action == tools.ProposeActionName {
 		args = e.safeExecutor.FilterArgs(action, args)
-		// ProposeAction used to emit only a result/error event. Trace recorders then
-		// had to synthesize a call with no Args, leaving args_hash empty on every
-		// successful write proposal. Emit the same redacted call event every other
-		// model-invoked tool emits before resolution starts.
+		// Emit the redacted call before resolution so trace args_hash is complete.
 		onStep(StepEvent{
 			Type:   StepToolCall,
 			Action: tools.ProposeActionName,
@@ -3062,14 +2688,8 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		return e.executeInstanceOps(ctx, action, args, onStep)
 	}
 
-	// Diagnosis meta-tools → delegate to diagnosis engine. Keys on chainRegistry
-	// (IsDiagnosisTool), which since the pre-P7 convergence is EQUAL to the
-	// advertised diagnosis set contains only DiagnoseBilling; SSH/Jupyter/port
-	// checks are owned by the typed ReadCapability_instance_access vertical. The
-	// GPU/image/port/init chains were deleted outright, so a hallucinated or
-	// replayed de-advertised diagnosis name no longer resolves to a chain here; it
-	// falls through to the normal unknown/mutating-tool handling below. Enforced by
-	// diagnosis.TestDiagnosisRegistryHasNoUnadvertisedChains.
+	// Registered diagnosis meta-tools delegate to the diagnosis engine. Instance
+	// access and repair use their dedicated typed capability and SSH lane.
 	if diagnosis.IsDiagnosisTool(action) {
 		args = e.safeExecutor.FilterArgs(action, args)
 		onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct, Args: e.safeExecutor.RedactArgs(action, args)})
@@ -3113,19 +2733,14 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 			return finalReplyPrefix + msg
 		}
 		if errors.Is(err, tools.ErrUserDeclined) {
-			// A not-granted confirm is NOT necessarily a user cancellation. On the
-			// HTTP/WS path an UNRESOLVED confirm — the user never clicked the card
-			// (timeout / disconnect / they typed in the chat box instead) — yields
-			// the same ErrUserDeclined as an explicit decline. Narrate it honestly
-			// as not-executed, never as a false "操作已取消" (sibling of the workflow
-			// path's console false-cancel P0). The mutating call was not made either
-			// way.
+			// ErrUserDeclined also covers unresolved confirmations, so do not claim
+			// that the user explicitly cancelled.
 			msg := fmt.Sprintf("好的，%s操作未执行。如需继续，请重新发送指令并确认。", friendlyActionName(action))
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 			return finalReplyPrefix + msg
 		}
 		errMsg := fmt.Sprintf("API 调用失败: %v", err)
-		// P0 阶段1B: attach a recovery hint for known upstream RetCodes so the model
+		// Attach a recovery hint for known upstream RetCodes so the model
 		// self-corrects (change zone/region/image, back off) instead of blindly
 		// retrying the same failing call — the codebase's recorded create-failure
 		// root cause. The hint is carried out-of-band on the typed error and never
@@ -3138,22 +2753,12 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		return tools.MarshalAgentToolResult(tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{}))
 	}
 
-	// ReAct fallback truncation for full-account list dumps. The legacy
-	// handler route path already sorted+truncated earlier; this
-	// catches the planner-misclassified turns that reach ReAct directly,
-	// keeping the LLM-visible list bounded regardless of routing.
+	// Bound full-account list dumps before they enter model context.
 	if action == "DescribeCompShareInstance" {
-		// PR1 hotfix Bug 4 (2026-05-28): when the planner classified this turn
-		// as operation_lifecycle with a known action, narrow the candidate
-		// list to instances in the required State BEFORE truncation. This
-		// removes the LLM's "guess which subset to show" non-determinism.
 		truncateDescribeResultForReAct(args, result.LLMResult)
 		e.recordPendingSelectionFromDisplayedDescribeResult(result.LLMResult)
 	}
-	projected := false
-	if e.reactResultProjectionEnabled {
-		projected = projectToolResultForReAct(action, result.LLMResult)
-	}
+	projected := projectToolResultForReAct(action, result.LLMResult)
 
 	formatted := prompt.FormatToolResult(result.LLMResult)
 	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "调用成功", TraceResult: result.TraceResult, Attempts: result.Attempts, Projected: projected})
@@ -3281,7 +2886,7 @@ func numberAny(v any) (float64, bool) {
 }
 
 // recordObservedInstanceFromTool keeps the one piece of read-side state that is
-// not semantic memory: the current live instance reference used by the target
+// not semantic history: the current live instance reference used by the target
 // binder. It never grants write authority; confirmation and live revalidation
 // still decide whether an operation may execute.
 func (e *Engine) recordObservedInstanceFromTool(action string, result *tools.SafeToolResult) {
@@ -3429,44 +3034,11 @@ func (e *Engine) recordObservedInstanceFromMonitor(raw map[string]any) {
 	}
 }
 
-// recordUserDesignatedInstance persists the instance the user designated in THIS
-// turn's own words, whenever the server can resolve it deterministically to
-// exactly one id.
-//
-// It exists because SelectedInstanceSourceUser is documented as "an explicit id
-// they typed, or a pick from a shown selection card" (session_state.go) while
-// every writer of it ran only AFTER a confirmed action — which quietly redefined
-// the field as "an instance the user approved an operation on". Those are two
-// different events. Conflating them meant an entry card that timed out, was
-// declined, or lost its connection threw away an id the user had typed in plain
-// text: the next turn carried only an `observed` row, the target gate correctly
-// refused it (observed is not chosen), and nothing the user could say next —
-// "确认", "继续排查", picking the row in the console — could satisfy the gate,
-// so the exchange looped with no exit. Observed live, 2026-08-17.
-//
-// The accepted proof is deliberately Tier A only (binding.explicit && bound()):
-// an id typed in this message, a unique exact instance name, or an ordinal
-// against a candidate list the server itself displayed. That is the server
-// matching the USER's literal text — not the model electing a row from a list it
-// just read, which is the line #546 draws and which stays drawn. Excluded by
-// construction: a model-authored id and an observed read (never explicit), a
-// carried prior selection (Tier B — re-recording it would refresh a TTL the user
-// never touched), a mistyped id or out-of-range ordinal (explicit but unbound),
-// and two references that disagree (conflict is never bound).
-//
-// This grants NO execution authority and skips no gate. The value is the same one
-// bindInstanceTarget already derives from this turn's text; persisting it only
-// lets a LATER turn reach a confirmation card naming that same instance. Entry
-// still requires that card, and a write still requires resolver + confirmation.
-//
-// STATED LIMIT: bound() needs a registry that can resolve the id, so on a COLD
-// rehydrated session a typed id is explicit-but-unbound and is not recorded here.
-// The SSH gate still admits it for that turn (its own TextExplicitlyMentionsName
-// fallback), so the user is not blocked — but if that turn's card is not approved,
-// the loop this function exists to close can still occur until some read warms the
-// registry. Closing it would mean persisting a string the server cannot verify
-// exists, which would then carry into write-target binding; that is a different
-// decision with a different risk, not an oversight here.
+// recordUserDesignatedInstance persists a target deterministically resolved from
+// this turn's user-authored ID, exact name or displayed-list ordinal. Carried or
+// observed targets do not refresh this proof. Cold-registry literal IDs are
+// handled later by the instance-ops gate. This records continuity only; execution
+// still requires existence verification and confirmation.
 func (e *Engine) recordUserDesignatedInstance() {
 	if e == nil || !e.sessionStateHydrated || !e.turnContextViewReady {
 		return
@@ -3529,13 +3101,8 @@ func (e *Engine) recordSelectedInstanceIDWithSource(id, name, source string) {
 	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 }
 
-// selectedInstanceTTLSeconds bounds how long a carried "current instance"
-// binding stays trusted without any fresh user (re)selection. After this idle
-// window a pronoun like "它" no longer resolves to a stale selection and the
-// trust guard's turn-start branch no longer trusts it — the user must see a new
-// card for the same historical instance before an SSH run can enter it. 30 min
-// matches the agentpool idle-evict window and sits between AWS Bedrock (1h) and
-// Gemini (30m) session norms.
+// selectedInstanceTTLSeconds bounds how long a carried target can authorize a
+// new target-specific confirmation without fresh user designation.
 const selectedInstanceTTLSeconds = 1800
 
 // expireStaleSelectedInstance clears the carried instance binding when it has
@@ -3888,19 +3455,13 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 			CapReason: capReason,
 		})
 	})
-	// Editable confirm form (create-flow 表单化): nil except on HTTP turns
-	// with COMPSHARE_CONFIRM_FORM on + client opt-in, where StepConfirms that
-	// declare a BuildForm gain select-only field edits with revalidation.
+	// Opted-in clients may edit declared form fields; every edit is revalidated.
 	if e.confirmEditsFn != nil {
 		wfEngine.SetConfirmEditsFn(e.confirmEditsFn)
 	}
 
-	// GpuType is NOT normalized here any more. It arrives canonical: the resolver
-	// matched it against the live machine-type catalog before ReadyForConfirmation,
-	// so the confirm card, the sealed contract and this call all carry the same
-	// string. The rewrite that used to sit here consulted a static table AFTER the
-	// user had confirmed, which meant the value we showed and the value we executed
-	// could differ and neither layer owned the final say.
+	// GpuType is already canonicalized against the live catalog before confirmation;
+	// the card, sealed contract and execution therefore carry the same value.
 	if action == "CreateInstanceWorkflow" {
 		if gt, _ := args["GpuType"].(string); gt != "" {
 			if e.guidedCreate && e.confirmEditsFn != nil {
@@ -3928,12 +3489,8 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 			}
 		}
 	}
-	// A user-named availability zone is resolved BEFORE this point, by the action
-	// resolver's CodecZone against the live catalog (an exact id/display name wins,
-	// an ambiguous/unknown mention refuses with candidates) — args["Zone"] is already
-	// canonical here. The old engine-side zone-resolution chain (a second LLM zone
-	// match plus the four legacy zone maps) was removed in the zone convergence; the
-	// workflow validates the canonical zone against the snapshot.
+	// A user-named availability zone is already resolved against the live catalog;
+	// the workflow validates that canonical value against the same snapshot.
 
 	// refData is the caller-supplied reference data for the turn. The resolver uses
 	// it to verify typed zone and image identifiers. During guided create, a catalog
@@ -3955,16 +3512,6 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return msg
 	}
-	// Once a journaled write has an unknown external outcome, this turn must end
-	// immediately. Feeding the workflow failure back to the Agent can make it
-	// propose and confirm the same write again in the same turn. The journal
-	// prevents the duplicate API call, but a second confirmation card is still
-	// misleading and obscures the required reconciliation step.
-	if errors.Is(e.ActionJournalError(), tools.ErrActionOutcomeUncertain) {
-		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, actionOutcomeUncertainReply, tools.ErrActionOutcomeUncertain))
-		return finalReplyPrefix + actionOutcomeUncertainReply
-	}
-
 	// Create-zone recovery: a named platform image that isn't available in the
 	// resolved zone fails capacity with RetCode=230 ("Params [CompShareImageId]
 	// not available") — DescribeCompShareImages is zone-blind, so a name match
@@ -4020,13 +3567,8 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		}
 	}
 
-	// A workflow that stopped at its confirm gate was NOT necessarily cancelled
-	// by the user. On the HTTP/WS path an UNRESOLVED confirm — the user never
-	// clicked the card (timeout / disconnect / they typed in the chat box
-	// instead) — yields the same "用户取消了操作" as an explicit decline. So
-	// narrate it honestly as not-executed, never as a false "已取消X操作" (the
-	// console P0: a fully-specified shutdown command answered with
-	// "好的，已取消关机操作。"). The mutating call was not made either way.
+	// An unresolved confirmation and an explicit decline share this workflow
+	// result, so state only that the operation was not executed.
 	if !result.Success && result.Message == "用户取消了操作" {
 		return finalReplyPrefix + fmt.Sprintf("好的，%s操作未执行。如需继续，请重新发送指令并确认。", friendlyActionName(action))
 	}
@@ -4313,28 +3855,7 @@ func createWorkflowFailureReply(message string, err error) string {
 	return "抱歉，创建实例没有成功：" + msg
 }
 
-// isCreateStockShortage reports whether a CreateInstanceWorkflow failure was a
-// real sold-out: the capacity gate said this exact spec exists and upstream has
-// none of it.
-//
-// It asks the workflow, which decided. It used to test
-// strings.Contains(message, "库存不足"), which was wrong in two ways that have
-// nothing to do with whether it happened to work.
-//
-// The sentence a user reads was also a control signal. Rewording it moved
-// behaviour; translating the product would have removed the behaviour outright.
-// Neither the message nor the branch could change alone, and only one of them
-// looks like code.
-//
-// And the match was unanchored: it tested the WHOLE of result.Message, which for a
-// tool-call failure is "步骤「X」执行失败: <upstream error>". Any step's upstream
-// error mentioning 库存不足 in passing would have been read as the capacity gate's
-// verdict and answered with alternatives. This repo has been bitten by exactly
-// that shape before — createImageUnavailable matched "230" as a substring, which
-// any "230" anywhere in the text could trip (see Result.Err's doc).
-//
-// The reason is set on one branch, by the code that took it, and means only what
-// that branch means.
+// isCreateStockShortage trusts the workflow's typed capacity verdict, never user-facing text.
 func isCreateStockShortage(failure *workflow.StepFailure) bool {
 	return failure != nil && failure.Reason == workflow.ReasonCapacitySoldOut
 }
@@ -4375,10 +3896,8 @@ func (e *Engine) createFailureReplyWithAlternatives(ctx context.Context, message
 		// not say what it was actually trying to build.
 		return reply
 	}
-	// The availability query is deliberately NOT scoped by charge type.
-	// InstanceType=spot is upstream-valid and answers with an empty catalog
-	// (measured live 2026-07-22: rows=0, vs 19 for uhost/all/absent), so scoping
-	// it here does not narrow the remedy — it deletes it.
+	// Do not scope this machine catalog call to Spot; upstream returns an empty
+	// list. Spot eligibility is applied from GPU inventory below.
 	avail := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", nil)
 	alts := knowledge.FittingGPUAlternatives("", "", nil, knowledge.ParseAvailableGPUs(avail, zone), gpuType, 3)
 	if strings.EqualFold(chargeType, deployment.ChargeTypeSpot) {
@@ -4425,29 +3944,8 @@ func (e *Engine) spotUnsupportedGPUTypes(ctx context.Context) []string {
 	return out
 }
 
-// workflowFinalParams returns the params to narrate and recover from: the
-// confirmed contract once the user has approved one, the original args otherwise.
-//
-// A confirm-form edit or the image swap lives only in the sealed params — the
-// pre-confirmation args are stale — so once there IS an approved contract it, not
-// args, is the source for secret redaction and the deterministic reply.
-//
-// "The user approved a contract" is not the same as "Contract != nil", which is
-// what this used to test. The guided create seals after each of its seven gates,
-// so a run that stopped at 检查库存 ends holding a real contract that authorised an
-// image choice and nothing else — with the same Operation as a genuine create
-// authorisation, so it cannot be told apart by looking. Reading it as "what the
-// user confirmed" promotes a selection card to consent.
-//
-// A failure with no record answers NOTHING, so it must not be read as yes. An
-// earlier version's `Failure == nil` disjunct meant exactly that, which put the
-// whole misreading back on any path that forgot to record one — and the
-// cancellation path had. Run now records on every exit; this reads a silent record
-// as "no" anyway, so that forgetting again costs a narration rather than
-// authorising params nobody approved.
-//
-// It is a function rather than three lines inline because an unreachable safe
-// default that cannot be tested is just a comment: this one is reachable here.
+// workflowFinalParams uses sealed params only after execution was actually authorized.
+// Earlier guided steps may also create a contract, but do not authorize the final write.
 func workflowFinalParams(result *workflow.Result, args map[string]any) map[string]any {
 	if result.Contract == nil {
 		return args
@@ -4560,17 +4058,8 @@ func (e *Engine) executeDiagnosisWithOutcome(ctx context.Context, action string,
 		return string(b), intent.HandlerFailureGenericRead
 	}
 	if action == "DiagnoseBilling" {
-		// Billing amounts are server-rendered from structured upstream fields.
-		// Letting the model narrate this result previously re-summed periods,
-		// extrapolated hourly quotes to monthly spend and inferred a free quota
-		// from a zero price. Exact financial facts have one deterministic exit.
-		//
-		// That exit is VERBATIM, not TERMINAL. It used to be finalReplyPrefix, which
-		// also ended the turn — so "CPU 跑满 + 一直扣费" got a price card and no CPU
-		// answer, discarding monitoring evidence the Agent had already gathered.
-		// verbatimReplyPrefix keeps the figures byte-exact and out of the model's
-		// context (the three failures above all need to SEE them) while letting the
-		// turn continue, so the rest of the question still gets answered.
+		// Billing amounts are rendered from structured fields and bypass model arithmetic.
+		// Verbatim delivery is non-terminal so mixed questions can still be completed.
 		reply := strings.TrimSpace(result.Conclusion)
 		if suggestion := strings.TrimSpace(result.Suggestion); suggestion != "" {
 			reply += "\n\n" + suggestion
@@ -4607,7 +4096,7 @@ type StepEvent struct {
 	Source                     string
 	Args                       map[string]any
 	Message                    string
-	Display                    string         // content for CLI display only (not sent to LLM)
+	Display                    string         // structured UI content (not sent to LLM)
 	TraceResult                map[string]any // redacted result payload for trace hashing only
 	Attempts                   int
 	RendererInputToolArgHashes []string
@@ -4698,42 +4187,12 @@ func toolWindowRunes(tools []openai.Tool) int {
 	return len([]rune(string(raw)))
 }
 
-// maxAssembledRequestRunes is the SIZE ceiling on one whole request — messages
-// AND the tool window — and it is the only bound that sees all of it at once.
-//
-// It exists because maxReplayedHistoryRunes cannot do this job. That budget is
-// applied at turn ENTRY, by recentCompleteConversationPairs, when the turn has
-// issued no tools yet — so it bounds history against an empty current turn and
-// then never looks again, while the turn goes on to accumulate up to
-// maxReadExpensiveCallsPerTurn tool results that are re-sent on every subsequent
-// round.
-//
-// Nothing else bounded that. maxAssembledRequestMessages counts messages, not
-// size. maxTranscriptTotalRunes = 40000 looks like it applies and does not:
-// captureTurnTranscript is deferred to the END of the turn (engine.go), so that
-// constant bounds what is PERSISTED and never what is sent. An earlier version
-// of the maxReplayedHistoryRunes derivation reserved 40000 for "this turn's own
-// transcript" on exactly that misreading.
-//
-// Measured, with history at budget and a full replay window of transcript-
-// bearing turns: at the p90 tool-result size of 4142 runes, 20 expensive reads
-// assemble 142,856 runes and 30 assemble 184,696 — both past the 130,000-token
-// lower-bound probe rather than a documented provider window.
-//
-// 100000 leaves 30,000 of that floor for the completion (terra is a reasoning
-// model and bills reasoning tokens), for the per-message wrapper overhead that a
-// rune count does not see, and for the floor being one probe.
+// maxAssembledRequestRunes bounds the complete provider request: messages plus tools.
+// History is budgeted earlier, before this turn accumulates tool results, so this final
+// assembly ceiling is still required. The 100k cap leaves headroom under the measured
+// 130k provider floor for completion, reasoning and wrapper overhead.
 const maxAssembledRequestRunes = 100000
 
-// The message-COUNT ceiling that used to sit beside this one — maxAssembledRequestMessages
-// = 100 — is deleted. It was described in its own comment as "conservative" and
-// as "coupled to the replay window, not independent of it": the legitimate
-// maximum was ~93, so raising the replay window past ~23 exchanges would have
-// made a count cap start shedding history on ordinary heavy turns, silently, for
-// a reason that had nothing to do with how large the request was. Deleting the
-// replay window's count made that coupling meaningless, and the size budget
-// above was already doing the work.
-//
 // assembledRequestRunes is the size a request is charged at: message content
 // plus tool-call names and arguments, which are as real to the provider as the
 // content and are what a tool-heavy turn is mostly made of.
@@ -4763,11 +4222,6 @@ func assembledRequestRunes(msgs []openai.ChatCompletionMessage) int {
 // oldest in-turn tool groups go (the model asked for those this turn, so losing
 // them may cost a re-read). The current question and the leading system block are
 // never shed.
-//
-// It used to take a message-count limit as well and satisfy both jointly. The
-// count is gone; the joint-satisfaction machinery below (assemble/fits) is kept
-// as-is because it is also what keeps a shed from cutting into the middle of an
-// exchange.
 func trimAssembledRequest(msgs []openai.ChatCompletionMessage, maxRunes int) []openai.ChatCompletionMessage {
 	if maxRunes <= 0 || assembledRequestRunes(msgs) <= maxRunes {
 		return msgs
@@ -4916,33 +4370,9 @@ func withEphemeralSystemBeforeLastUser(messages []openai.ChatCompletionMessage, 
 	return out
 }
 
-// PR9 removed ensureProjectId / externalExecutor / pickProjectId. The
-// auto-discovery path called ExternalExecutor.SetProjectId, which mutated
-// a SharedDeps singleton across sessions — one user's discovered project
-// id ended up auto-injected into another user's tool calls. ProjectId now
-// only flows from cfg → NewExternalExecutor at construction; runtime
-// mutation is gone. When mutating tools that need ProjectId open up,
-// route the value through args["ProjectId"] (per-session field on Engine).
-
-// normalizeMsg was moved to internal/textutil.Normalize in the C2
-// hard-block normalization refactor. All engine call sites now invoke
-// textutil.Normalize directly. See textutil/normalize.go for the
-// canonical implementation and per-package unit tests.
-
-func containsAnyKeyword(normalized string, keywords []string) bool {
-	for _, kw := range keywords {
-		if strings.Contains(normalized, kw) {
-			return true
-		}
-	}
-	return false
-}
-
-// humanAgentTransferKeywords 是明确"转人工"意图的窄白名单短语。仅匹配这些
-// 整词短语，避免"人工智能 / 人工费 / 人工成本"等同样含"人工"二字的非客服
-// 语义误触发客服二维码回复。命中后由 enginePreBlock 链路返回固定 canned
-// reply（refusal.HumanAgentTransfer，内含二维码 markdown 图片），跳过 LLM。
-var humanAgentTransferKeywords = []string{
+// humanAgentTransferPhrases keeps explicit human-support requests separate
+// from unrelated phrases such as 人工智能 and 人工成本.
+var humanAgentTransferPhrases = []string{
 	"转人工",  // 转人工
 	"转接人工", // 转接人工（"转人工" 的子串不含 "接"，需单列）
 	"人工客服", // 人工客服
@@ -4951,13 +4381,18 @@ var humanAgentTransferKeywords = []string{
 	"叫人工",  // 叫人工
 }
 
-// isHumanAgentTransferRequest 判定用户消息是否为明确的转人工请求。复用
-// preblock 既有的归一化匹配通路（textutil.Normalize + containsAnyKeyword），
-// 与 jailbreak / off-topic / monitor-recall 检测保持一致的匹配语义。
 func isHumanAgentTransferRequest(userMsg string) bool {
-	n := textutil.Normalize(userMsg)
-	return containsAnyKeyword(n, humanAgentTransferKeywords)
+	normalized := textutil.Normalize(userMsg)
+	return containsAnyKeyword(normalized, humanAgentTransferPhrases)
 }
 
-// pickProjectId removed in PR9 with ensureProjectId. See comment block
-// at the former ensureProjectId site (search for "PR9 removed").
+// containsAnyKeyword is used only for explicit product-protocol phrases, not
+// for semantic routing or topic classification.
+func containsAnyKeyword(normalized string, keywords []string) bool {
+	for _, keyword := range keywords {
+		if strings.Contains(normalized, keyword) {
+			return true
+		}
+	}
+	return false
+}

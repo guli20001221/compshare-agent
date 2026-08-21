@@ -14,7 +14,7 @@ import (
 
 // maxInstanceOpsStepEvents caps the per-command activity events the engine emits
 // for one in-instance diagnosis. It mirrors the harness's own step cap
-// (maxHarnessSteps=50) and the durable per-step synchronous INSERT it drives, so a
+// (maxHarnessSteps=50) and the per-step audit write it drives, so a
 // runaway harness cannot flood the activity stream or the turn's DB writes. Beyond
 // the cap, per-command events stop; the terminal summary still reports the totals.
 const maxInstanceOpsStepEvents = 50
@@ -24,18 +24,10 @@ const maxInstanceOpsStepEvents = 50
 // specific change, and a user who sees the same label twice cannot tell which they answered.
 const instanceOpsWriteAction = "InstanceOpsWriteCommand"
 
-// The target refusal is TWO strings for two audiences, because one string cannot serve both.
-// It used to be one — "请先明确要排查的实例。多个实例时请让用户提供实例 ID/名称或从候选列表选择；
-// 不能自行从实例列表挑选。" — which went to the tool result AND to the StepEvent. The console shows
-// a DiagnoseInstanceInternals step's Message verbatim (correctly: this lane's detail and its
-// terminal refusals live only in Message), so the customer read an instruction addressed to the
-// model, in the model's grammar: 「让用户提供」, 「不能自行从列表挑选」. The model then quoted it
-// back into its own prose, so the same internal sentence reached the user twice.
-//
-// The split is not just wording. The old text told the model what it must NOT do and never what
-// WOULD work, so the agent invented recoveries that cannot satisfy this gate — asking the user to
-// reply 「确认」 (which carries no identifier) or to select the row in the console (which writes no
-// session state). Both leave the exchange looping. The model-facing half now names the only exits.
+// Target refusal text is split by audience: the activity stream gives the user
+// an actionable instruction, while the tool result explains the binding rule to
+// the model. A bare confirmation or a console-only selection does not identify a
+// target in this conversation.
 const (
 	// instanceOpsTargetRefusalForUser is what the person reads. Actionable, no internal policy.
 	instanceOpsTargetRefusalForUser = "尚未开始实例内排查。请直接回复要排查的实例 ID 或实例名称；" +
@@ -53,12 +45,12 @@ const (
 // in-instance diagnosis lane. It is dispatched from executeToolOnce BEFORE the
 // diagnosis-chain and mutating-tool branches, so it never inherits the
 // SafeToolExecutor per-attempt wall-clock ceiling. The whole lane is inert unless
-// a runner was wired (server SharedDeps.InstanceOps / CLI SetInstanceOps) — when
+// a runner was wired (server SharedDeps.InstanceOps; tests may use SetInstanceOps) — when
 // e.instanceOps is nil the tool is not even in the model's window (see
 // centralAgentToolWindow), and this method fails closed on the off chance the model
 // names it anyway.
 //
-// Ordering (plan §3.1 / the security invariants):
+// Ordering:
 //   - nil-runner  → feature disabled, inert refusal, no slot consumed (INV-10)
 //   - param check → UHostId + Task required
 //   - target proof → the user named/selected this exact instance (never pick a list row)
@@ -87,35 +79,17 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 		return friendlyToolResultJSON(msg)
 	}
-	// The SSH lane can read and, when separately enabled, modify a box. A non-empty
-	// model-authored id is therefore not enough: a preceding account-wide list is
-	// observation, not a user selection. Reuse the exact selection proof used by
-	// workflow writes, so "刚才那台" keeps working after a genuine pick while a
-	// vague symptom cannot silently target the first running list row. An EXPIRED
-	// genuine pick is the one narrow extra case: it may reach a NEW card for the
-	// same id, but it is never authority before that card is approved.
+	// A model-authored id is not selection proof. Reuse the write-path binding
+	// rules; an expired user selection may reach a new card for the same id but is
+	// never authority by itself.
 	if !e.instanceOpsTargetMayReachConfirmation(instanceID) {
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: instanceOpsTargetRefusalForUser})
 		return friendlyToolResultJSON(instanceOpsTargetRefusalForModel)
 	}
-	// The turn-entry designation (recordUserDesignatedInstance) can only see ids the
-	// REGISTRY can tokenize: InstanceIDTokensInText derives its id prefixes from the
-	// instances the snapshot already holds and returns nil on an empty one
-	// (entity/resolve.go:189-197). Production sessions skip engine.Init(), so a
-	// session that never lists instances carries an empty registry for its whole
-	// life — and the shape this lane exists for (「ComfyUI 打不开」, then a bare
-	// 「cpod-…」) lists nothing. The card was still shown, because the gate above has
-	// its own last-resort check on the user's literal words; but NOTHING was
-	// recorded, so a card that was not approved left the session with no target at
-	// all, and the next 「继续排查」 was refused with nothing the user could say to
-	// clear it. That is #566's loop again, one registry state to the left — measured
-	// on the 2026-08-17 production transcript, after #566 shipped.
-	//
-	// Record it here, where the same fact is finally provable, and BEFORE the card:
-	// the designation is the user typing the id, never their approval (#566), so a
-	// declined or timed-out card must not erase it. The other two ways this gate can
-	// pass — the account's sole instance, and an expired prior pick — deliberately do
-	// NOT record: neither is a designation made in THIS message.
+	// A cold registry can make a literal ID provable only at this gate. Record the
+	// user's designation before confirmation so a declined or timed-out card does
+	// not erase it. Account-single and expired-selection fallbacks are not new user
+	// designations and therefore are not recorded here.
 	if e.userNamedInstanceThisTurn(instanceID) {
 		e.recordSelectedInstanceIDWithSource(instanceID, "", SelectedInstanceSourceUser)
 	}
@@ -141,9 +115,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		return friendlyToolResultJSON(msg)
 	}
 
-	// Authorization card. A decline is honest and non-terminal: the turn continues
-	// so the agent can still answer from cloud-side facts. The returned text is NOT
-	// a finalReplyPrefix (plan P1 门 3) and is distinct from the "already ran" text.
+	// A decline is non-terminal so the Agent can still answer from cloud-side facts.
 	if !e.confirmFn(action, e.safeExecutor.RedactArgs(action, filtered)) {
 		msg := instanceOpsUnauthorizedMessage(instanceID, e.lastConfirmationTerminalReason)
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
@@ -156,10 +128,8 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	// undo what the user explicitly chose to diagnose.
 	e.recordSelectedInstanceIDWithSource(instanceID, "", SelectedInstanceSourceUser)
 
-	// Live activity stream. connected + each command become one StepEvent; the
-	// terminal summary is emitted below from the verdict tallies. Per-command
-	// events are capped at maxInstanceOpsStepEvents (defense in depth with the
-	// harness's own cap). Command output NEVER appears here (INV-6) — only metadata.
+	// Connected and command progress become bounded activity events. Command
+	// output never enters this stream; only metadata does.
 	commandsEmitted := 0
 	// Settled commands are accumulated separately from the emitted ones. The live stream is capped
 	// at maxInstanceOpsStepEvents because it is a UI feed, but the interruption notice has to be
@@ -190,10 +160,8 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		}
 	}
 
-	// Per-command approval for writes. Reads are not gated: 20-45 of the commands in a real run are
-	// reads, and a card for each would train the user to click through without reading — which is
-	// worse than no card. Only the 1-3 that change the box stop and ask, and the card shows the
-	// literal command, because "may I change something" is not a question anyone can answer.
+	// Read commands run without a card. Every write command pauses on a card that
+	// shows the literal command being authorized.
 	var confirmWrite func(string) ConfirmationResult
 	if tools.InstanceOpsWritesEnabled() {
 		confirmWrite = func(command string) ConfirmationResult {
@@ -234,39 +202,21 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 			return finalReplyPrefix + msg
 		}
-		// Not found: the id is not in this account. Retrying it can never succeed, so the
-		// generic 「请稍后重试」 is advice that cannot work — and this is the most common way
-		// the lane fails in practice, because instance ids go stale fast (a test account
-		// replaced 7 of 10 instances within one hour on 2026-08-06, and a diagnosis aimed at
-		// an id read minutes earlier died here while the message pointed at a transient
-		// problem). A transient describe failure keeps the retry text: only a well-formed
-		// response that did not contain this id lands here.
+		// A well-formed account response that omits the id is permanent for this
+		// request; tell the user to correct the target rather than retry blindly.
 		if errors.Is(err, ErrInstanceOpsNotFound) {
 			msg := fmt.Sprintf("在当前账号下找不到实例 %s，可能已被删除 / 释放，或实例 ID 有误。请到控制台核对实例 ID 后再试。", instanceID)
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 			return finalReplyPrefix + msg
 		}
-		// The internal address could not be derived, so the lane refused rather than dialling
-		// the public address it is configured not to use. This is a DEPLOYMENT-side failure —
-		// the internal gateway, its config, or the region lookup — and the user's instance is
-		// not implicated, so the generic 「请稍后重试，或到控制台查看实例状态」 would send them
-		// to look at a console that has nothing wrong on it.
-		//
-		// It gets its own sentence for a second reason: the internal-IPv6 route ships without
-		// ever having run against the real backend (nothing routes to the internal gateway from
-		// a development machine), so the first production run IS the experiment. Three outcomes
-		// have to be told apart from the reply alone, by someone who may not be able to read the
-		// server log: it worked, the address could not be derived (here), or the address was
-		// derived and the dial to it failed (#522's dial text, which now also names the route).
+		// Address derivation is a deployment failure, not evidence that the user's
+		// instance or security group is broken.
 		if errors.Is(err, ErrInstanceOpsAddressUnavailable) {
 			msg := "无法换算该实例的内网地址，本次没有进入实例。这是运行环境侧的问题（内网网关或其配置），与实例本身无关，请联系部署同学查看服务日志。"
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 			return finalReplyPrefix + msg
 		}
-		// Not running: name the state. This used to fall into the generic branch below
-		// and tell the user 「请稍后重试，或到控制台查看实例状态」 — advice to go look up
-		// the one fact we already had in hand. The state comes verbatim from the same
-		// describe response; nothing here translates or guesses it.
+		// The state is a current platform fact, so return it instead of a generic retry.
 		if errors.Is(err, ErrInstanceOpsNotRunning) {
 			msg := fmt.Sprintf("该实例当前状态为 %s，不是运行中（Running），无法进入实例排查。等实例恢复运行后可以再试。",
 				instanceOpsStateFromError(err))
@@ -281,8 +231,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		return finalReplyPrefix + msg
 	}
 
-	// Terminal summary. No N/M denominator — the harness's agentic loop has no known
-	// total (see plan §5.2 and commit 889ad277); a bare count avoids a fake progress bar.
+	// The agentic loop has no known total, so report a count without a fake N/M denominator.
 	onStep(StepEvent{
 		Type:    StepToolResult,
 		Action:  action,
@@ -295,22 +244,8 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	return finalReplyPrefix + verdict.Text
 }
 
-// instanceOpsUnauthorizedMessage phrases a card that was not approved, using the
-// reason the confirmation harness already computed.
-//
-// One sentence used to cover every non-approval, and it named the user as the
-// actor: 「好的，已取消对实例 X 的实例内排查」. Production traces for 2026-07-13..08-12
-// show that was wrong far more often than it was right — of 104 entry cards, 9
-// ended in a timeout against 2 genuine declines, so the most common reader of
-// that sentence was someone who had NOT cancelled anything and, in the console,
-// had just clicked 确认 a moment too late and received a bare [NotFound] beside
-// it. A reply that misattributes the cause also misdirects the retry: "已取消"
-// invites re-asking, while a timeout wants "answer the card faster" and a
-// disconnect wants "reconnect".
-//
-// Deliberately no reason is phrased as a failure the user must report: every
-// branch here is a turn where NOTHING was executed inside the instance, and
-// saying so plainly is the point of the message.
+// instanceOpsUnauthorizedMessage reports the actual confirmation outcome. Every
+// branch is explicit that no command ran inside the instance.
 func instanceOpsUnauthorizedMessage(instanceID, terminalReason string) string {
 	switch strings.TrimSpace(terminalReason) {
 	case observability.ConfirmationReasonTimeout:
@@ -377,15 +312,8 @@ func (e *Engine) instanceOpsTargetMayReachConfirmation(instanceID string) bool {
 	return e.userNamedInstanceThisTurn(instanceID)
 }
 
-// userNamedInstanceThisTurn reports whether the user's OWN words this turn contain
-// this exact instance id. The model supplies the needle and the server checks the
-// haystack, so an id the model invented from a list it just read cannot pass (#546)
-// — the list is not in the user's message.
-//
-// It exists as a named function because two callers now depend on the same fact:
-// the target gate above admits the card on it, and executeInstanceOps records the
-// designation on it. Inlining it twice would let the id that reaches a card and the
-// id the session remembers drift apart, which is the exact class of bug #566 fixed.
+// userNamedInstanceThisTurn verifies the model-supplied ID against the user's
+// own current message. Both the target gate and designation recorder use it.
 func (e *Engine) userNamedInstanceThisTurn(instanceID string) bool {
 	if e == nil || !e.turnContextViewReady || strings.TrimSpace(instanceID) == "" {
 		return false
@@ -475,22 +403,8 @@ func instanceOpsPhaseNoun() string {
 	return "只读排查"
 }
 
-// A refusal in write mode is NOT "只读模式" — that wording sent the user looking for a switch that
-// was already on. Write mode still refuses for several distinct reasons — the destructive tier, the
-// shape gate, a command too long to fit on a card, an unverified platform service, a failed
-// structured-tool precondition, and each way a per-command card can end without approval — so the
-// reason has to name which one.
-//
-// That plurality is the whole problem the `reason` argument fixes. The harness distinguishes more
-// dispositions than the three-valued wire `disposition` can carry, so this function had nothing to
-// read and answered every write-mode refusal with one sentence covering all of them at once.
-// 「属于高危操作或命令形式不被接受」 is not a fact anyone can act on: the user cannot tell a policy
-// refusal from their own click, and the model cannot tell "never going to work" from "resend it
-// split in two" — measured in #516's class, where an unactionable refusal made the run delete half
-// its own probe chain and retry.
-//
-// An unknown or empty reason keeps exactly the previous wording, so a server ahead of the harness
-// (or behind it) degrades instead of printing a blank.
+// instanceOpsRefusalReason maps the harness's closed reasons to actionable user
+// text. Unknown reasons keep a conservative compatibility fallback.
 func instanceOpsRefusalReason(reason string) string {
 	switch reason {
 	case "refused_destructive":

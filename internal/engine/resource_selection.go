@@ -21,12 +21,6 @@ type pendingResourceSelection struct {
 	candidates []entity.InstanceSnapshot
 }
 
-// findExplicitInstanceRef was deleted with its last caller (selection_binder's
-// live-registry branch). It collapsed ResolveInstanceRefsInText's result to
-// hits[0] and unresolved[0], which is precisely the pick-one the binder's
-// contract forbids; callers that need "which instances did the user name" must
-// read the whole slice. Do not reintroduce a first-hit helper.
-
 type resourceSelectionMatch struct {
 	instance  entity.InstanceSnapshot
 	ok        bool

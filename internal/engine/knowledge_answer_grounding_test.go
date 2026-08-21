@@ -68,7 +68,7 @@ func TestKnowledgeGrounding_ValidCitationAccepted(t *testing.T) {
 	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "端口默认状态", "防火墙端口默认是关闭的[[kb-port-001]]。")
 	assert.Equal(t, "防火墙端口默认是关闭的。", got, "the marker is stripped; the prose ships")
 	require.Empty(t, mock.calls, "a validly-cited answer is accepted without any retry or verifier call")
-	require.NotEmpty(t, eng.sessionState.VerifiedKnowledge, "a cited pure-RAG answer is remembered")
+	require.NotEmpty(t, eng.sessionState.VerifiedEvidence, "a cited pure-RAG answer is remembered")
 	require.Equal(t, groundingSupported, eng.groundingOutcomeThisTurn)
 }
 
@@ -87,7 +87,7 @@ func TestKnowledgeGrounding_UncitedAnswerShipsWithoutRewrite(t *testing.T) {
 	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "端口默认状态", "防火墙端口默认是关闭的。")
 	assert.Equal(t, "防火墙端口默认是关闭的。", got)
 	require.Empty(t, mock.calls, "citation formatting must never rewrite user-facing prose")
-	require.Empty(t, eng.sessionState.VerifiedKnowledge)
+	require.Empty(t, eng.sessionState.VerifiedEvidence)
 	require.Equal(t, groundingUnavailable, eng.groundingOutcomeThisTurn)
 }
 
@@ -115,7 +115,7 @@ func TestKnowledgeGrounding_MixedKnownAndUnknownCitationsAreNotRecordedAsGrounde
 	)
 	assert.Equal(t, "防火墙端口默认是关闭的，更多说明见。", got)
 	require.Empty(t, mock.calls)
-	require.Empty(t, eng.sessionState.VerifiedKnowledge,
+	require.Empty(t, eng.sessionState.VerifiedEvidence,
 		"a partly fabricated citation set may ship fail-open but must never become verified memory")
 	require.Equal(t, groundingUnavailable, eng.groundingOutcomeThisTurn)
 }
@@ -127,7 +127,7 @@ func TestKnowledgeGrounding_UncitedFailOpenShips(t *testing.T) {
 	assert.Equal(t, "防火墙端口默认是关闭的。", got)
 	assert.NotContains(t, got, "知识库未覆盖")
 	require.Empty(t, mock.calls)
-	require.Empty(t, eng.sessionState.VerifiedKnowledge, "an uncited answer is shipped but not remembered as verified")
+	require.Empty(t, eng.sessionState.VerifiedEvidence, "an uncited answer is shipped but not remembered as verified")
 }
 
 // Under typography-only grounding the semantic verifier is deliberately gone: a
@@ -157,7 +157,7 @@ func TestKnowledgeGrounding_NoEvidenceShipsStableGeneral(t *testing.T) {
 }
 
 // An irrelevant retrieval hit must not erase a correct stable-general answer, and
-// the answer must not be promoted into durable verified memory against unrelated
+// the answer must not be promoted into persisted verified evidence against unrelated
 // evidence.
 func TestKnowledgeGrounding_IrrelevantSearchDoesNotEraseStableAnswer(t *testing.T) {
 	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
@@ -172,7 +172,7 @@ func TestKnowledgeGrounding_IrrelevantSearchDoesNotEraseStableAnswer(t *testing.
 
 	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "粘贴呢", answer)
 	assert.Equal(t, answer, got)
-	require.Empty(t, eng.sessionState.VerifiedKnowledge, "general knowledge must not be persisted against unrelated retrieval evidence")
+	require.Empty(t, eng.sessionState.VerifiedEvidence, "general knowledge must not be persisted against unrelated retrieval evidence")
 }
 
 // A verbatim evidence dump is a prose problem, not a security one: every chunk is

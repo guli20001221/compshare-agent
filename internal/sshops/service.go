@@ -31,7 +31,7 @@ const DefaultDiagnosisTask = "用户报告这台 GPU 实例\"掉卡\"（nvidia-s
 	"缺失或版本不匹配。最后给出根因结论和修复建议（修复命令只作为可选步骤写出，不要执行）。"
 
 // Service is the transport-agnostic core of the consent-gated, read-only SSH-ops lane. The HTTP
-// Action (and any future WS / CLI entry) calls it AFTER verifying consent. It owns: out-of-band
+// Action (and any future entry) calls it AFTER verifying consent. It owns: out-of-band
 // credential fetch, the fail-closed audit, and the per-task harness spawn. It never holds, logs,
 // or returns the credential — that lives only inside FetchCredential's Credential value and the
 // supervisor's one-shot stdin handshake.
@@ -79,10 +79,7 @@ func WithHostResolver(hr HostResolver) ServiceOption {
 // still never dialled. Empty (the default) disables the whole candidate path — no extra probe,
 // no extra log line, and the dial is byte-identical to WithHostResolver alone.
 //
-// It is a setting rather than a constant because the prefix is a production network fact, not a
-// product decision — the same reason mysql.host_override lives in YAML. It is measured working
-// (in-cluster 2026-08-16, see deploy/conf/config.prod.yaml), but if the fabric ever renumbers,
-// ops edits YAML instead of us shipping code to change a string.
+// The prefix is deployment network state, so it remains in YAML rather than code.
 func WithPublicIPv6Prefix(prefix string) ServiceOption {
 	return func(s *Service) { s.publicIPv6Prefix = strings.TrimSpace(prefix) }
 }
@@ -173,7 +170,7 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 	auditID, err := s.audit.Begin(ctx, ev)
 	if err != nil {
 		// Fail closed: never run an in-instance access we could not record. A UNIQUE(turn_id,
-		// task_hash) violation on a durable replay of the same turn lands here too (INV-9).
+		// task_hash) violation on a retry of the same turn lands here too (INV-9).
 		return Result{}, fmt.Errorf("sshops: audit begin failed, refusing to run (fail-closed): %w", err)
 	}
 
@@ -213,9 +210,7 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 		}
 	case res.PreflightFailed:
 		// The dial never landed: no command ran and Output is a refusal notice, not a diagnosis.
-		// The harness exits 0 on this path (it is an orderly refusal, not a crash), which is why
-		// this used to be recorded as a success — leaving the audit table asserting that we
-		// entered a box we never reached. Byte count and duration were the only tell.
+		// The harness exits 0 because this is an orderly refusal rather than a crash.
 		done.Disposition = "error"
 		if done.ErrClass == "" {
 			done.ErrClass = "preflight_failed"
@@ -237,7 +232,7 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 }
 
 // hashTask is the stable, non-reversible dedup identity of a task. Paired with the turn id it is the
-// UNIQUE(turn_id, task_hash) key that refuses a durable replay of the same turn (INV-9). It hashes the
+// UNIQUE(turn_id, task_hash) key that refuses a retry of the same turn (INV-9). It hashes the
 // raw task (the actual replayed input), not the redacted form the audit column stores, so replays of
 // one turn collide deterministically; being a hash, it carries nothing sensitive.
 func hashTask(task string) string {
