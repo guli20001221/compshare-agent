@@ -123,12 +123,11 @@ func AgentToolNoCitableEvidence(action string, data any, meta AgentToolMeta) Age
 // in the parser rather than only in the constructor below.
 const AgentToolCodeInvalidArguments = "INVALID_TOOL_ARGUMENTS"
 
-// AgentToolInvalidToolCall marks a call this binary rejected before executing
-// it because the MODEL emitted arguments that are not a JSON object. The user
-// supplied nothing wrong and has nothing to add, so this must never resolve to
-// ask_user: the fix is for the model to re-emit the same call with valid JSON
-// on the next round, which is what engine.executeToolOnce's comment has always
-// said the corrective hint is for.
+// AgentToolInvalidToolCall marks a call this binary rejected because the MODEL
+// emitted invalid arguments. Validation may include a read-only catalog lookup,
+// but no user-requested effect has occurred. The user supplied nothing wrong
+// and has nothing to add, so this must never resolve to ask_user: the model must
+// re-emit the call with corrected arguments on the next round.
 //
 // It keeps status needs_input — the call really is missing valid input — and
 // carries the whole instruction in next_step, so the closed status vocabulary
@@ -206,9 +205,10 @@ func validAgentToolControlPlane(result AgentToolResult) bool {
 		//
 		// correct_tool_call is bound to one error code here, not merely produced
 		// by one constructor. "Ignore the failure and call the same tool again"
-		// is safe advice ONLY for arguments this binary rejected before running
-		// anything; attached to an upstream failure it would be a retry loop
-		// against a real side effect. A constructor-only guarantee holds until
+		// is safe advice ONLY for arguments this binary rejected before any
+		// user-requested effect; a read-only catalog validation is harmless, but
+		// attaching it to an upstream failure would retry a real side effect.
+		// A constructor-only guarantee holds until
 		// the next hand-built AgentToolResult; this holds for every one of them.
 		if result.NextStep == AgentToolNextCorrectToolCall {
 			return !result.Retryable && result.Error.Code == AgentToolCodeInvalidArguments

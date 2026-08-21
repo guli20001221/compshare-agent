@@ -56,7 +56,7 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 			"工具参数未通过该能力的参数契约。请依据工具 schema 和用户已明确表达的条件修正参数后，重发同一次调用；不要向用户重复提问。",
 		)
 	}
-	if err := capability.ValidateCurrentTurnGrounding(request, e.lastUserMsg, e.recentPriorUserTexts(4)...); err != nil {
+	if err := e.validateCurrentTurnReadGrounding(request); err != nil {
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: err.Error()})
 		// Grounding rejects an invented optional filter before any read runs. It
 		// is also wholly model-owned: the user already gave the question, so the
@@ -129,6 +129,11 @@ func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabil
 	}
 	readResult := reg.Run(ctx, request, rt)
 	e.applyReadEffects(readResult.Effects)
+	if readResult.Status == platform.ReadStatusNeedsInput &&
+		readResult.FallbackReason == platform.ReadFallbackValidation &&
+		readResult.Envelope != nil {
+		return e.buildModelOwnedReadCorrection(action, capabilityLabel, readResult, onStep)
+	}
 	if readResult.Status == platform.ReadStatusUnavailable {
 		return e.buildUnavailableObservation(action, capabilityLabel, readResult, onStep)
 	}
@@ -184,11 +189,7 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 		CanAssertAbsence: canAssertAbsence,
 	}
 	if result.Status == platform.ReadStatusHandled && !result.NeedsClarification && result.Envelope != nil {
-		e.platformReadEvidenceThisTurn = append(e.platformReadEvidenceThisTurn, platformReadEvidence{
-			Capability: capabilityLabel,
-			Reply:      strings.TrimSpace(result.Reply),
-			Envelope:   *result.Envelope,
-		})
+		e.recordPlatformReadEvidence(capabilityLabel, result)
 	}
 	if result.Status == platform.ReadStatusHandled && !result.NeedsClarification &&
 		strings.TrimSpace(result.SensitiveReply) != "" {
@@ -206,6 +207,99 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 	_ = json.Unmarshal(payload, &traceResult)
 	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "查询完成", TraceResult: traceResult})
 	return string(payload)
+}
+
+// buildModelOwnedReadCorrection uses the existing correct_tool_call control
+// plane when a typed read has enough live evidence for the model to repair a
+// dynamic argument itself. The user has already supplied the intent, so this
+// must not degrade into ask_user. The evidence is also recorded in the existing
+// turn-local ledger so the corrected call can cite only an exact value returned
+// by the live catalog.
+func (e *Engine) buildModelOwnedReadCorrection(action, capabilityLabel string, result capability.ReadResult, onStep func(StepEvent)) string {
+	e.recordPlatformReadEvidence(capabilityLabel, result)
+	data := map[string]any{
+		"capability":         capabilityLabel,
+		"fallback_reason":    result.FallbackReason,
+		"tool_action":        result.ToolAction,
+		"evidence":           result.Envelope,
+		"guidance":           strings.TrimSpace(result.Reply),
+		"can_assert_absence": false,
+	}
+	agentResult := tools.AgentToolInvalidToolCall(
+		action,
+		tools.AgentToolCodeInvalidArguments,
+		"工具参数未匹配本轮返回的实时目录。请仅在语义唯一时使用 data.evidence 中的完整名称或 ID 修正参数并重发同一次调用；存在多个合理候选时再请用户选择。",
+		tools.AgentToolMeta{SourceStatus: "read_argument_validation"},
+	)
+	agentResult.Data = data
+	onStep(StepEvent{
+		Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct,
+		Message: "已读取实时目录，正在修正查询条件",
+		TraceResult: map[string]any{
+			"status":          string(platform.ReadStatusNeedsInput),
+			"fallback_reason": string(result.FallbackReason),
+			"tool_action":     result.ToolAction,
+		},
+	})
+	return tools.MarshalAgentToolResult(agentResult)
+}
+
+func (e *Engine) recordPlatformReadEvidence(capabilityLabel string, result capability.ReadResult) {
+	if e == nil || result.Envelope == nil {
+		return
+	}
+	e.platformReadEvidenceThisTurn = append(e.platformReadEvidenceThisTurn, platformReadEvidence{
+		Capability: capabilityLabel,
+		Reply:      strings.TrimSpace(result.Reply),
+		Envelope:   *result.Envelope,
+	})
+}
+
+func (e *Engine) validateCurrentTurnReadGrounding(request platform.ReadRequest) error {
+	if stock, ok := request.(capability.StockAvailabilityRequest); ok &&
+		e.stockZonesGroundedByCurrentTurnCatalog(stock.ZoneMentions) {
+		// Only the zone field gains proof from the live catalog. Clear that field
+		// and leave every other present or future grounding rule intact.
+		stock.ZoneMentions = nil
+		request = stock
+	}
+	return capability.ValidateCurrentTurnGrounding(request, e.lastUserMsg, e.recentPriorUserTexts(4)...)
+}
+
+// stockZonesGroundedByCurrentTurnCatalog is the narrow bridge between a live
+// catalog observation and the corrected stock call that follows it. It accepts
+// only exact zone subjects from evidence produced this turn; it does not infer
+// aliases, persist a mapping, or relax grounding for any other argument.
+func (e *Engine) stockZonesGroundedByCurrentTurnCatalog(mentions []string) bool {
+	if len(mentions) == 0 {
+		return false
+	}
+	allowed := map[string]struct{}{}
+	for _, evidence := range e.platformReadEvidenceThisTurn {
+		if evidence.Envelope.Kind != envelope.KindZoneCatalog {
+			continue
+		}
+		for _, subject := range evidence.Envelope.Subjects {
+			if subject.Type != envelope.SubjectZone {
+				continue
+			}
+			if value := platform.FoldLiteralSpan(subject.ID); value != "" {
+				allowed[value] = struct{}{}
+			}
+			if value := platform.FoldLiteralSpan(subject.Name); value != "" {
+				allowed[value] = struct{}{}
+			}
+		}
+	}
+	if len(allowed) == 0 {
+		return false
+	}
+	for _, mention := range mentions {
+		if _, ok := allowed[platform.FoldLiteralSpan(mention)]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // applyReadEffects applies the typed context side-effects a read capability

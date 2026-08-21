@@ -449,19 +449,18 @@ func unmatchedZoneStockExec() *mapReadExec {
 // restate the zone, and no inventory query ran at all.
 //
 // The mechanism was the status, not the model. Zero matches were reported as
-// ReadConflict, which the engine renders as choose_alternative /
-// AMBIGUOUS_SELECTION / ask_user_to_choose — "several candidates, pick one" —
-// while attaching no candidates, so the one recovery the tool-result contract
-// offers the model did not exist. The catalog is the answer; it goes back with
-// the result instead.
+// ReadConflict, which the engine renders as "several candidates, pick one" while
+// attaching no candidates. The live catalog now accompanies a model-owned
+// argument correction instead.
 func TestStockHandle_UnmatchedZoneMentionHandsBackTheLiveCatalog(t *testing.T) {
 	exec := unmatchedZoneStockExec()
 
 	result := runStock(t, exec, StockAvailabilityRequest{GPUType: "4090", ZoneMentions: []string{"华北2a"}})
 
-	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	require.Equal(t, platform.ReadStatusNeedsInput, result.Status)
+	require.Equal(t, platform.ReadFallbackValidation, result.FallbackReason)
 	require.False(t, result.NeedsClarification,
-		"零匹配不是歧义：没有候选可选时，把回合交回给用户就是死路")
+		"零匹配不是用户歧义：模型应先依据实时目录修正自己的参数")
 	assert.Contains(t, result.Reply, "「华北2a」", "the model must see which mention failed, verbatim")
 	assert.Contains(t, result.Reply, "本次未按可用区查询库存",
 		"the unanswered part of the question is a fact the model needs")
@@ -507,7 +506,8 @@ func TestStockHandle_ZoneMentionNeverReportsNoMatchAsAmbiguity(t *testing.T) {
 		t.Run(mention, func(t *testing.T) {
 			result := runStock(t, unmatchedZoneStockExec(),
 				StockAvailabilityRequest{GPUType: "4090", ZoneMentions: []string{mention}})
-			require.NotEqual(t, platform.ReadStatusConflict, result.Status)
+			require.Equal(t, platform.ReadStatusNeedsInput, result.Status)
+			require.Equal(t, platform.ReadFallbackValidation, result.FallbackReason)
 			require.False(t, result.NeedsClarification)
 		})
 	}

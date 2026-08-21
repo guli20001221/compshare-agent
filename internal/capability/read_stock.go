@@ -84,13 +84,10 @@ type capacitySpec struct {
 // has to come back as a limit rather than an estimate.
 const stockCapabilityDescription = "查询 GPU 机型在各可用区的实时库存，并在可能时做配置样本预检。库存数量来自本轮实时快照，仅作当前参考，接口不提供补货或到货时间；最终可创建性结合配置预检判断。规格参数查询使用 GPU 规格能力。"
 
-// stockZoneMentionsDescription's last clause is what makes the raw-fragment
-// contract usable. The field asks for the user's own words, so a fragment that is
-// not a catalog name is the EXPECTED input rather than an error; saying that the
-// catalog comes back is what lets the model resolve it instead of handing the
-// question to the user — which is how "华北2a" once ended a turn with no stock
-// query at all.
-const stockZoneMentionsDescription = "用户本轮明确提到的可用区原文片段；查询多个可用区时全部列出。不要自行改写为其他区域或默认区域。片段未精确匹配目录时会返回完整可用区目录，据此判断后用目录中的名称或 ZoneID 重新调用。"
+// The first call preserves the user's wording. If it does not match the live
+// catalog, the result gives the Agent that catalog and asks it to correct its own
+// call; a later call may therefore carry an exact catalog value instead.
+const stockZoneMentionsDescription = "首次调用填写用户本轮明确提到的可用区原文；工具返回实时目录后，语义唯一时可改用目录中的完整名称或 ZoneID 重试，存在多个合理候选时再请用户选择。不得默认区域或使用目录外的值。"
 
 func stockReadSpec() ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabilityResponse] {
 	return ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabilityResponse]{
@@ -624,12 +621,9 @@ func stockSupportZones(ctx context.Context, rt ReadRuntime) ([]zones.ZoneInfo, e
 // It is deliberately NOT ReadConflict. Conflict means "this resolved to several
 // candidates, pick one", and the engine turns it into choose_alternative /
 // AMBIGUOUS_SELECTION / next_step=ask_user_to_choose — a shape whose only
-// recovery, per the tool-result contract the model is given, is to switch to one
-// of the returned candidates. A mention that matched ZERO zones has no
-// candidates to return, so that recovery did not exist and the model's only
-// remaining move was to relay the refusal: it asked the user to restate the zone
-// and the stock query never ran. Reporting "no match" as "several matches" is
-// what made the dead end, not the model.
+// recovery, per the tool-result contract the model is given, is to correct its
+// own call from the live catalog. Reporting "no match" as "several matches" made
+// that impossible and sent the question back to the user.
 //
 // What the capability CAN state is a fact it just fetched. This layer normalizes
 // format, never meaning — no alias table, no 2↔二 mapping, no city keywords —
@@ -646,13 +640,13 @@ func unmatchedZoneMentionResult(unresolved []string, supportZones []zones.ZoneIn
 	for _, mention := range unresolved {
 		quoted = append(quoted, "「"+mention+"」")
 	}
-	// Facts only. This reply is model-visible and may be quoted to the user, so it
-	// states what is and is not true rather than instructing the reader what to do
-	// next — a tool result that tells the model how to behave leaks as guidance
-	// addressed to the customer.
+	// Facts only. The engine supplies the corrective instruction on the outer
+	// AgentTool result; this text only explains what the live lookup established.
 	result.Reply = fmt.Sprintf(
 		"%s不是当前实时可用区目录中的可用区名称或 ZoneID，本次未按可用区查询库存。\n当前实时可用区目录：\n%s",
 		strings.Join(quoted, "、"), result.Reply)
+	result.Status = platform.ReadStatusNeedsInput
+	result.FallbackReason = platform.ReadFallbackValidation
 	return result
 }
 

@@ -98,11 +98,11 @@ func TestInvalidToolCallRoutesBackToTheModelNotTheUser(t *testing.T) {
 }
 
 // "Re-send the same call" is safe advice only for arguments this binary rejected
-// before running anything. Bound to the constructor alone, the guarantee lasts
-// until the next hand-built AgentToolResult; bound in the parser, it holds for
-// every result the engine will ever observe — including one that pairs this next
-// step with a real upstream failure, which would be a retry loop against a side
-// effect that already happened.
+// before any user-requested effect. Bound to the constructor alone, the
+// guarantee lasts until the next hand-built AgentToolResult; bound in the parser,
+// it holds for every result the engine will ever observe — including one that
+// pairs this next step with a real upstream failure, which would be a retry loop
+// against a side effect that already happened.
 func TestTheModelOwnedNextStepIsBoundToTheMalformedArgumentCode(t *testing.T) {
 	for _, code := range []string{
 		"UPSTREAM_RETCODE_8964", "TOOL_EXECUTION_FAILED", "READ_INPUT_INCOMPLETE",
