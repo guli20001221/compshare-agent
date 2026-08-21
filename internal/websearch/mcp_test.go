@@ -40,12 +40,20 @@ func TestMCPClientSearchUsesFixedToolContractAndFiltersUnsafeSources(t *testing.
 			http.Error(writer, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		if request.Header.Get("X-Provider-Key") != "provider-test-key" {
+			http.Error(writer, "missing provider header", http.StatusUnauthorized)
+			return
+		}
 		handler.ServeHTTP(writer, request)
 	}))
 	defer httpServer.Close()
 
 	client, err := NewMCPClient(MCPOptions{
 		Endpoint: httpServer.URL, BearerToken: "search-token", Timeout: time.Second, MaxResults: 3,
+		// This verifies the shared MCP transport can safely carry a
+		// provider-specific header without changing its bearer behavior.
+		// Exa maps its API key to x-api-key through the same path.
+		Headers: http.Header{"X-Provider-Key": []string{"provider-test-key"}},
 	})
 	require.NoError(t, err)
 
@@ -109,6 +117,12 @@ Published: N/A`}}}, struct{}{}, nil
 	assert.Equal(t, "优云智算文档", results[0].Title)
 	assert.Equal(t, "https://www.compshare.cn/docs/guide", results[0].URL)
 	assert.Equal(t, "首条可引用资料。", results[0].Snippet)
+}
+
+func TestExaAPIKeyHeaderUsesProviderRequiredName(t *testing.T) {
+	header := exaAPIKeyHeader(" exa-test-key ")
+	assert.Equal(t, "exa-test-key", header.Get("x-api-key"))
+	assert.Empty(t, header.Get("Authorization"))
 }
 
 func TestNewExaMCPClientPinsTheOfficialEndpoint(t *testing.T) {

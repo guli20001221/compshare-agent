@@ -43,13 +43,14 @@ type RetrievalConfig struct {
 // WebSearchConfig configures an optional, read-only external-search MCP
 // fallback. It is deliberately separate from RetrievalConfig: the curated KB is
 // an on-by-default product dependency, while web search defaults off and is only
-// exposed after that KB returned no substantive evidence.
+// exposed after the KB is empty or an explicit evidence-coverage assessment finds
+// a necessary gap.
 type WebSearchConfig struct {
-	Enabled        *bool  `yaml:"enabled"`          // COMPSHARE_WEB_SEARCH_ENABLED (default off)
-	Provider       string `yaml:"provider"`         // COMPSHARE_WEB_SEARCH_PROVIDER (exa; default when enabled)
-	MCPURL         string `yaml:"mcp_url"`          // COMPSHARE_WEB_SEARCH_MCP_URL (must be Exa's official endpoint)
-	MCPBearerToken string `yaml:"mcp_bearer_token"` // COMPSHARE_WEB_SEARCH_MCP_BEARER_TOKEN
-	MCPTimeoutMS   int    `yaml:"mcp_timeout_ms"`   // COMPSHARE_WEB_SEARCH_MCP_TIMEOUT_MS
+	Enabled      *bool  `yaml:"enabled"`        // COMPSHARE_WEB_SEARCH_ENABLED (default off)
+	Provider     string `yaml:"provider"`       // COMPSHARE_WEB_SEARCH_PROVIDER (exa; default when enabled)
+	MCPURL       string `yaml:"mcp_url"`        // COMPSHARE_WEB_SEARCH_MCP_URL (must be Exa's official endpoint)
+	MCPAPIKey    string `yaml:"mcp_api_key"`    // COMPSHARE_WEB_SEARCH_MCP_API_KEY (sent as Exa x-api-key)
+	MCPTimeoutMS int    `yaml:"mcp_timeout_ms"` // COMPSHARE_WEB_SEARCH_MCP_TIMEOUT_MS
 }
 
 // TraceConfig holds the per-turn JSONL/DB trace sink settings.
@@ -98,7 +99,7 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putBoolEnv(overrides, "COMPSHARE_WEB_SEARCH_ENABLED", w.Enabled, "1", "0")
 	putStrEnv(overrides, "COMPSHARE_WEB_SEARCH_PROVIDER", w.Provider)
 	putStrEnv(overrides, "COMPSHARE_WEB_SEARCH_MCP_URL", w.MCPURL)
-	putStrEnv(overrides, "COMPSHARE_WEB_SEARCH_MCP_BEARER_TOKEN", w.MCPBearerToken)
+	putStrEnv(overrides, "COMPSHARE_WEB_SEARCH_MCP_API_KEY", w.MCPAPIKey)
 	putIntEnv(overrides, "COMPSHARE_WEB_SEARCH_MCP_TIMEOUT_MS", w.MCPTimeoutMS)
 
 	t := c.Agent.Trace

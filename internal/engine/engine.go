@@ -342,9 +342,22 @@ type Engine struct {
 	// call budget so one rewrite cannot hide the availability of later searches.
 	searchKnowledgeQueriesThisTurn int
 	// webSearchAvailableThisTurn becomes true only after an AVAILABLE curated-KB
-	// search returned no substantive evidence. It is both the model-window gate
-	// and the execution-boundary gate; no prompt-only path can open it.
+	// search returned no substantive evidence, or after the Agent explicitly
+	// assessed the retrieved evidence as incomplete. It is both the model-window
+	// gate and the execution-boundary gate; no prompt-only path can open it.
 	webSearchAvailableThisTurn bool
+	// webSearchAssessmentPendingThisTurn is the intermediate state for the case
+	// that a KB search did return citable chunks, but they may not cover every
+	// fact in the user's question. The Agent must inspect the evidence (and read
+	// a returned chunk in full when appropriate) before it can say that a
+	// specific fact is missing. Only then can it open the external fallback.
+	webSearchAssessmentPendingThisTurn bool
+	// webSearchQueryThisTurn is the one reviewed, bounded external query for the
+	// turn. It is either the resolved question after an empty KB result or the
+	// focused query produced by AssessKnowledgeEvidence. SearchWeb has no
+	// model-authored query parameter, so its caller cannot change what crosses
+	// the outbound privacy boundary after the eligibility decision.
+	webSearchQueryThisTurn string
 	// webSearchSuppressedThisTurn keeps the external fallback out of restricted
 	// public/knowledge-only turns even if an invented tool call reaches the
 	// dispatcher after an empty KB result.
@@ -1501,6 +1514,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeCallsThisTurn = 0
 	e.searchKnowledgeQueriesThisTurn = 0
 	e.webSearchAvailableThisTurn = false
+	e.webSearchAssessmentPendingThisTurn = false
+	e.webSearchQueryThisTurn = ""
 	e.webSearchCallsThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
 	e.resolvedKnowledgeQuestionThisTurn = ""
@@ -1669,6 +1684,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		toolWindow := centralAgentToolWindowWithWebSearch(
 			e.mutatingToolsEnabled,
 			e.instanceOps != nil,
+			e.webSearchAssessmentMayRun(),
 			e.webSearchMayRun(),
 		)
 		if opts.KnowledgeOnly {
@@ -2740,11 +2756,11 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		e.emitSearchKnowledgeRetrievalTrace(resolvedQuestion, plannedQuery, retrieved, rawHits, floorDroppedAll, activityID)
 	}
 	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, combined, searchKnowledgeLedgerTurnMaxItems)
-	// External search is a *fallback* after an available curated search returned
-	// no substantive evidence. A KB outage is not evidence of a corpus gap, and
-	// any earlier/later curated evidence withdraws the fallback again.
-	e.webSearchAvailableThisTurn = e.webSearcher != nil && successfulQueries > 0 &&
-		len(e.searchKnowledgeLedgerThisTurn.Items) == 0
+	// External search is a *fallback* after an available curated search either
+	// returned no substantive evidence or leaves a specifically assessed coverage
+	// gap. A KB outage is not evidence of a corpus gap, and any earlier/later
+	// curated evidence withdraws a prior fallback before it can run.
+	e.setWebSearchEligibilityAfterKnowledge(successfulQueries)
 	message := "搜索完成"
 	if successfulQueries == 0 && unavailableQueries > 0 {
 		message = "知识库服务暂时不可用"
@@ -3055,6 +3071,16 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		e.knowledgeQAAgentLoopThisTurn = true
 		args = e.safeExecutor.FilterArgs(action, args)
 		return e.executeSearchKnowledge(ctx, args, onStep)
+	}
+
+	// AssessKnowledgeEvidence is a local, bounded decision point. It does not
+	// fetch anything: it records whether the already-returned KB evidence covers
+	// every fact needed for the answer. Keeping it separate from SearchWeb makes
+	// the semantic "chunk exists but is insufficient" path explicit and keeps an
+	// invented search call from turning a relevant-but-partial chunk into a first
+	// hop to an external provider.
+	if action == assessKnowledgeEvidenceAction {
+		return e.executeAssessKnowledgeEvidence(args, onStep)
 	}
 
 	// SearchWeb never belongs to a route in tools.Registry: it is dynamically

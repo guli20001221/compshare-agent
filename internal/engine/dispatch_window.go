@@ -21,14 +21,16 @@ const (
 // high-level read is a distinct, catalog-generated tool, while every platform
 // fact still crosses the same EvidenceEnvelope adapter.
 func centralAgentToolWindow(mutatingEnabled, instanceOpsEnabled bool) []openai.Tool {
-	return centralAgentToolWindowWithWebSearch(mutatingEnabled, instanceOpsEnabled, false)
+	return centralAgentToolWindowWithWebSearch(mutatingEnabled, instanceOpsEnabled, false, false)
 }
 
-// centralAgentToolWindowWithWebSearch adds the external-search fallback only
-// after the current turn has exhausted useful curated-KB evidence. Keeping the
-// normal, static function above preserves the off-by-default window and makes
-// the one dynamic addition explicit at the call site.
-func centralAgentToolWindowWithWebSearch(mutatingEnabled, instanceOpsEnabled, webSearchAvailable bool) []openai.Tool {
+// centralAgentToolWindowWithWebSearch adds at most two dynamic capabilities
+// after curated-KB retrieval. A non-empty ledger first exposes the local
+// evidence-coverage assessment; only an empty ledger or an assessed coverage
+// gap exposes the external-search fallback. Keeping the normal, static function
+// above preserves the off-by-default window and makes both dynamic additions
+// explicit at the call site.
+func centralAgentToolWindowWithWebSearch(mutatingEnabled, instanceOpsEnabled, webSearchAssessmentAvailable, webSearchAvailable bool) []openai.Tool {
 	registry := tools.DefaultCapabilityRegistry()
 	var out []openai.Tool
 	if mutatingEnabled {
@@ -69,10 +71,42 @@ func centralAgentToolWindowWithWebSearch(mutatingEnabled, instanceOpsEnabled, we
 			out = append(out, capability.Tool)
 		}
 	}
+	if webSearchAssessmentAvailable {
+		out = append(out, assessKnowledgeEvidenceTool())
+	}
 	if webSearchAvailable {
 		out = append(out, webSearchTool())
 	}
 	return out
+}
+
+func assessKnowledgeEvidenceTool() openai.Tool {
+	return openai.Tool{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "AssessKnowledgeEvidence",
+			Description: "仅在本轮 SearchKnowledge 已成功返回可引用知识后才会出现。逐项核对已返回的知识是否直接支持回答用户问题；若节选不足，先用 ReadChunk 阅读已返回 chunk 的全文。只有在全文仍缺少某个必要事实、条件或当前外部技术信息时，才填写 verdict=insufficient，并精确说明缺口及一条不含凭据或个人信息的公开检索语句。不要因为想增加来源、复述同一事实或猜测知识库过期而判定不足。该工具不联网、不会回答用户。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"verdict": map[string]any{
+						"type":        "string",
+						"enum":        []string{"sufficient", "insufficient"},
+						"description": "sufficient 表示现有 KB 证据已覆盖回答所需事实；insufficient 表示明确的必要事实仍缺失。",
+					},
+					"missing_aspect": map[string]any{
+						"type":        "string",
+						"description": "仅 verdict=insufficient 时填写：尚不能由 KB 直接证实的具体事实或条件；sufficient 时留空。",
+					},
+					"external_query": map[string]any{
+						"type":        "string",
+						"description": "仅 verdict=insufficient 时填写：针对 missing_aspect 的简短公开检索语句；可使用用户问题和 KB 中出现的非敏感产品名或技术术语，不得包含账户、实例、凭据或个人信息；sufficient 时留空。",
+					},
+				},
+				"required": []string{"verdict"},
+			},
+		},
+	}
 }
 
 func webSearchTool() openai.Tool {
@@ -80,16 +114,11 @@ func webSearchTool() openai.Tool {
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "SearchWeb",
-			Description: "仅在本轮 SearchKnowledge 已没有足够平台知识证据后才会出现。查询必须直接使用用户当前问题中不含凭据或个人信息的原话，不得加入模型补写内容；结果是外部补充资料，不是平台现行规则。若采用任何结果，必须在对应结论后附其返回的 Markdown 链接；不能用它单独断定平台计费、配额、回收、价格、可用性或支持渠道。",
+			Description: "仅在本轮 SearchKnowledge 没有可引用证据，或 AssessKnowledgeEvidence 已确认现有证据不足后才会出现。无需传参数；系统只会发送此前经覆盖评估保存的、无敏感信息的检索语句。结果是外部补充资料，不是平台现行规则。若采用任何结果，必须在对应结论后附其返回的 Markdown 链接；不能仅凭外部资料断定平台计费、配额、回收、价格、可用性或支持渠道。",
 			Parameters: map[string]any{
-				"type": "object",
-				"properties": map[string]any{
-					"query": map[string]any{
-						"type":        "string",
-						"description": "用户当前问题中不含凭据或个人信息的原话；只可去掉空白，不得加入模型自行推测的信息。",
-					},
-				},
-				"required": []string{"query"},
+				"type":       "object",
+				"properties": map[string]any{},
+				"required":   []string{},
 			},
 		},
 	}
@@ -279,11 +308,11 @@ func cloneSchemaObject(value any) (map[string]any, bool) {
 }
 
 func centralAgentToolNames(mutatingEnabled, instanceOpsEnabled bool) []string {
-	return centralAgentToolNamesWithWebSearch(mutatingEnabled, instanceOpsEnabled, false)
+	return centralAgentToolNamesWithWebSearch(mutatingEnabled, instanceOpsEnabled, false, false)
 }
 
-func centralAgentToolNamesWithWebSearch(mutatingEnabled, instanceOpsEnabled, webSearchAvailable bool) []string {
-	window := centralAgentToolWindowWithWebSearch(mutatingEnabled, instanceOpsEnabled, webSearchAvailable)
+func centralAgentToolNamesWithWebSearch(mutatingEnabled, instanceOpsEnabled, webSearchAssessmentAvailable, webSearchAvailable bool) []string {
+	window := centralAgentToolWindowWithWebSearch(mutatingEnabled, instanceOpsEnabled, webSearchAssessmentAvailable, webSearchAvailable)
 	names := make([]string, 0, len(window))
 	for _, tool := range window {
 		if tool.Function != nil && tool.Function.Name != "" {
@@ -315,13 +344,15 @@ func ModelVisibleToolNames() []string {
 	// impossible. A new gate on centralAgentToolNames must be added here too.
 	for _, mutatingEnabled := range []bool{false, true} {
 		for _, instanceOpsEnabled := range []bool{false, true} {
-			for _, webSearchAvailable := range []bool{false, true} {
-				for _, name := range centralAgentToolNamesWithWebSearch(mutatingEnabled, instanceOpsEnabled, webSearchAvailable) {
-					if seen[name] {
-						continue
+			for _, webSearchAssessmentAvailable := range []bool{false, true} {
+				for _, webSearchAvailable := range []bool{false, true} {
+					for _, name := range centralAgentToolNamesWithWebSearch(mutatingEnabled, instanceOpsEnabled, webSearchAssessmentAvailable, webSearchAvailable) {
+						if seen[name] {
+							continue
+						}
+						seen[name] = true
+						names = append(names, name)
 					}
-					seen[name] = true
-					names = append(names, name)
 				}
 			}
 		}

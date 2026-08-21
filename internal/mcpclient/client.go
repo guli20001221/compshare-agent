@@ -21,10 +21,13 @@ import (
 const DefaultRequestTimeout = 12 * time.Second
 
 // Options configures one immutable read-only MCP client. BearerToken is
-// optional for trusted in-cluster endpoints and is never logged by this package.
+// optional for trusted in-cluster endpoints. Headers supports a small number of
+// provider-required headers (for example Exa's x-api-key); neither is logged by
+// this package.
 type Options struct {
 	Endpoint    string
 	BearerToken string
+	Headers     http.Header
 	Timeout     time.Duration
 	HTTPClient  *http.Client
 }
@@ -50,7 +53,7 @@ func New(options Options) (*Client, error) {
 	return &Client{
 		endpoint:   endpoint,
 		timeout:    timeout,
-		httpClient: cloneHTTPClientWithBearer(options.HTTPClient, options.BearerToken),
+		httpClient: cloneHTTPClientWithAuth(options.HTTPClient, options.BearerToken, options.Headers),
 	}, nil
 }
 
@@ -230,29 +233,42 @@ func toolResultTextContent(result *mcp.CallToolResult) (string, error) {
 	return strings.Join(texts, "\n"), nil
 }
 
-func cloneHTTPClientWithBearer(base *http.Client, bearerToken string) *http.Client {
+func cloneHTTPClientWithAuth(base *http.Client, bearerToken string, headers http.Header) *http.Client {
 	if base == nil {
 		base = http.DefaultClient
 	}
 	cloned := *base
-	if token := strings.TrimSpace(bearerToken); token != "" {
+	if strings.TrimSpace(bearerToken) != "" || len(headers) > 0 {
 		transport := cloned.Transport
 		if transport == nil {
 			transport = http.DefaultTransport
 		}
-		cloned.Transport = bearerRoundTripper{next: transport, token: token}
+		cloned.Transport = authRoundTripper{
+			next:        transport,
+			bearerToken: strings.TrimSpace(bearerToken),
+			headers:     headers.Clone(),
+		}
 	}
 	return &cloned
 }
 
-type bearerRoundTripper struct {
-	next  http.RoundTripper
-	token string
+type authRoundTripper struct {
+	next        http.RoundTripper
+	bearerToken string
+	headers     http.Header
 }
 
-func (t bearerRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+func (t authRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
 	cloned := request.Clone(request.Context())
 	cloned.Header = request.Header.Clone()
-	cloned.Header.Set("Authorization", "Bearer "+t.token)
+	for name, values := range t.headers {
+		cloned.Header.Del(name)
+		for _, value := range values {
+			cloned.Header.Add(name, value)
+		}
+	}
+	if t.bearerToken != "" {
+		cloned.Header.Set("Authorization", "Bearer "+t.bearerToken)
+	}
 	return t.next.RoundTrip(cloned)
 }

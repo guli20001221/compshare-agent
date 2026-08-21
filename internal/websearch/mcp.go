@@ -53,6 +53,7 @@ type Searcher interface {
 type MCPOptions struct {
 	Endpoint    string
 	BearerToken string
+	Headers     http.Header
 	Timeout     time.Duration
 	HTTPClient  *http.Client
 	MaxResults  int
@@ -68,11 +69,11 @@ type MCPClient struct {
 // optional only so the public canonical endpoint can be the secure default;
 // any override must still name that exact HTTPS endpoint.
 type ExaMCPOptions struct {
-	Endpoint    string
-	BearerToken string
-	Timeout     time.Duration
-	HTTPClient  *http.Client
-	MaxResults  int
+	Endpoint   string
+	APIKey     string
+	Timeout    time.Duration
+	HTTPClient *http.Client
+	MaxResults int
 }
 
 // ExaMCPClient adapts Exa's provider-specific web_search_exa text result to
@@ -89,6 +90,7 @@ func NewMCPClient(options MCPOptions) (*MCPClient, error) {
 	client, err := mcpclient.New(mcpclient.Options{
 		Endpoint:    options.Endpoint,
 		BearerToken: options.BearerToken,
+		Headers:     options.Headers,
 		Timeout:     options.Timeout,
 		HTTPClient:  options.HTTPClient,
 	})
@@ -122,7 +124,7 @@ func NewExaMCPClient(options ExaMCPOptions) (*ExaMCPClient, error) {
 		return nil, fmt.Errorf("Exa MCP endpoint must be %s", defaultExaMCPEndpoint)
 	}
 	client, err := mcpclient.New(mcpclient.Options{
-		Endpoint: normalized, BearerToken: options.BearerToken, Timeout: options.Timeout, HTTPClient: options.HTTPClient,
+		Endpoint: normalized, Headers: exaAPIKeyHeader(options.APIKey), Timeout: options.Timeout, HTTPClient: options.HTTPClient,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("Exa MCP: %w", err)
@@ -135,6 +137,15 @@ func NewExaMCPClient(options ExaMCPOptions) (*ExaMCPClient, error) {
 		return nil, fmt.Errorf("Exa web-search numResults must be 1..%d, got %d", maxResults, limit)
 	}
 	return &ExaMCPClient{client: client, maxResults: limit}, nil
+}
+
+func exaAPIKeyHeader(apiKey string) http.Header {
+	if apiKey = strings.TrimSpace(apiKey); apiKey != "" {
+		header := make(http.Header)
+		header.Set("x-api-key", apiKey)
+		return header
+	}
+	return nil
 }
 
 // Search calls the configured MCP tool and returns only safe, bounded, unique

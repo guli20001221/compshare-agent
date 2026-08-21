@@ -279,7 +279,7 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 7 shared + 104 per-session = 111 fields. Any drift
+// Whitelist totals: 7 shared + 106 per-session = 113 fields. Any drift
 // requires updating both this test AND plan §3.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
@@ -347,11 +347,14 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// tenant's searches withdraw the tool from another tenant's turn.
 		"searchKnowledgeCallsThisTurn":   true,
 		"searchKnowledgeQueriesThisTurn": true,
-		// External search is off by default and its one-call gate is per turn.
-		// Sharing either value could disclose one tenant's fallback state or let
-		// one tenant consume another's external-search budget.
-		"webSearchAvailableThisTurn": true,
-		"webSearchCallsThisTurn":     true,
+		// External search is off by default and its assessment, one-call gate,
+		// and frozen outbound query are per-turn. Sharing any of them could
+		// disclose one tenant's fallback state, make an external call available
+		// in the wrong session, or send another user's reviewed query upstream.
+		"webSearchAvailableThisTurn":         true,
+		"webSearchAssessmentPendingThisTurn": true,
+		"webSearchQueryThisTurn":             true,
+		"webSearchCallsThisTurn":             true,
 		// The planner's standalone answer target is turn-local. Sharing it would
 		// let one tenant's follow-up retrieval change another tenant's grounding
 		// question even if their evidence sets were distinct.
@@ -517,12 +520,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 7, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 104, len(perSessionFields); want != got {
+	if want, got := 106, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 111, typ.NumField(); want != got {
+	if want, got := 113, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update plan §3 + this test's whitelists to match.", want, got)
 	}

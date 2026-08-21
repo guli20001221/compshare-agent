@@ -272,9 +272,9 @@ func webSearcherFromEnv(getenv getenvFunc) (engine.WebSearcher, bool, error) {
 		return nil, false, fmt.Errorf("unsupported COMPSHARE_WEB_SEARCH_PROVIDER %q (want exa)", unknown)
 	}
 	searcher, err := websearch.NewExaMCPClient(websearch.ExaMCPOptions{
-		Endpoint:    strings.TrimSpace(getenv("COMPSHARE_WEB_SEARCH_MCP_URL")),
-		BearerToken: strings.TrimSpace(getenv("COMPSHARE_WEB_SEARCH_MCP_BEARER_TOKEN")),
-		Timeout:     webSearchMCPTimeoutFromEnv(getenv),
+		Endpoint: strings.TrimSpace(getenv("COMPSHARE_WEB_SEARCH_MCP_URL")),
+		APIKey:   strings.TrimSpace(getenv("COMPSHARE_WEB_SEARCH_MCP_API_KEY")),
+		Timeout:  webSearchMCPTimeoutFromEnv(getenv),
 	})
 	if err != nil {
 		return nil, false, fmt.Errorf("web-search %s client: %w", provider, err)
