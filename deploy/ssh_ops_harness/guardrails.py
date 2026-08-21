@@ -298,11 +298,16 @@ _STRUCTURED_DIAG = [re.compile(p) for p in [
     # util-linux lists, older versions did not, and the difference is not worth guessing at.
     r"swapon(\s+(-s|--summary|--show(=\S+)?|--noheadings|--raw|--bytes))+",
     r"mount(\s+(-l|--list))*",
-    r"(nvcc|python3?|pip3?|conda|docker|git|gcc|g\+\+|cmake|go|java|node|npm|ruff|jupyter)\s+(--version|-V|version)",
+    r"(nvcc|python3?|pip3?|conda|docker|podman|nerdctl|git|gcc|g\+\+|cmake|go|java|node|npm|ruff|jupyter)\s+(--version|-V|version)",
     r"pip3?\s+(list|show|freeze)(\s+\S+)*",
     r"pip3?\s+cache\s+dir",
     r"conda\s+(list|info|env\s+list)(\s+\S+)*",
-    r"docker\s+(ps|images|info|version|stats\s+--no-stream)(\s+\S+)*",
+    r"(docker|podman|nerdctl)\s+(ps|images|info|version|stats\s+--no-stream)(\s+\S+)*",
+    # POSIX `test` only evaluates file metadata/string/integer predicates and changes no state.
+    # Shell expansion/substitution/redirection is rejected before this pattern, so allowing the
+    # builtin itself removes confirmation cards from ordinary `test -r FILE && cat FILE` probes
+    # without making an arbitrary operand executable.
+    r"test(\s+\S+)*",
     # Process-manager state: on these GPU images the web app (ComfyUI/Jupyter/filebrowser) is run by
     # supervisord, so "is my service supposed to be running, and did it die?" is answered here.
     # ONLY the reporting subcommands — start/stop/restart/reload/update stay unmatched => mutating.

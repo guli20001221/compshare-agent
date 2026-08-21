@@ -35,6 +35,12 @@ func TestPerWriteConfirmCardIsNeverTheRawActionName(t *testing.T) {
 	if got == serverOwnedConfirmLabel("DiagnoseInstanceInternals") {
 		t.Fatalf("door card and per-command card both say %q", got)
 	}
+	if got != "确认执行实例内命令" {
+		t.Fatalf("per-command card = %q, want an effect-neutral label", got)
+	}
+	if strings.Contains(got, "修复") {
+		t.Fatalf("an unproven read may reach this card, so the label must not claim a repair: %q", got)
+	}
 }
 
 // Workflows keep their console-side titles and their frames keep their exact

