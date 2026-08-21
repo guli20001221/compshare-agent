@@ -144,8 +144,11 @@ const (
 	// It is a general rule, not the incident's fix: a replay probe against the
 	// real model produced the substitution 8/8 without it and 8/10 with it. The
 	// confirmation card is what changed, and it is what to change if this recurs.
-	mutatingReActPromptSHA256 = "78106c71420f5a521bba11c987ea2b0bb6b370cbfa05f84f38034a7186f9d841"
-	readOnlyReActPromptSHA256 = "bc41be1dc16c163a51b84736585ad589cba86e50818bd97dc88dda230ea7ac78"
+	// 2026-08-21: SearchWeb is an opt-in, second-hop source. The shared
+	// knowledge-policy segment names its evidence boundary once so all prompt
+	// shapes agree on citations and on the platform-fact exclusion.
+	mutatingReActPromptSHA256 = "d35db0db71af9c8b56cbacb15f5a16e3744f02f11e80f4902ba5f9f7042b2119"
+	readOnlyReActPromptSHA256 = "38cd69ec0bc9ec24a1a9296315e10095841af799e4a54e9c611c0185d231a1fa"
 
 	// 2026-07-30: the two SHAs above pin mutating and read-only with the SSH-ops repair lane OFF.
 	// That leaves the rollout shape unpinned: deploy/conf/config.prod.yaml already sets
@@ -154,7 +157,7 @@ const (
 	// lane's only sentence lived inside the read-only boundary, which mutating mode skips). This
 	// third SHA pins that combination. It includes the same shared 2026-07-31
 	// catalog-candidate contract as the two snapshots above.
-	mutatingWithRepairLaneReActPromptSHA256 = "1f09da3d031dbb4459422d79c5495fdf6adb6d38644c83311e870fe2df221705"
+	mutatingWithRepairLaneReActPromptSHA256 = "5811a36eab0785531ea596753fd03f24acb4e4c63e659a1d60f8283003584686"
 )
 
 func TestReActPromptSnapshot_Mutating(t *testing.T) {

@@ -50,6 +50,7 @@ var stepActionLabels = map[string]string{
 	"GetCompShareCFSUpgradePrice":             "查询文件存储升级价格",
 	"GetCompShareCFSRefundPrice":              "查询文件存储退款金额",
 	"SearchKnowledge":                         "搜索知识库",
+	"SearchWeb":                               "联网搜索补充资料",
 	"ReadChunk":                               "查看知识原文",
 	"DiagnoseBilling":                         "诊断扣费异常",
 	// Byte-identical to the console's own STEP_LABELS entry, so shipping the

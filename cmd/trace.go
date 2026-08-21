@@ -12,6 +12,7 @@ import (
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/websearch"
 )
 
 type getenvFunc func(string) string
@@ -221,4 +222,52 @@ func knowledgeRetrieverFromEnv(getenv getenvFunc) (engine.KnowledgeRetriever, bo
 	}
 	log.Printf("knowledge: using remote MCP endpoint %s", endpoint)
 	return retriever, true, nil
+}
+
+// webSearchEnabledFromEnv is deliberately default-off. The curated KB is the
+// primary product source; enabling an external provider is an explicit privacy,
+// cost, and operations decision rather than an implicit fallback.
+func webSearchEnabledFromEnv(getenv getenvFunc) (bool, string) {
+	raw := strings.ToLower(strings.TrimSpace(getenv("COMPSHARE_WEB_SEARCH_ENABLED")))
+	switch raw {
+	case "", "0", "off", "no", "false", "disabled", "none":
+		return false, ""
+	case "1", "true", "yes", "on":
+		return true, ""
+	default:
+		return false, raw
+	}
+}
+
+func webSearchMCPTimeoutFromEnv(getenv getenvFunc) time.Duration {
+	raw := strings.TrimSpace(getenv("COMPSHARE_WEB_SEARCH_MCP_TIMEOUT_MS"))
+	if raw == "" {
+		return 0
+	}
+	ms, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || ms <= 0 {
+		log.Printf("web-search MCP: invalid COMPSHARE_WEB_SEARCH_MCP_TIMEOUT_MS=%q; using default", raw)
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
+}
+
+func webSearcherFromEnv(getenv getenvFunc) (engine.WebSearcher, bool, error) {
+	enabled, unknown := webSearchEnabledFromEnv(getenv)
+	if unknown != "" || !enabled {
+		return nil, false, nil
+	}
+	endpoint := strings.TrimSpace(getenv("COMPSHARE_WEB_SEARCH_MCP_URL"))
+	if endpoint == "" {
+		return nil, false, errors.New("COMPSHARE_WEB_SEARCH_MCP_URL is required when web search is enabled")
+	}
+	searcher, err := websearch.NewMCPClient(websearch.MCPOptions{
+		Endpoint:    endpoint,
+		BearerToken: strings.TrimSpace(getenv("COMPSHARE_WEB_SEARCH_MCP_BEARER_TOKEN")),
+		Timeout:     webSearchMCPTimeoutFromEnv(getenv),
+	})
+	if err != nil {
+		return nil, false, fmt.Errorf("web-search MCP client: %w", err)
+	}
+	return searcher, true, nil
 }

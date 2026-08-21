@@ -83,6 +83,18 @@ func applySharedDepsFromEnv(deps *engine.SharedDeps, cfg *config.Config, getenv 
 	if knowledgeEnabled {
 		deps.KnowledgeRetriever = retriever
 	}
+	webSearchRequested, unknownWebSearch := webSearchEnabledFromEnv(getenv)
+	if unknownWebSearch != "" {
+		log.Printf("warning: ignoring unknown COMPSHARE_WEB_SEARCH_ENABLED value %q", unknownWebSearch)
+	}
+	searcher, webSearchEnabled, webSearchErr := webSearcherFromEnv(getenv)
+	if webSearchRequested && webSearchErr != nil {
+		return fmt.Errorf("web-search fallback enabled but setup failed: %w", webSearchErr)
+	}
+	if webSearchEnabled {
+		deps.WebSearcher = searcher
+		log.Printf("runtime: external web-search fallback enabled; it is exposed only after an empty curated-KB search")
+	}
 
 	// HTTP sessions use the central Agent runtime. An intent router would add a
 	// second semantic model before the Agent and could once again delete or hide

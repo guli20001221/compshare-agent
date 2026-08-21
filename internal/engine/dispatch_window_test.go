@@ -139,9 +139,15 @@ func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {
 		// states the whole spec change. Do not spend more prompt bytes on this class
 		// of behavior expecting a different result.
 		//
-		// Measured max after the change is 5531 (read-only shape), so the number is
-		// the measurement plus a small margin, not a round number chosen to be safe.
-		require.LessOrEqual(t, len(system), 5600, "central system prompt grew past its reviewed byte budget")
+		// 5600 -> 5900 (2026-08-21): +298 bytes for the external-search source
+		// boundary. The runtime is the enforcement point (the tool appears only
+		// after an empty curated-KB result), but the model still needs the one
+		// sentence that distinguishes a cited external supplement from a platform
+		// rule. Hiding that distinction in a tool implementation would let the
+		// final synthesis erase it. Measured max after this addition is 5829
+		// bytes (read-only shape), so 5900 remains a measurement plus a small
+		// margin, not a round number chosen to be safe.
+		require.LessOrEqual(t, len(system), 5900, "central system prompt grew past its reviewed byte budget")
 		require.NotContains(t, system, "更新任务状态",
 			"the retired semantic-memory tool must not remain as a model instruction")
 		// Each Request tool keeps its operation-specific safety boundary and adds

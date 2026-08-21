@@ -2,18 +2,14 @@ package knowledge
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
-	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/compshare-agent/internal/mcpclient"
 )
-
-const defaultMCPRequestTimeout = 12 * time.Second
 
 // ErrSearchCapabilityInvalid means the short-lived search_id presented to the
 // remote knowledge service can no longer authorize a read. Callers must issue a
@@ -36,29 +32,23 @@ type MCPRetrieverOptions struct {
 // share through engine.SharedDeps. Per-search capabilities deliberately remain
 // in the calling Engine's current-turn state.
 type MCPRetriever struct {
-	endpoint   string
-	timeout    time.Duration
-	httpClient *http.Client
+	client *mcpclient.Client
 }
 
 // NewMCPRetriever validates and normalizes an endpoint. A bare in-cluster DNS
 // name is accepted for deployment ergonomics and becomes an http URL; an empty
 // path becomes /mcp.
 func NewMCPRetriever(options MCPRetrieverOptions) (*MCPRetriever, error) {
-	endpoint, err := normalizeMCPEndpoint(options.Endpoint)
+	client, err := mcpclient.New(mcpclient.Options{
+		Endpoint:    options.Endpoint,
+		BearerToken: options.BearerToken,
+		Timeout:     options.Timeout,
+		HTTPClient:  options.HTTPClient,
+	})
 	if err != nil {
 		return nil, err
 	}
-	timeout := options.Timeout
-	if timeout <= 0 {
-		timeout = defaultMCPRequestTimeout
-	}
-	client := cloneHTTPClientWithBearer(options.HTTPClient, options.BearerToken)
-	return &MCPRetriever{
-		endpoint:   endpoint,
-		timeout:    timeout,
-		httpClient: client,
-	}, nil
+	return &MCPRetriever{client: client}, nil
 }
 
 // RetrieveContext searches the active remote knowledge release and projects its
@@ -218,84 +208,10 @@ func unavailableMCPRetrieval(question string, err error) RetrievalResult {
 }
 
 func (r *MCPRetriever) callTool(ctx context.Context, name string, arguments map[string]any, output any) error {
-	if ctx == nil {
-		ctx = context.Background()
+	if r == nil || r.client == nil {
+		return errors.New("knowledge MCP retriever is not configured")
 	}
-	ctx, cancel := context.WithTimeout(ctx, r.timeout)
-	defer cancel()
-
-	client := mcp.NewClient(&mcp.Implementation{
-		Name:    "compshare-agent",
-		Version: "1.0.0",
-	}, nil)
-	session, err := client.Connect(ctx, &mcp.StreamableClientTransport{
-		Endpoint:             r.endpoint,
-		HTTPClient:           r.httpClient,
-		DisableStandaloneSSE: true,
-		MaxRetries:           -1,
-	}, nil)
-	if err != nil {
-		return fmt.Errorf("connect knowledge MCP: %w", err)
-	}
-	defer func() { _ = session.Close() }()
-
-	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: arguments})
-	if err != nil {
-		return fmt.Errorf("call knowledge MCP tool %q: %w", name, err)
-	}
-	if err := decodeMCPToolResult(result, output); err != nil {
-		return fmt.Errorf("decode knowledge MCP tool %q: %w", name, err)
-	}
-	return nil
-}
-
-func decodeMCPToolResult(result *mcp.CallToolResult, output any) error {
-	if result == nil {
-		return errors.New("empty tool result")
-	}
-	if result.IsError {
-		return &mcpToolError{message: mcpToolResultText(result)}
-	}
-	if result.StructuredContent != nil {
-		encoded, err := json.Marshal(result.StructuredContent)
-		if err != nil {
-			return fmt.Errorf("marshal structured content: %w", err)
-		}
-		if err := json.Unmarshal(encoded, output); err != nil {
-			return fmt.Errorf("unmarshal structured content: %w", err)
-		}
-		return nil
-	}
-	for _, content := range result.Content {
-		text, ok := content.(*mcp.TextContent)
-		if !ok || strings.TrimSpace(text.Text) == "" {
-			continue
-		}
-		if err := json.Unmarshal([]byte(text.Text), output); err != nil {
-			return fmt.Errorf("unmarshal text content: %w", err)
-		}
-		return nil
-	}
-	return errors.New("tool result did not include structured or JSON text content")
-}
-
-type mcpToolError struct{ message string }
-
-func (e *mcpToolError) Error() string {
-	if e == nil || strings.TrimSpace(e.message) == "" {
-		return "knowledge MCP tool returned an error"
-	}
-	return strings.TrimSpace(e.message)
-}
-
-func mcpToolResultText(result *mcp.CallToolResult) string {
-	texts := make([]string, 0, len(result.Content))
-	for _, content := range result.Content {
-		if text, ok := content.(*mcp.TextContent); ok && strings.TrimSpace(text.Text) != "" {
-			texts = append(texts, strings.TrimSpace(text.Text))
-		}
-	}
-	return strings.Join(texts, "; ")
+	return r.client.Call(ctx, name, arguments, output)
 }
 
 func classifyMCPReadError(err error) error {
@@ -326,61 +242,7 @@ func mcpFailureReason(err error) string {
 }
 
 func normalizeMCPEndpoint(value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "", errors.New("knowledge MCP endpoint is required")
-	}
-	if !strings.Contains(value, "://") {
-		value = "http://" + value
-	}
-	parsed, err := url.Parse(value)
-	if err != nil {
-		return "", fmt.Errorf("parse knowledge MCP endpoint: %w", err)
-	}
-	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return "", fmt.Errorf("knowledge MCP endpoint scheme %q must be http or https", parsed.Scheme)
-	}
-	if strings.TrimSpace(parsed.Host) == "" {
-		return "", errors.New("knowledge MCP endpoint host is required")
-	}
-	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", errors.New("knowledge MCP endpoint must not contain user credentials, query, or fragment")
-	}
-	path := strings.TrimRight(parsed.Path, "/")
-	if path == "" {
-		parsed.Path = "/mcp"
-	} else {
-		parsed.Path = path
-	}
-	parsed.RawPath = ""
-	return parsed.String(), nil
-}
-
-func cloneHTTPClientWithBearer(base *http.Client, bearerToken string) *http.Client {
-	if base == nil {
-		base = http.DefaultClient
-	}
-	cloned := *base
-	if token := strings.TrimSpace(bearerToken); token != "" {
-		transport := cloned.Transport
-		if transport == nil {
-			transport = http.DefaultTransport
-		}
-		cloned.Transport = bearerRoundTripper{next: transport, token: token}
-	}
-	return &cloned
-}
-
-type bearerRoundTripper struct {
-	next  http.RoundTripper
-	token string
-}
-
-func (t bearerRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
-	cloned := request.Clone(request.Context())
-	cloned.Header = request.Header.Clone()
-	cloned.Header.Set("Authorization", "Bearer "+t.token)
-	return t.next.RoundTrip(cloned)
+	return mcpclient.NormalizeEndpoint(value)
 }
 
 func uniqueChunkIDs(values []string) []string {

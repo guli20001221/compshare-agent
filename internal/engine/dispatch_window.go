@@ -21,6 +21,14 @@ const (
 // high-level read is a distinct, catalog-generated tool, while every platform
 // fact still crosses the same EvidenceEnvelope adapter.
 func centralAgentToolWindow(mutatingEnabled, instanceOpsEnabled bool) []openai.Tool {
+	return centralAgentToolWindowWithWebSearch(mutatingEnabled, instanceOpsEnabled, false)
+}
+
+// centralAgentToolWindowWithWebSearch adds the external-search fallback only
+// after the current turn has exhausted useful curated-KB evidence. Keeping the
+// normal, static function above preserves the off-by-default window and makes
+// the one dynamic addition explicit at the call site.
+func centralAgentToolWindowWithWebSearch(mutatingEnabled, instanceOpsEnabled, webSearchAvailable bool) []openai.Tool {
 	registry := tools.DefaultCapabilityRegistry()
 	var out []openai.Tool
 	if mutatingEnabled {
@@ -61,7 +69,30 @@ func centralAgentToolWindow(mutatingEnabled, instanceOpsEnabled bool) []openai.T
 			out = append(out, capability.Tool)
 		}
 	}
+	if webSearchAvailable {
+		out = append(out, webSearchTool())
+	}
 	return out
+}
+
+func webSearchTool() openai.Tool {
+	return openai.Tool{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "SearchWeb",
+			Description: "仅在本轮 SearchKnowledge 已没有足够平台知识证据后才会出现。查询必须直接使用用户当前问题中不含凭据或个人信息的原话，不得加入模型补写内容；结果是外部补充资料，不是平台现行规则。若采用任何结果，必须在对应结论后附其返回的 Markdown 链接；不能用它单独断定平台计费、配额、回收、价格、可用性或支持渠道。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"query": map[string]any{
+						"type":        "string",
+						"description": "用户当前问题中不含凭据或个人信息的原话；只可去掉空白，不得加入模型自行推测的信息。",
+					},
+				},
+				"required": []string{"query"},
+			},
+		},
+	}
 }
 
 // centralAgentKnowledgeToolWindow is the fail-closed public-Q&A surface used by
@@ -248,7 +279,11 @@ func cloneSchemaObject(value any) (map[string]any, bool) {
 }
 
 func centralAgentToolNames(mutatingEnabled, instanceOpsEnabled bool) []string {
-	window := centralAgentToolWindow(mutatingEnabled, instanceOpsEnabled)
+	return centralAgentToolNamesWithWebSearch(mutatingEnabled, instanceOpsEnabled, false)
+}
+
+func centralAgentToolNamesWithWebSearch(mutatingEnabled, instanceOpsEnabled, webSearchAvailable bool) []string {
+	window := centralAgentToolWindowWithWebSearch(mutatingEnabled, instanceOpsEnabled, webSearchAvailable)
 	names := make([]string, 0, len(window))
 	for _, tool := range window {
 		if tool.Function != nil && tool.Function.Name != "" {
@@ -280,12 +315,14 @@ func ModelVisibleToolNames() []string {
 	// impossible. A new gate on centralAgentToolNames must be added here too.
 	for _, mutatingEnabled := range []bool{false, true} {
 		for _, instanceOpsEnabled := range []bool{false, true} {
-			for _, name := range centralAgentToolNames(mutatingEnabled, instanceOpsEnabled) {
-				if seen[name] {
-					continue
+			for _, webSearchAvailable := range []bool{false, true} {
+				for _, name := range centralAgentToolNamesWithWebSearch(mutatingEnabled, instanceOpsEnabled, webSearchAvailable) {
+					if seen[name] {
+						continue
+					}
+					seen[name] = true
+					names = append(names, name)
 				}
-				seen[name] = true
-				names = append(names, name)
 			}
 		}
 	}

@@ -16,6 +16,7 @@ import (
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/store"
+	"github.com/compshare-agent/internal/websearch"
 	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -346,6 +347,49 @@ func TestApplySharedDepsDefaultsToKnowledgeMCP(t *testing.T) {
 
 	require.NoError(t, err)
 	require.IsType(t, &knowledge.MCPRetriever{}, deps.KnowledgeRetriever)
+}
+
+func TestApplySharedDepsWebSearchIsOffByDefaultAndFailsClosedWhenMisconfigured(t *testing.T) {
+	cfg := &config.Config{Agent: config.AgentConfig{LLM: config.LLMConfig{
+		BaseURL: "http://localhost:1", APIKey: "llm-key", Model: "deepseek-v4-flash",
+	}}}
+	deps := &engine.SharedDeps{}
+	err := applySharedDepsFromEnv(deps, cfg, func(key string) string {
+		if key == "COMPSHARE_KB_MCP_URL" {
+			return "http://compshare-kb.example/mcp"
+		}
+		return ""
+	})
+	require.NoError(t, err)
+	require.Nil(t, deps.WebSearcher, "no setting must not silently enable an external provider")
+
+	err = applySharedDepsFromEnv(&engine.SharedDeps{}, cfg, func(key string) string {
+		switch key {
+		case "COMPSHARE_KB_MCP_URL":
+			return "http://compshare-kb.example/mcp"
+		case "COMPSHARE_WEB_SEARCH_ENABLED":
+			return "1"
+		default:
+			return ""
+		}
+	})
+	require.ErrorContains(t, err, "COMPSHARE_WEB_SEARCH_MCP_URL")
+
+	deps = &engine.SharedDeps{}
+	err = applySharedDepsFromEnv(deps, cfg, func(key string) string {
+		switch key {
+		case "COMPSHARE_KB_MCP_URL":
+			return "http://compshare-kb.example/mcp"
+		case "COMPSHARE_WEB_SEARCH_ENABLED":
+			return "1"
+		case "COMPSHARE_WEB_SEARCH_MCP_URL":
+			return "https://search.example/mcp"
+		default:
+			return ""
+		}
+	})
+	require.NoError(t, err)
+	require.IsType(t, &websearch.MCPClient{}, deps.WebSearcher)
 }
 
 func TestRootCommandDoesNotExposeWebSocketServe(t *testing.T) {
