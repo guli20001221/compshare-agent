@@ -12,16 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The replayed conversation window is the model's ENTIRE cross-turn memory —
-// messagesFromAgentContext drops every other prior-turn message. Until this file
-// existed, both sides of every restored pair went through safeContextText, which
-// collapses whitespace and cuts at maxSemanticRunes (320). Nothing asserted that:
-// `grep -rn 'maxSemanticRunes' internal/engine/*_test.go` was empty, so the
-// truncation could be added, removed or retargeted with the suite still green.
-//
-// Measured cost of the truncation on the 2026-07 production exports (3867
-// completed exchanges): 41.8% of assistant replies exceeded 320 runes, so 43% of
-// exchanges reached the next turn incomplete.
+const oldHistoryEndpointCutoffRunes = 320
 
 // restoredHistory returns only what the assembler replayed from PRIOR turns:
 // everything after the leading system/card block, up to the current user message.
@@ -99,7 +90,7 @@ func TestReplayedExchangeKeepsALongAssistantReplyIntact(t *testing.T) {
 	reply := longAssistantReply()
 	// Guard against a vacuous test: if the fixture ever shrinks below the old cut
 	// point, the assertions below would pass on the truncating code too.
-	require.Greater(t, len([]rune(reply)), maxSemanticRunes,
+	require.Greater(t, len([]rune(reply)), oldHistoryEndpointCutoffRunes,
 		"fixture must exceed the old 320-rune cut or this test cannot fail")
 
 	history := runOneTurnWithHistory(t, []openai.ChatCompletionMessage{
@@ -116,7 +107,7 @@ func TestReplayedExchangeKeepsALongAssistantReplyIntact(t *testing.T) {
 
 func TestReplayedExchangeKeepsALongUserMessageIntact(t *testing.T) {
 	pasted := longUserMessage()
-	require.Greater(t, len([]rune(pasted)), maxSemanticRunes,
+	require.Greater(t, len([]rune(pasted)), oldHistoryEndpointCutoffRunes,
 		"fixture must exceed the old 320-rune cut or this test cannot fail")
 
 	history := runOneTurnWithHistory(t, []openai.ChatCompletionMessage{
@@ -187,7 +178,6 @@ func TestBudgetDropsWholeOldestExchangesAndNeverTruncates(t *testing.T) {
 }
 
 func TestBudgetPreservesPlainDialogueBeforeDroppingOlderToolDetail(t *testing.T) {
-	withCanonicalTranscript(t, true)
 	pairs := []ConversationPair{
 		{
 			User: "旧问题", Assistant: "旧回答",

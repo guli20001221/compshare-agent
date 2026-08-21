@@ -101,17 +101,8 @@ func addComputedResourceMeta(env *envelope.Envelope, meta ResourceEnvelopeMeta) 
 			addComputed("shown_count", "Shown count", strconv.Itoa(meta.Shown))
 		}
 		addComputed("truncated", "Truncated", "true")
-		// PR1 hotfix follow-up (2026-05-28 联调): the answering model, shown only
-		// `truncated:true` + `shown_count:10`, freelances text like
-		// "剩余 2 台实例因分页未在此列表中展示，请缩小查询范围或调整分页参数"
-		// — there is no pagination mechanism in this codebase; the truncation
-		// is a fixed "top 10 by State+StartTime" display cap. Inject the exact
-		// user-facing sentence the model MUST emit verbatim, computed from
-		// the canonical denominator (matched_count for filtered queries,
-		// otherwise total_count). This Constraint is now the only thing holding
-		// that wording: the paired prompt directive that used to forbid 分页
-		// phrasing lived in the grounded renderer's own system prompt, which was
-		// deleted along with that never-invoked package.
+		// This is a fixed display cap, not pagination. Supply the exact constraint
+		// text using the filtered or total denominator.
 		denominator := meta.TotalCount
 		if meta.FilterApplied != "" && meta.MatchedCount > 0 {
 			denominator = meta.MatchedCount
@@ -548,15 +539,8 @@ func addPositiveIntFact(add func(string, string, any), key, label string, value 
 	}
 }
 
-// addPositiveTimeFact emits an epoch as the SAME calendar text the rendered
-// block prints, because the Agent answers from these facts and a raw epoch
-// forces it to convert by hand. Measured on a live multi-turn probe: asked when
-// an instance started, 6 of 10 replies quoted 「Unix 时间戳 1784432142」 and one
-// converted it to 2026-07-20 while the rendered line in the very same reply said
-// 2026-07-19 — a whole day wrong, self-contradictory, from one upstream number.
-// Emitting the epoch alongside the text would not fix it: as long as the number
-// is reachable the model can still quote and re-derive it, so the epoch does not
-// survive into the envelope at all. resourceTimeLabel is the one producer.
+// addPositiveTimeFact emits the same localized text used by the renderer so the
+// model never has to convert an epoch or create a contradictory date.
 func addPositiveTimeFact(add func(string, string, any), key, label string, value int64) {
 	if value > 0 {
 		add(key, label, resourceTimeLabel(value))

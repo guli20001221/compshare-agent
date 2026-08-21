@@ -35,8 +35,8 @@ func TestUnavailableCapability_ReturnsStructuredUnavailable(t *testing.T) {
 func TestUnavailableCapability_InReadCatalog(t *testing.T) {
 	toolName := ReadToolPrefix + accountFinanceStatusCapability
 
-	reg, ok := MigratedRead(toolName)
-	require.True(t, ok, "account_finance_status must be a migrated (typed) read tool")
+	reg, ok := RegisteredReadForTool(toolName)
+	require.True(t, ok, "account_finance_status must be a registered typed read tool")
 	result := reg.Run(context.Background(), unavailableRequest{}, ReadRuntime{})
 	require.Equal(t, platform.ReadStatusUnavailable, result.Status)
 

@@ -114,9 +114,7 @@ func resourceStateLabel(state string) string {
 		return "运行中"
 	case "stopped":
 		return "已关机"
-	// `Install` is the LEGACY upstream spelling still accepted for response
-	// compatibility (see the diagnosis notes in CLAUDE.md); without it a legacy
-	// row falls through and shows the user the raw English word.
+	// `Install` remains an accepted upstream spelling for initializing instances.
 	case "initializing", "installing", "install":
 		return "初始化中"
 	case "imagemaking":

@@ -50,6 +50,14 @@ func minimalConfig() *config.Config {
 
 var owner1 = store.Owner{TopOrganizationID: 1, OrganizationID: 1}
 
+func leaseAndRelease(ctx context.Context, pool *agentpool.Pool, owner store.Owner, sessionID string) (*engine.Engine, error) {
+	eng, release, err := pool.Lease(ctx, owner, sessionID)
+	if release != nil {
+		release()
+	}
+	return eng, err
+}
+
 // TestPoolHitReusesEngine verifies that two consecutive Get calls for the same
 // (owner, sessionID) return the same *engine.Engine pointer and only call ListBySession once.
 func TestPoolHitReusesEngine(t *testing.T) {
@@ -62,11 +70,11 @@ func TestPoolHitReusesEngine(t *testing.T) {
 
 	ctx := context.Background()
 
-	eng1, err := pool.Get(ctx, owner1, "sess-1")
+	eng1, err := leaseAndRelease(ctx, pool, owner1, "sess-1")
 	if err != nil {
 		t.Fatalf("first Get: %v", err)
 	}
-	eng2, err := pool.Get(ctx, owner1, "sess-1")
+	eng2, err := leaseAndRelease(ctx, pool, owner1, "sess-1")
 	if err != nil {
 		t.Fatalf("second Get: %v", err)
 	}
@@ -91,18 +99,18 @@ func TestPoolLRUEviction(t *testing.T) {
 
 	ctx := context.Background()
 
-	eng1, err := pool.Get(ctx, owner1, "sess-1")
+	eng1, err := leaseAndRelease(ctx, pool, owner1, "sess-1")
 	if err != nil {
 		t.Fatalf("Get sess-1: %v", err)
 	}
 
-	_, err = pool.Get(ctx, owner1, "sess-2")
+	_, err = leaseAndRelease(ctx, pool, owner1, "sess-2")
 	if err != nil {
 		t.Fatalf("Get sess-2: %v", err)
 	}
 
 	// sess-1 should have been evicted; re-Get rebuilds it as a new engine.
-	eng1b, err := pool.Get(ctx, owner1, "sess-1")
+	eng1b, err := leaseAndRelease(ctx, pool, owner1, "sess-1")
 	if err != nil {
 		t.Fatalf("second Get sess-1: %v", err)
 	}
@@ -129,7 +137,7 @@ func TestPoolIdleTTLEviction(t *testing.T) {
 
 	ctx := context.Background()
 
-	eng1, err := pool.Get(ctx, owner1, "sess-ttl")
+	eng1, err := leaseAndRelease(ctx, pool, owner1, "sess-ttl")
 	if err != nil {
 		t.Fatalf("first Get: %v", err)
 	}
@@ -141,7 +149,7 @@ func TestPoolIdleTTLEviction(t *testing.T) {
 	}, 1*time.Second, 10*time.Millisecond, "idle engine was not evicted within 1s")
 
 	// A fresh Get must rebuild the engine (new pointer, new ListBySession call).
-	eng2, err := pool.Get(ctx, owner1, "sess-ttl")
+	eng2, err := leaseAndRelease(ctx, pool, owner1, "sess-ttl")
 	if err != nil {
 		t.Fatalf("Get after eviction: %v", err)
 	}
@@ -286,9 +294,9 @@ func TestPoolEnginesShareProcessWideDependencies(t *testing.T) {
 	defer pool.Close()
 
 	ctx := context.Background()
-	engA, err := pool.Get(ctx, owner1, "sess-a")
+	engA, err := leaseAndRelease(ctx, pool, owner1, "sess-a")
 	require.NoError(t, err)
-	engB, err := pool.Get(ctx, owner1, "sess-b")
+	engB, err := leaseAndRelease(ctx, pool, owner1, "sess-b")
 	require.NoError(t, err)
 
 	require.Same(t, engA.LLMClientPointer(), engB.LLMClientPointer(), "LLM client should be process-wide")

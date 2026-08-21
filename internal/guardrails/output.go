@@ -6,56 +6,11 @@ import (
 	"unicode"
 )
 
-// Output leak protection — redacts platform credentials and customer
-// identifiers from assistant replies before they land in HTTP
-// messages.content rows for role=assistant.
-//
-// Distinct from RedactPII (input side, this same package): the patterns
-// here target what the LLM might render INTO a reply (e.g. an IP it
-// learned from a tool result that internal/sanitizer didn't blank, or
-// a credential string the model rendered with a marker keyword like
-// "AccessKey=..."). Known provider prefixes are also removed when they
-// appear without a field name.
-//
-// Scope:
-//   - IPv4 — both private (10.*, 192.168.*) and public; ops/dev review
-//     should not see customer IPs. Zone codes (cn-wlcb-01, cn-shanghai-02)
-//     are non-IP and survive.
-//   - Project UUID — 8-4-4-4-12 hex with optional "project_id" /
-//     "proj-" prefix; collapses to a placeholder.
-//   - Access / Secret keys — credential-shaped opaque strings after a
-//     marker keyword (access_key, ak, secret_key, sk, AccessKey...).
-//   - Bearer / JWT tokens — `eyJ`-prefixed JWT shape or generic
-//     "Bearer <token>" / "token=<long-string>" / "token: <long-string>"
-//     form. Separator may be whitespace, '=', ':' or any combination so
-//     both prose phrasing and config-file phrasing are caught.
-//
-// NOT in scope (deliberately preserved):
-//   - GPU model numbers (4090 / 5090 / A100 / H200) — pricing/spec
-//     answers depend on these.
-//   - Instance IDs (uhost-xxx) — answers about specific instances
-//     remain readable.
-//   - Zone codes (cn-wlcb-01) — needed for region-specific answers.
-//   - Prices ("¥1.69/小时") — must be preserved verbatim.
-//   - IPv4 addresses — see below.
-//
-// IPv4 used to be redacted here and no longer is. It was never a secret in
-// this product: the addresses that appear are the user's OWN instance
-// endpoints, shown back to the user who owns them. Masking them cost real
-// information and bought nothing:
-//   - The SSH login line ("ssh root@203.0.113.9 -p 23") stayed intact while
-//     streaming but came back as "root@[已脱敏:IP]" after a reload, because
-//     only the persisted copy was redacted — the same answer, useless.
-//   - In the in-instance diagnosis activity stream, "--ip=127.0.0.1" and
-//     "--ip=0.0.0.0" collapsed to the same token — and loopback-vs-wildcard
-//     is precisely the discriminator in a "service is up but unreachable"
-//     diagnosis.
-//   - Version-shaped strings ("1.2.3.4-rc1") matched the dotted-quad regex
-//     and were mangled.
-//
-// What this boundary is for is credentials — AK/SK, tokens, signatures — and
-// that redaction is untouched. Do not reintroduce IPv4 masking without a
-// concrete leak it prevents.
+// Output leak protection removes credentials, tokens and project UUIDs from
+// assistant replies before persistence. It deliberately preserves operational
+// facts the owner needs to use or troubleshoot their resources: instance IDs,
+// IP addresses, zones, prices and GPU model names. Input-side PII redaction is a
+// separate boundary.
 //
 // Known false-positive surface (acceptable per ticket):
 //   - Marker-prefixed prose: `AccessKey: <opaque-value>`
@@ -94,7 +49,7 @@ var (
 	bearerRegex = regexp.MustCompile(`(?i)\b(bearer|token)[\s:=]+([A-Za-z0-9+/=_\-\.]{20,})\b`)
 
 	// Persistence-grade credential coverage shared by assistant output and the
-	// durable execution envelope. Unlike RedactOutputLeak, these patterns do not
+	// persisted execution record. Unlike RedactOutputLeak, these patterns do not
 	// touch IP addresses, project IDs, email addresses, or other routing inputs.
 	credentialAssignmentRegex = regexp.MustCompile(
 		`(?i)(["']?\b(?:access[_-]?key(?:[_-]?id|[_-]?secret)?|secret[_-]?key|api[_-]?key|x[_-]?api[_-]?key|ak|sk|access[_-]?token|security[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|token|password|passwd|pwd|private[_-]?key)\b["']?\s*[:=]\s*["']?)([^"'\s,;}&\]]+)`,
@@ -190,7 +145,7 @@ func ContainsCredential(s string) bool {
 	return s != "" && RedactCredentials(s) != s
 }
 
-// ClassifyPasswordAssignment is the single parser used by both durable input
+// ClassifyPasswordAssignment is the single parser used by both persisted input
 // redaction and the sealed workflow-secret channel. It returns byte offsets so
 // callers redact exactly the value matched by the shared credential policy.
 // Questions containing an example password are redacted but never executed.

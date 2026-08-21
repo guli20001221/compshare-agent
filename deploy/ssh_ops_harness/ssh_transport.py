@@ -23,20 +23,11 @@ _REMOTE_KILL_GRACE = 5
 def _bounded(command: str) -> str:
     """Wrap `command` so the BOX enforces a time bound on it, not just us.
 
-    _pump's timeout path calls chan.close() with the comment "stop the remote command from running
-    on". It does not stop it. Closing an SSH channel closes the channel; without a pty sshd does not
-    reliably signal the child, so the command keeps running with nowhere to write. Measured A/B on a
-    live box with `grep -rn <pat> / | head -20`: local-close-only left 2 processes alive (the grep
-    AND the head) still running 12s later, while the same command under `timeout` left 0.
-
-    That leak is not merely untidy. A `grep -rn` over /model abandoned at 30s was still scanning 1.5
-    HOURS later, and the next diagnosis of that same instance saw it, read it as concurrent
-    modification, and stopped to ask the operator instead of performing the repair. We also cannot
-    reclaim it: the channel it was born on is gone.
+    Closing an SSH channel does not reliably signal a non-pty child. GNU timeout bounds the remote
+    process group so descendants cannot outlive the channel.
 
     Shape notes:
-      * `bash`, not `sh`. Live runs use bash-isms (`${PIPESTATUS[0]}` appeared in a real run), and
-        dash would silently mis-execute them.
+      * `bash`, not `sh`, because generated commands may use bash syntax.
       * GNU timeout puts the child in its own process group and signals the group, which is why the
         grandchild (`head`) dies too — verified, not assumed.
       * If `timeout` is absent the `if` does not exec and the ORIGINAL command runs verbatim after
@@ -56,13 +47,8 @@ def _bounded(command: str) -> str:
 def _clip(text: str) -> str:
     """Cap oversized output while keeping BOTH ends.
 
-    A head-only clip (`text[:_MAX_OUTPUT]`) is actively misleading on the single most valuable
-    diagnostic artifact there is — a log file. `cat` of a 1.2MB service log delivered a window whose
-    newest visible line was 9 months old, and three separate live runs then reported, correctly for
-    what they were shown, "this service last ran in October" — which read as model fabrication but
-    was ours. Logs are appended, so the TAIL carries the crash and the most recent timestamp; other
-    output (config dumps, listings) is front-loaded. Keeping both ends serves both, and the elision
-    is stated inline so the agent knows material is missing rather than inferring from a false end.
+    Logs are tail-heavy while configuration and listings are often head-heavy. Keep both ends and
+    mark the elision so the agent does not infer a false beginning or end.
     """
     if len(text) <= _MAX_OUTPUT:
         return text
@@ -159,10 +145,8 @@ def run_ssh(conn: dict, command: str, secrets=()) -> dict:
         if timed_out:
             # The classifier refuses the KNOWN blockers (tail -f, top, watch...), but it cannot
             # prove a command terminates — a stdin-reading command, a hung mount, a wedged NFS
-            # path all block forever. paramiko's exec_command(timeout=) does NOT bound
-            # recv_exit_status(), so this used to hang until the supervisor's whole-run wall clock
-            # fired: 3 of 9 live runs died at 12m having executed only 6-8 commands, with the
-            # blocking command itself invisible (a step is emitted only after it returns).
+            # path all block forever. paramiko's exec_command(timeout=) does not bound
+            # recv_exit_status(), so the transport must enforce this deadline.
             # Partial output is kept — a command that printed and then hung is still evidence.
             return {"error": "exec_timeout", "detail": f"{_EXEC_TIMEOUT}s",
                     "partial": guardrails.scrub_output(_clip(_dec(out_b)), secrets)}

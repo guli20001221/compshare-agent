@@ -8,10 +8,7 @@ import (
 	"github.com/compshare-agent/internal/platform"
 )
 
-// Image-tag-catalog read capability (migrated from the legacy intent route).
-// The legacy handler made a single DescribeCompShareImageTags call and rendered
-// the tag categories; it carried no request fields and no evidence envelope, so
-// this capability is reply-only (like network_accelerator_status).
+// Image-tag-catalog is a parameterless, reply-only read capability.
 
 const (
 	imageTagCatalogCapabilityLabel = string(intent.IntentImageTagCatalog)
@@ -25,8 +22,7 @@ type ImageTagCatalogRequest struct{}
 // MissingFields: none — the catalog is account-scoped and parameterless.
 func (ImageTagCatalogRequest) MissingFields() []platform.MissingField { return nil }
 
-// ImageTagCatalogResponse carries the rendered reply. Parity with the legacy
-// route: there is no evidence envelope for this capability.
+// ImageTagCatalogResponse carries the rendered reply.
 type ImageTagCatalogResponse struct {
 	Reply string
 }
@@ -61,8 +57,6 @@ func imageTagCatalogRender(resp ImageTagCatalogResponse) ReadResult {
 	r.ToolAction = imageTagCatalogAction
 	return r
 }
-
-// --- Relocated verbatim from intent/routing_registry.go -------------------------
 
 // renderImageTagCatalogReply returns the catalog reply and whether the payload
 // was empty (no categorized tags and no flat Tags) — an empty catalog is a

@@ -1,13 +1,4 @@
-// Package textutil holds small string helpers shared across engine,
-// router, and other packages that need to do signal matching on
-// user-typed messages.
-//
-// The functions here MUST stay pure (no IO, no logging, no state) and
-// strictly behavior-preserving — multiple defense-in-depth layers
-// (preblock predicates, planner pre-text snapshot, knowledge retriever
-// query normalization) call Normalize and any drift between callers
-// silently breaks hard-block precision. See memory rules
-// feedback_cjk_security_regex and feedback_l0_stop_grow_dictionary.
+// Package textutil holds pure string helpers shared across runtime packages.
 package textutil
 
 import (
@@ -20,10 +11,8 @@ import (
 // lowercases ASCII letters. CJK characters are preserved as-is. Returns
 // a new string; the input is never mutated.
 //
-// This is the canonical normalization used by engine.Chat preblock
-// predicates and inputguard.PreBlock rules. Do NOT fork; if a new
-// normalization rule is needed (e.g. full-width punctuation), add it
-// here so all callers see it uniformly.
+// Callers that compare user-entered labels or commands should share this
+// normalization instead of maintaining local variants.
 func Normalize(s string) string {
 	var b strings.Builder
 	prevSpace := true // treat start as space so leading whitespace collapses

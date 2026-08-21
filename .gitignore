@@ -3,106 +3,30 @@
 .env.*
 *.env
 *.env.*
-
-# Local-only one-shot server bootstrap script. Contains real LLM_API_KEY,
-# STS service AK/SK, and MySQL DSN — file documents this in its own
-# header comment. Never commit.
-start-server.ps1
-# Local-only WS 联调 orchestrator. Same real credentials as start-server.ps1.
-start-ws-liantiao.ps1
-# Local-only smoke credential source — real LLM_API_KEY + STS service AK/SK.
-# Sourced by eval/*.ps1 live smokes. Never commit (the *.env globs above do
-# NOT match this .ps1 filename).
-eval/.smoke_env.ps1
-*.smoke_env.ps1
-__pycache__/
-deploy/kb/v2/.cache/
-eval/.cache/
 *.pyc
+__pycache__/
+
+# Local credentials and one-shot integration launchers.
+start-server.ps1
+start-ws-liantiao.ps1
+*.smoke_env.ps1
+
+# Local build, test, and agent scratch state.
 .worktrees/
-
-# trace_gate capture intermediates: capture_baseline.ps1 regenerates these on
-# every run; only the promoted context_prompt_baseline.{jsonl,labels.json} are
-# committed.
-eval/trace_gate/fixtures/*.candidate.jsonl
-eval/trace_gate/fixtures/*.candidate.labels.json
-
-# Shadow QA per-round agent configs contain real API keys (UCloud + LLM).
-# Never commit these.
-eval/shadow_qa/agent.yaml
-eval/shadow_qa/**/agent.yaml
-eval/shadow_qa/shadow_qa_agent.yaml
-eval/shadow_qa/**/shadow_qa_agent.yaml
-eval/shadow_qa/.env
-eval/shadow_qa/**/.env
-
-# Realism eval run outputs (eval/realism/run_realism_eval.ps1): per-question
-# traces, replies, and the generated agent.org.yaml contain real-account data
-# (instance IDs, IPs). The harness + question set are committed; outputs are not.
-eval/realism/out*/
-
-# M1 CLI eval round (2026-05-23) — entire directory is local-only.
-# Contains real-account traces (UHostIds, IPs, prices, trace_id), GT JSON
-# dumps, and raw_results.json. Older rounds (round2 etc.) committed a
-# hand-curated subset of *.md reports; this round was run as a developer
-# regression check only, so the whole directory stays untracked. If a
-# sanitized summary is needed later, copy it out to docs/ first.
-eval/shadow_qa/2026-05-23-m1-cli-eval/
-# M2 CLI eval round (2026-05-24) — same policy as M1. Reply / tool-call
-# regression check only. CLI path does not hydrate SessionState so the
-# eval does NOT cover M2's RecentFacts / SelectedInstance
-# writers; those are covered by engine unit/integration tests and the
-# HTTP fact-persist e2e test.
-eval/shadow_qa/2026-05-24-m2-cli-eval/
-# PR-β multi-region CLI eval round (2026-05-25). Live AK/SK + LLM key in
-# config.yaml; questions reference real instance UHostIds. Reply / tool-call
-# regression check only — covers cross-region mutating workflow Region wiring.
-eval/shadow_qa/2026-05-25-prb-region-cli-eval/
-# PR-δ0 stock cross-region CLI eval round (2026-05-25). Same key/UHostId
-# policy as PR-β round. Covers stock-availability cross-region default
-# after filterStockEntriesToResolverZones deletion + PR-β regression checks.
-eval/shadow_qa/2026-05-25-prd0-stock-cli-eval/
-# PR4 Q10 cjkStopwords CLI eval round (2026-05-25). Same key/UHostId policy.
-# Covers custom-image modifier stop-list (自定义/私有/公共/共享) fix +
-# specific-name guard regression check.
-eval/shadow_qa/2026-05-25-pr4-q10-cli-eval/
-# Phase-1 prompt-split CLI eval round (2026-05-25). run_smoke.ps1 here carries
-# inline live LLM/STS keys (not start-server-sourced), and the round dir was
-# missing from this list — ignore the whole dir like the other shadow_qa rounds.
-eval/shadow_qa/2026-05-25-phase1-prompt-split-cli-eval/
 .runs/
-agent.exe
-agent.exe~
 .claude/
-# Local-only Codex tooling scratch/artifacts dir (planning notes, eval dumps).
+.codex/
 .Codex/
 agent
+agent.exe~
 compshare-agent
 dist/
+deploy/kb/v2/.cache/
+eval/.cache/
 
-# CLI smoke trace dumps (per-question reply.txt + JSONL traces). The committed
-# evidence is eval/rag_ext_comfyui_smoke_report.md, not the raw traces.
-eval/traces_comfyui_smoke/
-eval/traces_linuxpt_smoke/
-eval/traces_pr5_ab/
-
-# Production chat exports, judge dumps and replay packages under eval/reports/.
-# These are raw customer conversations — IPs, passwords, instance ids, order
-# numbers — and THIS REPOSITORY IS PUBLIC. As of 2026-07-27 the main checkout
-# carried 360 MB / 371 untracked entries here (prod_chat_export_*,
-# chat_resolution_judge_*, prod_chat_judgement_*), none of it ignored, so a
-# single `git add -A` would have published all of it.
-#
-# Nothing in the deploy path reads eval/ — cmd/, internal/ and deploy/ have zero
-# references to it — so ignoring the directory costs production nothing. Files
-# already tracked under it are unaffected: git never ignores a tracked path. To
-# add a genuinely publishable report here, use `git add -f`.
+# Raw production exports can contain customer identifiers and credentials.
+# Publish only deliberately sanitized fixtures with `git add -f`.
 eval/reports/
 
-# Belt-and-braces for the Windows app-execution alias trap (see pythonBin in
-# internal/sshops/supervisor_test.go, which is the actual fix). Spawning the
-# zero-byte `python3` stub under WindowsApps installs a runtime, and `go test`
-# runs each package from its own directory, so it landed ~135MB / 3788 files
-# here. The cause is fixed; this line only stops an older checkout, or a future
-# alias directory we have not seen, from putting it one `git add -A` away.
+# A Windows app-execution alias can create a Python tree beside SSH tests.
 internal/sshops/Python/

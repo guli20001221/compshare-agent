@@ -53,7 +53,7 @@ HTTP 状态码与 `Code` 一一对应：
 | 401 | `Unauthorized` | 未登录 / token 失效 |
 | 403 | `Forbidden` | 无权访问该会话 / 资源 |
 | 404 | `NotFound` | 资源不存在（会话、消息、反馈） |
-| 409 | `SessionTurnLimitExceeded` | 仅兼容模式：本会话轮数已达上限（默认 20 问答对），需新开 session |
+| 409 | `SessionTurnLimitExceeded` | 本会话已达到产品轮数配额（默认 20 问答对），需新开 session |
 | 429 | `RateLimited` | 触发限流（按 `(top_organization_id, organization_id)` 计） |
 | 500 | `InternalError` | 后端未预期错误 |
 | 502 | `ModelError` | LLM 上游错误 |
@@ -250,7 +250,7 @@ HTTP 状态码与 `Code` 一一对应：
 | `Message` | string | **是** | 用户输入。长度上限 = `GetCSAgentMeta.MaxInputLength`（按 rune 计） |
 | `Image` | string | 否 | 图片 base64 data URL（`data:image/jpeg;base64,...`）。仅接受 JPEG / PNG / WebP，解码后 ≤ 5MB。服务端配置 `agent.ocr.model` 或 `MODELVERSE_QWEN_VL_MODEL` 后生效；未配置时忽略此字段。服务端会生成结构化截图摘要作为上下文，原始图片不落库。 |
 
-> 正式环境启用持久化对话协议后，单个 session 不再有轮数硬上限，服务端会从已确认保存的历史继续恢复上下文。`agent.http.max_session_turns` 只约束关闭持久化协议后的兼容路径；该路径默认最多 20 个问答对，超过后返回 HTTP 409 `SessionTurnLimitExceeded`。该值不得大于会话配额上限（`config.MaxSessionTurnsCeiling` = 20），否则启动时直接报错。注意这条校验的理由在 2026-08-05 变了：它原先叫 `MaxReplayedExchanges`，同时是模型的历史回放窗口，超出窗口的轮次模型看不到、症状表现为"忘记开头"而不是配置错误。引擎现在没有按轮数计的回放窗口了——模型记多少由 `engine.maxReplayedHistoryRunes`（尺寸）决定——所以这个数现在纯粹是产品配额，放开它不需要引擎跟着改。
+> `agent.http.max_session_turns` 是产品轮数配额，默认最多 20 个问答对；达到后返回 HTTP 409 `SessionTurnLimitExceeded`。模型能看到多少历史由请求的 rune/token 预算独立决定，不受固定回放轮数限制。
 
 ```json
 {

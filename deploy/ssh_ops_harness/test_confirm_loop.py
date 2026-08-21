@@ -2,12 +2,8 @@
 
 Run:  python test_confirm_loop.py   ->  exits non-zero on ANY failure.
 
-Why this loop exists at all: the lane-level card the user clicks authorizes ENTERING the box. It
-never names what will change, so it cannot be the consent for `kill 6934`. A live paired run showed
-the gap concretely — the model repaired four of four faults, and among the commands it ran were
-`kill 6934`, `sed -i` on a user's source file and `systemctl restart`. The guardrail cannot tell a
-squatting process from a training job three days in. The operator can. Measured cost of asking:
-1-3 requests per repair, because 20-45 of the commands in a run are reads.
+The lane-level card authorizes entering the box, not a later state change. Each write therefore
+requires approval of its exact command.
 
 The property under test is therefore not "it asks" but "it cannot proceed unless a matching,
 affirmative answer came back" — every other outcome must read as a refusal.
@@ -54,11 +50,7 @@ check("approved-runs", res["executed"] is True and entry["disposition"] == "ran_
 check("request-carries-literal-command",
       len(io_obj.requests) == 1 and io_obj.requests[0]["command"] == WRITE)
 
-# The check above is 24 characters long, so it held while the payload was built from
-# `command[:400]` — the assertion was correct and simply could not fail. Until 2026-07-30 a longer
-# command was silently trimmed to fit the card: the operator approved a PREFIX while the suffix (the
-# end of a sed expression, the target of a redirect) executed unread. Consent to a prefix is not
-# consent, so the case that exercises it has to be longer than the old cap.
+# Exercise a command beyond the historical display cap: approval text must never be truncated.
 LONG_WRITE = "sed -i 's/" + "a" * 450 + "/b/' /workspace/app.conf"
 check("long-command-is-classified-approvable", guardrails.classify(LONG_WRITE) == "mutating")
 res, entry, io_obj = dispatch(LONG_WRITE)

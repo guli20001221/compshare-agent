@@ -541,7 +541,7 @@ func TestInstanceOps_AllowsFreshUserSelectionButRejectsDifferentModelTarget(t *t
 	eng.SetInstanceOps(runner)
 	eng.turnContextViewThisTurn = AgentContext{
 		CurrentQuestion: "帮我看看刚才那台",
-		SelectedEntities: []SemanticEntityHint{{
+		SelectedEntities: []SelectedEntityHint{{
 			Kind: "instance", ID: "uhost-picked", Name: "picked", Source: SelectedInstanceSourceUser, Freshness: ContinuityFreshnessFresh,
 		}},
 	}

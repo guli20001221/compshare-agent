@@ -18,9 +18,7 @@ type MissingField struct {
 // Missing builds a MissingField for a required-but-absent field.
 func Missing(name string) MissingField { return MissingField{Name: name, Reason: "required"} }
 
-// ReadStatus is the control-flow outcome a read capability reports. The values
-// match the legacy handler-status wire strings so a migrated capability's tool
-// observation is byte-identical to the pre-migration one.
+// ReadStatus is the control-flow outcome reported by a typed read capability.
 type ReadStatus string
 
 const (
@@ -67,11 +65,7 @@ const (
 	ReadFallbackActionNotAllowed ReadFallbackReason = "action_not_allowed"
 )
 
-// RouteStatus is the read observation's route_status projection: the
-// dispatch-outcome label the engine emits alongside a read result. Its wire
-// values match the legacy intent.RouteStatus strings the observation carried
-// before the read adapter dropped its intent dependency, so the emitted JSON is
-// unchanged. Only the values routeStatusForReadResult can produce live here.
+// RouteStatus is the dispatch outcome emitted with a typed read observation.
 type RouteStatus string
 
 const (

@@ -322,13 +322,8 @@ func listSpecCandidates(result map[string]any, gpuType string, gpuCount float64,
 func CreateInstanceDef() *Definition {
 	return &Definition{
 		Name: "CreateInstanceWorkflow",
-		// No Description: after cede00d4 the model-facing text for this operation is
-		// the tool's own description (tools/registry.go -> capability.AgentInstruction
-		// -> actionresolver/catalog.go AgentDescription -> engine/dispatch_window.go).
-		// A Description here would be dead text at best and a second, drifting source
-		// of the trigger rule at worst. The step list that used to live here was
-		// removed for a separate reason: it described the server's own pipeline and
-		// primed the Agent to re-run those reads itself.
+		// The model-facing text comes from the tool catalog. A second description
+		// here would drift and expose server-owned steps as work for the Agent.
 		Steps: []Step{
 			stepQueryImages(false),
 			stepQueryInstanceTypes(),
@@ -369,12 +364,11 @@ func CreateInstanceDef() *Definition {
 
 // CreateInstanceGuidedDef returns the guided, Figma-style order flow for
 // creating a CompShare GPU instance. The public action name stays
-// CreateInstanceWorkflow so old tooling and confirmation labels remain stable.
+// CreateInstanceWorkflow to preserve the public tool and confirmation contract.
 func CreateInstanceGuidedDef() *Definition {
 	return &Definition{
-		// No Description here either: it was a narration of the step list below, which
-		// drifts the moment a step moves — and this flow's order has now changed twice.
-		// The steps are the description.
+		// The tool catalog owns the model-facing description; the steps below own
+		// execution order.
 		Name: "CreateInstanceWorkflow",
 		Steps: []Step{
 			stepQueryImages(true),
@@ -386,15 +380,12 @@ func CreateInstanceGuidedDef() *Definition {
 			stepQueryInstanceTypes(),
 			// GPU inventory comes from TWO upstream implementations: the request's
 			// zone_id selects the backend rather than filtering the result, so an
-			// absent zone_id reaches only the official pools and a Pod zone's stock
-			// reads as a real zero. cede00d4 splits the call and merges the answers
-			// against the live zone catalog; this flow takes that whole mechanism.
+			// absent zone_id reaches only the official pools. Query both backends and
+			// merge them against the live zone catalog.
 			stepQueryOfficialGPUInventory(),
 			stepQueryPodGPUInventory(),
 			stepResolveGPUInventorySnapshot(),
-			// The CARD order stays image-first (this branch's reordering), which
-			// cede00d4 predates rather than disagrees with: it branched from the
-			// hardware-first order and only inserted the inventory steps above.
+			// The card order remains image-first.
 			// Image must lead because the GPU list is constrained by the selected
 			// image's SupportedGpuTypes, the per-zone capacity probe needs a concrete
 			// image, and 卡数量 / CPU-内存 are gated by a capacity check that needs it
@@ -415,11 +406,8 @@ func CreateInstanceGuidedDef() *Definition {
 			stepGuidedChooseImageFamily(),
 			stepGuidedChooseImage(),
 			stepGuidedChooseChargeType(),
-			// One capacity fan-out over every (model, zone) the catalog offers, read
-			// by BOTH hardware cards. It used to sit between them and cover only the
-			// chosen model's zones; the GPU card was then the one place a user could
-			// click something they could not buy. Image and charge type are settled by
-			// here, which is everything the call needs except the zone.
+			// One capacity fan-out over every catalog (model, zone), shared by both
+			// hardware cards. Image and charge type are settled here.
 			stepProbeZoneCapacity(),
 			stepGuidedChooseGPU(),
 			stepGuidedChooseZone(),
@@ -873,19 +861,8 @@ func stepReQuerySelectedSourceImages() Step {
 	}
 }
 
-// stepBrowseCommunityWhenNameMatchedNothing rescues a named community create whose
-// upstream search matched nothing. ImageName is only the wording that happened to reach
-// us — the Agent rewrites it freely between turns — and stepQueryImages passes it
-// straight through as FuzzySearch, so a miss UPSTREAM leaves the catalog empty and the
-// picker dies with "未找到可选社区镜像" while the image sits on the platform. Observed
-// live 2026-07-21 on "用最强AI数字人 InfiniteTalk为我创建一台机器"; the same session's
-// "用 InfiniteTalk 镜像创建一台实例" returned 22 rows, so the miss is a property of the
-// wording, not of the catalog. A search miss must degrade to browsing, never to a dead
-// end — no local fallback can do this, because by then the catalog is already empty.
-//
-// It re-queries WITHOUT the name and overwrites 查询镜像 in place, the same overwrite
-// stepReQuerySelectedSourceImages performs. A narrowed-but-non-empty result is a useful
-// narrowing and is deliberately left alone.
+// stepBrowseCommunityWhenNameMatchedNothing turns an empty fuzzy-name result
+// into an unfiltered catalog browse. Non-empty narrowing remains intact.
 func stepBrowseCommunityWhenNameMatchedNothing() Step {
 	return Step{
 		Name: "查询镜像",
@@ -928,22 +905,8 @@ func stepQueryInstanceTypes() Step {
 				args["Zone"] = z // honour an explicit zone (e.g. the deploy handler's ChosenZone)
 				addZoneRegionAndID(wfCtx, args, z)
 			}
-			// Deliberately NOT scoped to the Spot pool. InstanceType=spot looks
-			// like the right way to ask "what can I buy on Spot", and upstream
-			// accepts it — then returns nothing. DescribeAvailableCompShareInstanceTypes
-			// appends a row only for InstanceType uhost/all (uhost-compshare-api,
-			// ucloud/describe_available_compshare_instance_types.go formatResponse),
-			// and its dispatcher has no Pod branch, so "spot" is a valid value with
-			// an empty answer.
-			//
-			// Measured live 2026-07-22: rows=19 / 12 GPU types for absent, "uhost"
-			// and "all"; rows=0 for "spot". An empty catalog makes resolveTargetSpec
-			// fail with "未找到 X × N 卡的可用配比" listing no GPU types at all, so
-			// sending it breaks every Spot create.
-			//
-			// Spot eligibility comes from DescribeCompShareGpuInventory instead: it
-			// carries BOTH pools plus SpotUnsupportedGpuTypes, and needs no charge
-			// type to ask.
+			// Do not scope this catalog call to Spot: upstream returns an empty
+			// machine-type list. Spot eligibility comes from GPU inventory.
 			return args, nil
 		},
 	}
@@ -1152,23 +1115,10 @@ func guidedCapacityArgsFor(wfCtx *Context, gpuType, zone string) (map[string]any
 
 const zoneCapacityStepName = "查询各可用区容量"
 
-// stepProbeZoneCapacity asks, once per candidate zone, whether the resolved
-// image + GPU can actually be created there — BEFORE the zone card is built, so
-// a zone with no capacity is offered disabled instead of accepted and then
-// refused eight steps later at 检查库存.
-//
-// It cannot be one call. The capacity API takes the zone as INPUT, so a single
-// request only ever describes the zone already chosen; that is what
-// stepQueryCapacitySpecs does, and it is why the sold-out answer used to arrive
-// after the user had picked.
-//
-// It now covers the GPU card too, which an earlier version of this comment
-// called impossible — "there the zone is not yet chosen". That was written when
-// the GPU card came FIRST. Under the image-first order the image is already
-// resolved here, and the image is the input the capacity call is hardest to
-// assemble; only the zone is missing, and each model is offered in a handful of
-// zones. So the fan-out is one call per (model, zone) row of the catalog — ~19
-// live, not N_gpu × N_zone — and both cards read the one answer.
+// stepProbeZoneCapacity asks once per catalog (model, zone) whether the resolved
+// image can be created there. Both hardware cards share the result and disable
+// known-unavailable choices before selection. The API requires a zone, so the
+// fan-out cannot be represented by one request.
 //
 // This is what makes "every enabled option is creatable" true rather than
 // approximate: a card count cannot answer it. The official CLI refuses
@@ -1212,8 +1162,7 @@ func stepProbeZoneCapacity() Step {
 func capacityComboKey(gpuType, zone string) string { return gpuType + "\x00" + zone }
 
 // zoneCapacityProbeCalls builds one capacity request per (model, zone) the
-// catalog offers. When the GPU is already pinned it narrows to that model, so a
-// flow that only needs the zone card still costs what it used to.
+// catalog offers. When the GPU is already pinned it narrows to that model.
 //
 // Returns nothing when the image is not yet resolved — the step then skips and
 // both cards keep their ungated behavior.
@@ -1605,16 +1554,9 @@ func createImageTaxonomy(wfCtx *Context) *deployment.ImageTaxonomy {
 	return deployment.ParseImageTaxonomy(wfCtx.Result(imageTaxonomyStepName))
 }
 
-// imageCandidateSet is the ONE candidate set the whole image flow reads. Every
+// imageCandidateSet is the one candidate set the whole image flow reads. Every
 // number a card states and every option it offers is a projection of it, so the
 // card cannot promise a population the next card does not have.
-//
-// It exists because they used to be computed twice. The facet card counted
-// snap.Entries() — the raw catalog — while the picker ran the ranker (hard status
-// and pod/container gates, plus the agent's structured request) and only then
-// applied the facets. The card therefore advertised "框架 / 应用镜像 55 个镜像"
-// against a picker that could hand back ten, and on a Pod zone it counted VM-only
-// images the picker had already dropped.
 type imageCandidateSet struct {
 	snap *deployment.ImageCatalogSnapshot
 	// base survives the hard gates and the structured request; no facet applied.
@@ -1748,8 +1690,7 @@ func filterSelections(in []deployment.ImageSelection, keep func(deployment.Image
 
 // createImageCandidates builds the candidate set from the workflow context, so the
 // facet cards, the tag card and the picker all read the same parameters — and the
-// same authoritative pod flag, resolved from the zone catalog rather than the
-// ZoneIsPod cache the picker used to read before it was warm.
+// same authoritative pod flag resolved from the zone catalog.
 func createImageCandidates(wfCtx *Context) imageCandidateSet {
 	images := createImageResult(wfCtx)
 	request := deployment.ImageRequest{
@@ -2010,10 +1951,7 @@ func createInventoryPoolLabel(pool string) string {
 // which is the whole point: a card must never offer a mode the gate will refuse,
 // nor hide one the gate would allow.
 //
-// A missing snapshot is deliberately NOT read as "supported". It used to be, on
-// the premise that the catalog query was already charge-type scoped; it is not
-// (see stepQueryInstanceTypes for the measurement), so that premise silently
-// disabled the gate on the plain path.
+// A missing snapshot is unknown, not evidence that a purchase pool is supported.
 func createInventoryPoolSupport(wfCtx *Context, placement deployment.ZonePlacement, pool string) (bool, bool) {
 	return createInventoryPoolSupportFor(wfCtx, placement, paramStr(wfCtx.Params, "GpuType", ""), pool)
 }
@@ -2179,15 +2117,8 @@ func imageMapByID(images map[string]any, id string) map[string]any {
 // priceAmountFor reads the amount quoted for one charge type out of one of the
 // price arrays.
 //
-// It accepts both "Instance" and "Price". "Instance" is what upstream ACTUALLY
-// returns — every live capture of GetCompShareInstancePriceResponse taken from
-// the real API uses it, and "Price" appears in none of them. This function's doc
-// used to say the opposite:
-// that "Price" was the API field and "Instance" a robustness fallback. It was
-// written to match this repo's fixtures, which invented "Price" — so the branch
-// production has always taken was documented as the fallback, and the branch no
-// live response can reach was documented as the contract. Both are read here
-// because the fixtures still exist; the order is not a statement about upstream.
+// It accepts upstream's "Instance" field and the compatible "Price" shape used
+// by existing fixtures.
 func priceAmountFor(raw map[string]any, arrKey, chargeType string) (float64, bool) {
 	arr, ok := raw[arrKey].([]any)
 	if !ok {
@@ -2232,20 +2163,14 @@ func priceListAmountFor(raw map[string]any, chargeType string) (float64, bool) {
 const estimatedPriceSuffix = "（预估）"
 
 // createPriceNote is the fuller sentence, carried as its own card field so a
-// renderer can place it properly. CLI prints it under the price.
+// renderer can place it properly beneath the price.
 const createPriceNote = "最终费用以实际创建和结算结果为准"
 
 // extractEstimatedPrice builds the snapshot of what the user is about to be
 // quoted, and renders the one string that both the card and the seal will carry.
 //
-// It is the ONLY place a create price is turned into text. It absorbed
-// confirmPriceText, which used to render it separately: that function re-ran the
-// very same PriceDetails lookup this one had already done, so the "no price"
-// guard here was dead — its own !ok branch could never be reached, because the
-// second lookup's empty-string branch always caught the same case first. Two
-// lookups of one response, one of them load-bearing and the other shadowing a
-// guard, is the shape of defect this convergence exists to remove; a mutation test
-// found it here rather than a user.
+// It is the only place a create price is turned into text, so the card and seal
+// cannot render different quotes.
 //
 // Returns nil when upstream quoted nothing usable for this charge type — the card
 // then shows no price rather than a fabricated one, because a 0 renders as free.
@@ -2311,9 +2236,8 @@ func stepConfirmCreate() Step {
 		Name: "确认创建",
 		Type: StepConfirm,
 		// Editable selection form (v1, select-only). Consumed only when the
-		// HTTP path wires a ConfirmEditsFunc (COMPSHARE_CONFIRM_FORM on +
-		// client opt-in); the CLI boolean confirm and the deploy_model saga
-		// ignore these three fields entirely.
+		// HTTP wires ConfirmEditsFunc for opted-in clients; other clients and
+		// the deploy_model saga ignore these three fields.
 		BuildForm:      buildCreateConfirmForm,
 		ApplyOverrides: applyCreateOverrides,
 		// An edit re-runs from the draft, not from stock: the edited params must
@@ -2369,20 +2293,10 @@ const createDraftStepName = "形成执行草稿"
 // create_draft.go and are not read anywhere else.
 const createDraftKey = "__create_draft"
 
-// materializeCreateDraft resolves every derived create parameter ONCE — zone,
+// materializeCreateDraft resolves every derived create parameter once — zone,
 // CPU/memory, card count, image id, charge type, minimal CPU platform, system
-// disks, placement — and RETURNS the draft. It stores nothing; see the note at the
+// disks and placement — and returns the draft. It stores nothing; see the note at the
 // end of this comment.
-//
-// This is the "form the CreateExecutionDraft" stage. Before it existed,
-// resolveTargetSpec ran TWICE: once in buildCreateConfirmArgs to render the card,
-// and again inside stepCreateInstance.BuildArgs to build the real API call — with
-// the seal in between, hashing only Params and therefore blind to both. The card
-// and the executed request agreed only because the function was pure and its
-// inputs happened to be frozen after the gate (the old re-validation named only
-// the stock and price steps, so "查询可用配比" never re-ran). That was an accident
-// of the call graph, not a contract, and it covered Zone, CPU, Memory, GPU count,
-// ImageId, ChargeType, MinimalCpuPlatform, disks and placement alike.
 //
 // It runs as the createDraftStepName resolve step, BEFORE capacity and price, so
 // those two consume the same resolution the card shows and the create sends
@@ -2560,15 +2474,9 @@ func promoteCreateDraft(wfCtx *Context) error {
 	if err != nil {
 		return err
 	}
-	// The SAME snapshot the card rendered — read once more, not rebuilt. Both the
+	// The same snapshot the card rendered, not a rebuilt draft. Both the
 	// decode above and the encode below copy the disks, so what lands in Params is
 	// independent of StepResults all the way down.
-	//
-	// This comment used to claim the separation followed from ToContractMap
-	// building a fresh map every call. It does not, and did not: the map was fresh
-	// but the disk list inside it was the candidate's own, so the two were joined
-	// at the one field that lives behind a reference. The codec now copies it; the
-	// freshness of the map was never the thing doing the work.
 	wfCtx.Params[createDraftKey] = snapshot.ToContractMap()
 	return nil
 }
@@ -2587,16 +2495,8 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 	//
 	// The price TEXT is part of that contract too, which is why its charge type is
 	// read off the draft rather than re-normalised from Params. The two agree on
-	// every path today, so nothing was visibly broken — but "the card reads only
-	// the draft" is either structural or it is a habit, and a habit is what the
-	// card/create image split already turned out to be.
-	// No price, no card. A create that reached this gate without a quote used to
-	// render a card with the 价格 row silently missing on the CLI and "price":""
-	// on the wire, and then let the user approve a spend nobody had priced. That
-	// is the one thing docs/workflow-tool-retcode-audit.md refuses: "任何涉及费用
-	// 的操作，要么在确认前展示有效价格，要么在确认前停止" — a rule ResizeInstanceWorkflow
-	// and CFS create already honour through this same message, and which the
-	// create was alone in not honouring.
+	// every path today. No price means no confirmation card: a paid operation must
+	// show a usable quote before approval.
 	//
 	// Reaching here without a price is narrow: 查询价格 is not Optional, so a
 	// transport error or a non-zero RetCode has already fail-stopped the workflow
@@ -2630,7 +2530,7 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 		// still skip it when empty.
 		"PriceNote": priceNote,
 		// FallbackNote is set by the deploy_model handler when it switched the
-		// create-zone (sold-out primary). Empty for the CLI/ReAct create path.
+		// create-zone (sold-out primary). Empty before a create-zone is selected.
 		// Surfaced in the confirm card so the user sees the zone switch before
 		// approving. The key is always present (value "" when unset); the
 		// renderer (cli.go printCreateConfirmCard) skips it when empty.
@@ -2780,32 +2680,21 @@ func paramNum(params map[string]any, key string, defaultVal float64) float64 {
 //
 // A caller may THREAD an already-resolved CompShareImageId in params (the
 // deploy_model handler does, so the saga creates exactly the image the matcher chose +
-// sized the GPU for, instead of re-resolving independently). CLI/ReAct callers do
+// sized the GPU for, instead of re-resolving independently). ReAct callers do
 // NOT set it, so their resolution is byte-unchanged.
-// SelectedImage is one image, chosen once: the ID that executes and the Name the
-// user is shown are two fields of a SINGLE selection.
-//
-// They used to be two independent walks of the same response. For platform images
-// pickImageId and pickImageName each called matchPlatformImage and read a
-// different field off the result — agreeing because they shared a starting point,
-// not because anything held them together. For community images they did not even
-// read the same LEVEL: the id came from groups[0].Data[0], the display name from
-// groups[0].ImageName. And when a caller threaded a CompShareImageId, the name
-// shown was whatever ImageName came with it — which is exactly where a stale name
-// can be displayed over a different image's id.
+// SelectedImage binds the executable ID and user-visible name to one catalog
+// selection.
 type SelectedImage struct {
 	ID     string `json:"id"`
 	Name   string `json:"name"`
 	Source string `json:"source"`
 }
 
-// selectCreateImage resolves the image ONCE, through the single deterministic
+// selectCreateImage resolves the image once through the deterministic
 // interpreter (deployment.ResolveImage) on the turn's image catalog. It is the only
 // image decision in the create flow; the draft carries the result whole, so the
 // confirm card renders Name and the create sends ID without either re-selecting.
-//
-// It replaces the old matchPlatformImage / selectCommunityImage / catalogImageName
-// trio and the two invariants they violated:
+// The resolver enforces two invariants:
 //   - An explicitly threaded CompShareImageId (a 230-recovery re-run or a form
 //     override) is VERIFIED against the catalog; only a verified id is sealed, with
 //     its catalog name. An unverified id is NOT sealed under the caller's ImageName
@@ -3029,49 +2918,11 @@ const (
 	maxFormGPUOptions     = 5
 	maxFormImageOptions   = 3
 	maxGuidedImageOptions = 10
-	// maxGuidedCommunityImageQueryLimit sizes the community browse corpus.
-	//
-	// 20 groups could not populate a 用途 classification: measured live 2026-07-22 the
-	// community catalog holds TotalCount=821 groups, and one page of 100 already
-	// spans all 7 categories (219 version rows, 219 of them tagged, 37 distinct
-	// tags). Upstream tag filtering cannot narrow this for us — DescribeCommunityImages
-	// declares Tag []string but its task never parses the dotted Tag.N form the way
-	// DescribeAvailableCompShareInstanceTypes does for MachineTypes, so every Tag
-	// value (valid, category name, or garbage) returns the identical unfiltered
-	// result. Categorisation is therefore client-side over whatever this fetch
-	// returns, which is why the fetch has to be worth categorising.
-	//
-	// It costs no model tokens: workflow step results stay in wfCtx and only
-	// ResultData (UHostIds) leaves the workflow.
-	//
-	// ⚠️ The SortCondition sent with this query does NOT reach the ordering.
-	// Measured live 2026-07-28 against the full catalog (832 groups, fetched by
-	// paging): page 1 of 100 contains only 8 of the catalog's 20 most-deployed
-	// families — RVC (#2, 9683 deploys), vLLM-DeepSeek-R1-Distill (#6) and
-	// GPT-SoVITS (#10) are all absent — and all four argument shapes (plain,
-	// SortCondition, ExcludeReadme, both) return byte-identical coverage. So this
-	// is an ARBITRARY 100 of 832 with respect to popularity, not the top 100. The
-	// picker still works (it classifies and ranks whatever it gets), but nothing
-	// here may claim the browse corpus is popularity-ordered, and a "most popular"
-	// answer cannot be derived from it without fetching every page.
+	// The community endpoint does not honor tag or popularity ordering here, so
+	// this is a broad classification page, not a "most popular" ranking.
 	maxGuidedCommunityImageQueryLimit = 100
-	// maxPlatformImageQueryLimit asks for the whole platform catalog in one call.
-	//
-	// The previous value of 20 was not a page size the flow ever paged past: no
-	// Offset is sent, so whatever the first response held WAS the catalog for every
-	// downstream consumer — the facet options, the picker and the final card.
-	//
-	// Measured live 2026-07-22 (TotalCount=72 throughout):
-	//
-	//	Limit absent / 20   rows=40  rows carrying tags=7
-	//	Limit=100           rows=72  rows carrying tags=36
-	//	Limit=200           upstream RetCode=230 "Params [Limit] not available"
-	//
-	// So 20 hid 44% of the catalog and 80% of the tagged rows, which is why the
-	// tag facet looked nearly empty. 100 is also the practical ceiling — 200 is
-	// refused — so do NOT raise this further without re-probing. Should the catalog
-	// ever exceed 100, TotalCount in the response is the signal that the list is
-	// truncated; today 72 < 100 so it is complete.
+	// 100 is the upstream platform-catalog ceiling. TotalCount exposes future
+	// truncation if the catalog grows beyond it.
 	maxPlatformImageQueryLimit = 100
 	// maxCustomImageQueryLimit is the documented ceiling of the tenant-scoped
 	// DescribeCompShareCustomImages list. An exact candidate is additionally
@@ -3136,12 +2987,6 @@ func createChargeTypeOptions(wfCtx *Context, zone string) []ConfirmFormOption {
 // poolUnsupportedInZone reports whether the CURRENT charge type's purchase pool
 // is KNOWN not to be sold for this model in this zone, and the label to show.
 //
-// This used to answer "is it a pod zone", which is the rule the create gate
-// itself dropped: pod-ness does not decide Spot. 华北二C is a pod zone that DOES
-// sell Spot, and 华北一C is a pod zone that does not — a card built on pod-ness
-// hides the first and the gate would have accepted it. Reading the same fact the
-// gate reads is the only way the two cannot disagree.
-//
 // An unresolvable placement or an unanswered backend is not evidence: the option
 // stays enabled and validateCreatePlacement remains the authoritative refusal.
 func poolUnsupportedInZone(wfCtx *Context, zone, gpuType string) (bool, string) {
@@ -3158,11 +3003,7 @@ func poolUnsupportedInZone(wfCtx *Context, zone, gpuType string) (bool, string) 
 // therefore NOT a creatability proof. A reader who takes it for one will build the
 // next gate on a guarantee that was never made.
 //
-// Within its one axis it is the single implementation, consumed by BOTH the zone
-// card and the create gate. They used to compute it separately from the same two
-// inputs — the same answer today, and a drift waiting to happen the first time
-// either side is touched, which is precisely how a card comes to offer what the
-// gate refuses.
+// Within this axis it is shared by the zone card and authoritative create gate.
 type imageContainerFit int
 
 const (
@@ -3192,10 +3033,7 @@ func imageContainerFitForZone(images map[string]any, imageID string, placement d
 }
 
 // zoneRejectsSelectedImage is the zone card's view of that verdict: it disables a
-// zone only on a KNOWN mismatch. Before this gate existed the pair was assembled
-// silently — the flow's own default zone could pick the incompatible one — and
-// surfaced as "Ubuntu-nvidia 22.04 不是容器镜像，不能用于 上海二A" after the last
-// card, when the only remedy left was to start over.
+// zone only on a known mismatch.
 //
 // It does not claim the card and the gate can never disagree about an OUTCOME:
 // imageZoneUnverifiable is deliberately passed here and refused there, and the
@@ -3356,8 +3194,7 @@ func guidedStepPosition(wfCtx *Context, logical int) (int, int) {
 	}
 	// The wizard is conditional: choosing a source/image/GPU can remove later
 	// cards, so its final total is unknowable at the first card. Expose a
-	// monotonic ordinal and Total=0 (unknown) instead of renumbering history from
-	// mutable skip predicates (the old 3/9 -> 3/8 and 6/6 -> 5/5 bug).
+	// monotonic ordinal and Total=0 (unknown) instead of renumbering prior cards.
 	return len(order) + 1, 0
 }
 
@@ -3392,13 +3229,8 @@ func guidedStepWasReached(wfCtx *Context, logical int) bool {
 	return false
 }
 
-// markGuidedStepReached records that a card was shown, in the order the cards
-// were reached — which is what the step ordinal is derived from.
-//
-// It used to also maintain a GuidedReachedSteps set for a membership query. The
-// final card stopped asking whether the image step had been reached (it no
-// longer re-opens the image at all), which left that set written and never read
-// — dead state inside Params, and Params is what seal() hashes.
+// markGuidedStepReached records card order, which determines the displayed step
+// ordinal.
 func markGuidedStepReached(wfCtx *Context, logical int) {
 	if wfCtx == nil || wfCtx.Params == nil {
 		return
@@ -3588,24 +3420,9 @@ func currentTurnImageCatalogRequest(wfCtx *Context) (deployment.ImageRequest, bo
 	return request, true
 }
 
-// imageSuggestionSettlesAxis reports that the Agent's suggestion has already
-// answered the SOURCE and 用途 questions, so re-asking them is a question whose
-// answer is visible in the suggestion itself.
-//
-// The distinction this draws is between the axes an image implies and the image
-// itself. After 「推荐一个做数字人的镜像」→「用该镜像开一台」, asking 平台还是社区 and
-// then 想跑哪一类 makes the user re-derive facts already fixed by the image the
-// assistant named — measured on the real stack 2026-07-29, that flow re-opened
-// at step 1 of the guided create. The picker still shows (it stays gated on
-// imageUserSettled), so the guarantee that closed the original bug — an
-// Agent-pinned id never seals unseen — is untouched: the user still sees and
-// confirms the image, just without two cards that could only be answered one way.
-//
-// It requires the proposal to have NAMED the source rather than reading the
-// defaulted value: paramStr falls back to "platform", so a community suggestion
-// whose source the Agent left out would otherwise skip the source card while
-// carrying the wrong catalog into the picker. initialParamSet is the same
-// "the request actually said this" test the spec cards use.
+// imageSuggestionSettlesAxis skips source/purpose questions already fixed by an
+// exact suggested image. The user still sees and confirms the image itself. The
+// proposal must explicitly name its source; a defaulted source is insufficient.
 func imageSuggestionSettlesAxis(wfCtx *Context) bool {
 	if wfCtx == nil || wfCtx.ImageSelection() != ImageSelectionSuggested {
 		return false
@@ -3807,19 +3624,8 @@ func shouldSkipGuidedChargeTypeStep(wfCtx *Context) (bool, error) {
 // chargeTypeChangeHint says where the purchase mode can be changed. The final
 // card deliberately cannot change it — a late switch would desync the resource
 // pool every earlier step queried against — so the honest answer depends on
-// whether this run actually showed the purchase-mode card. It did: point back at
-// it. It did not (the user named the mode in their request): starting over is
-// genuinely the only way.
-//
-// This sentence was a constant that always said "重新发起创建", written when the
-// card did not exist. Once it did, the final card was telling users to redo the
-// whole request to change something they had just been asked.
-// The alternatives are computed by SUBTRACTING the mode in force, not listed as
-// a constant. The constant version named all three of 包日/包月/抢占式 whatever the
-// user had asked for, so a 抢占式 request produced "需要包日、包月或抢占式，请重新发起
-// 创建（例如「用抢占式创建一台…」）" — it offered the mode already in force as the way
-// to change away from it, and the example was verbatim what the user had just
-// typed. The user is left unable to tell whether the card understood them.
+// whether this run showed the purchase-mode card. Alternatives always exclude
+// the mode currently in force.
 func chargeTypeChangeHint(wfCtx *Context) string {
 	if !guidedStepSkipped(wfCtx, guidedStepChargeType) {
 		return "需要改用其他计费方式，请返回上面的「购买方式」一步重新选择。"
@@ -4109,13 +3915,6 @@ func buildGuidedCpuMemoryForm(wfCtx *Context) (*ConfirmForm, error) {
 // CompshareImageGroup[].Data[] versions. The form keeps that source boundary
 // explicit before later cards rank only the chosen live catalog.
 //
-// The framing is not decoration — it is what the catalogs actually are.
-// Measured live 2026-07-22: community is 821 groups, 219/219 of the fetched rows
-// tagged, and those tags ARE the platform's 用途 classification — a catalog of
-// ready-to-run applications. Platform is 72 rows: 9 bare System images and 52 App
-// images whose tags are framework names (PyTorch, Miniconda3, Tensorflow) — a
-// catalog of environments to build in.
-//
 // Order and default are deliberately unchanged: platform stays first and stays the
 // default, so this reframes the question without silently moving anyone to a
 // different catalog.
@@ -4301,11 +4100,8 @@ func imageCategoryFacetOptions(taxonomy *deployment.ImageTaxonomy, set imageCand
 
 // imageTypeFacetLabel names an upstream ImageType for the card.
 //
-// The enum is System / App / Game / Other (DescribeCompShareImages), and the live
-// platform catalog really does return all of System(9), App(52) and Other(11) —
-// "Other" used to fall through and render as the bare English word next to three
-// Chinese labels. An unrecognised type still falls through verbatim on purpose: a
-// value we cannot name is shown as the platform sent it rather than guessed at.
+// Known upstream values are localized. An unknown value is shown verbatim rather
+// than guessed at.
 func imageTypeFacetLabel(t string) string {
 	switch strings.ToLower(t) {
 	case "system":
@@ -4447,9 +4243,7 @@ func imageSelectionMatchesFacets(snap *deployment.ImageCatalogSnapshot, id, want
 // ("大模型推理" / "深度学习") is NOT handled here — the central Agent maps it to a real
 // image before the workflow runs; this step is the click-through fallback.
 //
-// The raw ImageTag facet used to sit on this same card. It now has its own card
-// (stepGuidedChooseImageTag) so its options can be computed from what THIS card's
-// answer leaves behind — see guidedStepImageTag.
+// ImageTag has a later card whose options are computed from these selections.
 func buildGuidedImageFacetsForm(wfCtx *Context) (*ConfirmForm, error) {
 	set := createImageCandidates(wfCtx)
 	grouped := imageCandidatesGroupIntoFamilies(candidateEntries(set.snap, set.base))
@@ -4586,14 +4380,8 @@ func buildGuidedImageSourceForm(wfCtx *Context) (*ConfirmForm, error) {
 }
 
 // guidedImagePageDescription states what this card is showing and, when the
-// candidate list is longer than the page, what it is NOT showing.
-//
-// Silence here was the defect: the earlier filter card advertised "框架 / 应用镜像
-// 55 个镜像" and this card handed back ten with no sign that forty-five existed.
-// Neither available lie is acceptable — restating the count as ten hides real
-// candidates, and listing all fifty-five makes the card unusable — so the card
-// says both numbers and names the two ways to narrow. Real paging/search is still
-// owed; this is the honest interim.
+// candidate list is longer than the page, the total candidate count and how to
+// narrow it.
 func guidedImagePageDescription(shown, candidates int) string {
 	const base = "先确定实际创建使用的镜像，后续 GPU、可用区和库存检查都以这一个镜像 ID 为准。"
 	if candidates <= shown {
@@ -5648,7 +5436,7 @@ func guidedZoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, curr
 	}
 	inventory := guidedInventoryFrom(wfCtx, inventoryResult)
 	// Real creatability per zone, when the probe managed to establish it. A zone
-	// missing from this map was never established and keeps its old behavior —
+	// missing from this map remains unknown —
 	// the raw GPU inventory count is NOT a substitute (it reports 0 for zones
 	// that are in fact selling, which is why it may inform the note but never
 	// disable an option).
@@ -5735,14 +5523,6 @@ func guidedZoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, curr
 	// reply is built from. When nothing is selectable there is nothing to steer
 	// toward, and the authoritative negative belongs to 检查库存 / the create gate,
 	// which raise it with a complete record. See stepCheckCapacity.
-	//
-	// This used to be one stand-down per rule, and that is not the same thing.
-	// Capacity asked "is any zone creatable", purchase mode asked nothing at all,
-	// and the image rule asked "does any zone accept this image" — so a card where
-	// capacity killed zone A and the image killed zone B saw each rule find its own
-	// survivor, stood down neither, and went out with nothing enabled. Every rule
-	// was individually satisfied and the card was still a dead end. Deciding it once
-	// on the assembled options is what makes a fourth rule safe to add.
 	//
 	// What this is NOT: a fix for the user's situation. Re-enabling the options is a
 	// downgrade that keeps the flow moving, and one of the known-bad zones then
@@ -6186,9 +5966,7 @@ func guidedImageFormOptionsFromSet(params map[string]any, images map[string]any,
 		disabled := false
 		// A GPU-recommendation mismatch is shown DISABLED (not hidden), so the user
 		// sees why an image they might name is not selectable for this card.
-		// Reason only — the client joins [Note, Disabled && Reason], so the old pair
-		// ("所选镜像不支持当前 GPU" + "镜像不支持当前 GPU") rendered as the same
-		// sentence twice with a separator between them.
+		// Set only Reason because the client joins Note and disabled Reason.
 		if gpuType != "" && len(supported) > 0 && !containsFold(supported, gpuType) {
 			reason = "镜像不支持当前 GPU"
 			disabled = true
@@ -6311,7 +6089,7 @@ func gpuOptionLabel(catalog map[string]any, gpuType string) string {
 // zoneFormOptions builds the confirm-card zone selector, listing the zones the
 // current GPU type is sellable in with the current zone first. Each option's
 // display label comes from the turn snapshot (via zoneDisplayLabel) — the single
-// zone authority — degrading to the bare zone id, never a legacy per-zone label map.
+// zone authority — degrading to the bare zone id when no label is known.
 func zoneFormOptions(wfCtx *Context, catalog map[string]any, gpuType, current string) []ConfirmFormOption {
 	if catalog == nil {
 		return nil

@@ -29,15 +29,9 @@ var (
 	ErrHistoryWindowExceeded        = errors.New("history window exceeded")
 	ErrHistoricalMonitorUnsupported = errors.New("historical monitor unsupported")
 	ErrMutatingActionDisabled       = errors.New("mutating action disabled")
-	ErrActionJournalRequired        = errors.New("mutating action journal required")
-	ErrActionOutcomeUncertain       = errors.New("mutating action outcome is uncertain; automatic retry refused")
 	// ErrCFSZoneUnresolved is returned when GetCompShareCFSUpgradePrice cannot
-	// resolve the CFS's internal zone_id before dispatch. Without zone_id,
-	// upstream silently returns RetCode 0 with Price 0 (a fake free price)
-	// instead of failing — live-verified 2026-07-10 (finding #15: no zone_id
-	// -> Price=0/RetCode=0; zone_id=5001 -> Price=12.94/OriginalPrice=31.50).
-	// Refusing here is safer than forwarding a request that looks successful
-	// but is meaningless.
+	// resolve the internal zone_id. The upstream otherwise returns a misleading
+	// zero-price success, so this path fails closed.
 	ErrCFSZoneUnresolved = errors.New("cannot resolve CFS availability zone")
 )
 
@@ -50,20 +44,6 @@ const (
 )
 
 type ConfirmFunc func(action string, args map[string]any) bool
-
-// ActionCall is the single external side-effect attempt guarded by an
-// ActionJournal. The journal must durably mark the call started before invoking
-// it and must never invoke it for a replayed or uncertain action.
-type ActionCall func(ctx context.Context, action string, args map[string]any) (map[string]any, error)
-
-// ActionJournal is injected per durable v2 turn. It deliberately lives in the
-// tools package so SafeToolExecutor remains the one boundary shared by ReAct,
-// routed handlers, workflows, and deploy sagas, without coupling those paths
-// to the SQL store.
-type ActionJournal interface {
-	Execute(ctx context.Context, action string, args map[string]any, call ActionCall) (map[string]any, error)
-	Err() error
-}
 
 type SafeToolRequest struct {
 	Action string
@@ -92,8 +72,6 @@ type SafeToolExecutor struct {
 	policies             map[string]ToolExecutionPolicy
 	confirm              ConfirmFunc
 	mutatingToolsEnabled bool
-	actionJournal        ActionJournal
-	requireActionJournal bool
 	// zoneCatalog resolves a Zone string to its numeric ZoneID for
 	// resolveJupyterTokenZoneID. Defaults to the shared, process-wide,
 	// TTL-cached zones.Default() (same instance engine.Engine uses for the
@@ -143,38 +121,12 @@ func WithMutatingToolsEnabled(enabled bool) SafeOption {
 	}
 }
 
-func WithActionJournal(journal ActionJournal) SafeOption {
-	return func(s *SafeToolExecutor) {
-		s.actionJournal = journal
-	}
-}
-
-func WithRequireActionJournal(required bool) SafeOption {
-	return func(s *SafeToolExecutor) {
-		s.requireActionJournal = required
-	}
-}
-
 func (s *SafeToolExecutor) SetMutatingToolsEnabled(enabled bool) {
 	s.mutatingToolsEnabled = enabled
 }
 
 func (s *SafeToolExecutor) SetConfirmFunc(fn ConfirmFunc) {
 	s.confirm = fn
-}
-
-// ActionJournalError is the commit barrier for a durable v2 turn. A caller
-// must not commit the assistant answer or session state when this returns an
-// error, even if the database currently has no uncertain action row (for
-// example when a reservation COMMIT acknowledgement was lost after rollback).
-func (s *SafeToolExecutor) ActionJournalError() error {
-	if s.actionJournal == nil {
-		if s.requireActionJournal {
-			return ErrActionJournalRequired
-		}
-		return nil
-	}
-	return s.actionJournal.Err()
 }
 
 func (s *SafeToolExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
@@ -274,33 +226,10 @@ func (s *SafeToolExecutor) ExecuteSafe(ctx context.Context, req SafeToolRequest)
 		}
 	}
 
-	var raw map[string]any
-	var attempts int
-	if policy.Class == ActionClassMutating && s.requireActionJournal && s.actionJournal == nil {
-		return nil, fmt.Errorf("%w: %s", ErrActionJournalRequired, req.Action)
+	if req.Hooks.OnBeforeCall != nil {
+		req.Hooks.OnBeforeCall(req.Action, args)
 	}
-	if policy.Class == ActionClassMutating && s.actionJournal != nil {
-		// Mutations get exactly one external attempt. Retrying a write below the
-		// durable journal would bypass its action slot and can duplicate effects.
-		raw, err = s.actionJournal.Execute(ctx, req.Action, args, func(callCtx context.Context, action string, callArgs map[string]any) (map[string]any, error) {
-			if req.Hooks.OnBeforeCall != nil {
-				req.Hooks.OnBeforeCall(action, callArgs)
-			}
-			attemptCtx := callCtx
-			var cancel context.CancelFunc
-			if policy.TimeoutMS > 0 {
-				attemptCtx, cancel = context.WithTimeout(callCtx, time.Duration(policy.TimeoutMS)*time.Millisecond)
-				defer cancel()
-			}
-			return s.inner.Execute(attemptCtx, action, callArgs)
-		})
-		attempts = 1
-	} else {
-		if req.Hooks.OnBeforeCall != nil {
-			req.Hooks.OnBeforeCall(req.Action, args)
-		}
-		raw, attempts, err = s.executeWithRetry(ctx, policy, req.Action, args)
-	}
+	raw, attempts, err := s.executeWithRetry(ctx, policy, req.Action, args)
 	if err != nil {
 		return nil, err
 	}
@@ -327,7 +256,7 @@ func (s *SafeToolExecutor) executeWithRetry(ctx context.Context, policy ToolExec
 	}
 
 	for attempts = 1; attempts <= maxAttempts; attempts++ {
-		// Apply per-attempt timeout (PR #5). The derived context is
+		// Apply the per-attempt timeout. The derived context is
 		// scoped to this single Execute call so a hung backend cannot
 		// outlast the policy budget. If policy.TimeoutMS is zero we
 		// pass the parent ctx through unchanged — the inner executor's
@@ -351,7 +280,7 @@ func (s *SafeToolExecutor) executeWithRetry(ctx context.Context, policy ToolExec
 			return nil, attempts, err
 		}
 
-		// Linear backoff between retries (PR #5). Sleep BackoffBaseMS *
+		// Linear backoff between retries. Sleep BackoffBaseMS *
 		// attempt ms, but break early if the parent ctx is cancelled
 		// (caller deadline or shutdown). For read_cheap with
 		// MaxRetries=1 + BackoffBaseMS=300 this is at most one 300ms
@@ -368,22 +297,10 @@ func (s *SafeToolExecutor) executeWithRetry(ctx context.Context, policy ToolExec
 	return nil, attempts, lastErr
 }
 
-// resolveBackendZoneID fills args["zone_id"] for the two actions where a raw
-// tool call (ReAct or otherwise) reaches this executor without one — the
-// model is never given the internal numeric zone id (registry.go's schemas
-// for these actions do not declare zone_id/az_group as a param, and it is
-// not in policy.AllowedParams either), yet two upstream calls misbehave
-// without it: GetCompShareCFSUpgradePrice silently returns a fake ¥0
-// "success" (finding #15) and DescribeCompShareJupyterToken fails outright
-// for Pod (cpod-*) instances (finding #9). Both mirror the existing
-// deterministic-route pattern — describe the resource first, then read its
-// zone id off the response — used by intent.resolveCFSZoneIDFromDescribe and
-// workflow.addRequiredInstanceLocationArgs/addInstancePlacementArgs. This is
-// a safety net for calls that bypass those deterministic routes (e.g. a
-// direct ReAct tool call); a caller that already supplied zone_id (the
-// deterministic routes call in with OriginDiagnosisInternal after resolving
-// it themselves) is left untouched, so no extra describe call happens on the
-// already-working path.
+// resolveBackendZoneID supplies the internal numeric zone required by CFS
+// upgrade pricing and Pod Jupyter-token calls. The model cannot provide this
+// field; it is derived from an authoritative resource description. Existing
+// caller-supplied values pass through unchanged.
 func (s *SafeToolExecutor) resolveBackendZoneID(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
 	switch action {
 	case "GetCompShareCFSUpgradePrice":
@@ -395,13 +312,8 @@ func (s *SafeToolExecutor) resolveBackendZoneID(ctx context.Context, action stri
 	}
 }
 
-// resolveCFSUpgradeZoneID resolves zone_id for a standalone
-// GetCompShareCFSUpgradePrice call by describing the CFS (mirrors
-// intent.resolveCFSZoneIDFromDescribe). Live-verified 2026-07-10: without
-// zone_id upstream returns RetCode=0/Price=0 (looks successful, is actually
-// meaningless); with zone_id=5001 it returns the real Price=12.94. Since a
-// silent fake-zero is worse than a loud failure, an unresolvable zone REJECTS
-// the call rather than forwarding it.
+// resolveCFSUpgradeZoneID derives the required zone from DescribeCFS. It rejects
+// an unresolved zone because upstream otherwise returns a misleading zero price.
 func (s *SafeToolExecutor) resolveCFSUpgradeZoneID(ctx context.Context, args map[string]any) (map[string]any, error) {
 	if hasNonZeroUint(args["zone_id"]) {
 		return args, nil
@@ -432,20 +344,9 @@ func (s *SafeToolExecutor) resolveCFSUpgradeZoneID(ctx context.Context, args map
 // resolveJupyterTokenZoneID resolves zone_id for a DescribeCompShareJupyterToken
 // call whose (first) UHostId is a Pod instance (cpod-* prefix).
 //
-// CORRECTED 2026-07-10 after live E2E testing caught the original
-// implementation as a silent no-op: DescribeCompShareInstance does NOT carry
-// a ZoneId/ZoneID/zone_id field on its UHostSet entries (upstream tags it
-// json:"-" — confirmed empirically, 0/6 real instances, during the original
-// conformance audit; instanceZoneIDFromDescribeResult always returned 0). The
-// field that DOES reliably exist is the string Zone (e.g. "cn-bj2-03"), which
-// must be resolved to its numeric id via the support-zone catalog — the same
-// mechanism workflow.addRequiredPodPlacementArgs uses for Pod placement
-// elsewhere. UCloud (uhost-*) instances did not need zone_id in the live
-// evidence, so this is a no-op unless a Pod id is present. Resolution failure
-// falls through unresolved rather than rejecting: without our fix a Pod call
-// with no zone_id already fails loudly upstream (RetCode 8433) instead of
-// succeeding with a wrong answer, so leaving it unresolved is no worse than
-// the pre-fix behavior.
+// Pod Describe rows expose a string Zone rather than numeric zone_id, so the
+// support-zone catalog supplies the numeric value. UHost calls are unchanged;
+// unresolved Pod values remain an upstream validation error.
 func (s *SafeToolExecutor) resolveJupyterTokenZoneID(ctx context.Context, args map[string]any) (map[string]any, error) {
 	if hasNonZeroUint(args["zone_id"]) {
 		return args, nil
@@ -572,11 +473,8 @@ func stringSliceArg(v any) []string {
 	}
 }
 
-// cfsZoneIDFromDescribeResult mirrors intent.cfsZoneIDFromDescribe's field
-// precedence (ZoneId / ZoneID / zone_id, checked at the top level then inside
-// CFSSet rows) so this SafeToolExecutor safety net for raw tool calls never
-// disagrees with the deterministic CFS route about where the zone id lives
-// in a DescribeCFS response.
+// cfsZoneIDFromDescribeResult accepts the upstream ZoneId spellings at the top
+// level and inside CFSSet rows.
 func cfsZoneIDFromDescribeResult(raw map[string]any) uint32 {
 	if raw == nil {
 		return 0
@@ -629,19 +527,11 @@ func uint32FieldAny(m map[string]any, keys ...string) uint32 {
 	return 0
 }
 
-// dedupeModelRepositoryTags defensively removes duplicate tag tokens from the
-// model-repository browse actions' responses. Upstream's own tag-dedup logic
-// checks a "seen" map but never writes to it, so duplicates leak through
-// untouched (finding #22, live-verified 2026-07-10: 3 total tag tokens, "AI"
-// appearing twice). Two shapes carry tags here: DescribeModelRepositoryModels
+// dedupeModelRepositoryTags removes duplicate tag tokens from the two
+// model-repository response shapes. DescribeModelRepositoryModels
 // puts a comma-separated "Tag" string on each Models[] entry, and its sibling
 // DescribeModelRepositoryTags returns a flat "Tags" array — this only touches
-// those two fields on those two actions; it is not a generic response
-// post-processing hook. (The deterministic model-repository-browse route
-// already deduped DescribeModelRepositoryTags's list client-side via
-// intent.uniqueStrings before rendering; this closes the gap for a raw tool
-// call that bypasses that route and for the per-model Tag field, which no
-// existing code touched.)
+// those two fields on those two actions; it is not a generic response hook.
 func dedupeModelRepositoryTags(action string, raw map[string]any) map[string]any {
 	if raw == nil {
 		return raw

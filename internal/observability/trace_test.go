@@ -128,39 +128,18 @@ func TestSparseTraceRecordMissingOptionalBlocksStillReadable(t *testing.T) {
 	if record.SchemaVersion != "trace.v0.2" || record.TraceID != "trace-sparse" {
 		t.Fatalf("sparse trace identity = %#v", record)
 	}
-	if record.IntentRouter.Enabled || record.RateLimit.Checked || record.Retrieval.Enabled || record.Outcome.TotalTokens != 0 {
-		t.Fatalf("sparse optional fields should read as zero values: planner=%#v rate=%#v retrieval=%#v outcome=%#v", record.IntentRouter, record.RateLimit, record.Retrieval, record.Outcome)
+	if record.RateLimit.Checked || record.Retrieval.Enabled || record.Outcome.TotalTokens != 0 {
+		t.Fatalf("sparse optional fields should read as zero values: rate=%#v retrieval=%#v outcome=%#v", record.RateLimit, record.Retrieval, record.Outcome)
 	}
 }
 
-func TestSchemaVersionIsV011(t *testing.T) {
+func TestSchemaVersionIsV012(t *testing.T) {
 	// v0.10 distinguishes unobserved tool latency from a measured 0ms duration
 	// and preserves an absent native provider finish reason as "unspecified";
-	// v0.11 adds bounded instance-selection provenance at turn start and end.
-	if SchemaVersion != "trace.v0.11" {
-		t.Fatalf("SchemaVersion = %q, want trace.v0.11", SchemaVersion)
-	}
-}
-
-func TestPlannerTracePlannedExecutionPathMarshals(t *testing.T) {
-	data, err := json.Marshal(TraceRecord{
-		SchemaVersion: SchemaVersion,
-		TraceID:       "trace-1",
-		TurnID:        "turn-1",
-		TurnIndex:     1,
-		Timestamp:     "2026-06-02T00:00:00Z",
-		UserMsgHash:   "sha256:user",
-		IntentRouter: RouterTrace{
-			Intent:               "knowledge_qa",
-			PlannedExecutionPath: "terminal_rag",
-		},
-	})
-	if err != nil {
-		t.Fatalf("marshal TraceRecord: %v", err)
-	}
-	text := string(data)
-	if !strings.Contains(text, `"planned_execution_path":"terminal_rag"`) {
-		t.Fatalf("trace record missing planned_execution_path: %s", text)
+	// v0.11 adds bounded instance-selection provenance; v0.12 removes retired
+	// planner/runtime-form fields and records internal capability calls directly.
+	if SchemaVersion != "trace.v0.12" {
+		t.Fatalf("SchemaVersion = %q, want trace.v0.12", SchemaVersion)
 	}
 }
 
@@ -555,7 +534,7 @@ func TestTraceV01FixtureStillReadable(t *testing.T) {
 	}
 }
 
-func TestTraceV02FixtureIncludesRuntimeAndCapFields(t *testing.T) {
+func TestTraceV02FixtureStillReadsCapFields(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("testdata", "trace_v0_2_cap_fields.json"))
 	if err != nil {
 		t.Fatalf("read fixture: %v", err)
@@ -564,9 +543,8 @@ func TestTraceV02FixtureIncludesRuntimeAndCapFields(t *testing.T) {
 	if err := json.Unmarshal(data, &record); err != nil {
 		t.Fatalf("unmarshal v0.2 fixture: %v", err)
 	}
-	if record.SchemaVersion != "trace.v0.2" || record.Runtime.RouterMode != "shadow" ||
-		len(record.Runtime.RouteIntents) != 1 || record.Runtime.RouteIntents[0] != "monitor" {
-		t.Fatalf("runtime fixture = %#v schema=%q", record.Runtime, record.SchemaVersion)
+	if record.SchemaVersion != "trace.v0.2" {
+		t.Fatalf("schema=%q", record.SchemaVersion)
 	}
 	call := record.ToolCalls[0]
 	if call.Capped != ToolCappedTargets || call.RequestedTargets != 21 || call.ExecutedTargets != 0 ||
@@ -786,49 +764,9 @@ func readJSONMap(t *testing.T, path string) map[string]any {
 	return payload
 }
 
-// TaskTier (a reserved schema slot) must serialize when populated
-// and stay absent when empty (omitempty). The "empty" branch protects
-// legacy consumers parsing older traces from seeing an unexpected
-// "task_tier":"" key. Populator is B2-B4 territory; this test only
-// covers the schema contract added in B1.
-func TestTraceRecord_TaskTier_Serialization(t *testing.T) {
-	base := TraceRecord{
-		SchemaVersion: SchemaVersion,
-		TraceID:       "trace-1",
-		TurnID:        "turn-1",
-		TurnIndex:     1,
-		Timestamp:     "2026-05-29T00:00:00Z",
-		UserMsgHash:   "sha256:user",
-	}
-
-	t.Run("empty TaskTier is omitted", func(t *testing.T) {
-		data, err := json.Marshal(base)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		if strings.Contains(string(data), `"task_tier"`) {
-			t.Fatalf("empty TaskTier should be omitted, got: %s", data)
-		}
-	})
-
-	t.Run("populated TaskTier appears in JSON", func(t *testing.T) {
-		rec := base
-		rec.TaskTier = "knowledge"
-		data, err := json.Marshal(rec)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		if !strings.Contains(string(data), `"task_tier":"knowledge"`) {
-			t.Fatalf("populated TaskTier should serialize, got: %s", data)
-		}
-	})
-}
-
 // Authorizations (the write-target dual-proof audit) must be absent from the wire
-// for every non-mutating turn (omitempty + the len>0 marshal gate, same reserved-
-// slot contract as Steps/TaskTier) and round-trip its hashed/enum fields when a
-// write is authorized. The "empty" branch keeps the trace byte-identical for the
-// overwhelming majority of turns that authorize no write.
+// for every non-mutating turn and round-trip its hashed/enum fields when a write
+// is authorized.
 func TestTraceRecord_Authorizations_Serialization(t *testing.T) {
 	base := TraceRecord{
 		SchemaVersion: SchemaVersion,
@@ -879,11 +817,7 @@ func TestTraceRecord_Authorizations_Serialization(t *testing.T) {
 	})
 }
 
-// ActualExecutionTier (B4a derived dispatch tier) must serialize when populated and
-// stay absent when empty (omitempty), same contract as TaskTier. The "empty"
-// branch protects consumers parsing pre-B4a traces from an unexpected
-// "actual_execution_tier":"" key, and is also the on-the-wire encoding of "tier not
-// observable for this turn" (attribution-observable-only).
+// ActualExecutionTier serializes only when observed.
 func TestTraceRecord_ActualExecutionTier_Serialization(t *testing.T) {
 	base := TraceRecord{
 		SchemaVersion: SchemaVersion,
@@ -917,53 +851,7 @@ func TestTraceRecord_ActualExecutionTier_Serialization(t *testing.T) {
 	})
 }
 
-func TestTraceRecord_ActualExecutionPath_Serialization(t *testing.T) {
-	base := TraceRecord{
-		SchemaVersion: SchemaVersion,
-		TraceID:       "trace-1",
-		TurnID:        "turn-1",
-		TurnIndex:     1,
-		Timestamp:     "2026-06-02T00:00:00Z",
-		UserMsgHash:   "sha256:user",
-	}
-
-	t.Run("empty ActualExecutionPath is omitted", func(t *testing.T) {
-		data, err := json.Marshal(base)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		if strings.Contains(string(data), `"actual_execution_path"`) {
-			t.Fatalf("empty ActualExecutionPath should be omitted, got: %s", data)
-		}
-	})
-
-	t.Run("populated ActualExecutionPath appears in JSON", func(t *testing.T) {
-		rec := base
-		rec.ActualExecutionPath = ExecutionPathAgent
-		data, err := json.Marshal(rec)
-		if err != nil {
-			t.Fatalf("marshal: %v", err)
-		}
-		if !strings.Contains(string(data), `"actual_execution_path":"agent"`) {
-			t.Fatalf("populated ActualExecutionPath should serialize, got: %s", data)
-		}
-	})
-}
-
-// TestDeriveActualExecutionTier pins the priority-ordered derivation. The cases that
-// matter for correctness (not just coverage): a retrieval *fallback* that
-// continued into ReAct must read as agent (the path that actually ran), NOT
-// knowledge by status name; and a turn with no observable dispatch signal must
-// read as "" (unknown), NOT default-to-agent — otherwise hard-block/canned
-// refusals would inflate the agent traffic share.
-//
-// NOTE: this table hardcodes the route_status string literals because
-// observability cannot import internal/intent (intent imports observability —
-// import cycle). It therefore tests the derivation ALGORITHM, not the binding to
-// the real enum VALUES. The value binding (which fails if a RouteStatus
-// constant is renamed in handler.go) lives in intent.TestRouteStatusBindsToActualExecutionTier,
-// which can reference the constants directly. Both must be kept in sync when the
-// enum changes (internal/intent/handler.go:42-58).
+// TestDeriveActualExecutionTier pins the observable-only derivation.
 func TestDeriveActualExecutionTier(t *testing.T) {
 	reactCall := []ToolCallTrace{{Source: ToolSourceMainReAct}}
 	knowledgeCall := []ToolCallTrace{{Source: ToolSourceKnowledgeLocal}}
@@ -972,26 +860,12 @@ func TestDeriveActualExecutionTier(t *testing.T) {
 		record TraceRecord
 		want   string
 	}{
-		{"cutover dispatched -> fast",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched"}}, ActualExecutionTierFast},
-		{"cutover selection_required -> fast (clarify prompt, no ReAct)",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "selection_required"}}, ActualExecutionTierFast},
-		{"cutover dispatched_retrieval -> knowledge",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched_retrieval"}}, ActualExecutionTierKnowledge},
-		{"cutover dispatched_agent -> agent (B8.3 deploy_model handler)",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched_agent"}}, ActualExecutionTierAgent},
-		{"no cutover but retrieval hits -> knowledge",
+		{"retrieval hits -> knowledge",
 			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}}, ActualExecutionTierKnowledge},
 		{"main_react tool fired -> agent",
 			TraceRecord{ToolCalls: reactCall}, ActualExecutionTierAgent},
 		{"retrieval enabled but 0 hits, ReAct ran -> agent",
 			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 0}, ToolCalls: reactCall}, ActualExecutionTierAgent},
-		{"retrieval fallback continued into ReAct -> agent (path that ran, not status name)",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "fallback_retrieval_miss"}, ToolCalls: reactCall}, ActualExecutionTierAgent},
-		{"low-confidence fallback into ReAct -> agent",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "fallback_low_confidence"}, ToolCalls: reactCall}, ActualExecutionTierAgent},
-		{"failure_after_tool but retrieval hits present -> knowledge",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "failure_after_tool"}, Retrieval: RetrievalTrace{Enabled: true, Hits: 1}}, ActualExecutionTierKnowledge},
 		{"no observable signal -> unknown (not default-agent)",
 			TraceRecord{}, ""},
 		{"hard-block canned reply, no dispatch signal -> unknown",
@@ -1003,154 +877,6 @@ func TestDeriveActualExecutionTier(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := tc.record.DeriveActualExecutionTier(); got != tc.want {
 				t.Fatalf("DeriveActualExecutionTier() = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-func TestDeriveActualExecutionPath(t *testing.T) {
-	reactCall := []ToolCallTrace{{Source: ToolSourceMainReAct}}
-	plannerCall := []ToolCallTrace{{Source: ToolSourcePlannerHandler}}
-	diagnosisCall := []ToolCallTrace{{Source: ToolSourceDiagnosisInternal}}
-	knowledgeToolCall := []ToolCallTrace{{Source: ToolSourceKnowledgeLocal}}
-	workflowCall := []ToolCallTrace{{Source: ToolSourceWorkflowInternal}}
-	sagaStep := []StepTrace{{StepID: "s0", State: StepStateSuccess}}
-	cases := []struct {
-		name   string
-		record TraceRecord
-		want   string
-	}{
-		{"cutover dispatched -> routing",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched"}}, ExecutionPathRouting},
-		{"cutover selection_required -> routing",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "selection_required"}}, ExecutionPathRouting},
-		{"cutover dispatched_retrieval -> terminal_rag",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched_retrieval"}}, ExecutionPathTerminalRAG},
-		{"cutover dispatched_agent -> agent",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched_agent"}}, ExecutionPathAgent},
-		{"saga step -> agent",
-			TraceRecord{Steps: sagaStep}, ExecutionPathAgent},
-		{"main ReAct tool -> agent",
-			TraceRecord{ToolCalls: reactCall}, ExecutionPathAgent},
-		{"workflow internal tool -> agent",
-			TraceRecord{ToolCalls: workflowCall}, ExecutionPathAgent},
-		{"diagnosis tool with retrieval hits -> agent",
-			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}, ToolCalls: diagnosisCall}, ExecutionPathAgent},
-		{"knowledge tool inside loop -> agent",
-			TraceRecord{ToolCalls: knowledgeToolCall}, ExecutionPathAgent},
-		{"retrieval hits only -> terminal_rag",
-			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}}, ExecutionPathTerminalRAG},
-		{"planner handler tool only -> routing",
-			TraceRecord{ToolCalls: plannerCall}, ExecutionPathRouting},
-		{"retrieval miss then ReAct -> agent",
-			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 0}, ToolCalls: reactCall}, ExecutionPathAgent},
-		{"no observable signal -> unknown",
-			TraceRecord{}, ""},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.record.DeriveActualExecutionPath(); got != tc.want {
-				t.Fatalf("DeriveActualExecutionPath() = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-// TestActualExecutionTierAndExecutionPathAreSeparateAxes pins that the work-tier axis
-// (ActualExecutionTier) and the runtime-form axis (ActualExecutionPath) are DELIBERATELY
-// distinct and diverge for real turns — they must not be collapsed into one
-// field or one shared vocabulary. WHY it matters: a turn can do knowledge-tier
-// WORK while running the agent runtime FORM; merging the two would erase that
-// signal — it would make the knowledge_qa→agent-loop migration invisible in
-// traces and mislabel diagnosis-with-retrieval. Each case derives BOTH axes
-// from the same record; the first two take different values per axis (knowledge
-// work, agent form), the third shows the axes agreeing on the natural
-// knowledge↔terminal_rag correspondence.
-func TestActualExecutionTierAndExecutionPathAreSeparateAxes(t *testing.T) {
-	cases := []struct {
-		name     string
-		record   TraceRecord
-		wantTier string // work-tier axis (ActualExecutionTier)
-		wantForm string // runtime-form axis (ActualExecutionPath)
-	}{
-		{"knowledge_qa agent loop: knowledge work, agent form",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched_knowledge_agent_loop"}},
-			ActualExecutionTierKnowledge, ExecutionPathAgent},
-		{"diagnosis with retrieval: knowledge work, agent form",
-			TraceRecord{Retrieval: RetrievalTrace{Enabled: true, Hits: 2}, ToolCalls: []ToolCallTrace{{Source: ToolSourceDiagnosisInternal}}},
-			ActualExecutionTierKnowledge, ExecutionPathAgent},
-		{"terminal RAG answer: knowledge work, terminal_rag form (axes agree)",
-			TraceRecord{IntentRouter: RouterTrace{RouteStatus: "dispatched_retrieval"}},
-			ActualExecutionTierKnowledge, ExecutionPathTerminalRAG},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.record.DeriveActualExecutionTier(); got != tc.wantTier {
-				t.Fatalf("DeriveActualExecutionTier() = %q, want %q (work-tier axis)", got, tc.wantTier)
-			}
-			if got := tc.record.DeriveActualExecutionPath(); got != tc.wantForm {
-				t.Fatalf("DeriveActualExecutionPath() = %q, want %q (runtime-form axis)", got, tc.wantForm)
-			}
-		})
-	}
-}
-
-func TestExecutionPathMismatch(t *testing.T) {
-	cases := []struct {
-		name         string
-		record       TraceRecord
-		wantMismatch bool
-		wantOK       bool
-	}{
-		{
-			name: "planned and actual match",
-			record: TraceRecord{
-				IntentRouter:        RouterTrace{PlannedExecutionPath: ExecutionPathRouting},
-				ActualExecutionPath: ExecutionPathRouting,
-			},
-			wantMismatch: false,
-			wantOK:       true,
-		},
-		{
-			name: "planned terminal rag actual agent mismatch",
-			record: TraceRecord{
-				IntentRouter:        RouterTrace{PlannedExecutionPath: ExecutionPathTerminalRAG},
-				ActualExecutionPath: ExecutionPathAgent,
-			},
-			wantMismatch: true,
-			wantOK:       true,
-		},
-		{
-			name: "derive actual when unset",
-			record: TraceRecord{
-				IntentRouter: RouterTrace{PlannedExecutionPath: ExecutionPathAgent},
-				ToolCalls:    []ToolCallTrace{{Source: ToolSourceMainReAct}},
-			},
-			wantMismatch: false,
-			wantOK:       true,
-		},
-		{
-			name: "missing planned excluded",
-			record: TraceRecord{
-				ActualExecutionPath: ExecutionPathAgent,
-			},
-			wantMismatch: false,
-			wantOK:       false,
-		},
-		{
-			name: "missing actual excluded",
-			record: TraceRecord{
-				IntentRouter: RouterTrace{PlannedExecutionPath: ExecutionPathAgent},
-			},
-			wantMismatch: false,
-			wantOK:       false,
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			gotMismatch, gotOK := tc.record.ExecutionPathMismatch()
-			if gotMismatch != tc.wantMismatch || gotOK != tc.wantOK {
-				t.Fatalf("ExecutionPathMismatch() = (%v, %v), want (%v, %v)", gotMismatch, gotOK, tc.wantMismatch, tc.wantOK)
 			}
 		})
 	}

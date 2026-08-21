@@ -59,8 +59,8 @@ type RateLimiter interface {
 }
 
 type Request struct {
-	// SubjectKey must be pre-hashed with SubjectKeyFromPublicKey before it
-	// reaches the limiter. Allow does not validate or hash raw key material.
+	// SubjectKey must already be an opaque tenant key. Allow does not validate
+	// or hash raw identity material.
 	SubjectKey string
 	Class      Class
 	Action     string
@@ -198,14 +198,6 @@ func (l *InMemoryRateLimiter) Allow(req Request) Decision {
 	}
 }
 
-func SubjectKeyFromPublicKey(publicKey string) (string, bool) {
-	if publicKey == "" {
-		return AnonymousSubjectKey, false
-	}
-	sum := sha256.Sum256([]byte(publicKey))
-	return "sha256:" + hex.EncodeToString(sum[:]), true
-}
-
 // SubjectKeyFromOrganization produces a stable, opaque rate-limit key from a
 // (topOrg, org) pair. The hash algorithm is intentionally identical to
 // tools.SubjectKeyFromUser so that both packages produce the same key for the
@@ -220,9 +212,8 @@ func SubjectKeyFromOrganization(topOrg, org uint32) (string, bool) {
 }
 
 // SubjectKeyFromTenant returns a hashed subject key derived from the console
-// tenant identity (top_organization_id + organization_id). Used by the WS
-// server path so each tenant gets its own rate-limit bucket; CLI path keeps
-// SubjectKeyFromPublicKey because there is only one process-level identity.
+// tenant identity (top_organization_id + organization_id), so each tenant gets
+// its own rate-limit bucket.
 //
 // Format: "sha256:" + hex(sha256("top=<topOrgID>;org=<orgID>"))
 // When both IDs are 0 returns AnonymousSubjectKey so InMemoryRateLimiter still

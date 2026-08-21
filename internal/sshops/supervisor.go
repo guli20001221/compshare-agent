@@ -173,11 +173,8 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 	timeout := s.Timeout
 	if timeout <= 0 {
 		// Wall clock must cover the WHOLE command sequence, not a typical one. ssh_transport caps a
-		// single command at 30s, and a real diagnosis runs 20-45 of them; once the read allowlist was
-		// removed the agent also began issuing genuinely expensive reads (a `du` over a 117G tree, a
-		// 1.2MB log). A live run died at the old 5-6m ceiling with the diagnosis nearly complete and
-		// returned nothing, which is the worst outcome for a read-only probe — so the default is
-		// sized to the sequence. The lane streams every step live, so a long run stays observable.
+		// A diagnosis may run 20-45 commands, including expensive filesystem reads. Size the wall
+		// clock for that sequence; each step remains visible while it runs.
 		timeout = 12 * time.Minute
 	}
 	ctx, cancel := context.WithTimeout(ctx, timeout)
@@ -297,8 +294,7 @@ const (
 	maxHarnessStepLine    = 256 << 10 // 256 KiB per-line cap — a step line is metadata; a huge one is malformed
 	// Step-count ceiling. MUST stay >= the harness's turn budget (DEFAULT_MAX_TURNS in harness.py):
 	// a cap below it silently truncates the tail of the activity stream, so the audit tally under-counts
-	// and the operator stops seeing commands while the agent is still running. Live runs hit the old
-	// value of 50 exactly, which is what surfaced this.
+	// and the user stops seeing commands while the agent is still running.
 	maxHarnessSteps = 120
 )
 

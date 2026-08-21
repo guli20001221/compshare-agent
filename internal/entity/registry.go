@@ -20,7 +20,6 @@ type SyncEvent string
 
 const (
 	SyncEventUnavailable SyncEvent = "unavailable"
-	SyncEventInit        SyncEvent = "init"
 	SyncEventSyncRefresh SyncEvent = "sync_refresh"
 	SyncEventWarmCache   SyncEvent = "warm_cache"
 	SyncEventFailed      SyncEvent = "failed"
@@ -29,7 +28,6 @@ const (
 type RefreshReason string
 
 const (
-	RefreshReasonInit      RefreshReason = "init"
 	RefreshReasonManual    RefreshReason = "manual"
 	RefreshReasonTTL       RefreshReason = "ttl"
 	RefreshReasonWarmCache RefreshReason = "warm_cache"
@@ -437,8 +435,6 @@ func (r *EntityRegistry) recordRefreshFailure(err error) {
 
 func syncEventForReason(reason RefreshReason) SyncEvent {
 	switch reason {
-	case RefreshReasonInit:
-		return SyncEventInit
 	case RefreshReasonWarmCache:
 		return SyncEventWarmCache
 	default:

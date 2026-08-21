@@ -19,7 +19,6 @@ import (
 // arm-B replay of production traffic have a median of 5,486 runes and a p90 of
 // 7,659 (max 17,686, which alone exceeded the entire previous budget).
 func TestTranscriptSizedHistoryPreservesSessionDialogueAndCompactsOldDetail(t *testing.T) {
-	withCanonicalTranscript(t, true)
 
 	for _, tc := range []struct {
 		name    string

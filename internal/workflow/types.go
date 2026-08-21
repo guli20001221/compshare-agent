@@ -18,7 +18,7 @@ type StepType int
 // from the seal — steps consult it, nothing mutates it.
 type ReferenceData struct {
 	// ZoneCatalog is the live availability-zone catalog for this turn, or nil on
-	// paths with no catalog (CLI, or a failed fetch). Its accessors are nil-safe,
+	// paths with no catalog (for example a failed fetch). Its accessors are nil-safe,
 	// so a consumer reads it the same way whether or not it is present.
 	ZoneCatalog *deployment.ZoneCatalogSnapshot
 	// ImageCatalog is the live image catalog for this turn, resolved once by the
@@ -167,14 +167,13 @@ type Step struct {
 	// Poll retries a successful read whose CheckResult reports a pending state.
 	// It is opt-in and intended for asynchronous state transitions after a
 	// confirmed write (for example Running -> Stopping -> Stopped). Mutating
-	// calls must never use it: writes remain single-attempt under the action
-	// journal.
+	// calls must never use it: confirmed writes remain single-attempt.
 	Poll *PollPolicy
 
-	// --- Editable confirm form (StepConfirm only; all three nil/empty =
-	// legacy boolean confirm, byte-identical). Consumed only by
-	// workflow.Engine.Run when a ConfirmEditsFunc is wired (HTTP path with
-	// COMPSHARE_CONFIRM_FORM on + client opt-in); the saga runner ignores
+	// --- Editable confirm form (StepConfirm only; all three nil/empty use the
+	// plain boolean confirmation). Consumed only by
+	// workflow.Engine.Run when a ConfirmEditsFunc is wired for an opted-in
+	// client; the saga runner ignores
 	// them, so deploy_model keeps the plain confirm. ---
 
 	// BuildForm builds the editable selection form shown alongside the
@@ -206,7 +205,7 @@ type Step struct {
 	// must never degrade into executing something else.
 	PromoteOnConfirm func(wfCtx *Context) error
 	// ConfirmSubmitMode controls what happens after a form-bearing confirm is
-	// submitted with Overrides. Empty preserves the legacy edit→revalidate→
+	// submitted with Overrides. Empty preserves the edit→revalidate→
 	// re-confirm loop. ConfirmSubmitContinue applies the whitelisted selection
 	// and advances to the next workflow step, used by guided multi-step forms.
 	ConfirmSubmitMode ConfirmSubmitMode
@@ -492,22 +491,14 @@ type Result struct {
 	// the engine reads it to narrate results and recover from the exact confirmed
 	// params instead of stale input.
 	//
-	// It is NOT, on its own, "the contract that gated the mutating step" — this
-	// comment used to say that, and on the guided create it is false. That flow
-	// seals after each of its seven gates, so a run that stopped at 检查库存 ends
-	// with a contract that authorised the image selection and no more. Ask
-	// Failure.Sealed whether a contract authorising execution exists; a non-nil
-	// Contract answers a different question.
+	// It is not proof that the final mutating step was authorized; consult
+	// Failure.Sealed for that distinction.
 	Contract *SealedActionContract `json:"-"`
 	// Failure describes the step that stopped this workflow, or nil when it
 	// succeeded. Server-internal, like Contract and Err.
 	Failure *StepFailure `json:"-"`
-	// Err is the error that stopped this workflow, unflattened, or nil. Message
-	// keeps the human sentence; Err keeps the typed cause, so a caller deciding
-	// what to DO about a failure can read the upstream error's fields instead of
-	// grepping the sentence. (createImageUnavailable used to match "230" and
-	// "CompShareImageId" as substrings of Message — an unanchored match that any
-	// "230" anywhere in the text could trip.)
+	// Err is the typed error that stopped the workflow. Message remains the
+	// user-facing explanation; callers must classify Err rather than parse it.
 	//
 	// It is deliberately NOT set for failures we raise ourselves from a SUCCESSFUL
 	// upstream response, e.g. the capacity gate's "库存不足" (CheckResult): those
@@ -661,7 +652,7 @@ type ConfirmResolution struct {
 // form; Engine.Run re-validates defensively before applying.
 type ConfirmEditsFunc func(action string, args map[string]any, form *ConfirmForm) ConfirmResolution
 
-// StepEvent is emitted during workflow execution for UI/CLI display.
+// StepEvent is emitted during workflow execution for client display.
 type StepEvent struct {
 	StepName  string
 	StepIndex int

@@ -1,9 +1,5 @@
-// Package platform holds the shared value-object vocabulary used by the agent's
-// read capabilities and the legacy intent router. It is a leaf package: it
-// imports nothing from internal/intent, so a typed capability can own its
-// request contract (internal/capability) without reverse-depending on the intent
-// router. internal/intent re-exports every type here via aliases, so existing
-// intent.TargetRef / intent.Metric / … references keep compiling unchanged.
+// Package platform holds value objects shared by typed read capabilities and
+// their projections. It is a dependency-free leaf package.
 package platform
 
 // TargetRefType classifies how a target instance reference was expressed.

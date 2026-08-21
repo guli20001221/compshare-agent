@@ -14,31 +14,16 @@ import (
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
-	"github.com/compshare-agent/internal/turncoord"
 	"github.com/gin-gonic/gin"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// A create/write turn must surface the confirmation CARD before any answer prose
-// — a turn that streamed answer text before the card would bury it. These two
-// tests are the deterministic frame-ordering gate the lead asked for: they
-// exercise the REAL WS handler (HandleWS via httptest) in BOTH transport modes
-// and assert the same invariant each mode expresses differently:
-//
-//   - durable (real deploy path after the durable_turns cutover): the projected
-//     `confirmation` frame must precede the terminal `done` frame, and durable
-//     carries the answer text in the done frame's Content — it emits NO per-token
-//     `token` frame, so the assertion is idx(confirmation) < idx(done).
-//   - legacy (current deploy default, durable_turns:false): the `confirmation`
-//     frame must precede the FIRST streamed `token` frame.
-//
-// Neither test enables the global COMPSHARE_ENABLE_MUTATING_TOOLS (forbidden per
-// CLAUDE.md): the durable gate injects a controllable coordinator event stream,
-// and the legacy gate uses the per-engine SetMutatingToolsEnabled lever plus a
-// scripted LLM whose first round proposes a write, driving the real ReAct
-// proposal → resolver → confirmation round-trip.
+// A create/write turn must surface the confirmation card before answer prose;
+// otherwise streamed text can bury the decision the user must make. The test
+// below drives the real WS handler and ReAct proposal → resolver → confirmation
+// path.
 
 // indexOfEvent returns the position of the first frame whose "event" == name,
 // or -1 when absent.
@@ -61,68 +46,7 @@ func eventNames(frames []map[string]any) []string {
 	return out
 }
 
-// TestWSDurable_ConfirmationFramePrecedesDoneFrame is the durable half of the
-// frame-order gate. A create turn's coordinator stream projects
-// step → interaction.requested(confirmation) → turn.committed(done); the WS
-// projection MUST preserve that order so the card is never emitted after the
-// terminal answer. Durable carries the answer text in the done frame's Content,
-// so there is no `token` frame to race — the assertion is
-// idx(confirmation) < idx(done).
-func TestWSDurable_ConfirmationFramePrecedesDoneFrame(t *testing.T) {
-	coordinator := &fakeDurableCoordinator{
-		events: []turncoord.Event{
-			{
-				TurnID: "turn-durable-1", Seq: 1, Type: "turn.running", Provisional: true,
-				Payload: json.RawMessage(`{}`),
-			},
-			{
-				TurnID: "turn-durable-1", Seq: 2, Type: "turn.step", Provisional: true,
-				Payload: json.RawMessage(`{"action":"RequestCreateInstance","message":"proposing create","type":"tool"}`),
-			},
-			{
-				TurnID: "turn-durable-1", Seq: 3, Type: "interaction.requested", Provisional: true,
-				Payload: json.RawMessage(`{"interaction_key":"confirmation/0","kind":"confirmation","payload":{"action":"CreateInstanceWorkflow","summary":"create 4090","form":{}}}`),
-			},
-			{
-				TurnID: "turn-durable-1", Seq: 4, Type: "turn.committed", Provisional: false,
-				Payload: json.RawMessage(`{"content":"已为你准备好创建卡片，请确认。","message_id":"assistant-1","committed":true}`),
-			},
-		},
-	}
-	srv := durableWSTestServer(t, coordinator)
-	conn := dialWS(t, srv, gatewayHeaders())
-	defer conn.Close(websocket.StatusNormalClosure, "")
-
-	require.NoError(t, conn.Write(context.Background(), websocket.MessageText, []byte(
-		`{"Action":"SendCSAgentChat","ProtocolVersion":2,"SessionId":"sess-1","ClientTurnId":"client-create","Message":"帮我创建一台4090","Features":["confirm_form_v1","guided_create_v1"]}`,
-	)))
-
-	frames := readFrameList(t, conn)
-	names := eventNames(frames)
-
-	confirmationIdx := indexOfEvent(frames, "confirmation")
-	doneIdx := indexOfEvent(frames, "done")
-	stepIdx := indexOfEvent(frames, "step")
-
-	require.NotEqual(t, -1, confirmationIdx, "a create turn must project a confirmation frame; got %v", names)
-	require.NotEqual(t, -1, doneIdx, "the turn must terminate with a done frame; got %v", names)
-	assert.Less(t, confirmationIdx, doneIdx,
-		"the confirmation card MUST precede the terminal done frame (order=%v)", names)
-	if stepIdx != -1 {
-		assert.Less(t, stepIdx, confirmationIdx,
-			"a tool/step frame precedes the confirmation it produced (order=%v)", names)
-	}
-	assert.Equal(t, -1, indexOfEvent(frames, "token"),
-		"durable mode carries the answer in done.Content and emits no per-token frame (order=%v)", names)
-
-	// The confirmation frame carries the card identity the client confirms against;
-	// the done frame carries the answer text. Both must survive the projection.
-	assert.Equal(t, "confirmation/0", frames[confirmationIdx]["ConfirmationId"])
-	assert.Equal(t, "CreateInstanceWorkflow", frames[confirmationIdx]["Action"])
-	assert.Equal(t, "已为你准备好创建卡片，请确认。", frames[doneIdx]["Content"])
-}
-
-// mutatingProposalLLM scripts the two model turns the legacy gate needs: the
+// mutatingProposalLLM scripts the two model turns the gate needs: the
 // first ReAct round (call #1) returns exactly one Request* proposal tool call;
 // every later call (the answer round after the card is rejected) returns plain
 // text with no tool calls. It does not stream, so chatStream emits the reply as a
@@ -189,7 +113,7 @@ func readOneFrame(t *testing.T, ctx context.Context, conn *websocket.Conn) map[s
 // answer round then streams a `token` frame. The card MUST precede the first
 // answer token. START-on-Stopped is used because it reaches a plain confirmation
 // via ConfirmFunc (create may route to an intake form via a different callback);
-// the create card's own content ordering is covered by the durable gate above and
+// the create card's own content ordering is covered by the confirmation gate above and
 // the live N=5.
 func TestWSLegacy_ConfirmationFramePrecedesTokenFrame(t *testing.T) {
 	llmFake := &mutatingProposalLLM{
@@ -205,7 +129,6 @@ func TestWSLegacy_ConfirmationFramePrecedesTokenFrame(t *testing.T) {
 		&config.Config{Agent: config.AgentConfig{
 			LLM:  config.LLMConfig{Model: "model-x"},
 			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
-			Meta: config.MetaConfig{MaxInputLength: 4000},
 			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
 		}},
 		&mockSessions{byID: map[string]store.Session{
@@ -219,8 +142,6 @@ func TestWSLegacy_ConfirmationFramePrecedesTokenFrame(t *testing.T) {
 		fakePool{eng: eng},
 		nil,
 	)
-	h.SetConfirmFormEnabled(true)
-	h.SetGuidedCreateEnabled(true)
 
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

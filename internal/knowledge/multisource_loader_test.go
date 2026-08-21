@@ -75,8 +75,7 @@ func chunkIDSet(corpus Corpus) map[string]struct{} {
 
 // Merging a platform-origin and an external-origin source produces one flat
 // index: all chunks + all vectors, KBVersion generalized to "merged" because the
-// two sources carry different kb_versions. This is the property cmd/trace.go will
-// rely on to serve both corpora through the unchanged retriever.
+// two sources carry different kb_versions.
 func TestLoadPinnedCorporaMergesSources(t *testing.T) {
 	t.Parallel()
 	platform := writePinnedSource(t, "kb.platform", "official", "qwen3-embedding-8b", 4, "p1", "p2")
@@ -179,6 +178,36 @@ func TestLoadPinnedCorporaRejectsDigestMismatch(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "corpus digest mismatch")
 	assert.Contains(t, err.Error(), "load corpus")
+}
+
+func TestLoadPinnedCorporaRejectsOrphanVector(t *testing.T) {
+	t.Parallel()
+	src := writePinnedSource(t, "kb.platform", "official", "qwen3-embedding-8b", 4, "p1")
+	f, err := os.OpenFile(src.EmbeddingsPath, os.O_APPEND|os.O_WRONLY, 0)
+	require.NoError(t, err)
+	_, err = f.WriteString(`{"chunk_id":"orphan","vector":[0.1,0.1,0.1,0.1]}` + "\n")
+	require.NoError(t, err)
+	require.NoError(t, f.Close())
+	src.ExpectedEmbeddingDigest, err = ComputeEmbeddingFileDigest(src.EmbeddingsPath)
+	require.NoError(t, err)
+
+	_, _, err = LoadPinnedCorporaWithEmbeddings([]PinnedCorpusSource{src})
+	require.ErrorContains(t, err, "orphan vector")
+}
+
+func TestLoadPinnedCorporaRejectsMissingVector(t *testing.T) {
+	t.Parallel()
+	src := writePinnedSource(t, "kb.platform", "official", "qwen3-embedding-8b", 4, "p1", "p2")
+	raw, err := os.ReadFile(src.EmbeddingsPath)
+	require.NoError(t, err)
+	lines := strings.Split(strings.TrimSpace(string(raw)), "\n")
+	require.Len(t, lines, 3)
+	require.NoError(t, os.WriteFile(src.EmbeddingsPath, []byte(strings.Join(lines[:2], "\n")+"\n"), 0o600))
+	src.ExpectedEmbeddingDigest, err = ComputeEmbeddingFileDigest(src.EmbeddingsPath)
+	require.NoError(t, err)
+
+	_, _, err = LoadPinnedCorporaWithEmbeddings([]PinnedCorpusSource{src})
+	require.ErrorContains(t, err, "missing vector")
 }
 
 func TestLoadPinnedCorporaRejectsEmptySources(t *testing.T) {

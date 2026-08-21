@@ -11,9 +11,8 @@ import (
 	"github.com/compshare-agent/internal/intent"
 )
 
-// repeatableAgentTool no longer lists the local GPU knowledge tools: they were
-// deleted along with the static spec table they read, so there is nothing left
-// to mark repeatable.
+// repeatableAgentTool identifies reads that may legitimately run more than once
+// in a turn as the Agent refines its evidence.
 func repeatableAgentTool(action string) bool {
 	if action == "SearchKnowledge" || diagnosis.IsDiagnosisTool(action) {
 		return true

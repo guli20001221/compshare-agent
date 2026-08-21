@@ -68,9 +68,8 @@ func createImageUnavailable(result *workflow.Result) bool {
 // already 230'd and is skipped. It runs only after the create's own resolution
 // hit the zone-availability wall (RetCode=230).
 //
-// The relevance ranking is the ONE image interpreter — deployment.ResolveImage —
-// not a second private matcher: this used to re-rank the pool with its own
-// keyword/substring scorer, exactly the duplication the convergence removes.
+// deployment.ResolveImage is the only image relevance interpreter; recovery
+// does not maintain a private matcher.
 func (e *Engine) resolveAvailableCreateImage(ctx context.Context, args map[string]any, zone, failedID string, zoneCat *deployment.ZoneCatalogSnapshot) (id, name string, ok bool) {
 	keyword, _ := args["ImageName"].(string)
 	gpuType, _ := args["GpuType"].(string)

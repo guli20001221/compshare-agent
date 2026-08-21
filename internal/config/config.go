@@ -39,15 +39,13 @@ type STSConfig struct {
 type AgentConfig struct {
 	LLM       LLMConfig       `yaml:"llm"`
 	RateLimit RateLimitConfig `yaml:"rate_limit"`
-	Executor  string          `yaml:"executor"` // "external" or "internal"
 
 	CompShareAPIURL string `yaml:"compshare_api_url"`
 	PublicKey       string `yaml:"public_key"`
 	PrivateKey      string `yaml:"private_key"`
 	Region          string `yaml:"region"`
-	// ProjectId is the CompShare project ID required by some APIs
-	// (e.g. UpdateCompShareStopScheduler). Optional: if empty, the
-	// engine will attempt to discover it via GetProjectList at Init.
+	// ProjectId is the optional deployment-wide CompShare project ID.
+	// Request-scoped values arrive through tools.UserContext.
 	ProjectId string `yaml:"project_id"`
 
 	HTTP   HTTPConfig   `yaml:"http"`
@@ -57,14 +55,10 @@ type AgentConfig struct {
 	OCR    OCRConfig    `yaml:"ocr"`
 	Feishu FeishuConfig `yaml:"feishu"`
 
-	// Runtime feature flags, previously env-only (read in cmd/). These are
-	// overlaid on os.Getenv via RuntimeGetenv with "YAML wins, env fallback"
-	// precedence — see runtime.go. Omitting any section preserves the prior
-	// env-driven behavior unchanged.
-	Features  FeaturesConfig  `yaml:"features"`
-	Retrieval RetrievalConfig `yaml:"retrieval"`
-	Trace     TraceConfig     `yaml:"trace"`
-	SSHOps    SSHOpsConfig    `yaml:"ssh_ops"`
+	Authorization AuthorizationConfig `yaml:"authorization"`
+	Retrieval     RetrievalConfig     `yaml:"retrieval"`
+	Trace         TraceConfig         `yaml:"trace"`
+	SSHOps        SSHOpsConfig        `yaml:"ssh_ops"`
 }
 
 // FeishuConfig connects a Feishu application bot to the Agent's WebSocket
@@ -87,19 +81,8 @@ type FeishuConfig struct {
 	// without requiring an @ mention. It supersedes AutoReplyNewTopics while
 	// retaining the chat allowlist and the adapter's bot-message loop guard.
 	AutoReplyAllMessages bool `yaml:"auto_reply_all_messages"`
-	// EnablePlatformReadOnlyQueries switches the Feishu adapter from its legacy
-	// RAG-only window to the fail-closed public-platform query window. That
-	// window contains only publicly safe catalog/inventory reads; it never
-	// exposes account, instance, diagnostic, or mutating tools.
-	EnablePlatformReadOnlyQueries bool `yaml:"enable_platform_readonly_queries"`
-	// EnableConsoleHandoff lets the public Feishu adapter show approved
-	// authenticated diagnosis entry points when the answer needs live instance
-	// state, logs, processes, ports, or another per-account diagnostic. It does
-	// not carry any Feishu conversation content or identity into either entry
-	// point.
-	EnableConsoleHandoff bool `yaml:"enable_console_handoff"`
 	// ConsoleAssistantURL is the user-facing console entry point shown for the
-	// handoff. Keep it configurable because console routes may differ by deploy.
+	// handoff. An empty value disables the handoff.
 	ConsoleAssistantURL string `yaml:"console_assistant_url"`
 	// ClientDownloadURL is the optional official desktop-client download page
 	// shown beside the web console. After the user installs and logs into that
@@ -124,63 +107,23 @@ type ExternalImageOAuthConfig struct {
 	RedirectURL string `yaml:"redirect_url"`
 }
 
-// SSHOpsConfig configures the consent-gated, read-only in-instance SSH-ops lane
-// (COMPSHARE_SSH_OPS). Enabled is tri-state like the FeaturesConfig bools: nil = fall through to
-// the COMPSHARE_SSH_OPS env, then to the built-in default (off). The remaining fields configure the
-// harness subprocess and have no env fallback — deployment sets them in YAML. The lane also requires
-// durable turns on the server path and a non-static STS provider (INV-12); see cmd/instance_ops.go.
+// SSHOpsConfig configures the consent-gated in-instance diagnosis lane. The
+// server requires tenant-scoped STS credentials and the audit schema.
 type SSHOpsConfig struct {
-	Enabled     *bool         `yaml:"enabled"`      // COMPSHARE_SSH_OPS (default off)
 	HarnessPath string        `yaml:"harness_path"` // absolute path to deploy/ssh_ops_harness/harness.py
 	BaseURL     string        `yaml:"base_url"`     // ANTHROPIC_BASE_URL of the ModelVerse Anthropic endpoint
 	APIKey      string        `yaml:"api_key"`      // empty = agent.llm.api_key
 	Python      string        `yaml:"python"`       // interpreter; empty = "python3"
 	Model       string        `yaml:"model"`        // third-party model id; empty = agent.llm.model
-	Timeout     time.Duration `yaml:"timeout"`      // hard per-task wall clock; empty = 5m
-	// AllowWrites lets the harness EXECUTE the mutating tier instead of refusing it, so the agent
-	// can repair the box rather than only describe the repair. Destructive commands (delete, wipe,
-	// reboot, account/ssh lockout) stay refused in both modes, as does command substitution — that
-	// shape gate is the injection firewall, not part of the read-only policy. Default off, and off
-	// is a different PRODUCT: the consent card, the tool description and the audit phase all change
-	// with it, because a write executed under a card that said "只读排查" is consent we did not get.
+	Timeout     time.Duration `yaml:"timeout"`      // hard per-task wall clock; empty = 12m
+	// AllowWrites enables the confirmation-gated mutating tier. Destructive and
+	// opaque command shapes remain refused.
 	AllowWrites bool `yaml:"allow_writes"`
-	// InternalIPv6 makes the lane dial the instance's internal IPv6 instead of the public
-	// EIP its SshLoginCommand advertises. Set it wherever this process runs inside the
-	// UCloud private network and therefore has no route to customer EIPs — which is the
-	// whole production deployment, and is why the lane could not enter a single box there
-	// while the identical code connected in under 1.2s from a normal network.
-	//
-	// It requires agent.sts.iam_url: the address is derived by asking the internal gateway
-	// (UVPCFEGO.TransformIPv4ToIPv6), the same call uhost-compshare-api makes before
-	// handing a container to compshare-access, which then reaches the box at [IPv6]:22.
-	//
-	// Default off, because on a developer machine the opposite is true: the EIP is the
-	// only reachable address and the internal gateway is not routable at all.
+	// InternalIPv6 uses the UCloud internal gateway to replace a UHost's public
+	// address. It requires agent.sts.iam_url and is production-network-specific.
 	InternalIPv6 bool `yaml:"internal_ipv6"`
-	// PublicIPv6Prefix, when set, gives the lane a SECOND address to try when the internal
-	// one does not answer: the instance's public IPv4 expressed under this translation
-	// prefix (both the simple low-32-bit form and the RFC 6052 /48 form are attempted).
-	//
-	// It exists for one measured gap. cn-wlcb-01 is reached over its internal IPv6 and
-	// cn-sh2-02 is not — the deployment runs in the c5 cluster and cn-sh2 sits behind c3,
-	// so the mapping resolves and the dial goes nowhere. A translation prefix reaches the
-	// box without a per-cluster fabric route.
-	//
-	// Measured in-cluster 2026-08-16 (two runs, no disagreement): the prefix closes exactly
-	// that gap — cn-sh2-02 answers on the simple low-32-bit form in ~30ms with an sshd
-	// banner, while its internal address burns the full dial timeout. It is not a guess
-	// about the network either; the platform publishes the same prefix and the same
-	// encoding itself, since every *.podtcp.compshare.cn name resolves to that prefix with
-	// the zone pod ingress's public IPv4 in the low 32 bits.
-	//
-	// Still a setting, and still empty by default: it is a production network fact like
-	// mysql.host_override, a wrong prefix must be an ops edit rather than a code change,
-	// and a deployment that never sets it dials exactly what it dialled before. The
-	// per-encoding measurements and the reason the RFC 6052 form is kept despite never
-	// answering live beside the value in deploy/conf/config.prod.yaml.
-	//
-	// Ordering is the safety property, not this field: the internal address stays the
-	// first candidate and the public IPv4 is never dialled in any position.
+	// PublicIPv6Prefix provides a translated public-IPv4 candidate after the
+	// internal candidate. The advertised public EIP is never dialled directly.
 	PublicIPv6Prefix string `yaml:"public_ipv6_prefix"`
 }
 
@@ -194,86 +137,28 @@ type HTTPConfig struct {
 	MaxInputLength       int           `yaml:"max_input_length"`
 	PoolCapacity         int           `yaml:"pool_capacity"`
 	PoolIdleTTL          time.Duration `yaml:"pool_idle_ttl"`
-	// MaxSessionTurns caps the compatibility chat path only. Durable WebSocket
-	// turns deliberately have no conversation-length wall: committed history is
-	// paged and rebuilt per turn instead of forcing a context-breaking session
-	// rollover. Zero or unset uses DefaultMaxSessionTurns in compatibility mode.
+	// MaxSessionTurns is a product quota. Model history is bounded independently
+	// by request size. Zero or unset uses DefaultMaxSessionTurns.
 	MaxSessionTurns int `yaml:"max_session_turns"`
-	// DisableCORS turns off the permissive CORS middleware. Default false =
-	// CORS headers are added (needed for local front-end debug per the
-	// front-back-local-debug skill: dev server on localhost:3000 fetches
-	// 127.0.0.1:<port> directly). In production the agent sits behind a
-	// gateway that already issues CORS headers, so set this to true to
-	// avoid duplicate Access-Control-Allow-* headers (which browsers
-	// reject as malformed even when the values match).
+	// DisableCORS leaves CORS headers to the deployment gateway.
 	DisableCORS bool `yaml:"disable_cors"`
 }
 
-// MaxSessionTurnsCeiling is the largest agent.http.max_session_turns a
-// deployment may configure. It is a PRODUCT QUOTA and nothing else.
-//
-// It used to be MaxReplayedExchanges, and it used to mean something stronger:
-// engine.maxAgentContextPairs read it, so it was simultaneously the model's
-// entire cross-turn memory, and the validation below existed to stop a
-// deployment running 30-turn sessions against a 20-exchange window — turn 1
-// forgotten from turn 22 with no error and no log line.
-//
-// That coupling is gone. The engine no longer caps replayed exchanges by count
-// at all; what the model remembers is decided by engine.maxReplayedHistoryRunes
-// and then by engine.maxAssembledRequestRunes, both of which are sizes. So this
-// number no longer describes memory, and a larger session no longer silently
-// truncates history — it just fills the size budget sooner.
-//
-// The quota is kept at 20 because lifting it is a product decision, not a
-// consequence of the engine change.
-//
-// LIFTING IT PAST ~50 TURNS IS NOT FREE, and an earlier draft of this comment
-// claimed it was. agentpool.buildEngine rebuilds a cold session by reading a
-// fixed 100 messages with ORDER BY created_at ASC — the OLDEST 100, not the
-// newest — so past 50 turns a restart or an LRU eviction would restore the
-// beginning of the conversation and drop everything recent. The engine's own
-// ceilings no longer stand in the way; that read does. It is left alone here
-// because at 20 turns a session is ~40 messages and the page cannot truncate,
-// and because a token-aware tail belongs with whatever raises the quota rather
-// than with the change that removed the count ceilings.
+// MaxSessionTurnsCeiling is the product quota, not a model-history window.
+// History itself is bounded by token/rune budgets. Raising this quota also
+// requires auditing the fixed-size cold-session database read.
 const MaxSessionTurnsCeiling = 20
 
-// ShippedMaxTokensPerTurn mirrors agent.rate_limit.max_tokens_per_turn in
-// deploy/conf/config.yaml, for the code that has to SIZE ITSELF against the
-// deployed cap rather than read it from a loaded Config.
-//
-// It exists because that number had grown two producers that disagreed: the
-// history-ceiling test asserted against a hardcoded 200000 that was correct until
-// the config was raised on 2026-07-23 and then silently was not. The stale copy
-// happened to be the conservative direction, so nothing failed — which is
-// precisely why it survived, and why the next drift could as easily go the other
-// way.
-//
-// maxReplayedHistoryRunes NO LONGER DERIVES FROM THIS CAP. It was sized against
-// half of it divided by maxReActRounds until 2026-08-05. The request budget now
-// derives from the context window instead (engine.maxAssembledRequestRunes),
-// because this cap is a per-turn RATE limit enforced at runtime across every
-// round, not a bound on any single request — and a single request is what a
-// provider rejects.
-//
-// TestShippedConfigMatchesTheTokenCapConstant reads the yaml and fails if the two
-// diverge, so this is a pinned mirror rather than a third copy. Runtime enforcement
-// still reads the operator's loaded RateLimitConfig.MaxTokensPerTurn — a deployment
-// may set its own value, and this constant does not override it.
-const ShippedMaxTokensPerTurn = 400_000
+// DefaultMaxSessionTurns is the fallback when agent.http.max_session_turns is
+// zero or unset. It must stay <= MaxSessionTurnsCeiling.
+const DefaultMaxSessionTurns = MaxSessionTurnsCeiling
 
-// DefaultMaxSessionTurns is the compatibility-path fallback when
-// agent.http.max_session_turns is zero or unset. The durable turn coordinator
-// never consults it. Must stay <= MaxSessionTurnsCeiling; validateHTTPConfig
-// enforces that for configured values and TestDefaultTurnCapFitsSessionQuota
-// for this one.
-const DefaultMaxSessionTurns = 20
-
-// MySQLConfig holds connection settings for the MySQL backing store.
+// MySQLConfig holds PostgreSQL connection settings. The historical Go/YAML name
+// remains for deployment compatibility.
 // DSN accepts any ${ENV_VAR} placeholder; if the env var is unset the field is
 // set to "" so the server sub-command can validate presence before starting.
 // A plain literal DSN is passed through unchanged.
-// It is optional at Load time so CLI users are not forced to set the env var.
+// It is optional at Load time; the server command validates it before starting.
 type MySQLConfig struct {
 	DSN string `yaml:"dsn"`
 	// HostOverride replaces only the host component of a PostgreSQL URL DSN.
@@ -289,7 +174,6 @@ type MySQLConfig struct {
 type MetaConfig struct {
 	Welcome          string   `yaml:"welcome"`
 	SuggestedPrompts []string `yaml:"suggested_prompts"`
-	MaxInputLength   int      `yaml:"max_input_length"`
 }
 
 type LLMConfig struct {
@@ -401,8 +285,8 @@ func Load(path string) (*Config, error) {
 	if err := applyRateLimitDefaults(&cfg.Agent.RateLimit); err != nil {
 		return nil, err
 	}
-	// mysql.dsn is optional at Load time: CLI path does not require it.
-	// The "server" sub-command must validate DSN presence before starting.
+	// mysql.dsn is optional while parsing configuration. The server command
+	// validates DSN presence before starting.
 	if err := resolveOptionalDSN(&cfg.Agent.MySQL.DSN); err != nil {
 		return nil, err
 	}
@@ -410,9 +294,6 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	if err := validateMySQLConfig(&cfg.Agent.MySQL); err != nil {
-		return nil, err
-	}
-	if err := validateMetaConfig(&cfg.Agent.Meta); err != nil {
 		return nil, err
 	}
 	// STS: resolve optional placeholders for service credentials.
@@ -442,18 +323,6 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	applyOCRDefaults(&cfg.Agent.OCR, &cfg.Agent.LLM)
-
-	// Check for explicit mismatch before meta defaults are applied.
-	// meta.max_input_length == 0 means "not set"; inheritance happens below.
-	if cfg.Agent.Meta.MaxInputLength != 0 && cfg.Agent.HTTP.MaxInputLength != 0 &&
-		cfg.Agent.Meta.MaxInputLength != cfg.Agent.HTTP.MaxInputLength {
-		return nil, fmt.Errorf(
-			"agent.http.max_input_length (%d) and agent.meta.max_input_length (%d) conflict: set only one or make them equal",
-			cfg.Agent.HTTP.MaxInputLength, cfg.Agent.Meta.MaxInputLength,
-		)
-	}
-
-	applyMetaDefaults(&cfg.Agent.Meta, cfg.Agent.HTTP.MaxInputLength)
 
 	return &cfg, nil
 }
@@ -614,10 +483,7 @@ func validateHTTPConfig(h *HTTPConfig) error {
 	if h.MaxSessionTurns < 0 {
 		return negativeValueError("agent.http.max_session_turns")
 	}
-	// The product quota. This used to guard the model's memory as well — past the
-	// replayed-history window the oldest exchanges stopped reaching the model, and
-	// the symptom looked like a model defect rather than a config one. The engine
-	// no longer has a count window, so this is now only what it says it is.
+	// Product quota; model history is bounded independently by request size.
 	if h.MaxSessionTurns > MaxSessionTurnsCeiling {
 		return fmt.Errorf(
 			"agent.http.max_session_turns=%d exceeds the configured session quota (%d)",
@@ -640,19 +506,11 @@ func validateMySQLConfig(m *MySQLConfig) error {
 	return nil
 }
 
-// validateMetaConfig rejects any explicitly-set negative numeric values.
-func validateMetaConfig(meta *MetaConfig) error {
-	if meta.MaxInputLength < 0 {
-		return negativeValueError("agent.meta.max_input_length")
-	}
-	return nil
-}
-
 // resolveRequiredSecret resolves a required secret field. It accepts EITHER a
 // ${ENV_VAR} placeholder (resolved from the environment; the named var must be
 // non-empty) OR an inline literal value. Inline literals are permitted so a
-// production config.yaml can be fully self-contained with no environment
-// variables (the YAML-first config migration). envKey names the conventional
+// config.yaml can be fully self-contained with no environment variables.
+// envKey names the conventional
 // env var for the error message only; any ${...} placeholder is honored for
 // compatibility.
 func resolveRequiredSecret(field *string, yamlPath, envKey string) error {
@@ -683,8 +541,8 @@ func resolveRequiredSecret(field *string, yamlPath, envKey string) error {
 // resolveOptionalPlaceholder resolves an optional credential-ish field
 // (public_key / private_key / project_id). Empty is allowed (left unchanged). A
 // ${ENV_VAR} placeholder is resolved from the environment (the named var must be
-// non-empty, matching the prior contract). An inline literal is now permitted
-// too (YAML-first migration), so a self-contained config.yaml needs no env. A
+// non-empty). An inline literal is also permitted, so a self-contained
+// config.yaml needs no environment. A
 // "$"-prefixed value that is not valid ${...} is rejected as a typo.
 func resolveOptionalPlaceholder(field *string, yamlPath string) error {
 	raw := strings.TrimSpace(*field)
@@ -773,14 +631,6 @@ func applyMySQLDefaults(m *MySQLConfig) {
 	}
 	if m.ConnMaxLifetime == 0 {
 		m.ConnMaxLifetime = time.Hour
-	}
-}
-
-// applyMetaDefaults fills the meta section. MaxInputLength inherits from the
-// http section when omitted so both are always consistent.
-func applyMetaDefaults(meta *MetaConfig, httpMaxInputLength int) {
-	if meta.MaxInputLength == 0 {
-		meta.MaxInputLength = httpMaxInputLength
 	}
 }
 

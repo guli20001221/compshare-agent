@@ -161,7 +161,7 @@ func policyForAction(action string) ToolExecutionPolicy {
 		policy.RetryOn = []ErrorClass{ErrorClassNetwork, ErrorClassEOF, ErrorClassHTTP5xx}
 	}
 
-	// Per-class timeout + backoff defaults (PR #5 unification). Numbers
+	// Per-class timeout and backoff defaults. Numbers
 	// include cold STS credential acquisition when server mode uses
 	// AssumeRole. Cheap reads are usually <2s once credentials are warm,
 	// but the first per-role call can spend up to 10s in STS before the
@@ -188,16 +188,6 @@ func policyForAction(action string) ToolExecutionPolicy {
 		policy.MaxRetries = 0
 		policy.RetryOn = nil
 		policy.BackoffBaseMS = 0
-		// Defensive: catches L2 actions whose class was overridden to
-		// non-destructive upstream (e.g. a future class-derivation
-		// change). For any action routed through classForAction → L2 →
-		// Destructive (today's path), TimeoutMS was already set by the
-		// switch above, so this branch is unreachable. Kept so the L2
-		// invariant is self-contained: any L2 leaves this block with a
-		// non-zero TimeoutMS regardless of upstream changes.
-		if policy.TimeoutMS == 0 {
-			policy.TimeoutMS = 30000
-		}
 	}
 	if action == "ResetCompShareInstancePassword" || action == "ResetPasswordWorkflow" {
 		policy.RedactInResult = append(policy.RedactInResult, "Password")
@@ -270,8 +260,7 @@ func actionAllowsBackendZoneID(action string) bool {
 		"GetCompShareImageCreateProgress",
 		"DescribeCompShareCustomImageSyncDetail",
 		// DescribeCompShareJupyterToken: Pod (cpod-*) instances need the
-		// internal zone_id or the call fails outright (RetCode 8433,
-		// live-verified 2026-07-10, finding #9). SafeToolExecutor resolves
+		// internal zone_id or the call fails outright. SafeToolExecutor resolves
 		// and attaches zone_id itself (resolveJupyterTokenZoneID) for raw
 		// tool calls that don't supply one; this allowlist entry lets an
 		// already-resolved zone_id survive filterSafeArgs for
@@ -350,12 +339,7 @@ func actionAllowsBackendIdentity(action string) bool {
 func routeForAction(action string) ActionRoute {
 	switch {
 	case action == "SearchKnowledge", action == "ReadChunk":
-		// Agentic-RAG read-only tools (P3). Routed locally on a dedicated engine
-		// branch, never through SafeToolExecutor — their Route is Knowledge, not
-		// external_api. SearchKnowledge finds chunks and returns bounded snippets;
-		// ReadChunk returns one chunk's full body by id. The local GPU knowledge
-		// tools that used to share this route were deleted with the static spec
-		// table they answered from.
+		// Knowledge reads are local engine tools, not external API calls.
 		return ActionRouteKnowledge
 	case strings.HasSuffix(action, "Workflow"):
 		return ActionRouteWorkflow

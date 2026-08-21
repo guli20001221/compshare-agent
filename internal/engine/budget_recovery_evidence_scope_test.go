@@ -29,7 +29,7 @@ func priorPricingLedger() knowledge.EvidenceLedger {
 // produced a confident answer built from a chunk fetched for a different question
 // several turns earlier — and then stored that answer, copying the same chunk into
 // a second entry with a fresh timestamp, which is how a chunk retrieved once stops
-// ever ageing out of the verifiedKnowledgeMaxTurns window.
+// ever ageing out of the verifiedEvidenceMaxTurns window.
 //
 // The exits are not hypothetical: replaying production traffic they produced the
 // 处理轮次超限 cluster (M106/M110/M115/M143) and the 180s-timeout cluster
@@ -41,9 +41,9 @@ func TestBudgetRecoveryRefusesOnPriorEvidenceAlone(t *testing.T) {
 		{Content: `{"answer":"RTX 4090 按量计费每小时 2.00 元[1]。"}`},
 	}}, &mockExecutor{}, nil)
 	eng.maxTokensPerTurn = 50000
-	eng.rememberVerifiedKnowledge("4090 一小时多少钱", priorPricingLedger())
+	eng.rememberVerifiedEvidence("4090 一小时多少钱", priorPricingLedger())
 
-	require.Len(t, eng.sessionState.VerifiedKnowledge, 1,
+	require.Len(t, eng.sessionState.VerifiedEvidence, 1,
 		"premise: the prior entry must exist, or this test proves nothing")
 	require.NotEmpty(t, eng.knowledgeLedgerForVerification("那包月呢").Items,
 		"premise: the verifier can still see it — this test is about the GENERATOR, not the verifier")
@@ -55,7 +55,7 @@ func TestBudgetRecoveryRefusesOnPriorEvidenceAlone(t *testing.T) {
 		"a turn that retrieved nothing must keep the canned refusal, not answer a monthly-billing "+
 			"question out of an hourly-pricing chunk fetched for a different question")
 	assert.Empty(t, got)
-	assert.Len(t, eng.sessionState.VerifiedKnowledge, 1,
+	assert.Len(t, eng.sessionState.VerifiedEvidence, 1,
 		"and it must not re-stamp the prior chunk into a second entry, which would reset its age")
 }
 
@@ -67,7 +67,7 @@ func TestBudgetRecoveryStillDeliversFromThisTurnsEvidence(t *testing.T) {
 		{Content: `{"answer":"可以把 max-model-len 调小来降低显存占用[1]。"}`},
 	}}, &mockExecutor{}, nil)
 	eng.maxTokensPerTurn = 50000
-	eng.rememberVerifiedKnowledge("4090 一小时多少钱", priorPricingLedger())
+	eng.rememberVerifiedEvidence("4090 一小时多少钱", priorPricingLedger())
 	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{keptVLLMHit()}
 
 	got, ok := eng.synthesizeOnBudgetExceeded(context.Background(), "vllm 显存不足怎么办")
@@ -80,7 +80,7 @@ func TestBudgetRecoveryStillDeliversFromThisTurnsEvidence(t *testing.T) {
 // grounded turn, making them permanent.
 func TestStoredEvidenceIsThisTurnsOnly(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.rememberVerifiedKnowledge("4090 一小时多少钱", priorPricingLedger())
+	eng.rememberVerifiedEvidence("4090 一小时多少钱", priorPricingLedger())
 	eng.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{
 		Query: "包月怎么算",
 		Items: []knowledge.EvidenceItem{{

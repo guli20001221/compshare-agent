@@ -17,8 +17,6 @@ import (
 	"github.com/compshare-agent/internal/config"
 )
 
-const knowledgeOnlyFeature = "knowledge_only_v1"
-
 type AgentError struct {
 	Code    string
 	Message string
@@ -38,7 +36,6 @@ type AgentClient struct {
 	orgID          uint32
 	projectID      string
 	userEmail      string
-	platformReads  bool
 	consoleHandoff bool
 	http           *http.Client
 }
@@ -68,8 +65,7 @@ func NewAgentClient(cfg config.FeishuConfig) (*AgentClient, error) {
 		wsURL: wsURL.String(), httpURL: httpURL.String(),
 		companyID: cfg.CompanyID, orgID: cfg.OrganizationID,
 		projectID: cfg.ProjectID, userEmail: cfg.UserEmail,
-		platformReads:  cfg.EnablePlatformReadOnlyQueries,
-		consoleHandoff: cfg.EnableConsoleHandoff,
+		consoleHandoff: strings.TrimSpace(cfg.ConsoleAssistantURL) != "",
 		http:           &http.Client{Timeout: 15 * time.Second},
 	}, nil
 }
@@ -127,10 +123,7 @@ func (c *AgentClient) Ask(ctx context.Context, sessionID, clientTurnID, question
 	}
 	defer conn.CloseNow()
 
-	features := []string{knowledgeOnlyFeature}
-	if c.platformReads {
-		features[0] = agentprotocol.FeatureFeishuPublicPlatformReadOnly
-	}
+	features := []string{agentprotocol.FeatureFeishuPublicPlatformReadOnly}
 	if c.consoleHandoff {
 		features = append(features, agentprotocol.FeatureFeishuConsoleHandoff)
 	}

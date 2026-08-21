@@ -1,7 +1,7 @@
 -- 0011_create_ssh_ops_audit.sql (PostgreSQL)
 --
 -- Fail-closed audit for the consent-gated, read-only in-instance SSH-ops lane
--- (COMPSHARE_SSH_OPS). One row per consented diagnosis attempt: Begin inserts the
+-- One row per consented diagnosis attempt: Begin inserts the
 -- 'started' row BEFORE the harness runs (no run without a durable record), Finish
 -- enriches it with the outcome. The SSH credential is NEVER written — only tenant
 -- identity, the target instance, the PII-redacted task text, and the outcome.

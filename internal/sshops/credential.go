@@ -16,47 +16,16 @@ import (
 	"strings"
 )
 
-// ErrNoSSHTarget marks an instance that has no SSH entrypoint at all: its describe
-// carries an empty SshLoginCommand. Confirmed live against a CompShare Windows GPU
-// instance (OsType=WINDOWS, SshLoginCommand=""); any image without SSH lands here
-// too. It is NON-retryable — the box can never be entered — so callers distinguish
-// it from a transient describe failure and tell the user honestly instead of
-// "please retry". FetchCredential returns it wrapped; match with errors.Is.
+// ErrNoSSHTarget is a non-retryable instance with no SSH entrypoint, including
+// Windows/RDP-only instances. FetchCredential returns it wrapped.
 var ErrNoSSHTarget = errors.New("sshops: instance has no SSH target")
 
-// ErrInstanceNotRunning marks an instance that exists and may well have an SSH
-// entrypoint, but is not in Running state — ImageMaking, Stopped, Starting. The
-// box cannot be entered NOW and the reason is knowable, so callers name the state
-// instead of falling back to "请稍后重试，或到控制台查看实例状态", which tells the
-// user nothing they did not already know.
-//
-// Found by a live probe: uhost-…9dd126 sat in ImageMaking with no public address,
-// so the SSH dial failed and the whole lane collapsed into that generic line —
-// while the read-only instance_access capability, reading the SAME describe
-// response, correctly reported 「实例当前状态为 ImageMaking，云侧预检不能确认」.
-// The state was one field away the whole time.
-//
-// The error text carries the raw upstream state verbatim; nothing here translates
-// or enumerates states, because only Running/Stopped are attested in this repo and
-// ImageMaking was learned from a live response. Callers show it as-is.
+// ErrInstanceNotRunning carries the upstream state so callers can explain why
+// an existing instance cannot currently be entered.
 var ErrInstanceNotRunning = errors.New("sshops: instance is not running")
 
-// ErrInstanceNotFound marks an instance the describe response does not contain,
-// even though the response itself was well-formed and held other instances. The
-// id is not in this tenant's account: released, deleted, or simply mistyped.
-// Retrying the same id can never succeed, so callers say that instead of the
-// generic 「请稍后重试，或到控制台查看实例状态」.
-//
-// This is the third time this lane has had to learn the same lesson (see
-// ErrNoSSHTarget and ErrInstanceNotRunning above), and the case that forced it
-// is the most common one of the three: on 2026-08-06 a test account replaced 7
-// of its 10 instances within an hour, so a diagnosis launched against an id read
-// minutes earlier failed with "please retry" — advice that could not work — and
-// the real cause (the box was gone) took an hour to find because nothing said it.
-//
-// Deliberately NOT used when the response carried no instances at all: an empty
-// response can also mean a partial upstream failure, where retrying is genuinely
-// the right advice.
+// ErrInstanceNotFound means a well-formed account response omitted the requested
+// ID. An entirely empty response remains a retryable upstream ambiguity.
 var ErrInstanceNotFound = errors.New("sshops: instance not found in this account")
 
 // NotRunningError carries the raw upstream state so a caller can name it without
@@ -82,15 +51,8 @@ type Describer interface {
 	Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error)
 }
 
-// ErrInternalAddressUnavailable marks a failed address rewrite: the lane was configured to
-// reach instances at their internal address and could not work out what that address is.
-// The box may be perfectly healthy — the failure is the gateway, its configuration, or the
-// region lookup — so callers say so instead of emitting the generic "please retry, or check
-// the instance in the console", which points the user at something that is not wrong.
-//
-// It also keeps the first production run of the internal route self-diagnosing: "could not
-// derive the address" and "derived it and the dial failed" are different layers, and only
-// the second one is about the network to the instance.
+// ErrInternalAddressUnavailable identifies an address-resolution failure rather
+// than a problem inside the target instance.
 var ErrInternalAddressUnavailable = errors.New("sshops: internal address unavailable")
 
 // HostResolver rewrites the address an instance is dialled at, given the instance's own
@@ -105,10 +67,8 @@ var ErrInternalAddressUnavailable = errors.New("sshops: internal address unavail
 //	(addr, nil) dial addr instead
 //	("", err)   the rewrite should have worked and did not — REFUSE, do not fall back
 //
-// The third case is not pedantry. Falling back would dial the exact route the operator
-// configured this resolver because it does not work, and the resulting timeout would be
-// reported as the instance's firewall blocking SSH: the wrong-layer diagnosis this lane
-// has already shipped twice (#516, #522).
+// Resolver errors fail closed; falling back would misattribute a gateway failure
+// to the target instance.
 type HostResolver interface {
 	ResolveHost(ctx context.Context, instance map[string]any) (string, error)
 }
@@ -293,20 +253,8 @@ func instanceIDOf(inst map[string]any) string {
 	return "?"
 }
 
-// resolveInstance finds the requested instance in a describe response and fails
-// when it is absent.
-//
-// It used to fall back to the first element when nothing matched. That made the
-// id on the consent card, the id SSH'd into, and the id written to the audit row
-// three independent things: the request filters by UHostIds.0, but if upstream
-// ever ignores or mis-parses that filter and returns the caller's whole list,
-// the fallback silently picks a different box while the caller stamps the
-// requested id onto the result. Consent and audit both break, inside one tenant,
-// where credential scoping cannot help. There is no case where entering an
-// unverified box is better than refusing, so the fallback is gone.
-//
-// The resolved id is returned rather than echoed by the caller so that "which
-// box did we read" has exactly one producer.
+// resolveInstance returns only an exact requested ID. The resolved ID is
+// returned from the matched row so confirmation, SSH and audit share one source.
 func resolveInstance(raw map[string]any, instanceID string) (map[string]any, string, error) {
 	seen := 0
 	for _, key := range []string{"UHostSet", "UHostInstanceSet", "Instances", "DataSet"} {

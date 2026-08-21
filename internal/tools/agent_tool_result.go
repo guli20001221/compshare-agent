@@ -285,8 +285,6 @@ func AgentToolResultFromError(action string, err error, meta AgentToolMeta) Agen
 		return AgentToolRetryLater(action, nil, "UPSTREAM_TIMEOUT", "上游处理超时，请稍后再试。", meta)
 	case errors.Is(err, ErrUserDeclined):
 		return AgentToolFailure(action, nil, "CONFIRMATION_NOT_ACCEPTED", "用户尚未确认，本次操作没有执行。", meta)
-	case errors.Is(err, ErrActionOutcomeUncertain):
-		return AgentToolFailure(action, nil, "ACTION_OUTCOME_UNCERTAIN", "操作结果无法确认，不能自动重复执行。", meta)
 	case errors.Is(err, ErrToolCapExceeded):
 		return AgentToolFailure(action, nil, "TOOL_LIMIT_REACHED", "本次请求超出工具允许范围。", meta)
 	case errors.Is(err, ErrHistoryWindowExceeded):

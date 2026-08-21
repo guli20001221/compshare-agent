@@ -21,14 +21,14 @@ func TestResolveActionProposal_CarriesZoneSnapshotForZoneOpsOnly(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-b", time.Now())
 	eng.turnContextViewReady = true
 
-	create, err := eng.resolveActionProposalShadow(zoneUserCtx(), map[string]any{
+	create, err := eng.resolveActionProposal(zoneUserCtx(), map[string]any{
 		"turn_id": "turn-b", "operation": "CreateInstanceWorkflow", "slots": []any{},
 	})
 	require.NoError(t, err)
 	require.NotNil(t, create.referenceData.ZoneCatalog, "a zone op must carry the resolver's snapshot for the workflow to reuse")
 	assert.True(t, create.referenceData.ZoneCatalog.Available(), "the carried snapshot is built from the live catalog")
 
-	stop, err := eng.resolveActionProposalShadow(zoneUserCtx(), map[string]any{
+	stop, err := eng.resolveActionProposal(zoneUserCtx(), map[string]any{
 		"turn_id": "turn-b", "operation": "StopInstanceWorkflow", "slots": []any{},
 	})
 	require.NoError(t, err)

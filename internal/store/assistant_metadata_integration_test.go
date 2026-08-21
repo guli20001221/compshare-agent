@@ -4,12 +4,57 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func openIsolatedMessageTestDB(t *testing.T) *sql.DB {
+	t.Helper()
+	dsn := os.Getenv("COMPSHARE_TEST_MYSQL_DSN")
+	if dsn == "" {
+		t.Skip("COMPSHARE_TEST_MYSQL_DSN not set — skipping real PostgreSQL message-store integration test")
+	}
+	if strings.Contains(dsn, "117.50.198.43") {
+		t.Fatal("refusing to run the integration test against the production PostgreSQL host")
+	}
+
+	admin, err := sql.Open("postgres", dsn)
+	require.NoError(t, err)
+	require.NoError(t, admin.Ping())
+	schema := "message_it_" + strings.ReplaceAll(uuid.NewString(), "-", "")
+	_, err = admin.Exec(`CREATE SCHEMA ` + schema)
+	require.NoError(t, err)
+	t.Cleanup(func() {
+		_, _ = admin.Exec(`DROP SCHEMA IF EXISTS ` + schema + ` CASCADE`)
+		_ = admin.Close()
+	})
+
+	u, err := url.Parse(dsn)
+	require.NoError(t, err)
+	q := u.Query()
+	q.Set("search_path", schema)
+	u.RawQuery = q.Encode()
+	db, err := sql.Open("postgres", u.String())
+	require.NoError(t, err)
+	require.NoError(t, db.Ping())
+	t.Cleanup(func() { _ = db.Close() })
+
+	for _, name := range []string{"0001_init.sql", "0003_add_session_context_version.sql"} {
+		data, readErr := os.ReadFile(filepath.Join("..", "..", "deploy", "migrations", name))
+		require.NoError(t, readErr)
+		_, execErr := db.Exec(string(data))
+		require.NoError(t, execErr, "apply %s", name)
+	}
+	require.NoError(t, VerifySchema(context.Background(), db))
+	return db
+}
 
 // UpdateAssistantMetadata's statement is never parsed by a unit test — a
 // dialect or semantics error in it is invisible until it reaches a database. It
@@ -18,7 +63,7 @@ import (
 // contract the envelope depends on; assignment would make each writer of
 // messages.metadata silently drop every other writer's keys.
 func TestUpdateAssistantMetadata_MergesInsteadOfReplacing(t *testing.T) {
-	db := openIsolatedTurnTestDB(t)
+	db := openIsolatedMessageTestDB(t)
 	store := &MySQLMessageStore{db: db}
 	ctx := context.Background()
 	owner := Owner{TopOrganizationID: 66391350, OrganizationID: 64404856}
@@ -56,9 +101,9 @@ VALUES ($1, $2, 'assistant', 'reply', 'ok', $3)
 // A row with no metadata at all is the ordinary case — the assistant placeholder
 // is inserted with a NULL metadata column. `||` against NULL yields NULL in
 // PostgreSQL, so without the COALESCE this write would blank the column instead
-// of populating it, and the shadow rollout would read as "wrote nothing".
+// of populating it, and persistence would read as "wrote nothing".
 func TestUpdateAssistantMetadata_PopulatesNullMetadata(t *testing.T) {
-	db := openIsolatedTurnTestDB(t)
+	db := openIsolatedMessageTestDB(t)
 	store := &MySQLMessageStore{db: db}
 	ctx := context.Background()
 	owner := Owner{TopOrganizationID: 66391350, OrganizationID: 64404856}
@@ -85,10 +130,10 @@ VALUES ($1, $2, 'assistant', 'reply', 'ok', NULL)
 	assert.JSONEq(t, `{"agent_transcript_v1":{"v":1}}`, string(raw))
 }
 
-// Owner scoping is the same guard UpdateAssistant carries; a shadow write must
+// Owner scoping is the same guard UpdateAssistant carries; a metadata write must
 // not be a way to stamp a row belonging to another tenant.
 func TestUpdateAssistantMetadata_RejectsForeignOwner(t *testing.T) {
-	db := openIsolatedTurnTestDB(t)
+	db := openIsolatedMessageTestDB(t)
 	store := &MySQLMessageStore{db: db}
 	ctx := context.Background()
 	owner := Owner{TopOrganizationID: 66391350, OrganizationID: 64404856}

@@ -63,30 +63,6 @@ func TestSubjectKeyFromOrganization(t *testing.T) {
 	})
 }
 
-func TestSubjectKeyFromPublicKey(t *testing.T) {
-	subject, ok := SubjectKeyFromPublicKey("public-key-123")
-	if !ok {
-		t.Fatalf("SubjectKeyFromPublicKey returned ok=false for non-empty public key")
-	}
-	if !strings.HasPrefix(subject, "sha256:") {
-		t.Fatalf("subject key should use sha256 prefix, got %q", subject)
-	}
-	if strings.Contains(subject, "public-key-123") {
-		t.Fatalf("subject key leaked raw public key: %q", subject)
-	}
-
-	anonymous, ok := SubjectKeyFromPublicKey("")
-	if ok {
-		t.Fatalf("empty public key should return ok=false")
-	}
-	if anonymous != AnonymousSubjectKey {
-		t.Fatalf("empty public key should return anonymous subject, got %q", anonymous)
-	}
-	if strings.HasPrefix(anonymous, "sha256:") {
-		t.Fatalf("empty public key must not be hashed")
-	}
-}
-
 func TestInMemoryRateLimiterQPSLimit(t *testing.T) {
 	now := time.Date(2026, 5, 9, 10, 0, 0, 0, time.Local)
 	limiter := NewInMemoryRateLimiter(Limits{
@@ -226,31 +202,6 @@ func TestInMemoryRateLimiterReadExpensiveUsesSeparateBucket(t *testing.T) {
 	assertAllowed(t, limiter.Allow(req))
 	assertAllowed(t, limiter.Allow(req))
 	assertDenied(t, limiter.Allow(req), ReasonDailyExceeded)
-}
-
-func TestInMemoryRateLimiterDoesNotLeakRawPublicKey(t *testing.T) {
-	rawPublicKey := "public-key-that-must-not-appear"
-	subject, ok := SubjectKeyFromPublicKey(rawPublicKey)
-	if !ok {
-		t.Fatalf("SubjectKeyFromPublicKey returned ok=false")
-	}
-	now := time.Date(2026, 5, 9, 10, 0, 0, 0, time.Local)
-	limiter := NewInMemoryRateLimiter(Limits{
-		LLMQPS:        1,
-		LLMDaily:      100,
-		MutatingQPS:   1,
-		MutatingDaily: 50,
-	})
-
-	req := Request{SubjectKey: subject, Class: ClassLLM, Action: "main_react_chat", Now: now}
-	assertAllowed(t, limiter.Allow(req))
-	denied := limiter.Allow(req)
-	assertDenied(t, denied, ReasonQPSExceeded)
-
-	rendered := fmt.Sprintf("%+v %v", denied, denied.Err)
-	if strings.Contains(rendered, rawPublicKey) {
-		t.Fatalf("decision/error leaked raw public key: %s", rendered)
-	}
 }
 
 func TestConcurrentAllowNoRace(t *testing.T) {

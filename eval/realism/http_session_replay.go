@@ -105,7 +105,7 @@ type formOption struct {
 
 func main() {
 	input := flag.String("input", "", "sanitized sessions JSONL")
-	out := flag.String("out", "eval/reports/chat_resolution_judge_2026-06-13/http_replay_current_637_2026-06-19/raw_replay.jsonl", "output JSONL")
+	out := flag.String("out", "", "output JSONL")
 	base := flag.String("base", "http://127.0.0.1:18080", "HTTP base URL")
 	project := flag.String("project", "org-cwy2qk", "ProjectId sent to server")
 	topOrg := flag.String("top-org", "2384301", "X-Company-Id / top_organization_id")
@@ -122,6 +122,9 @@ func main() {
 
 	if *input == "" {
 		fatalf("missing -input")
+	}
+	if *out == "" {
+		fatalf("missing -out")
 	}
 	sessions, err := loadSessions(*input)
 	if err != nil {

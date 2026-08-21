@@ -11,14 +11,9 @@ import (
 // InstanceIPv6Resolver answers one question for the SSH-ops lane: which address is
 // this instance reachable at FROM HERE.
 //
-// An instance's SshLoginCommand advertises its public EIP, which is correct for the
-// customer's own laptop and useless from inside the UCloud private network, where
-// this service runs: the packets are silently dropped, so the dial does not fail
-// fast, it times out — measured across 3 instances, 2 ports and 2 regions on
-// 2026-08-06, each of which connected in under 1.2s from a normal network using the
-// identical transport. The platform's own answer to the same problem is the
-// instance's internal IPv6 (see UVPCClient.TransformIPv4ToIPv6), so this resolver
-// derives that address from the describe payload the lane has already fetched.
+// Public EIPs are not reachable from the production private network. UHost dials
+// therefore use the platform's internal IPv6 mapping derived from the current
+// describe response.
 //
 // It is deliberately per-instance and read-only: it holds no credential, and the
 // only state it keeps is the region-name -> region-id table, which is account-wide
@@ -46,11 +41,8 @@ func NewInstanceIPv6Resolver(gatewayURL string, zones ToolExecutor) *InstanceIPv
 // a port on the box; inventing an IPv6 for it would move the dial to an address that
 // never served that port.
 //
-// A non-nil error means the mapping should have worked and did not. Callers must NOT
-// silently fall back to the public address in that case: falling back would dial the
-// route the operator has already declared unreachable, then blame the instance's
-// firewall for the timeout — the wrong-layer diagnosis this lane has been burned by
-// twice (#516, #522).
+// A non-nil error means the mapping should have worked and did not. Callers must
+// not silently fall back to the unreachable public route.
 func (r *InstanceIPv6Resolver) ResolveHost(ctx context.Context, instance map[string]any) (string, error) {
 	privateIP, vpcID := privateEndpoint(instance)
 	if privateIP == "" || vpcID == "" {

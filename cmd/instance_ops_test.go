@@ -200,7 +200,7 @@ func TestInstanceOpsRunner_NoConnectedWhenNoCommands(t *testing.T) {
 	require.Equal(t, 0, verdict.Refused)
 }
 
-// A nil limiter (CLI single-user path) skips the rate check but still runs the diagnosis.
+// A nil limiter skips the rate check but still runs the diagnosis.
 func TestInstanceOpsRunner_NilLimiterStillRuns(t *testing.T) {
 	diag := &fakeDiagnoser{output: "健康"}
 	r := newInstanceOpsRunner(diag, noopDescriber{}, nil)
@@ -300,7 +300,6 @@ func TestInstanceOpsRunner_TerminalFailuresAreLogged(t *testing.T) {
 
 // --- server gate decisions -------------------------------------------------------------------------
 
-// baseGateCfg is a cfg where the ONLY thing preventing a wired lane is the flag under test.
 func gateCfg() *config.Config {
 	return &config.Config{Agent: config.AgentConfig{
 		LLM: config.LLMConfig{Model: "gpt-5.6-terra", APIKey: "modelverse-test-key"},
@@ -312,56 +311,37 @@ func gateCfg() *config.Config {
 	}}
 }
 
-func gateEnv(vals map[string]string) func(string) string {
-	return func(k string) string { return vals[k] }
-}
-
-// P2 gate 1: lane off by default → nil runner, no error.
+// An absent harness path leaves the optional lane off.
 func TestServerInstanceOpsRunner_OffByDefault(t *testing.T) {
-	r, err := serverInstanceOpsRunner(gateCfg(), gateEnv(nil), noopDescriber{}, nil)
+	cfg := gateCfg()
+	cfg.Agent.SSHOps.HarnessPath = ""
+	r, err := serverInstanceOpsRunner(cfg, noopDescriber{}, nil)
 	require.NoError(t, err)
 	require.Nil(t, r)
 }
 
-// The lane is READ-ONLY, so it does NOT require durable turns: with SSH_OPS + non-static STS + a DB it
-// runs on the current (non-durable) production transport (WS/SSE via chatStream, which carries the
-// confirm card + StepEvent stream). Durable only adds disconnect-survival, not safety.
-func TestServerInstanceOpsRunner_RunsWithoutDurable(t *testing.T) {
-	env := gateEnv(map[string]string{"COMPSHARE_SSH_OPS": "1"}) // COMPSHARE_DURABLE_TURNS deliberately unset
+func TestServerInstanceOpsRunner_RunsOnProductionTransport(t *testing.T) {
 	db := sql.OpenDB(fakeConnector{})
 	defer db.Close()
 
-	r, err := serverInstanceOpsRunner(gateCfg(), env, noopDescriber{}, db)
+	r, err := serverInstanceOpsRunner(gateCfg(), noopDescriber{}, db)
 	require.NoError(t, err)
-	require.NotNil(t, r, "read-only lane must run on the non-durable transport (no durable requirement)")
+	require.NotNil(t, r)
 }
 
-// P2 gate 7 (INV-12): SSH_OPS + durable on, but a static provider (no STS service AK/SK) → refuse to
+// A static provider (no STS service AK/SK) refuses to
 // construct. Under a shared static account there is no per-tenant scoping on the target instance.
 func TestServerInstanceOpsRunner_RefusesStaticProvider(t *testing.T) {
 	cfg := gateCfg()
 	cfg.Agent.STS = config.STSConfig{} // empty service AK/SK ⇒ StaticCredentialProvider path
 	cfg.Agent.PublicKey, cfg.Agent.PrivateKey = "pk", "sk"
-	env := gateEnv(map[string]string{"COMPSHARE_SSH_OPS": "1"})
-
 	// non-nil db so the ONLY thing gating construction is the static provider
 	db := sql.OpenDB(fakeConnector{})
 	defer db.Close()
 
-	r, err := serverInstanceOpsRunner(cfg, env, noopDescriber{}, db)
+	r, err := serverInstanceOpsRunner(cfg, noopDescriber{}, db)
 	require.NoError(t, err)
 	require.Nil(t, r, "static AK/SK must refuse the lane (INV-12)")
-}
-
-// Durable ON is accepted too — it simply adds disconnect-survival; the gate never depended on it.
-func TestServerInstanceOpsRunner_ConstructsWithDurableOn(t *testing.T) {
-	env := gateEnv(map[string]string{"COMPSHARE_SSH_OPS": "1", "COMPSHARE_DURABLE_TURNS": "1"})
-	db := sql.OpenDB(fakeConnector{})
-	defer db.Close()
-
-	r, err := serverInstanceOpsRunner(gateCfg(), env, noopDescriber{}, db)
-	require.NoError(t, err)
-	require.NotNil(t, r)
 }
 
 // A lane enabled against a database missing the audit migration must be OFF, and the server must
@@ -393,7 +373,7 @@ func TestServerInstanceOpsRunner_MissingAuditMigrationDisablesTheLaneAndStillBoo
 	// hallucinated call.
 	describer := &recordingDescriber{}
 
-	r, err := serverInstanceOpsRunner(gateCfg(), gateEnv(map[string]string{"COMPSHARE_SSH_OPS": "1"}), describer, db)
+	r, err := serverInstanceOpsRunner(gateCfg(), describer, db)
 
 	require.NoError(t, err, "an optional lane's missing column must not take the whole server down")
 	require.Nil(t, r, "the lane must be OFF: a nil runner is what keeps the tool out of the model's window (INV-10)")
@@ -414,7 +394,7 @@ func TestServerInstanceOpsRunner_CompleteAuditSchemaWiresTheLane(t *testing.T) {
 	db := sql.OpenDB(fakeConnector{})
 	defer db.Close()
 
-	r, err := serverInstanceOpsRunner(gateCfg(), gateEnv(map[string]string{"COMPSHARE_SSH_OPS": "1"}), noopDescriber{}, db)
+	r, err := serverInstanceOpsRunner(gateCfg(), noopDescriber{}, db)
 
 	require.NoError(t, err)
 	require.NotNil(t, r)
@@ -423,12 +403,11 @@ func TestServerInstanceOpsRunner_CompleteAuditSchemaWiresTheLane(t *testing.T) {
 // A fully-enabled lane with missing harness settings fails LOUDLY at boot, not silently.
 func TestServerInstanceOpsRunner_MisconfigIsBootError(t *testing.T) {
 	cfg := gateCfg()
-	cfg.Agent.SSHOps.HarnessPath = "" // enabled but not configured
-	env := gateEnv(map[string]string{"COMPSHARE_SSH_OPS": "1"})
+	cfg.Agent.SSHOps.BaseURL = ""
 	db := sql.OpenDB(fakeConnector{})
 	defer db.Close()
 
-	_, err := serverInstanceOpsRunner(cfg, env, noopDescriber{}, db)
+	_, err := serverInstanceOpsRunner(cfg, noopDescriber{}, db)
 	require.Error(t, err, "a fully-enabled but misconfigured lane must fail boot, not disable silently")
 }
 

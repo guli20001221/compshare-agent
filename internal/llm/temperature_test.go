@@ -20,7 +20,7 @@ import (
 // struct holds 0 either way; only the wire tells the two apart.
 func TestPinnedZeroTemperatureSurvivesSerialization(t *testing.T) {
 	body, err := json.Marshal(openai.ChatCompletionRequest{
-		Model:       "deepseek-v4-flash",
+		Model:       "gpt-5.6-terra",
 		Temperature: wireTemperature(0),
 	})
 	require.NoError(t, err)
@@ -31,7 +31,7 @@ func TestPinnedZeroTemperatureSurvivesSerialization(t *testing.T) {
 // TestUnpinnedTemperatureIsAbsentFromTheWire is the other half: callers that
 // leave Temperature nil must be byte-identical to before this field existed.
 func TestUnpinnedTemperatureIsAbsentFromTheWire(t *testing.T) {
-	body, err := json.Marshal(openai.ChatCompletionRequest{Model: "deepseek-v4-flash"})
+	body, err := json.Marshal(openai.ChatCompletionRequest{Model: "gpt-5.6-terra"})
 	require.NoError(t, err)
 	assert.False(t, strings.Contains(string(body), `"temperature"`),
 		"an unpinned request must not send a temperature; got %s", body)

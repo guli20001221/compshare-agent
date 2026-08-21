@@ -12,9 +12,8 @@ func TestValidateConfigConsoleHandoffRequiresHTTPSURL(t *testing.T) {
 	cfg := config.FeishuConfig{
 		AppID: "cli_test", AppSecret: "secret", AgentWSURL: "ws://127.0.0.1:7429/",
 		CompanyID: 1, OrganizationID: 2, AllowedChatIDs: []string{"oc_test"},
-		EnableConsoleHandoff: true,
 	}
-	require.ErrorContains(t, ValidateConfig(cfg), "console_assistant_url")
+	require.NoError(t, ValidateConfig(cfg), "an absent URL disables the handoff")
 	cfg.ConsoleAssistantURL = "http://console.example.test/assistant"
 	require.ErrorContains(t, ValidateConfig(cfg), "absolute HTTPS")
 	cfg.ConsoleAssistantURL = "https://console.example.test/#/assistant"

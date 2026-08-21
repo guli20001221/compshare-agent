@@ -1,4 +1,4 @@
-"""Reasoning-blind command guardrails for the SSH-ops lane (production-hardened, round 2).
+"""Reasoning-blind command guardrails for the SSH-ops lane.
 
 Core safety principle: the decision to run / refuse / confirm a command is driven ONLY
 by the user intent + the literal command string, NEVER by anything the instance emitted.
@@ -16,23 +16,14 @@ Prefer observable pre-state, exact approval and a recoverable change. Reserve th
 for effects that lose data/recovery access, make the guest unbootable, or cross into another control
 plane; a high-impact but reversible guest change belongs behind a confirmation card.
 
-Two adversarial red-team rounds shaped this. Round 1 closed exfil/streaming/destructive holes.
-Round 2's lesson: the hardening must NOT destroy the lane's OWN diagnostics — SSH auth logs,
-checksums (sha256sum), git/docker IDs, and `KeyError:` tracebacks were being over-redacted, and
-`ps -o environ` still leaked env. So redaction is now PRECISION-first (specific secret labels +
-value-shape + vendor prefixes), classification anchors flags to the right binary, and the
-transport's hard per-command timeout backstops any streaming command that still slips through.
+Redaction is precision-first, classification anchors flags to the relevant binary, and the
+transport enforces a per-command timeout.
 
-The read tier is NOT deny-by-default, and this file used to claim it was. A command that
+The read tier is not deny-by-default. A command that
 matches no rule at all falls through to read_only: `evil`, `evil -q` and `frobnicate --all`
-auto-run. What is left of that gap is now exactly ONE shape — an unknown BARE NAME, resolved
-through the remote PATH — and it is a known, tracked debt, not an oversight. It was accepted
-deliberately on 2026-07-23 (see POLICY_RELAXED_TO_READ in test_guardrails.py, and
-`frobnicate --all` in CLASSIFY_CASES, which is pinned mutating there and re-baselined to
-read_only by the policy), on the reasoning that a name we do not know is not a name we know to
-be dangerous. Closing it needs an IDENTITY judgement — measured at 95 of 221 corpus cases and
-16 of 20 realistic commands changing tier — so it is a separate decision with its own blast
-radius, and it is still open.
+auto-run. The remaining gap is an unknown bare name resolved through the remote PATH. Closing
+that gap requires an executable-identity policy and is intentionally outside this literal-shape
+classifier.
 
 Running a FILE is no longer part of that gap, and the rule for it is deliberately small: a
 program named by absolute path auto-runs as a read only from /bin, /sbin, /usr/bin and
@@ -80,15 +71,8 @@ from urllib.parse import urlsplit
 #     PATH, so a bare `dd` is whatever that box's PATH resolves `dd` to. A name is not an
 #     identity here, and an allowlist keyed on one only looks like it establishes trust.
 #
-# The exemption was also worth almost nothing. Measured over the pinned CLASSIFY_CASES
-# corpus by removing it and re-classifying, exactly THREE cases change: `dd --version`
-# (-> mutating), `curl --version` (-> mutating) and `usermod --help` (-> destructive).
-# Everything a diagnosis actually runs — `nvidia-smi --help`, `python3 --version`,
-# `git --version`, `docker --version` — is read_only through the normal path below and
-# never needed an exemption. Two extra confirmation cards (`dd`, `curl`) plus one hard
-# refusal (`usermod --help`, which the destructive scan owns once nothing exempts it) is
-# the entire price of not having a rule whose safety argument cannot be made. The refusal
-# is worth naming separately: a card can be clicked, a destructive verdict cannot.
+# Normal diagnostic version queries are classified by the regular rules below; no separate
+# help/version bypass is needed.
 # Verbs that write EVERY path they are handed, so a lockout path anywhere in the argv is a write.
 # `mv` belongs here rather than below because its SOURCE disappears too: `mv /etc/fstab /tmp/bak`
 # leaves the box unbootable just as surely as overwriting it does.
@@ -97,13 +81,8 @@ _WRITE_ANY_ARG = r"(?:tee|truncate|chmod|chown|chgrp|dd|rm|mv)"
 # these — `cp /etc/fstab /tmp/fstab.bak`, i.e. backing it up before editing — is the careful thing
 # to do, and refusing it is the exact over-strictness this re-tiering exists to remove.
 _WRITE_LAST_ARG = r"(?:cp|install|ln)"
-# Paths where a write is unrecoverable from inside the box, or destroys the only channel we would
-# need in order to recover it. These are the deliberate CARVE-OUTS from the 2026-07-30 narrowing
-# further down: /etc as a whole moved to `mutating` because that is where a broken service's config
-# lives and refusing it refused the repair — but these specific paths are not service config. A bad
-# fstab line makes the box unbootable; passwd/shadow/group/the main sudoers file/ssh each end the
-# login path. A sudoers.d drop-in remains an exact, removable guest change behind confirmation;
-# /var/lib holds live database and container state, so a write there is data loss, not a config fix.
+# Paths where a write can make the guest unbootable, destroy access, or corrupt live state.
+# Ordinary service configuration remains confirmable; these paths are always refused.
 _LOCKOUT_BODY = (r"/(?:etc/(?:fstab|crypttab|passwd|shadow|gshadow|group|sudoers|ssh"
                  r"|default/grub)|var/lib)")
 _LOCKOUT_PATHS = _LOCKOUT_BODY + r"(?:/|\s|$)"
@@ -126,11 +105,7 @@ _SYSTEM_PATHS = r"/(?:etc|usr|lib(?:64)?|s?bin|var|boot|opt|root)(?:/|\s|$)"
 # ===========================================================================
 _DESTRUCTIVE_SRC = [
     # ---- deletion -------------------------------------------------------------------------
-    # `rm` was UNCONDITIONALLY destructive until 2026-07-30. Measured cost of that on a live run:
-    # a purely READ-ONLY diagnostic probe (curl a port, print the body) was hard-refused because it
-    # tidied up its own `/tmp` scratch file at the end. The gate was punishing careful behaviour.
-    # Now: irreversible or wide-blast-radius deletes stay refused; a targeted delete of one
-    # non-system path falls through to `mutating`, i.e. it still needs the operator's consent card.
+    # Irreversible or wide deletes are refused; a targeted non-system delete is mutating.
     r"\brm\b[^\n]*\s-{1,2}[a-zA-Z-]*[rR]",                 # recursive: rm -r / -rf / --recursive
     # Every shell expansion that makes ONE `rm` delete an unknown number of files. `*`/`?` were
     # covered from the start; brace and bracket expansion were not, so `rm -f /etc/{a,b}` and
@@ -143,13 +118,7 @@ _DESTRUCTIVE_SRC = [
     r"\brm\b[^\n]*\s/(etc|boot|s?bin|lib(64)?|usr|sys|proc|dev|var/lib)(/|\s|$)",
     r"\brm\b[^\n]*\s/\s*$",                                 # rm /
     r"\bunlink\b", r"\bshred\b",
-    # `truncate` was UNCONDITIONALLY destructive until 2026-07-30. Measured on a live box: a 2 GB
-    # log held open by a running process, `rm` of it reclaimed ZERO bytes (df avail unchanged at
-    # 75062 MB, the open fd still pinning the inode) while `truncate -s 0` reclaimed all 2 GB
-    # (75062 -> 77110 MB). The gate was therefore allowing the move that does NOT work and refusing
-    # the one that does, on 系统盘写满 — the most classic ops failure there is. Only the ZERO-size
-    # form is exempted; `truncate -s 10G` still allocates and still refuses. The lockout and
-    # kernel-path rules below apply to both forms regardless.
+    # Only zero-length truncation is confirmable; allocation and lockout/kernel targets refuse.
     r"\btruncate\b(?![^\n]*(?:-s\s*0|--size[=\s]*0)(?:\s|$))",
     r"\bmkfs\w*\b", r"(?<![\w-])dd\b[^\n]*\s(if=|of=|bs=|count=|conv=)",
     # fdisk/parted stay destructive EXCEPT the pure LIST mode (-l/--list), which only prints the
@@ -194,33 +163,15 @@ _DESTRUCTIVE_SRC = [
     # cp/install/ln write only their LAST argument, so the destination form is separate — otherwise
     # `cp /proc/net/tcp /tmp/out` and `cp /dev/null /tmp/marker`, both legitimate, would be refused.
     rf"\b{_WRITE_LAST_ARG}\b[^\n]*\s/(?:boot|sys|dev|proc)/\S*\s*$",
-    # /etc, /usr, /lib, /bin, /sbin, /var/lib were in the three patterns above until 2026-07-30 and
-    # are deliberately NOT any more. They are where a broken service actually lives, so refusing
-    # them refused the repair itself. Measured on a live run: the fault was injected by renaming a
-    # file under /usr/lib, and the agent — having diagnosed it exactly right — could not rename it
-    # back, because `mv ... /usr/lib/...` was destructive. Every natural form (mv / cp / install /
-    # `cat X > Y`) was refused; only contortions (`ln -s`, `python3 shutil.move`) got through, which
-    # is not a fix path anyone should have to find. Writing a log next to the image's own
-    # /usr/local/jupyterlab.log was refused for the same reason.
-    # They now fall through to `mutating`: still gated, but by the operator reading the exact
-    # command on a consent card rather than by a blanket path ban. The exceptions are the
-    # _LOCKOUT_PATHS above (/etc/fstab, the account and ssh files, /var/lib): those are not service
-    # config, so nothing in the measured runs needed them and a bad write there is either
-    # unbootable or unrecoverable. The first cut of this narrowing dropped /var/lib along with the
-    # rest, which was loosening with no evidence behind it.
+    # System service paths are confirmable so the lane can repair software. _LOCKOUT_PATHS above
+    # remain refused because a bad write there can destroy boot, access, or live data.
     # Recursive ownership/mode rewrites discard old metadata for an unknown tree. A single chmod
     # (including 777) or chattr change is reversible and therefore stays `mutating`.
     r"\bchmod\b.*\s-R\b", r"\bchown\b.*\s-R\b",
     # firewall / services / management-channel lockout
     r"\biptables\b\s+-F", r"\bufw\b\s+disable",
-    # `restart`/`reload` on ssh join stop/kill as of 2026-07-30, and the reason is a measurement:
-    # on a live box, SIGHUP to sshd with ONE bad directive in its config did not fail safe the way
-    # nginx does — OpenSSH re-execs itself on HUP, the re-exec failed, and the daemon DIED (port
-    # stopped listening, connection refused). A plain restart with the same config also refused to
-    # start. In this category the user's config is ALREADY broken, which is precisely when a
-    # reload is fatal, so it must not be one consent-card click away.
-    # `start` is deliberately NOT here: it is the recovery direction, it cannot lose a daemon that
-    # is already down, and it stays approvable.
+    # Restarting or reloading SSH/network can destroy the recovery channel when config is broken.
+    # Starting an already-down service remains confirmable.
     r"\bsystemctl\b[^\n]*\b(stop|kill|restart|reload|try-restart|force-reload|disable|mask)\b[^\n]*\b\S*(ssh|network)\S*\b",
     r"\bservice\b\s+\S*(ssh|network)\S*\s+(stop|restart|reload|force-reload)\b",
     # process kill of init / critical daemons
@@ -238,33 +189,13 @@ _DESTRUCTIVE_SRC = [
 ]
 _DESTRUCTIVE = [re.compile(p, re.IGNORECASE) for p in _DESTRUCTIVE_SRC]
 
-# --- the ONE narrowing of the destructive tier, 2026-08-08 -----------------------------------
-# `rm -rf <dir>` was refused in every form, which made the single most common real disk-full repair
-# — clearing a package/model cache — impossible: the agent could only delete files ONE AT A TIME,
-# each behind its own consent card. But a blanket narrowing is not available either, because what
-# makes a recursive delete unreviewable is that the operator reading the card cannot enumerate what
-# is inside the directory.
+# Recursive deletion is confirmable only for trees regenerable by construction: dot-caches,
+# __pycache__, /tmp, /var/tmp and /var/cache. A user-named cache directory is not sufficient.
 #
-# The exemption is therefore scoped to trees whose contents are regenerable BY CONSTRUCTION, so
-# "what is inside" does not have to be known to judge the command: dot-caches, __pycache__, /tmp,
-# /var/tmp, /var/cache. `/workspace/cache` and friends are deliberately NOT here — a directory a
-# user happened to name "cache" may hold a dataset, and convention is not a guarantee.
-#
-# It suppresses ONLY the recursion rules. Every other destructive pattern still applies to the same
-# segment. That layering was MEASURED rather than asserted, over the 20 must-refuse cases pinned in
-# test_guardrails F13c:
-#   * 17/20 never reach the layering at all — _is_regenerable_recursive_delete rejects them itself
-#     (glob/brace/bracket, `..`, two targets, an unrecognized flag, a tree that is not regenerable).
-#   * 3/20 DO get the exemption — `/usr/.cache`, `/var/lib/.cache`, `/etc/.cache` — and are refused
-#     by the pre-existing system-path rule, which the exemption never touches.
-#   * On today's rule set the two overlap enough that killing either the metachar check or the
-#     both-spellings check below flips no final verdict; each changes only WHETHER the exemption
-#     fires. They are kept as defence in depth and are documented here as exactly that, not claimed
-#     as the thing holding the line — the F13c verdicts are what hold it.
-# The residual, named rather than left implicit: a dot-cache under a system path NOT in that rule
-# (`/opt/.cache`, `/srv/.cache`) gets a consent card rather than a refusal, and a `.cache` that is a
-# SYMLINK elsewhere cannot be seen from the literal string — the same limit every path rule in this
-# file has, and the reason the card shows the exact string the operator approves.
+# It suppresses only the recursion rule. Every other destructive pattern still applies. Globs,
+# traversal, multiple targets, unknown flags and non-regenerable trees cannot take the exemption.
+# System paths remain refused by their independent rule. Literal path checks cannot resolve a
+# symlink; the confirmation card therefore shows the exact approved command.
 _RM_RECURSION_RULES = {
     r"\brm\b[^\n]*\s-{1,2}[a-zA-Z-]*[rR]",
 }
@@ -361,15 +292,8 @@ _STRUCTURED_DIAG = [re.compile(p) for p in [
     r"(ss|netstat)(\s+\S+)*",
     r"ip\s+(-\w+\s+)*(addr|a|link|l|route|r|neigh|n)(\s+(show|list|s|l))?",
     r"getconf(\s+\S+)*",
-    # Listing forms of two binaries whose BARE invocation writes, so both sit in
-    # _MUTATING_BINARIES and every form of them was gated — including the ones that only print.
-    #
-    # Measured cost, 2026-08-07: an OOM diagnosis on a live instance put `swapon --show` behind a
-    # human confirmation card with a countdown. Whether a box has swap, and whether it is full, is
-    # the first fork in OOM triage — so the gate was standing in front of the question the run
-    # existed to answer, for a command that opens no file and changes no state.
-    #
-    # Anchored to the LISTING flags only, and at least one is required: `swapon /swapfile` and
+    # Listing forms of binaries whose other invocations mutate. Anchored to listing flags only:
+    # `swapon /swapfile` and
     # `swapon -a` still enable swap, `mount /dev/sda1 /mnt` still mounts, and all three stay
     # mutating because they cannot fullmatch. Bare `swapon` is deliberately NOT here — modern
     # util-linux lists, older versions did not, and the difference is not worth guessing at.
@@ -532,12 +456,8 @@ def _pkg_safe_path(p: str) -> bool:
             or p.endswith("/pyvenv.cfg"))
 
 
-# F13: application log files. "Why did my service die?" is answered by the service's OWN log and
-# nothing else — a live run showed the agent trying `tail` on the app log on nearly every round, being
-# refused every time, and then INVENTING a cause ("核心包未安装" / "启动脚本本轮未执行"). Scope is a
-# path SHAPE (a .log/.out/.err under an application dir), never /var/log — system/auth logs there leak
-# credentials and login records. Values inside are still secret-scrubbed by scrub_output on the way
-# out (a Jupyter `token=` in a startup log is redacted), and the secret-FILE tripwires still deny.
+# Application logs are content-safe only under application directories, never /var/log. Output is
+# still secret-scrubbed and secret-file tripwires still apply.
 _APP_LOG_PREFIXES = ("/workspace/", "/data/", "/mnt/", "/opt/", "/start.d/", "/usr/local/")
 _APP_LOG_SHAPE = re.compile(r"(?:\.(?:log|out|err)|(?:^|/)nohup\.out)$", re.I)
 
@@ -573,15 +493,10 @@ def _safe_meta_path(p: str) -> bool:
     that, allow the introspection tree AND the user/app data dirs (still minus any secret-FILE
     location).
 
-    F11 — why the non-home APP dirs are included: a live run proved the cost of denying them. With
-    the app dir unlistable the agent could not find ComfyUI's source checkout at /workspace/ComfyUI,
-    searched pip site-packages instead, and confidently concluded "镜像没装 ComfyUI 本体" — while the
-    app was fully installed and merely STOPPED. Evidence starvation produced a WRONG root cause,
-    which is worse than the disclosure it avoided: these reads return names/sizes/perms, never file
-    CONTENT.
+    Non-home application directories are included because metadata is needed to locate installed
+    software; these reads return names, sizes and permissions, never file content.
 
-    /root and /home stay EXCLUDED: a red-team round locked `ls /root` / `ls -la /root/models` as
-    refused (a filename in a home dir is itself potentially sensitive) and that gate is unchanged.
+    /root and /home stay excluded because filenames there may be sensitive.
     Where the app lives under /root, its existence is still provable with the size-only `du`
     allowance (F5) — so the agent is never forced to guess."""
     p = _unquote(p)
@@ -631,7 +546,7 @@ _DU_DENY_SUBSTR = tuple(d for d in _DENY_PATH_SUBSTR if d != "/root")
 
 
 # F12: a `du` walk rooted at `/` may descend ONE level (top-level dirs + their sizes). Deeper walks
-# would enumerate subdirectory NAMES inside home dirs, which the `ls /root` red-team lock forbids.
+# would enumerate subdirectory names inside home directories, which the policy forbids.
 _DU_DEPTH = re.compile(r"(?:--max-depth[=\s]\s*|(?:^|\s)-d\s*)(\d+)")
 
 
@@ -650,7 +565,7 @@ def _du_safe_path(p: str) -> bool:
     # single 46G file sat unmentioned. They emit standard FHS directory names plus SIZES, never file
     # contents; the secret-file tripwires and the F12 depth cap still apply.
     #
-    # Deliberately NOT "any top-level dir": a red-team round locked `du -sh /etc` as refused, and that
+    # Deliberately not "any top-level dir": `du -sh /etc` remains refused, and that
     # gate is unchanged. Drill-down after the root sweep still works through the F5 user-dir allowance
     # (`du -sh /root`, `du -sh /root/data`).
     if p == "/" or re.fullmatch(r"/\*+", p):
@@ -729,11 +644,7 @@ def _interval_ok(tokens) -> bool:
 
 
 # --- F10: loopback-only HTTP probe -------------------------------------------
-# "Does the service actually answer on its port?" is THE discriminator between the two most common
-# real web-service failures — process DEAD vs process ALIVE but bound to 127.0.0.1 (the classic
-# missing `--listen 0.0.0.0`, which makes the public/pod URL 403 while the box is perfectly healthy).
-# Neither `ss` nor `ps` can answer it: only asking the port does. A live run proved the agent burns
-# its whole turn budget when this is refused.
+# A loopback HTTP request distinguishes a dead service from one listening only locally.
 #
 # Scope is deliberately airtight so this can never exfiltrate or mutate:
 #   - every non-flag argument MUST be a loopback URL (127.0.0.1 / localhost / ::1 / 0.0.0.0),
@@ -868,8 +779,8 @@ def _is_safe_readonly_command(cmd: str) -> bool:
         return False
     # F14: scan for hard metachars on a copy whose SINGLE-QUOTED spans are blanked out. Inside single
     # quotes the shell expands nothing, so `grep 'comfy$'` / `grep 'a|b'` are inert text — yet the flat
-    # scan refused them, and anchoring a grep is routine (a live run lost ~1/4 of its budget to exactly
-    # this). Masking preserves offsets, so pipe boundaries are located outside quotes too. Path safety
+    # scan would refuse them. Masking preserves offsets, so pipe boundaries are located outside
+    # quotes too. Path safety
     # is UNAFFECTED: segments are taken from the ORIGINAL text and every path token is still validated,
     # so `cat '/etc/shadow'` remains refused.
     masked = _mask_single_quoted(stripped)
@@ -877,7 +788,7 @@ def _is_safe_readonly_command(cmd: str) -> bool:
         return False
     # Command substitution stays refused even when quoted. Inside single quotes `$(...)` is inert in a
     # correct shell, but this is the one construct where a quoting bug turns into arbitrary execution,
-    # so it is belt-and-braces denied on the RAW text (a red-team round locked `grep '$(whoami)'`).
+    # so it is also denied on the raw text.
     # A bare `$` anchor (`grep 'comfy$'`) carries no such risk and stays allowed.
     if _SUBSTITUTION.search(stripped):
         return False
@@ -923,29 +834,20 @@ def _strip_sudo(cmd: str) -> str:
 
 
 # A command refused for its FORM (chaining / substitution / find) rather than because it mutates.
-# This is ONLY used to word the refusal message — it never grants execution, so it cannot widen the
-# security boundary. It matters because the refusal text is the model's sole feedback channel: a live
-# run showed a form-refused `ls /a; ls /b` answered with "this changes the box" makes the model retry
-# ANOTHER chained variant instead of splitting into single commands, burning the whole turn budget
-# (24/50 commands refused, max_turns hit, no verdict).
+# This is only used to word the refusal; it never grants execution. Accurate feedback lets the
+# model split an unsupported command shape instead of retrying another equivalent wrapper.
 # =============================================================================
 # Tier 2: mutating — refused in Phase 1. Everything NOT matching is read_only.
 #
-# POLICY CHANGE (2026-07-23, product owner's call). This lane is read-only
-# DIAGNOSIS, so the boundary is now defined by EFFECT instead of by a curated
-# allowlist of blessed commands. Two things forced the change:
-#   * the allowlist was a treadmill — every new image/scenario needed new entries;
-#   * it actively produced WRONG answers. A live N=3 repro went from 1/3 to 3/3
-#     correct root causes purely by widening what the agent could READ; every
-#     fabrication traced to evidence starvation, not to bad reasoning.
-# Reads are therefore allowed by default, and only these classes stay refused:
+# The boundary is defined by effect rather than a curated command allowlist. Reads are allowed by
+# default, and only these classes stay refused:
 #   1. writes / state changes on the box
 #   2. execution of arbitrary code (a `python -c` is an unbounded write primitive)
 #   3. network egress off the box (exfil channel; loopback probes stay allowed)
 #   4. commands that stream or block forever (they burn the entire turn budget)
 #
-# Secret-bearing READS (env, cloud-init logs, /proc/*/environ, `ps auxe`) are now
-# ALLOWED by explicit product decision: on this platform those are the operator's
+# Secret-bearing reads (env, cloud-init logs, /proc/*/environ, `ps auxe`) are
+# allowed by product policy: on this platform those are the user's
 # own platform keys, and the instance password is already visible in the console,
 # so reading them discloses nothing the requesting tenant cannot already see. The
 # literal SSH credential is still stripped from output by scrub_output as defense
@@ -955,11 +857,6 @@ def _strip_sudo(cmd: str) -> str:
 # Listing-only forms of binaries that are otherwise writers. Checked BEFORE _MUTATING_BINARIES,
 # the same shape the interpreters / curl / env carve-outs already use — set membership reads the
 # first token only, so without this there is nowhere for "the form that just prints" to be said.
-#
-# Measured cost of not having it, 2026-08-07: a live OOM diagnosis put `swapon --show` behind a
-# human confirmation card with a countdown. Whether a box has swap, and whether it is full, is the
-# first fork in OOM triage — the gate was standing in front of the question the run existed to
-# answer, for a command that opens no file and changes nothing.
 #
 # Anchored to listing flags, and swapon requires at least one: `swapon /swapfile`, `swapon -a` and
 # `mount /dev/sda1 /mnt` cannot fullmatch and stay mutating. Bare `swapon` is deliberately absent —
@@ -971,13 +868,9 @@ _LISTING_ONLY = {
 
 # Binaries whose invocation changes the box (or holds the session open forever).
 _MUTATING_BINARIES = {
-    # `rm`/`unlink` belong here as of 2026-07-30. They used to be unconditionally destructive, so
-    # this set never needed them; once the destructive patterns were narrowed to recursive/glob/
-    # system-path deletes, a targeted `rm -f /tmp/scratch` fell through to read_only — i.e. a delete
-    # that executes with NO consent card. Narrowing a refusal must never turn into an auto-run.
+    # Targeted deletes are mutating; narrowing the destructive patterns must not auto-run them.
     "rm", "unlink",
-    # These write a file on EVERY invocation — there is no read-only form of them to preserve, and
-    # all four classified read_only until 2026-07-30, i.e. they wrote with no consent card at all.
+    # These write a file on every invocation; there is no read-only form to preserve.
     "split", "csplit", "mknod", "mkfifo",
     # Wrappers that run another command but whose OWN argument grammar cannot be parsed reliably
     # (taskset/numactl take either a positional mask or a flag; flock takes a path or an fd). We
@@ -996,13 +889,7 @@ _MUTATING_BINARIES = {
     "vi", "vim", "nano", "emacs", "ed", "less", "more", "man", "watch", "htop",
     "screen", "tmux", "at", "batch", "systemd-run",
 }
-# Wrapper prefixes: the command's EFFECT belongs to the inner command, not to the wrapper's name.
-# Until 2026-07-30 none of these appeared in any set, which left the gate structurally asymmetric:
-# the destructive scan is a regex over the WHOLE string, so `nice rm -rf /x` was caught, but the
-# mutating check reads only the FIRST token, so `nice touch /etc/x` read as read_only and auto-ran
-# with no consent card. Wrapping is the cheapest bypass there is, and it defeated exactly one half
-# of the gate — the half a human is standing in.
-#
+# Wrapper prefixes: the command's effect belongs to the inner command, not the wrapper's name.
 # The value is how many of the wrapper's OWN positionals precede the inner command once flags are
 # consumed (`timeout 5 cmd` has one: the duration). Failing to find an inner command at all fails
 # CLOSED, so `ionice -p 1234 -c 3` (which renices a running pid rather than running anything) lands
@@ -1019,10 +906,7 @@ _WRAPPER_VALUE_FLAGS = {"-n", "-c", "-o", "-e", "-i", "-s", "-k", "-p", "-N", "-
 # environment probe. Every other `command` form executes.
 _COMMAND_LOOKUP = re.compile(r"(?:^|\s)-[vV](?:\s|$)")
 
-# Binaries that READ by default but take a destination path, so the write hides in a FLAG rather
-# than in the binary's name. All of these classified read_only on 2026-07-30 — they wrote a file
-# with no consent card. `base64 -d -o out` and `xxd -r in out` are the standard "write arbitrary
-# bytes to an arbitrary path" idioms, so this was not a corner case.
+# Binaries that read by default but take a destination path, so a write hides in a flag.
 # A blanket "-o means output" rule would be wrong: `ps -o pid,comm`, `lsblk -o NAME`, `findmnt -o`
 # and `df -o` all use -o for FORMAT and are core diagnostics. Hence per-binary scoping.
 _OUTPUT_FLAG_WRITERS = {
@@ -1034,17 +918,7 @@ _OUTPUT_FLAG_WRITERS = {
     "xxd": re.compile(r"(?:^|\s)-(?:r|revert)(?:\s|$)"),
 }
 
-# The same shape as _OUTPUT_FLAG_WRITERS, one layer over: a binary that READS by default and whose
-# SIDE EFFECT — here, killing processes — hides in a flag rather than in its name.
-#
-# `fuser` appeared NOWHERE in this module until 2026-08-08, and none of the 353 classification cases
-# covered it, so every kill form classified read_only — which means it executed with no consent card
-# AND in read-only mode, under a card that says 只读排查. Measured: 10/10 kill spellings, including
-# `sudo`/`nice`-wrapped and chained ones, came back read_only, while the plain `kill 6934` and
-# `pkill -f x` beside them correctly landed in mutating. The gate was standing in front of the small
-# kill and waving through the large one: `fuser -km /workspace` SIGKILLs every process touching that
-# filesystem, and `fuser -k /dev/nvidia0` kills the customer's training job.
-#
+# A binary can read by default while a flag adds a side effect. fuser kill forms are mutating;
 # Anchored to the kill flag itself, so the diagnostic forms this lane genuinely needs — `fuser
 # 8188/tcp`, `fuser -v /workspace`, `fuser -n tcp 8188` — stay read_only. Short flags cluster
 # (`-km`, `-ki`, `-k -9`), hence the character-class spelling rather than a bare `-k`. `fuser` has
@@ -1072,32 +946,11 @@ _VERSION_ONLY = re.compile(r"^(--version|-V|--help|version|help)$")
 # execution regardless of what it is named — this is what keeps an unknown binary from
 # becoming an arbitrary write primitive now that the read allowlist is gone.
 _SCRIPT_SHAPE = re.compile(r"\.(sh|bash|py|pl|rb|js|php|lua|ksh|zsh|run|bin|out)$", re.I)
-# ...and the other half of that: a file named by ABSOLUTE path. `/tmp/x`, `/root/payload`,
-# `/opt/whatever` and `/data/run` matched no rule at all and auto-ran with no consent card,
-# because the read tier falls through (module docstring). `./x` was refused and `/tmp/x` was
-# not, which is a distinction about how the path was SPELLED, not about what it does.
-#
-# The line drawn here is deliberately small and dumb: a program named by absolute path is
-# auto-run as a READ only from the four system program directories. Everything else gets a
-# confirmation card. Not a refusal — a card. The agent can still run /root/venv/bin/python,
-# /opt/app/bin/run and /usr/local/bin/whatever and still complete a repair; it just asks first.
-#
-# SYSTEM PROGRAMS AUTO-READ, USER/APPLICATION PATHS CONFIRM FIRST. The only exception is not
-# trust-by-directory: a path-qualified Python invocation may auto-run when its payload passes
-# `_is_readonly_py_invocation`, the same AST/module proof used for bare `python`. This closes a
-# measured diagnostic hole without turning `/tmp/x` or `/opt/app/bin/run` into silent execution.
-#
-# The version this replaced tried to establish that a path was TRUSTWORTHY — bin/sbin directory
-# shape, minus shared temp, with carve-outs coming for symlinks, venvs and toolchain dirs. That
-# cannot be made correct: /root/x/bin/payload and /root/x/payload carry the same real risk, and
-# the difference between them is a naming convention. Each carve-out would have added rules and
-# tests without ever establishing that a remote file is safe to execute unattended. A short,
-# honest boundary that sometimes asks is worth more than a long one that infers.
-#
-# It makes NO judgement about the program's NAME. An unknown BARE name (`evil`, resolved through
-# the remote PATH, which is why a name is not an identity here) still auto-runs. That is a known,
-# tracked debt: closing it needs identity, adds real diagnostic friction, and should be decided
-# from an actual incident rather than from a list of hypothetical spellings.
+# Explicit absolute paths auto-run only from the four system program
+# directories; other paths require confirmation. A path-qualified Python probe
+# may still run when its payload passes the normal read-only Python analysis.
+# This rule judges path shape, not binary identity. Bare names continue through
+# the ordinary command classifier.
 _SYSTEM_PROGRAM_DIRS = ("/bin", "/sbin", "/usr/bin", "/usr/sbin")
 
 
@@ -1124,12 +977,7 @@ _NET_BINARIES = {"nc", "ncat", "netcat", "socat", "telnet", "ftp", "tftp", "sftp
 # the START of the segment so a PATH that merely contains the word (e.g.
 # `cat /var/log/cuda-installer.log`) cannot trip it.
 _MUTATING_FORMS = [re.compile(p, re.I) for p in [
-    # `clean`/`autoclean`/`purge` join the verb lists as of 2026-08-08. They DELETE the package and
-    # wheel caches, which is a real disk-full repair and therefore a real write — but neither list
-    # named the verb, so `apt-get clean`, `yum clean all` and `pip cache purge` classified read_only
-    # and ran with no consent card, including under a 只读排查 card. Measured alongside the `fuser`
-    # hole in the same sweep. Low blast radius (caches regenerate) but it is still the box changing
-    # while the record says a read happened, which is the failure mode the tier exists to prevent.
+    # Cache-cleaning verbs still mutate the guest and therefore require confirmation.
     r"^(apt|apt-get|aptitude|yum|dnf|apk|pacman|zypper)\b.*\b(install|remove|purge|upgrade|update|autoremove|autoclean|clean)\b",
     r"^(pip|pip3|conda|mamba|npm|yarn|pnpm|cargo|gem|poetry|uv)\b.*\b(install|uninstall|remove|update|upgrade|add|sync|clean|purge)\b",
     # Deletes files per its tmpfiles.d configuration — the name reads like a dry-run and is not one.
@@ -1443,14 +1291,7 @@ def _env_is_read(tokens) -> bool:
     return True
 
 
-# Shell reserved words can PRECEDE a command, so exactly like `sudo` and the wrapper binaries they
-# defeat a first-token lookup — and this set was still open after the wrapper fix. Chaining is
-# accepted and split on `;`, so an ordinary `if true; then rm -f /root/x; fi` produces the segment
-# `then rm -f /root/x`, whose token 0 is `then`; `rm` is never looked up and the delete AUTO-RUNS
-# with no consent card. Measured: `if true; then rm -f /root/marker; fi`, `for f in a b; do rm -f
-# /root/$f; done`, `time touch /root/marker` and `! touch /root/marker` all classified read_only.
-# The destructive scan caught the same shapes (`if ...; then chmod 777 /etc/passwd; fi` is refused)
-# because it is a regex over the whole string — the same asymmetry the wrapper fix was about.
+# Shell reserved words can precede a command and must be stripped before first-token classification.
 #
 # Unlike the wrapper binaries, these legitimately strip to NOTHING: `fi`, `done` and `esac` are real
 # segments that change nothing, so an empty remainder is a READ here, not a fail-closed refusal.
@@ -1575,7 +1416,7 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
         return True
     # Reads that block forever or stream a raw block device. Scoped to readers that dump raw
     # CONTENT: `cat /dev/sda` streams the whole disk, but `blkid /dev/vdb` / `fdisk -l` /
-    # `smartctl -a` only query metadata and are core disk diagnostics (red-team-approved).
+    # `smartctl -a` only queries metadata and is a core disk diagnostic.
     if binary in _RAW_READERS and any(
             _BLOCKING_PATHS.match(_unquote(t)) for t in tokens[1:] if t.startswith("/")):
         return True
@@ -1695,21 +1536,17 @@ def _effective_launch_tokens(seg: str):
     return []
 
 
-# Executables with a production-proven mismatch between "standalone process is up" and "the
-# platform-managed entry works". This registry is intentionally evidence-driven rather than built
-# from every Softwares[].Name: existing APIs do not describe each image's launcher/auth/root contract,
-# and guessing that contract would turn a protection into a repair blocker. Add an executable only
-# with an observed substitute-service failure and keep the runtime refusal generic.
+# A standalone process does not establish that a managed platform entry works.
+# Keep this list evidence-driven because the catalog does not describe each
+# application's launcher, authentication and root contract.
 _UNMANAGED_PLATFORM_ENTRY_EXECUTABLES = {"filebrowser"}
 
 
 def is_unmanaged_platform_service_launch(command: str, _depth: int = 0) -> bool:
     """Whether a command launches a standalone substitute for a managed platform entry.
 
-    The console File Browser is a platform entrypoint. Its external route, port mapping,
-    authentication and root are not established by finding an arbitrary guest binary or seeing a
-    loopback HTTP 200. The incident this protects launched a standalone FileBrowser with a guessed
-    port/root/--noauth and then reported success.
+    A platform entry's external route, authentication and root are not proven by
+    launching an arbitrary guest binary or seeing a loopback HTTP 200.
 
     Mentions in ps/find/log reads and existing supervisorctl operations remain diagnostics or
     image-owned repairs. Only a direct executable invocation is refused.
@@ -1751,8 +1588,7 @@ def _normalize_paths(cmd: str) -> str:
 
     The destructive tier contains PATH rules (`/boot`, `/etc/fstab`, `/var/lib`, the system-path
     `rm`), and a regex over the raw string reads `//etc/fstab` and `/tmp/../etc/fstab` as different
-    paths from `/etc/fstab` while the kernel does not. Both spellings were accepted as `mutating` on
-    2026-07-30 — one consent card away from a write the tier is supposed to refuse outright.
+    paths from `/etc/fstab` while the kernel does not.
 
     This is only ever used to produce a SECOND string to scan, never to replace the first: classify
     ORs the two scans, so normalizing can add matches and can never remove one. That is what makes
@@ -1773,32 +1609,10 @@ def _normalize_paths(cmd: str) -> str:
 def _scan_destructive(cmd: str) -> bool:
     """Match the destructive tier PER COMMAND — never across a `;` / `|` / newline boundary.
 
-    Most rules in the tier have the shape "write-verb ... sensitive-path", and both halves were
-    matched over the WHOLE string. So two commands that are each harmless were refused together:
-    `chmod u+rx /root/models; awk '{print}' /proc/17146/status` paired the first segment's `chmod`
-    with the third segment's `/proc/...` and came back destructive. Measured cost on a live repair
-    run: exactly that `chmod` was hard-refused, and the model then reached the same end state with
-    `install -d -m 755 /root/models`, which passed. For a CONSENT gate an easily-respelled refusal
-    is worse than no refusal — it teaches the model to route around the gate instead of stopping.
-
-    Per-command is the TIGHTER reading, not a relaxation, and in both directions:
-      - a destructive effect is always produced by one command, so nothing real is lost;
-      - `^` and `$` now anchor to the command instead of the string, which CLOSES two bypasses a
-        whole-string scan had (`truncate -s 10G /big; echo -s 0` borrowed the `-s 0` exemption from
-        a different command; `cp /tmp/x /var/lib/mysql/ibdata1; ls /tmp` evaded the destination
-        anchor by appending a second command). Both were `mutating` — one consent card away.
-
-    Boundaries come from _split_chain, so a separator inside quoted DATA is not a boundary and
-    `chmod 000 "a; /etc/ssh/sshd_config"` stays one command (pinned in test_guardrails). Newlines
-    are split too: the rules themselves are `[^\n]`-bounded, but _normalize_paths joins on spaces,
-    which collapsed a two-line command into one line and let the normalized copy pair across it.
-
-    KNOWN RESIDUAL, named rather than silently left: a bare `&` is not in _CHAIN_SPLIT, so
-    `chmod 755 /workspace/app & ls -R /workspace` is still one segment and still pairs. Adding `&`
-    to the splitter would cut `2>&1` / `&>` in half and break the read tier (`nvidia-smi 2>&1 |
-    grep x` is a pinned read_only), which is a real regression traded for a shape models do not
-    write — they use `&` to detach a single command (`nohup ... &`), and a TRAILING `&` pairs
-    nothing. `;`, `|`, `&&` and `||` — every form seen live — are covered.
+    Most rules have the shape "write-verb ... sensitive-path". Scanning a whole chain could pair
+    the verb from one command with another command's path, while weakening `^`/`$` anchors.
+    _split_chain respects quoted separators and newlines. Bare `&` is intentionally not a boundary
+    because splitting it would corrupt `2>&1` and `&>` redirections.
     """
     for line in cmd.split("\n"):
         for seg in _split_chain(line):

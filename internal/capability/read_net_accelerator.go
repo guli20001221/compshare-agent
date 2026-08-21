@@ -9,11 +9,8 @@ import (
 	"github.com/compshare-agent/internal/platform"
 )
 
-// Network-accelerator status read capability (migrated from the legacy intent
-// route). The legacy handler ignored the resolved targets entirely —
-// CheckCompShareNetOptimizer is account-scoped and takes no instance argument —
-// so this capability decodes Targets for schema parity but the handler makes
-// the same bare call.
+// Network-accelerator status is account-scoped; the upstream action takes no
+// instance argument.
 
 const (
 	netAcceleratorCapabilityLabel = string(intent.IntentNetAcceleratorStatus)
@@ -28,10 +25,7 @@ type NetworkAcceleratorStatusRequest struct {
 // MissingFields: none — a network-accelerator status query is account-scoped.
 func (NetworkAcceleratorStatusRequest) MissingFields() []platform.MissingField { return nil }
 
-// NetworkAcceleratorStatusResponse carries the rendered status reply. There is
-// no evidence envelope for this capability (parity with the legacy route); the
-// reply is produced in Handle and passed through Render so the Handle/Render
-// split matches the kernel contract.
+// NetworkAcceleratorStatusResponse carries the rendered status reply.
 type NetworkAcceleratorStatusResponse struct {
 	Reply string
 }
@@ -66,8 +60,6 @@ func netAcceleratorRender(resp NetworkAcceleratorStatusResponse) ReadResult {
 	r.ToolAction = netAcceleratorAction
 	return r
 }
-
-// --- Relocated verbatim from intent/routing_net_accelerator.go -----------------
 
 // renderNetAcceleratorStatusReply returns the status reply and whether the query
 // yielded no status at all (no rows and no Optimized field) — an empty status is
@@ -105,15 +97,8 @@ func renderNetAcceleratorStatusReply(raw map[string]any) (string, bool) {
 	return "未获取到网络加速状态。这是只读状态查询，不会直接修改配置。", true
 }
 
-// netAcceleratorBoundaryNote states the read-only boundary, and offers the
-// 开通 path only when something is actually off.
-//
-// It used to be one fixed string, so a reply read 「网络加速已开通。……如需开通，我会走
-// 确认流程。」 — offering to turn on what the same sentence had just reported as on.
-// The user cannot tell whether the status or the offer is the mistake, so the
-// whole answer becomes untrustworthy. With several regions the offer is still
-// correct as long as ONE of them is off, which is why this takes a flag rather
-// than being deleted.
+// netAcceleratorBoundaryNote offers activation only when at least one queried
+// region is disabled.
 func netAcceleratorBoundaryNote(anyDisabled bool) string {
 	if anyDisabled {
 		return "这是只读状态查询，不会直接修改配置；如需开通，我会走确认流程。"

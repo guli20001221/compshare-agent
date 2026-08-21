@@ -49,10 +49,7 @@ func main() {
 		email    = flag.String("email", "", "X-User-Email header (optional)")
 		project  = flag.String("project", "", "ProjectId to include in the chat frame")
 		reqID    = flag.String("request-id", "wsprobe-1", "X-Request-Id header")
-		// The in-instance diagnosis lane runs on its own budget (agent.ssh_ops.timeout,
-		// 12m in the P3 config). A 5-minute client deadline cut a real run off mid-probe
-		// and printed "context deadline exceeded", which reads exactly like a server
-		// failure and is not one. Make the client wait longer than the server can.
+		// Wait longer than the server-side instance-diagnosis budget.
 		timeout = flag.Duration("timeout", 20*time.Minute, "client-side deadline for the whole exchange")
 	)
 	flag.Parse()

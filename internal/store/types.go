@@ -110,19 +110,18 @@ type MessageStore interface {
 	GetWithOwnerCheck(ctx context.Context, owner Owner, msgID string) (Message, error)
 }
 
-// AssistantMetadataStore is the shadow-write contract for the canonical agent
+// AssistantMetadataStore is the persistence contract for the canonical agent
 // transcript (messages.metadata -> agent_transcript_v1).
 //
-// It is deliberately a SEPARATE optional interface rather than a method on
-// MessageStore, for the same reason CommittedTailMessageStore is: a store that
-// does not implement it must degrade to writing nothing, not fail to compile
-// and not fail a turn. Callers type-assert and skip when absent.
+// It is a separate optional interface rather than a MessageStore method. Stores
+// that do not implement metadata persistence still support normal chat turns;
+// callers type-assert and skip it.
 //
 // The separation is also the safety property. The assistant reply is persisted
 // by UpdateAssistant, whose error the chat path deliberately ignores; folding
 // metadata into that same statement would let a serialization or JSONB fault
 // take the reply and its ok status down with it, silently. This write is
-// therefore its own statement, issued only after the reply is already durable,
+// therefore its own statement, issued only after the reply is already persisted,
 // and its failure is a metric rather than a turn outcome.
 type AssistantMetadataStore interface {
 	// UpdateAssistantMetadata sets messages.metadata on an assistant row.
@@ -130,27 +129,6 @@ type AssistantMetadataStore interface {
 	// count "wrote nothing" separately from "wrote successfully"; that is a
 	// metric, never a turn failure.
 	UpdateAssistantMetadata(ctx context.Context, owner Owner, msgID string, metadata json.RawMessage) error
-}
-
-// CommittedTailMessageStore is the history contract used by the durable turn
-// protocol. It is intentionally separate from MessageStore so legacy/test
-// stores do not silently inherit unsafe head-page semantics. Implementations
-// must return only protocol-committed complete user/assistant pairs from the
-// newest turnLimit turns, ordered oldest-to-newest within that tail. Protocol
-// commitment includes both committed v2 chat_turns and strict legacy pairs:
-// the same non-empty request_uuid, exactly one ok user, and exactly one ok
-// assistant in the owner-scoped session. Half/error/duplicate/null legacy
-// groups must never enter model history.
-type CommittedTailMessageStore interface {
-	ListCommittedTail(ctx context.Context, owner Owner, sessionID string, turnLimit int) ([]Message, error)
-}
-
-// CommittedPageMessageStore is the user-visible history contract. Like the
-// engine tail reader above, it exposes only complete protocol-committed pairs,
-// but adds an opaque pair cursor for GetSession pagination. A page boundary
-// must never split a user/assistant pair.
-type CommittedPageMessageStore interface {
-	ListCommittedBySession(ctx context.Context, owner Owner, sessionID string, limit int, cursor string) ([]Message, string, int, error)
 }
 
 // FeedbackStore manages user feedback on messages.

@@ -11,14 +11,8 @@ import (
 
 type BuildOptions struct {
 	MutatingToolsEnabled bool
-	// InstanceOpsWritesEnabled is the SSH-ops repair lane (agent.ssh_ops.allow_writes). It is a
-	// SECOND, independent way the agent can change something, and the read-only boundary below was
-	// written when the mutating gate was the only one. Left unaware of this, that boundary tells
-	// the agent "当前工具只允许查询和诊断，不执行资源变更" while a repair lane sits in its window —
-	// and the agent believes the sentence: measured on a stopped ollama, with the lane authorized
-	// and the tool present, it replied "我目前没有可直接执行实例内终端命令、修改服务或重启进程的
-	// 权限，无法替你进实例修复" and handed the user a command list instead. The boundary has to
-	// name the exception or it silently disables the feature it does not know about.
+	// InstanceOpsWritesEnabled independently authorizes confirmation-gated
+	// changes inside one instance; it does not enable platform mutations.
 	InstanceOpsWritesEnabled bool
 	// FeishuConsoleHandoff is a response-only contract for the public Feishu
 	// adapter. It does not add tools or change user authorization.
@@ -85,10 +79,8 @@ func BuildSystemWithOptionsAndTrace(userContext string, opts BuildOptions) (stri
 		}
 		sections = append(sections, PromptSection{ID: "readonly_boundary", Text: boundary})
 	} else if opts.InstanceOpsWritesEnabled {
-		// No read-only boundary exists in this mode, so the lane needs a section of its own or
-		// nothing in the prompt names it at all. The deployed config already sets
-		// mutating_tools: true, so that is the shape the lane's own rollout produces. Kept as an
-		// else-branch so read-only mode renders byte-identically.
+		// No read-only boundary exists in this mode, so the repair lane needs its
+		// own concise prompt section.
 		sections = append(sections, PromptSection{ID: "instance_repair_lane", Text: segmentInstanceRepairLane})
 	}
 	sections = append(sections, PromptSection{ID: "scope_boundary", Text: segmentScopeBoundary},
@@ -198,27 +190,8 @@ var toolResultShrinkLevels = []struct {
 	{arrayItems: 0, scalarRunes: 120},
 }
 
-// FormatToolResult returns a compact JSON string (<= maxToolResultRunes runes)
-// for feeding back to the LLM.
-//
-// The contract is absolute: what comes out is ALWAYS parseable JSON, and if
-// anything was dropped to fit, the JSON itself says so. It is never a fragment.
-//
-// The previous implementation shrank lists to 5 items and, if that still did
-// not fit, hard-cut the marshalled bytes at the cap — "invalid JSON, but a
-// bounded result", as its comment conceded. On the shape that matters most,
-// DescribeCompShareInstance with the real ~1.2-1.5 KB rows the upstream API
-// returns, the shrink never fit, so the byte-cut was not a last resort at all:
-// it was the normal path from three instances up. What reached the model was
-// two complete rows, a third cut mid-key, and — because Go marshals map keys in
-// sorted order and the cut takes the tail — "TotalCount":30 sitting intact at
-// the front. The model was told there were thirty instances, shown one or two,
-// and given no marker at all, because the "已截取前 5 条" notice is the LAST
-// element of the list and was the first thing the cut ate. That is not a
-// degraded context, it is a context that lies, and inviting a model to account
-// for twenty-eight rows it cannot see is how instances get fabricated.
-//
-// So: drop whole elements, never bytes.
+// FormatToolResult returns parseable JSON within maxToolResultRunes. It drops
+// whole values and records truncation explicitly; it never byte-cuts JSON.
 func FormatToolResult(result map[string]any) string {
 	b, err := json.Marshal(result)
 	if err != nil {

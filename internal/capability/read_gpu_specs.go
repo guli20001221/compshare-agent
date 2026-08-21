@@ -10,12 +10,8 @@ import (
 	"github.com/compshare-agent/internal/platform"
 )
 
-// GPU-specs read capability (migrated from the legacy intent route). It lists
-// GPU machine-type specs via DescribeAvailableCompShareInstanceTypes and
-// renders an overview or full-spec table plus a gpu_specs evidence envelope. The
-// typed request carries the GPU name filter + detail level, so the handler and
-// renderer never re-read the user's sentence (the legacy path re-derived them
-// from Slots).
+// GPU-specs reads the live machine-type catalog and renders either an overview
+// or full specifications with an evidence envelope.
 
 const (
 	gpuSpecsCapabilityLabel = string(intent.IntentGPUSpecsQuery)
@@ -33,9 +29,7 @@ type GPUSpecsRequest struct {
 // MissingFields: none — an unfiltered overview is valid.
 func (GPUSpecsRequest) MissingFields() []platform.MissingField { return nil }
 
-// GPUSpecsResponse carries the upstream payload plus the typed filter/detail the
-// deterministic renderer + envelope builder consume. Both derive the matched set
-// and detail flag from these fields exactly as the legacy handler did from Slots.
+// GPUSpecsResponse carries the payload and typed rendering controls.
 type GPUSpecsResponse struct {
 	Raw     map[string]any
 	GPUType string
@@ -44,11 +38,7 @@ type GPUSpecsResponse struct {
 
 func gpuSpecsReadSpec() ReadCapabilitySpec[GPUSpecsRequest, GPUSpecsResponse] {
 	return ReadCapabilitySpec[GPUSpecsRequest, GPUSpecsResponse]{
-		Label: gpuSpecsCapabilityLabel,
-		// Model-visible. It said "静态规格" while reading the live catalog — after the
-		// hand-maintained gpuSpecs table was deleted this is the ONLY source of GPU
-		// facts, and calling it static invited the agent to trust it less and answer
-		// from its own weights instead.
+		Label:       gpuSpecsCapabilityLabel,
 		Description: "查询平台 GPU 机型的结构化规格，包括显存、算力、最大卡数和可选 CPU/内存组合。用于规格比较，不代表当前实时库存。",
 		Params:      objectParam(map[string]schemaNode{"gpu_type": stringParam(), "detail_level": enumParam(platform.DetailLevelValues()...)}),
 		Handle:      gpuSpecsHandle,
@@ -79,8 +69,6 @@ func gpuSpecsRender(resp GPUSpecsResponse) ReadResult {
 	r.Envelope = &env
 	return r
 }
-
-// --- Relocated from intent/routing_registry.go (Slots → typed gpuType/detail) ---
 
 func renderGPUSpecsReply(raw map[string]any, gpuType string, detail platform.DetailLevel) string {
 	items := mapSliceAt(raw, "AvailableInstanceTypes")

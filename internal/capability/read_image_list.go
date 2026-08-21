@@ -13,12 +13,8 @@ import (
 	"github.com/compshare-agent/internal/platform"
 )
 
-// Image-list read capability (migrated from the legacy intent route). The single
-// image_list tool fans out on the request's Source facet to the platform, custom,
-// community or shared listing — each its own upstream action, renderer and (for
-// platform/custom/community) evidence envelope. The typed request carries the
-// source + query + list mode, so the handler never re-reads the user's sentence
-// (the legacy path re-derived them from Slots).
+// Image-list fans a typed source/query request into the platform, custom,
+// community or shared live catalog and returns the corresponding evidence.
 
 const (
 	imageListCapabilityLabel = string(intent.IntentImageList)
@@ -71,14 +67,14 @@ type ImageListResponse struct {
 func imageListReadSpec() ReadCapabilitySpec[ImageListRequest, ImageListResponse] {
 	return ReadCapabilitySpec[ImageListRequest, ImageListResponse]{
 		Label:       imageListCapabilityLabel,
-		Description: "查询平台、自制、社区或共享镜像的当前目录及结构化属性。用于浏览、筛选、核实或推荐镜像；具名模型的部署、运行、快速安装或 ComfyUI 使用，先查社区镜像目录：有可用的精确兼容候选时优先据此推荐或承接创建。仅在社区目录无匹配、用户明确要求源码安装，或询问 adapter/权重路径时，再用模型仓库或知识检索补充。没有精确兼容候选时，如实说明，不把相近模型或通用运行时说成已支持。具体查询与语义扩展规则以参数说明为准。",
+		Description: "查询平台、自制、社区或共享镜像的实时目录，用于浏览、推荐和创建前选型。部署或运行具名模型/应用时先查社区镜像；有精确候选就据此回答，没有则如实说明。源码、权重或 adapter 问题再使用模型仓库或知识检索。",
 		Params: objectParam(map[string]schemaNode{
 			"source": enumParam(platform.ImageSourceValues()...),
 			"query": stringParam().described(
 				"用户原话中的目录查询词；复制最短且有意义的用途、约束或用户明确点名的镜像，可取用户表达中的子串，不要先猜候选镜像名。无查询条件时留空。",
 			),
 			"semantic_queries": arrayParam(stringParam()).described(
-				"社区或平台镜像可用，最多 3 个。Agent 根据用户用途提炼的技术或类别查询词，例如用途的常见项目类别或运行时名称；不得替代 query，结果会与 query 的结果合并。原话查询无结果或候选不合适时，可保留同一个 query 后重试并补充这里。具名模型的部署、运行、快速安装或 ComfyUI 使用，先用 source=community 查询；有精确兼容候选时可直接推荐或承接创建，不需要先查平台目录。社区未命中，或用户要求基础环境时，再查 platform。",
+				"最多 3 个补充查询词。根据用户用途提炼技术、项目类别或运行时名称；不能替代 query，结果会合并。部署具名模型/应用时先查 community，未命中或用户要求基础环境时再查 platform。",
 			),
 			"mode": enumParam(platform.ListModeValues()...),
 		}),
@@ -361,7 +357,7 @@ func sharedImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRun
 	if err != nil {
 		return ImageListResponse{}, ReadFailureAfterTool(sharedImageAction, imageListCapabilityLabel, err)
 	}
-	// Shared images carry no evidence envelope (legacy parity).
+	// Shared-image results do not expose an evidence envelope.
 	reply, empty := renderSharedImageListReply(raw, req.Query, req.Mode)
 	if empty {
 		return ImageListResponse{}, ReadEmpty(reply)
@@ -372,8 +368,7 @@ func sharedImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRun
 	}, ReadResult{}
 }
 
-// imageExecute runs an upstream image action, normalising a nil payload to an
-// empty map exactly as the legacy executeRouteAction did.
+// imageExecuteAll normalizes a nil upstream payload to an empty map.
 func imageExecuteAll(ctx context.Context, rt ReadRuntime, action, listKey string, args map[string]any) (map[string]any, error) {
 	raw, err := imagecatalogfetch.FetchAll(ctx, rt.Executor.Execute, action, listKey, args)
 	if err != nil {
@@ -394,16 +389,13 @@ func imageFilterQuery(query string, mode platform.ListMode) string {
 	return strings.TrimSpace(query)
 }
 
-// populatedEnvelope returns &env only when it carries subjects, mirroring the
-// legacy setEnvelopeIfPopulated gate.
+// populatedEnvelope returns only evidence envelopes with subjects.
 func populatedEnvelope(env envelope.Envelope) *envelope.Envelope {
 	if len(env.Subjects) == 0 {
 		return nil
 	}
 	return &env
 }
-
-// --- Relocated from intent/routing_registry.go (Slots → typed query/mode) -------
 
 func renderImageListReply(raw map[string]any, listKey string, fieldOrder []string, searchQuery string, mode platform.ListMode) string {
 	items := mapSliceAt(raw, listKey)
@@ -746,14 +738,8 @@ func buildCommunityImageEnvelope(raw map[string]any, searchQuery string, mode pl
 		envelope.Fact{Key: "total_count", Label: "Total count", Value: len(byID), Source: envelope.FactSourceComputed},
 	)
 
-	// Breadth before depth. Every version of a family carries the SAME name, so
-	// filling the cap family-by-family spends it on rows the Agent cannot tell
-	// apart: measured live 2026-07-28, 数字人 matches 62 families / 98 images, and
-	// depth-first handed the Agent 7 InfiniteTalk versions + 3 LTX versions — a
-	// two-family menu, with HeyGem and every other digital-human family invisible.
-	// Round-robin instead: one version per family in popularity order, then a
-	// second each, and so on. A broad search now shows the field; a narrow one
-	// (few families) still spends the remaining cap on that family's versions.
+	// Breadth before depth: show one version per family before adding another
+	// version of the same family.
 	families := groupCommunityVersionRows(filtered, byID)
 	shown := 0
 	for depth := 0; shown < imageListDisplayCap; depth++ {

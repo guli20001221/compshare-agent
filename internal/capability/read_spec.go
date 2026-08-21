@@ -73,11 +73,8 @@ type ReadRuntime struct {
 	SyncRegistry func(raw map[string]any)
 }
 
-// ReadResult is the neutral outcome a typed read capability produces. It carries
-// the same read-relevant fields the legacy handler result exposed so the engine
-// serialises a migrated capability's observation byte-identically to the
-// pre-migration one. Empty Status is a sentinel used only inside a Handle return
-// to mean "not terminal — render the Response".
+// ReadResult is the neutral outcome a typed read capability produces. Empty
+// Status inside Handle means "not terminal — render the response".
 type ReadResult struct {
 	Status platform.ReadStatus
 	Reply  string
@@ -155,9 +152,7 @@ func ReadFallbackBeforeTool(reason platform.ReadFallbackReason) ReadResult {
 	return ReadResult{Status: platform.ReadStatusFallbackBeforeTool, FallbackReason: reason}
 }
 
-// FriendlyReadFailureReply is the generic post-tool failure reply. It is
-// byte-identical to the legacy route-dispatch failure string it replaced, so a
-// migrated capability's failure observation matches the pre-migration one.
+// FriendlyReadFailureReply is the generic post-tool failure reply.
 const FriendlyReadFailureReply = "查询暂时失败，请稍后再试。"
 
 // userFacingError is the structural half of a typed upstream error carrying an
@@ -165,10 +160,8 @@ const FriendlyReadFailureReply = "查询暂时失败，请稍后再试。"
 // structurally so this package does not import the error's package.
 type userFacingError interface{ UserMessage() string }
 
-// ReadFailureAfterTool classifies an upstream error into a terminal read result,
-// mirroring the legacy failureAfterToolForError: a typed upstream error with a
-// non-empty user message surfaces it as an actionable failure; otherwise the
-// generic friendly reply prefixed by the capability label.
+// ReadFailureAfterTool surfaces an actionable typed upstream message when one
+// exists; otherwise it uses the generic friendly reply.
 func ReadFailureAfterTool(action, label string, err error) ReadResult {
 	var friendly userFacingError
 	if errors.As(err, &friendly) {

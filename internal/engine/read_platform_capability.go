@@ -17,10 +17,7 @@ import (
 
 // ReadCapabilityObservation is the only result shape exposed by the read
 // capability adapter. Control-flow states stay distinct and factual answers
-// must cross an evidence envelope before the Agent can consume them. Its status /
-// failure / fallback / route types are the platform read vocabulary — the read
-// adapter builds the observation directly off capability.ReadResult and no
-// longer bridges through the legacy intent.HandlerResult carrier.
+// must cross an evidence envelope before the Agent can consume them.
 type ReadCapabilityObservation struct {
 	Capability       string                      `json:"capability"`
 	Status           platform.ReadStatus         `json:"status"`
@@ -75,13 +72,10 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "查询参数不完整", TraceResult: map[string]any{"status": string(platform.ReadStatusNeedsInput), "missing_fields": missing}})
 		return string(payload)
 	}
-	reg, ok := capability.MigratedRead(action)
+	reg, ok := capability.RegisteredReadForTool(action)
 	if !ok {
-		// Every model-visible read owns a typed vertical (P3.3/P3.4). A decoded read
-		// tool with no migrated capability is a wiring bug, not a runtime state; the
-		// legacy intent.Slots read dispatch was deleted in P6.
-		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: "unmigrated read capability"})
-		return marshalReadCapabilityError(action, "unmigrated read capability")
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: "unregistered read capability"})
+		return marshalReadCapabilityError(action, "unregistered read capability")
 	}
 	return e.executeTypedReadCapability(ctx, action, string(readIntent), reg, request, args, onStep)
 }
@@ -110,9 +104,7 @@ func (e *Engine) recentPriorUserTexts(limit int) []string {
 	return out
 }
 
-// executeTypedReadCapability dispatches a migrated read through its typed
-// vertical. The capability produces a capability.ReadResult directly, without
-// the legacy route-dispatch machinery — which no longer exists to bridge to.
+// executeTypedReadCapability dispatches a typed read vertical.
 func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabilityLabel string, reg capability.RegisteredRead, request platform.ReadRequest, args map[string]any, onStep func(StepEvent)) string {
 	onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct, Args: args})
 
@@ -222,7 +214,7 @@ func (e *Engine) applyReadEffects(effects []capability.ReadEffect) {
 	for _, effect := range effects {
 		switch eff := effect.(type) {
 		case capability.RememberVerifiedInstances:
-			// Same-id-verified existence evidence for the write path (concern #6):
+			// Same-ID existence evidence for the write path:
 			// only a resource_info response echoing the exact id lands here, so a
 			// later write on that id has a real ExistenceProof without re-querying.
 			if e.verifiedInstanceEvidenceThisTurn == nil {

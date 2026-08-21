@@ -10,18 +10,14 @@ import (
 	"github.com/compshare-agent/internal/platform"
 )
 
-// Refund-estimate read capability (migrated from the legacy intent route). It
-// resolves the requested instance(s), calls GetCompShareRefundPrice and renders
-// a read-only estimate — it never releases the instance.
+// Refund-estimate resolves requested instances and returns a read-only estimate;
+// it never releases an instance.
 
 const (
 	refundCapabilityLabel = string(intent.IntentRefundEstimate)
 	refundAction          = "GetCompShareRefundPrice"
 
-	// refundStaleSelectionReply — a single prior-turn target that no longer
-	// resolves (deleted / not visible in this account). Parity with the legacy
-	// handleRefundEstimate special case: this is a HANDLED answer, not a
-	// fallback, so the agent explains rather than silently retrying.
+	// A stale prior-turn target is a handled answer so the Agent can explain it.
 	refundStaleSelectionReply = "未找到刚才选中的实例，可能已被删除或当前账号不可见。请重新指定实例名称或实例 ID 后再估算退费。"
 
 	// noRefundEstimateReply — the upstream returned no refund rows at all. A
@@ -29,12 +25,7 @@ const (
 	noRefundEstimateReply = "未获取到退费估算结果。这个查询只做估算，不会释放实例。"
 )
 
-// RefundEstimateRequest is the capability's own request contract. targets is
-// required (schema required set + MissingFields), so the engine returns
-// needs_input BEFORE the handler when it is empty. The legacy handler's
-// FallbackInstanceID / clarify branch was therefore already unreachable on the
-// read-tool path (it only served the retired direct-dispatch route) and is
-// intentionally not reproduced here.
+// RefundEstimateRequest requires at least one target.
 type RefundEstimateRequest struct {
 	Targets []platform.TargetRef `json:"targets"`
 }
@@ -74,9 +65,7 @@ func refundHandle(ctx context.Context, req RefundEstimateRequest, rt ReadRuntime
 	// the one capability that refuses what upstream would have priced.
 	instances, ids, reason := resolveReadTargetSnapshots(ctx, req.Targets, rt)
 	if reason != nil {
-		// A single prior-turn reference that no longer resolves is a stale
-		// selection: answer (handled) instead of a bare fallback, matching the
-		// legacy handleRefundEstimate special case.
+		// Explain a stale prior-turn selection instead of silently retrying.
 		if len(req.Targets) == 1 && req.Targets[0].Source == platform.SourcePriorTurn {
 			r := ReadHandled(refundStaleSelectionReply)
 			r.ToolAction = refundAction
@@ -104,8 +93,6 @@ func refundRender(resp RefundEstimateResponse) ReadResult {
 	r.ToolAction = refundAction
 	return r
 }
-
-// --- Relocated verbatim from intent/routing_cfs_refund.go ----------------------
 
 func renderRefundEstimateReply(raw map[string]any, instances []entity.InstanceSnapshot) string {
 	rows := platform.MapSliceAt(raw, "RefundPriceSet")

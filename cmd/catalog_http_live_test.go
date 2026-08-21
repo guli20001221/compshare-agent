@@ -63,7 +63,7 @@ func TestCatalogAndChargeAcceptanceOverRealHTTP(t *testing.T) {
 
 	sessions := newCatalogLiveSessions()
 	handlers := newServerHandlers(
-		cfg, sessions, messages, nil, pool, nil, cfg.RuntimeGetenv(os.Getenv),
+		cfg, sessions, messages, nil, pool, nil,
 	)
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
@@ -160,7 +160,7 @@ func TestCatalogAndChargeAcceptanceOverRealHTTP(t *testing.T) {
 	})
 	t.Cleanup(chargePool.Close)
 	chargeHandlers := newServerHandlers(
-		cfg, sessions, messages, nil, chargePool, nil, cfg.RuntimeGetenv(os.Getenv),
+		cfg, sessions, messages, nil, chargePool, nil,
 	)
 	chargeRouter := gin.New()
 	chargeRouter.GET("/", chargeHandlers.HandleWS)
@@ -294,7 +294,7 @@ func TestResourceRenderingOverRealHTTP(t *testing.T) {
 	const organizationID = 64404856
 	sessions.add(sessionID, topOrganizationID, organizationID)
 	handlers := newServerHandlers(
-		cfg, sessions, messages, nil, pool, nil, cfg.RuntimeGetenv(os.Getenv),
+		cfg, sessions, messages, nil, pool, nil,
 	)
 	gin.SetMode(gin.TestMode)
 	router := gin.New()

@@ -7,7 +7,6 @@ import (
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
-	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -110,7 +109,7 @@ func TestDispatchChat_StepEventsAppearBeforeDone(t *testing.T) {
 	assert.Less(t, lastStep, firstDone, "all step events must precede done")
 }
 
-func TestDispatchChatTraceRecordsAgentExecutionPathForToolCall(t *testing.T) {
+func TestDispatchChatTraceRecordsToolCall(t *testing.T) {
 	llmFake := &toolTurnLLM{}
 	eng := engine.NewWithDeps(llmFake, toolTurnExecutor{}, denyConfirm)
 	eng.RehydrateHistory(nil)
@@ -128,7 +127,6 @@ func TestDispatchChatTraceRecordsAgentExecutionPathForToolCall(t *testing.T) {
 		&config.Config{Agent: config.AgentConfig{
 			LLM:  config.LLMConfig{Model: "model-x"},
 			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
-			Meta: config.MetaConfig{MaxInputLength: 4000},
 			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
 		}},
 		sessions,
@@ -142,7 +140,6 @@ func TestDispatchChatTraceRecordsAgentExecutionPathForToolCall(t *testing.T) {
 
 	require.Len(t, traceWriter.records, 1)
 	trace := traceWriter.records[0]
-	assert.Equal(t, observability.ExecutionPathAgent, trace.ActualExecutionPath)
 	require.Len(t, trace.ToolCalls, 1)
 	assert.Equal(t, "DescribeCompShareInstance", trace.ToolCalls[0].Action)
 }

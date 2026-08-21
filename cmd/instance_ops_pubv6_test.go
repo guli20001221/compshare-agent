@@ -21,10 +21,8 @@ func baseSSHOpsConfig() config.SSHOpsConfig {
 	}
 }
 
-// A prefix set without internal_ipv6 is invisible: the candidate list only ever replaces a bare
-// IPv4 advertised host, and that rewrite is what internal_ipv6 turns on. Booting anyway would
-// produce a lane that looks configured, dials the same address as before, and lets the
-// experiment be reported as "the prefix does not work" without a single candidate being tried.
+// A prefix set without internal_ipv6 is inert because only UHost IPv4 addresses
+// enter the translation path. Reject that contradictory configuration at boot.
 func TestPublicIPv6PrefixWithoutInternalIPv6FailsTheBoot(t *testing.T) {
 	sc := baseSSHOpsConfig()
 	sc.PublicIPv6Prefix = "2002:a40:2e05::"
@@ -39,8 +37,7 @@ func TestPublicIPv6PrefixWithoutInternalIPv6FailsTheBoot(t *testing.T) {
 	}
 }
 
-// A typo in the prefix would otherwise surface as a refusal on the FIRST real diagnosis, in the
-// middle of the gray-account run — which reads as a failed experiment rather than a failed edit.
+// Reject malformed prefixes at boot instead of failing the first diagnosis.
 func TestMalformedPublicIPv6PrefixFailsTheBoot(t *testing.T) {
 	for _, prefix := range []string{"2002:a40:2e05::/48", "10.64.46.5", "2002:a40:2e0g::"} {
 		sc := baseSSHOpsConfig()
@@ -53,8 +50,7 @@ func TestMalformedPublicIPv6PrefixFailsTheBoot(t *testing.T) {
 	}
 }
 
-// The default has to stay a no-op, or every deployment that never opted in inherits an
-// experiment. Absence of the key is the state the shared baseline ships.
+// The shared baseline has no translated-address route; omitting it must remain valid.
 func TestNoPublicIPv6PrefixBootsUnchanged(t *testing.T) {
 	sc := baseSSHOpsConfig()
 	sc.InternalIPv6 = true

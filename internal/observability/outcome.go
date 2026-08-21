@@ -63,8 +63,8 @@ type FinishSignals struct {
 	// (the "dark-hole-within-the-dark-hole": empty LLM streams that previously hid
 	// inside status="success").
 	ReplyEmpty bool
-	// ReactRounds is the number of ReAct loop rounds entered this turn (0 when the
-	// turn never ran the loop — routing / RAG / pre-block paths).
+	// ReactRounds is the number of ReAct loop rounds entered this turn (zero for
+	// deterministic exits before the Agent loop).
 	ReactRounds int
 	// RoundCeilingHit is true when the ReAct loop exhausted maxReActRounds without
 	// producing a final answer (engine.go round-ceiling path), which returns a

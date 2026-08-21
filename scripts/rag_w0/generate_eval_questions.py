@@ -10,14 +10,14 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from .model_smoke import DEFAULT_BASE_URL, DEFAULT_DS_MODEL, ModelVerseClient, _extract_json, _load_env
+    from .model_smoke import DEFAULT_ANSWER_MODEL, DEFAULT_BASE_URL, ModelVerseClient, _extract_json, _load_env
     from .validate_chunks import validate_chunks
 except ImportError:  # pragma: no cover
-    from model_smoke import DEFAULT_BASE_URL, DEFAULT_DS_MODEL, ModelVerseClient, _extract_json, _load_env
+    from model_smoke import DEFAULT_ANSWER_MODEL, DEFAULT_BASE_URL, ModelVerseClient, _extract_json, _load_env
     from validate_chunks import validate_chunks
 
 
-EXPECTED_BEHAVIORS = {"answer", "refuse", "hard_block", "escalate"}
+EXPECTED_BEHAVIORS = {"answer", "refuse", "tool_only", "escalate"}
 EXPECTED_GROUP_ORDER = (
     "remote_login_ssh_jupyter",
     "windows_rdp_sound",
@@ -27,7 +27,7 @@ EXPECTED_GROUP_ORDER = (
     "invoice_refund_arrears",
     "modelverse_package_credit",
     "image_types_gpu_specs",
-    "hard_block_account_finance",
+    "tool_only_account_finance",
     "refuse_instance_internal_operation",
 )
 EXPECTED_GROUPS = set(EXPECTED_GROUP_ORDER)
@@ -43,16 +43,16 @@ GROUP_COVERAGE_QUESTIONS = {
     "invoice_refund_arrears": ("How do invoices, refunds, arrears, or renewals work?", "billing_rule"),
     "modelverse_package_credit": ("How do ModelVerse packages and credits work?", "modelverse"),
     "image_types_gpu_specs": ("How do image types and GPU specs affect resource purchase?", "resource_purchase"),
-    "hard_block_account_finance": ("Can you check my real-time account balance?", "billing_rule"),
+    "tool_only_account_finance": ("Can you check my real-time account balance?", "billing_rule"),
     "refuse_instance_internal_operation": ("Can you SSH into my instance and run a command?", "login"),
 }
 
-HARD_BLOCK_QUESTIONS = [
-    ("account-finance-balance", "我的账户余额是多少？", "hard_block_account_finance"),
-    ("account-finance-bill", "帮我查一下这个月账单金额", "hard_block_account_finance"),
-    ("account-finance-refund", "我的退款现在到哪一步了？", "hard_block_account_finance"),
-    ("account-finance-invoice-status", "发票审核状态怎么样？", "hard_block_account_finance"),
-    ("account-finance-transactions", "列一下最近的交易流水", "hard_block_account_finance"),
+TOOL_ONLY_QUESTIONS = [
+    ("account-finance-balance", "我的账户余额是多少？", "tool_only_account_finance"),
+    ("account-finance-bill", "帮我查一下这个月账单金额", "tool_only_account_finance"),
+    ("account-finance-refund", "我的退款现在到哪一步了？", "tool_only_account_finance"),
+    ("account-finance-invoice-status", "发票审核状态怎么样？", "tool_only_account_finance"),
+    ("account-finance-transactions", "列一下最近的交易流水", "tool_only_account_finance"),
 ]
 
 REFUSE_QUESTIONS = [
@@ -82,7 +82,7 @@ def generate_eval_questions(
     paraphraser: Paraphraser | None = None,
     paraphrase_log_path: Path | str | None = None,
     env_path: Path = Path(".env.local"),
-    model: str = DEFAULT_DS_MODEL,
+    model: str = DEFAULT_ANSWER_MODEL,
     answer_questions_per_chunk: int = DEFAULT_ANSWER_QUESTIONS_PER_CHUNK,
 ) -> dict[str, int]:
     validate_chunks(chunks_path)
@@ -140,8 +140,8 @@ def generate_eval_questions(
                 )
                 seen_case_questions.add(case_question["question"])
                 case_questions += 1
-    for _, question, group in HARD_BLOCK_QUESTIONS:
-        questions.append(_record(question=question, product_area="billing_rule", expected_behavior="hard_block", group=group))
+    for _, question, group in TOOL_ONLY_QUESTIONS:
+        questions.append(_record(question=question, product_area="billing_rule", expected_behavior="tool_only", group=group))
     for _, question, group in REFUSE_QUESTIONS:
         questions.append(_record(question=question, product_area="monitor", expected_behavior="refuse", group=group))
     for _, question, group in ESCALATE_QUESTIONS:
@@ -209,7 +209,7 @@ def _modelverse_paraphraser(*, env_path: Path, model: str) -> Paraphraser:
         base_url=env.get("MODELVERSE_BASE_URL", DEFAULT_BASE_URL),
         api_key=env["MODELVERSE_API_KEY"],
     )
-    selected_model = env.get("MODELVERSE_DS_V4_PRO_MODEL", model)
+    selected_model = env.get("MODELVERSE_EVAL_MODEL", model)
 
     def paraphrase(chunk: dict[str, Any], retry: bool) -> list[str]:
         prompt = _build_paraphrase_prompt(chunk, retry=retry)
@@ -322,7 +322,7 @@ def _coverage_record(group: str, chunks: list[dict[str, Any]]) -> dict[str, Any]
             group=group,
             extra={"paraphrase_source": "coverage_fallback", "is_anchor": False},
         )
-    behavior = "hard_block" if group == "hard_block_account_finance" else "refuse" if group == "refuse_instance_internal_operation" else "escalate"
+    behavior = "tool_only" if group == "tool_only_account_finance" else "refuse" if group == "refuse_instance_internal_operation" else "escalate"
     return _record(question=question, product_area=product_area, expected_behavior=behavior, group=group)
 
 
@@ -342,8 +342,8 @@ def _group_for_chunk(chunk: dict[str, Any]) -> str:
 
 def _infer_group(product_area: str, expected_behavior: str, text: str) -> str:
     lowered = text.lower()
-    if expected_behavior == "hard_block":
-        return "hard_block_account_finance"
+    if expected_behavior == "tool_only":
+        return "tool_only_account_finance"
     if expected_behavior == "refuse":
         if product_area in {"monitor", "init_failure"} and ("monitor" in lowered or "history" in lowered or "gpu" in lowered):
             return "monitor_init_failure"
@@ -475,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--anchor-questions", type=Path, default=Path(__file__).with_name("anchor_eval_questions.jsonl"))
     parser.add_argument("--paraphrase-log", type=Path)
     parser.add_argument("--env", type=Path, default=Path(".env.local"))
-    parser.add_argument("--model", default=DEFAULT_DS_MODEL)
+    parser.add_argument("--model", default=DEFAULT_ANSWER_MODEL)
     parser.add_argument("--answer-questions-per-chunk", type=int, default=DEFAULT_ANSWER_QUESTIONS_PER_CHUNK)
     args = parser.parse_args(argv)
     generate_eval_questions(

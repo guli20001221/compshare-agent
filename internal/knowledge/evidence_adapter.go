@@ -8,18 +8,14 @@ import (
 
 const DefaultEvidenceLedgerMaxItems = 3
 
-// DefaultEvidenceSnippetMaxRunes bounds the per-item content excerpt carried by
-// the SUBSTANTIVE ledger (BuildSubstantiveEvidenceLedger). It is large enough to
-// capture the actionable head of an external runbook chunk (the flags/commands
-// live in the first lines) yet bounded so a 3-item ledger fed back through the
-// multi-round ReAct loop does not bloat the input (memory:
-// priortext-avalanche-invalidates-planner).
+// DefaultEvidenceSnippetMaxRunes bounds actionable excerpts carried through the
+// multi-round loop.
 const DefaultEvidenceSnippetMaxRunes = 400
 
 // EvidenceLedger is the safe view of retrieval results for body-read agent
 // skills. The diagnosis lane (BuildEvidenceLedger) intentionally does not expose
 // KBChunk.Content because there the instance data is the primary evidence and the
-// ledger is supplementary. The agentic-RAG registry tool (P3) instead uses
+// ledger is supplementary. SearchKnowledge instead uses
 // BuildSubstantiveEvidenceLedger, which fills Snippet with a bounded content
 // excerpt — on a symptom tool-ops turn the retrieved evidence IS the primary
 // base, so a content-free ledger could not ground a real fix.
@@ -31,13 +27,12 @@ type EvidenceLedger struct {
 type EvidenceItem struct {
 	ChunkID string `json:"chunk_id"`
 	Title   string `json:"title,omitempty"`
-	// ProductArea is the chunk's declared product_area (KBChunk.ProductArea),
-	// carried so the #5 wrong-domain guard can compare the cited evidence's
+	// ProductArea is the chunk's declared product_area, carried so the
+	// wrong-domain guard can compare cited evidence's
 	// domain against the question's inferred area. Empty when undeclared.
 	// json:"-" deliberately: this is internal plumbing for the guard, NOT part
 	// of the agent-visible SearchKnowledge tool result — keeping it out of the
-	// JSON leaves what the agent reads byte-identical (the agent loop is
-	// default-on in production).
+	// JSON keeps this internal to validation.
 	ProductArea string `json:"-"`
 	SourceType  string `json:"source_type,omitempty"`
 	ScoreBucket string `json:"score_bucket,omitempty"`
@@ -103,11 +98,8 @@ func BuildEvidenceLedger(query string, hits []RetrievalHit, maxItems int) Eviden
 	return ledger
 }
 
-// BuildSubstantiveEvidenceLedger is the agentic-RAG (P3) projection: identical to
-// BuildEvidenceLedger but each item carries a bounded Snippet excerpt of the
-// chunk body so the agent can synthesize an ACTIONABLE answer on a symptom
-// tool-ops turn (where the retrieved evidence is the primary, not supplementary,
-// base). snippetMaxRunes<=0 uses DefaultEvidenceSnippetMaxRunes.
+// BuildSubstantiveEvidenceLedger adds a bounded content snippet to each item.
+// snippetMaxRunes<=0 uses DefaultEvidenceSnippetMaxRunes.
 func BuildSubstantiveEvidenceLedger(query string, hits []RetrievalHit, maxItems, snippetMaxRunes int) EvidenceLedger {
 	if snippetMaxRunes <= 0 {
 		snippetMaxRunes = DefaultEvidenceSnippetMaxRunes
@@ -239,12 +231,8 @@ func evidenceScoreBucket(score float64) string {
 // verbatim (a contiguous >=32-rune passage), or "" when the text paraphrases.
 // Safe ledger fields such as chunk_id and title do not count as an echo.
 //
-// This is a SYNTHESIS-QUALITY signal, not a security one: every chunk in the
-// corpus is acl=customer_safe, so an echo is an answer that copied instead of
-// writing — undesirable prose, never a disclosure. Callers must RECORD it and
-// nothing more. It previously replaced the whole answer with a canned line,
-// which is the same failure mode as the retired grounding refusal: it fired
-// hardest on correct runbook answers, where the fix IS a command line.
+// This is a synthesis-quality signal, not a security decision; callers record
+// it without replacing the answer.
 func EchoedEvidenceChunkID(text string, hits []RetrievalHit) string {
 	haystack := strings.ToLower(compactWhitespace(text))
 	if haystack == "" {

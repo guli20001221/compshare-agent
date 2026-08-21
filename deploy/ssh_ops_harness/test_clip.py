@@ -1,11 +1,9 @@
-"""Gate for output clipping (regression: head-only truncation hid the newest log lines).
+"""Gate for bounded output clipping that preserves both the head and newest log lines.
 
 Run:  python test_clip.py   ->  exits non-zero on ANY miss.
 
-A head-only clip made `cat <big service log>` present a window whose newest visible line was months
-old; live runs then reported a months-stale "last run" — accurate for what they were shown, but
-wrong about the box. The clip must keep the TAIL (where a log's crash and latest timestamp live)
-as well as the head, and must say material was elided.
+The tail usually carries the newest timestamp or crash. Clipping must preserve both ends and mark
+the omitted middle.
 """
 import ssh_transport as t
 

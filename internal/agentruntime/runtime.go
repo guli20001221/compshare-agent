@@ -1,7 +1,6 @@
 // Package agentruntime owns the lifecycle of the model/tool reasoning loop.
-// Domain-specific prompt, grounding and tool behavior stays behind the Driver
-// callback while the migration is in progress; callers do not own round
-// counting or terminal-state semantics anymore.
+// Domain-specific prompts, grounding and tools stay behind the Driver callback;
+// callers do not own round counting or terminal-state semantics.
 package agentruntime
 
 import (

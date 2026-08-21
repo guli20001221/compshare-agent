@@ -125,7 +125,7 @@ func TestChatReportsTheCommittedWriteWhenTheNarrationCallFails(t *testing.T) {
 		"history must keep the reply, so a follow-up turn knows the instance exists")
 }
 
-// committedThenTruncatedLLM is the same durable-write shape as the provider
+// committedThenTruncatedLLM is the same committed-write shape as the provider
 // outage above, except the narration call reaches EOF with finish_reason=length.
 // The third response exists only to make a regression observable: the recovery
 // must finish after two calls, rather than spending a retry after the write has

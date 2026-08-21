@@ -96,8 +96,7 @@ check("context-data-cannot-close-a-reference-fence", "\\u003c/current_user_repor
 }))
 check("context-keeps-observed-port-not-invented-port",
       "8188" in _rendered_context_prompt and "8080" not in _rendered_context_prompt)
-# v2's reason for existing: the four port-shaped claims are separately named, and the one key that
-# used to hold two of them at once is gone from the schema rather than aliased to one of the halves.
+# Port hints and configured forwards are distinct facts; the removed merged key must not return.
 check("context-names-the-two-control-plane-port-facts-separately",
       "platform.instance_port_hints" in _rendered_context_prompt and
       "platform.tcp_forwards" in _rendered_context_prompt)
@@ -265,10 +264,7 @@ check("auth-fail-no-credential", "Pl4inPwd77x" not in r_auth["text"])
 check("auth-fail-hints-stale", "stale" in r_auth["text"])
 
 
-# --- connect_failed is a CATCH-ALL, so the exception class ssh_transport recorded has to reach the
-# text. It was captured and dropped on every failure, which is how a 2026-08-05 investigation spent
-# its time on a port that was in fact correct. The class name is a type name — no credential, no
-# host — so it is safe to show. ---
+# --- connect_failed keeps the credential-free exception class needed to distinguish dial failures. ---
 ssh_transport.run_ssh = lambda c, command, secrets=(): {"error": "connect_failed",
                                                         "detail": "NoValidConnectionsError"}
 r_conn = harness.run_command("df -h /")
@@ -324,14 +320,8 @@ check("preflight-auth-reason", isinstance(_pf_auth, str) and "认证失败" in _
 check("preflight-no-credential", "Pl4inPwd77x" not in (_pf_conn + _pf_auth))
 
 
-# --- The dial names the PORT, and says what the exception class actually establishes. ---
-# WHY the port: this lane dials 22 on a VM, 23 on a container image, and an arbitrary high forward
-# port on a pod. "SSH 端口未放通" without the number sends whoever reads it to test the wrong one —
-# on 2026-08-06 the failing instance had BOTH 22 and 23 open and the dial still timed out, so the
-# port the reader would have checked by default was open and proved nothing.
-# WHY per-class wording: calibrated against real endpoints on paramiko 3.5.1 (the >=3.4,<4 line prod
-# pins). A cloud security group DROPS rather than RSTs, so "port blocked" arrives as TimeoutError,
-# never as a refusal; offering "端口未放通" for a timeout is the same wrong-layer push #516 removed.
+# --- Dial failures name the actual port and only assert what the exception class establishes. ---
+# VMs, containers and pods use different ports; timeout, refusal and DNS failure are not equivalent.
 _conn23 = dict(harness._CONN, port=23)
 
 
@@ -353,8 +343,7 @@ check("preflight-timeout-carries-class", "TimeoutError" in _pf_timeout)
 _pf_refused = _dial("NoValidConnectionsError")
 check("preflight-refused-says-refused", "明确拒绝了连接" in _pf_refused)
 check("preflight-refused-names-the-dialed-port", "23 端口" in _pf_refused)
-# The two dial failures must not read the same: a refusal proves the host WAS reached, a timeout
-# proves nothing came back. Collapsing them is what made connect_failed useless in the first place.
+# A refusal proves the host was reached; a timeout only proves that nothing came back.
 # Compared with the trailing （ClassName） stripped — otherwise the class suffix alone satisfies
 # this, and the check passes even when both sentences collapse back to one generic paragraph.
 def _body(reason):
@@ -384,13 +373,7 @@ check("connect-fail-names-the-dialed-port", "port 23" in _rc_port)
 harness.set_conn(conn)
 
 
-# --- The dial also names WHICH ROUTE it took: the instance's internal IPv6, or its public address. ---
-# The two failures are byte-identical without it and mean opposite things. A timeout on the public
-# address says this host has no route out (the 2026-08-06 production failure: 3 instances x 2 ports x
-# 2 regions all timed out from the deployment while the identical code connected in under 1.2s from a
-# normal network). A timeout on the internal IPv6 says the address resolved and nothing answered on
-# it — a different team and a different fix. Whoever reads the message cannot tell them apart from
-# the port, the class, or anything else in the sentence.
+# --- Dial failures name the route: internal IPv6 and public addressing have different owners/fixes. ---
 check("route-v6-named", harness._dialled_route("2003:da8:2004:1000::1") == "内网 IPv6 地址")
 check("route-v4-named", harness._dialled_route("203.0.113.10") == "公网地址")
 check("route-absent-is-silent", harness._dialled_route(None) == "" and harness._dialled_route("") == "")
@@ -437,9 +420,7 @@ def _make_fake_paramiko(never_exits=False):
     m = types.ModuleType("paramiko")
 
     class _Chan:
-        """Models the paramiko Channel surface the transport pumps. `never_exits` reproduces a
-        blocking command (`cat` with no file, a wedged mount): bytes arrive, the exit status never
-        does. That is the shape that silently ate the whole 12m wall clock in 3 of 9 live runs."""
+        """Models the paramiko Channel surface, including a command that never reports exit."""
 
         def __init__(self, out, err):
             self._out, self._err, self._done = out, err, False
@@ -519,10 +500,7 @@ check("blocking-command-partial-is-scrubbed", _PW not in _hung.get("partial", ""
 check("transport-keeps-benign", "role pw" in _res["stdout"])
 
 
-# --- INV-9: reviewed SDK MCP tools and NOTHING else — no built-in or filesystem setting source is
-# loaded. Fail CLOSED otherwise. `Skill` was the one permitted built-in until the last playbook was
-# deleted (2026-08-14); with nothing to load it is refused like every other built-in, and
-# `setting_sources` (which existed only for skill discovery) is now empty. ---
+# --- INV-9: permit only reviewed SDK MCP tools; load no built-ins or filesystem settings. ---
 def opts(allowed, disallowed, sources, tools="DEFAULT", skills="DEFAULT"):
     if tools == "DEFAULT":
         tools = list(harness.TOOLS_BASE)                 # valid: no built-in exists at all
@@ -802,9 +780,7 @@ finally:
     harness._claude_md_ancestors = _saved_ancestors
     os.chdir(_cwd_before)
 
-# Cross-drive containment must answer False, not raise: os.path.commonpath raises ValueError when the
-# paths are on different Windows drives (TEMP on D:, profile on C: — an ordinary setup), and that
-# exception used to escape stage_clean_workdir and kill the diagnosis before the first command.
+# Cross-drive containment must answer False, not raise when os.path.commonpath sees different drives.
 check("is-under-cross-drive-is-false-not-an-exception",
       harness._is_under("Z:\\some\\temp", os.path.expanduser("~")) is False)
 # ...and that must hold for the REASON claimed, on every platform. The line above only reaches the
@@ -825,8 +801,7 @@ check("is-under-still-detects-real-containment",
 
 
 # --- stdout line protocol: @@STEP metadata-only per command, one terminal VERDICT block ------------
-# The Go supervisor parses stdout; these pin the wire shape so a format regression fails offline
-# instead of at the far end of a live run.
+# The Go supervisor parses stdout; these tests pin that wire shape.
 
 # D2 mapping: the six run_command dispositions collapse onto exactly three wire values, and anything
 # unmapped (a future ssh error class, the "" left by an exception) is a failure, never a success.
@@ -1095,10 +1070,8 @@ for s in _psteps:
 check("proto-steps-are-json", _ok_json and len(_pobjs) == 3)
 check("proto-dispositions",
       [o.get("disposition") for o in _pobjs] == ["refused", "refused", "ran"])
-# Exact set, not a subset: an @@STEP line is metadata that reaches the user's activity stream and an
-# audit row, so a field appearing here is a decision, never a leak. `reason` joined on 2026-08-08 —
-# it carries the fine-grained disposition the three-valued `disposition` above throws away, which is
-# what lets the server say WHICH gate refused instead of one sentence covering all of them at once.
+# Exact set, not a subset: every field reaches the activity stream and audit row. `reason` preserves
+# the fine-grained refusal cause that the three-valued `disposition` intentionally collapses.
 check("proto-step-fields-present",
       all(set(o) == {"command", "tier", "disposition", "reason", "exit", "bytes"} for o in _pobjs))
 # ...and it must be the specific value, or the server is back to guessing.

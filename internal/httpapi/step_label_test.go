@@ -22,7 +22,7 @@ import (
 // product call, coverage is the invariant.
 
 // Source 1+2+4: everything the model itself can be offered — tools.Registry
-// entries exposed to the agent, the ReadCapability_ family, the shadow consts,
+// entries exposed to the agent, the ReadCapability_ family, internal constants,
 // and the generated Request<Operation> proposal tools.
 func TestStepActionLabelCoversModelVisibleTools(t *testing.T) {
 	names := engine.ModelVisibleToolNames()

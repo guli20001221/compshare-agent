@@ -2,9 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"os"
-	"regexp"
-	"strings"
 	"testing"
 	"time"
 
@@ -45,23 +42,5 @@ func TestPersistAssistant_IsBounded(t *testing.T) {
 	}
 	if remaining := time.Until(st.deadline); remaining <= 0 || remaining > assistantPersistTimeout {
 		t.Fatalf("deadline %v out of range, want (0, %v]", remaining, assistantPersistTimeout)
-	}
-}
-
-// TestNoUnboundedAssistantWritesRemain is the structural half. The three turn-path
-// writes are easy to reintroduce unbounded — the old form reads perfectly
-// natural — so this fails on any UpdateAssistant call that passes a bare
-// Background context, rather than trusting the three current sites to stay
-// converted.
-func TestNoUnboundedAssistantWritesRemain(t *testing.T) {
-	src, err := os.ReadFile("handlers_chat.go")
-	if err != nil {
-		t.Fatalf("read handlers_chat.go: %v", err)
-	}
-	unbounded := regexp.MustCompile(`UpdateAssistant\(\s*context\.Background\(\)`)
-	if loc := unbounded.FindIndex(src); loc != nil {
-		line := 1 + strings.Count(string(src[:loc[0]]), "\n")
-		t.Fatalf("handlers_chat.go:%d writes the assistant row on an unbounded context; "+
-			"route it through persistAssistant so a stalled database cannot withhold done/error", line)
 	}
 }

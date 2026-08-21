@@ -11,17 +11,11 @@ import (
 	"github.com/compshare-agent/internal/zones"
 )
 
-// CFS read capabilities (migrated from the legacy intent route). The four CFS
-// protocols — list, create-price, upgrade-price, refund-estimate — each get their
-// own typed vertical instead of being funnelled back through one CFSKind Slots
-// branch. They share the observation identity (IntentCFSInfo) and the CFS
-// renderers, but nothing else. All are read-only price/estimate/list queries with
-// no evidence envelope.
+// CFS list, create-price, upgrade-price and refund-estimate are independent
+// typed read capabilities with a shared observation label.
 
 const (
-	// cfsFailureLabel is the failure-reply + observation label shared by all four
-	// CFS capabilities: the legacy route dispatched every CFS protocol under
-	// IntentCFSInfo, so failures were labelled with string(IntentCFSInfo).
+	// cfsFailureLabel is shared by all four CFS capabilities.
 	cfsFailureLabel = string(intent.IntentCFSInfo)
 
 	cfsDescribeAction     = "DescribeCFS"
@@ -44,9 +38,7 @@ func cfsRender(resp CFSResponse) ReadResult {
 	return r
 }
 
-// cfsClarify is the CFS deterministic clarification (a needs-more-input reply
-// that is still a Handled/NeedsClarification observation, matching the legacy
-// ClarificationResult).
+// cfsClarify returns a deterministic needs-more-input observation.
 func cfsClarify(action, reply string) ReadResult {
 	r := ReadClarification(reply)
 	r.ToolAction = action
@@ -247,10 +239,7 @@ func cfsRefundEstimateHandle(ctx context.Context, req CFSRefundEstimateRequest, 
 	return CFSResponse{Reply: renderCFSRefundReply(raw, cfsID), Action: cfsRefundPriceAction}, ReadResult{}
 }
 
-// --- Relocated verbatim from intent/routing_cfs_refund.go -----------------------
-
-// extractCFSID applies the legacy cfsIDFromTargetRefs contract to a single CFS
-// reference: a value is accepted only when it is a non-empty "cfs-"-prefixed id.
+// extractCFSID accepts only a non-empty CFS resource ID.
 func extractCFSID(id string) string {
 	value := strings.TrimSpace(id)
 	if suffix, ok := strings.CutPrefix(strings.ToLower(value), "cfs-"); ok && suffix != "" {
@@ -328,10 +317,7 @@ func cfsChargeTypeFromSlot(value string) string {
 	return value
 }
 
-// cfsMountStatusLabel translates the upstream mount-state enum. It used to print
-// through as 「挂载状态 Unmounted」 — the same class of leak as the raw ChargeType
-// next to it: an English wire value handed to the user in an otherwise Chinese
-// line. An unrecognised state still shows itself rather than being guessed at.
+// cfsMountStatusLabel translates known wire values and preserves unknown ones.
 func cfsMountStatusLabel(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "mounted":
@@ -357,14 +343,8 @@ func renderCFSInfoReply(raw map[string]any) string {
 	if len(rows) == 0 {
 		return "未查询到 CFS 共享文件存储。这个查询是只读操作，不会创建、扩容或删除 CFS。"
 	}
-	// No 「（只读查询）」 in the header and no mutation-policy trailer below. A CFS
-	// listing carried both on EVERY answer, so 「我有哪些 CFS」 returned two lines of
-	// standing policy around one line of data. No other listing in this package
-	// announces its own read-only-ness — the instance list, stock, images and zones
-	// all just answer — and the policy is not conditional on anything the user
-	// asked, so repeating it per turn trains the reader to skip the last line.
-	// Where it IS load-bearing (a price query that might be mistaken for an order)
-	// it stays, once, in that reply.
+	// Listings answer directly. Price queries retain their explicit read-only note
+	// because a quote can otherwise be mistaken for an order.
 	lines := []string{"CFS 共享文件存储："}
 	shown := 0
 	for _, rowAny := range rows {
@@ -386,9 +366,7 @@ func renderCFSInfoReply(raw map[string]any) string {
 		}
 		charge := stringField(row, "ChargeType")
 		if charge != "" {
-			// Same vocabulary as the instance list: this used to print the raw wire
-			// enum, so one account's storage read "计费 Month" while its instances read
-			// 包月.
+			// Use the same billing vocabulary as the instance list.
 			charge = "，计费 " + readprojection.ChargeTypeLabel(charge)
 		}
 		mountStatus := stringField(row, "MountStatus")

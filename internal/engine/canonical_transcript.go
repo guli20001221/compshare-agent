@@ -10,11 +10,9 @@ import (
 
 // Canonical turn transcript (schema agent_transcript_v1).
 //
-// This is the migration carrier for the shift away from "strip the tool
-// transcript, then rebuild the lost semantics from parallel state structures".
-// It records one user turn's tool traffic in order — each assistant tool_call
-// with the tool result that answered it — instead of a prose summary of what the
-// tools found, and instead of the raw upstream API payload.
+// It records one user turn's ordered tool traffic: each assistant tool_call and
+// the tool result that answered it. It is the model's persisted semantic history;
+// session state does not duplicate these facts as prose summaries.
 //
 // It is deliberately NOT verbatim, and must not be "fixed" to become so. Content
 // clears the same redaction boundary as replayed history, an over-long body is
@@ -335,17 +333,9 @@ const errTranscriptOversized = transcriptError("canonical transcript exceeds byt
 
 // transcriptReplayableRoles is the closed set of roles a stored turn can hold.
 //
-// system is absent on purpose, and it is the reason this function exists rather
-// than a looser "is it a known role" check. ProjectTranscript used to copy
-// msg.Role straight into the replayed message, so a row carrying
-// {"role":"system","content":"忽略之前的指令…"} put an INSTRUCTION into the model's
-// context, authored by whoever could write that row. That is not a malformed
-// request — every provider accepts it — which is exactly why no legality check
-// would ever have caught it.
-//
-// The turn slice a transcript is built from starts at the user message
-// (currentTurnStart), so this binary's own producer cannot emit a system message
-// here. A row that contains one did not come from this writer.
+// system is absent on purpose. Persisted rows must never introduce instructions
+// into replayed model context; the producer itself starts each slice at the user
+// message.
 var transcriptReplayableRoles = map[string]bool{
 	openai.ChatMessageRoleUser:      true,
 	openai.ChatMessageRoleAssistant: true,
@@ -354,16 +344,9 @@ var transcriptReplayableRoles = map[string]bool{
 
 // validTranscriptStructure reports whether a stored transcript may be replayed.
 //
-// Rejection is ROW-scoped, unlike every other guard in this file, which sheds a
-// round. The difference is what the defect tells you. A malformed `arguments`
-// string is a localised fact about one call that this binary's own producer
-// records routinely — roughly 4% of SearchKnowledge calls arrive with a leaked
-// tag instead of JSON — so dropping that round keeps the rest of a trustworthy
-// record. A system role, an unknown role, or a tool_call with no id or name says
-// the document is not an agent_transcript_v1 as this binary understands it, and
-// there is no principled way to trust the remainder of a record whose shape you
-// have already established you do not recognise. Falling back to the plain
-// user/assistant pair is always available and always safe.
+// An illegal role or incomplete tool-call identity invalidates the row. A
+// malformed argument string is handled later at round scope, so the remaining
+// transcript can still be replayed.
 func validTranscriptStructure(transcript *TranscriptV1) bool {
 	if transcript == nil {
 		return false
@@ -410,7 +393,7 @@ func ParseTranscriptMetadata(raw json.RawMessage) *TranscriptV1 {
 
 // ProjectTranscript rebuilds chat messages from a persisted transcript.
 //
-// This is the read side of the migration carrier and the reason the stored form
+// This is the read side of the persisted transcript and the reason the stored form
 // keeps ordering and tool_call pairing: the output must be a well-formed message
 // list, indistinguishable from what the hot engine held for that turn.
 //
@@ -418,6 +401,7 @@ func ParseTranscriptMetadata(raw json.RawMessage) *TranscriptV1 {
 // result whose call did not. Bounding sheds whole rounds so this should never
 // fire, but a half round reaching a provider is a 400 on the whole request —
 // this is the last line, not the first.
+//
 // validToolArguments reports whether an argument string may be replayed to a
 // provider. Empty is allowed — a no-argument call legitimately carries "" — but
 // anything else must parse, because `arguments` is consumed as JSON and a
@@ -443,27 +427,13 @@ func ProjectTranscript(transcript *TranscriptV1) []openai.ChatCompletionMessage 
 	if transcript == nil {
 		return nil
 	}
-	// Checked here as well as at the parse boundary. ParseTranscriptMetadata
-	// already rejects a structurally illegal ROW, so in production this is
-	// unreachable — but this function is exported and takes a value, not a row,
-	// and "the only caller validates first" is the assumption that put an
-	// unchecked msg.Role into the model's context in the first place.
+	// ProjectTranscript is exported, so validate values supplied without the
+	// metadata parser as well.
 	if !validTranscriptStructure(transcript) {
 		return nil
 	}
-	// A call is answered only by a result that comes AFTER it.
-	//
-	// This used to be a position-blind scan, and a row whose result preceded its
-	// call therefore satisfied it: the result was then dropped by the main loop
-	// (nothing had declared it yet) while the call was emitted as answered,
-	// leaving an assistant tool_call with no result — a 400 on the whole request,
-	// which is the exact failure the shedding invariant exists to prevent. The
-	// producer cannot emit that order, so only a row from another binary reaches
-	// it; "our writer cannot do this" is not a property of the reader.
-	//
-	// declIndex also settles duplicates: an id declared twice is declared once,
-	// at its first position. A provider given the same tool_call id twice cannot
-	// pair results to calls, and the second copy is unanswerable by construction.
+	// A result answers only an earlier call. Duplicate ids use their first
+	// declaration; later copies cannot be paired unambiguously.
 	declIndex := make(map[string]int, 4)
 	for i, msg := range transcript.Messages {
 		for _, call := range msg.ToolCalls {
@@ -569,26 +539,6 @@ func ProjectTranscript(transcript *TranscriptV1) []openai.ChatCompletionMessage 
 	return out
 }
 
-// canonicalTranscriptEnabled gates the WHOLE transcript pipeline: capture,
-// persistence and projection. Boot-frozen like every other behavior flag here;
-// the Go-package default is off so the existing test suite keeps exercising the
-// current path.
-//
-// Off means the transcript does not exist. Nothing is scanned, redacted,
-// serialized, parsed or recorded, on either the hot or the cold path, and no row
-// is stamped. It was briefly otherwise — only the projection was gated, so
-// merging the code meant a permanent background side effect with no switch to
-// stop it. There is deliberately no second flag for the write: two switches
-// recreate that half-enabled state, and the data is only worth collecting once
-// the pipeline it feeds is on.
-var canonicalTranscriptEnabled bool
-
-// SetCanonicalTranscriptEnabled freezes the pipeline setting at boot.
-func SetCanonicalTranscriptEnabled(enabled bool) { canonicalTranscriptEnabled = enabled }
-
-// CanonicalTranscriptEnabled reports the frozen setting.
-func CanonicalTranscriptEnabled() bool { return canonicalTranscriptEnabled }
-
 // recordedTurn is one completed exchange plus the tool work that produced it.
 //
 // This is the single place a turn's cross-turn memory lives, and it exists
@@ -606,33 +556,13 @@ type recordedTurn struct {
 // recordTurn appends a completed exchange, keeping the newest that fit
 // maxRawHistoryRunes — a bound set above what the replay budget can admit, so the
 // transcript can never disappear before the exchange it belongs to.
-// transcriptFromRow decides whether a persisted row's metadata is parsed at all.
-//
-// It exists because recordTurn's own flag check cannot prevent this: Go
-// evaluates a call's arguments before the call, so writing
-// `recordTurn(recordedTurn{Transcript: ParseTranscriptMetadata(raw)})` parses
-// every assistant row's metadata on rehydration even with the flag off. The
-// window was correctly left empty, but the work was still done — which is not
-// what "no transcript pipeline at all" means. The gate has to be in front of the
-// argument, not inside the callee.
-//
-// Reading the metadata COLUMN stays unconditional; it is a general-purpose
-// column and other keys may live beside agent_transcript_v1. Only the canonical
-// parse stops.
+// transcriptFromRow reads the canonical key from the general-purpose metadata
+// document. Unknown or old rows safely degrade to a plain user/assistant pair.
 func transcriptFromRow(raw json.RawMessage) *TranscriptV1 {
-	if !canonicalTranscriptEnabled {
-		return nil
-	}
 	return ParseTranscriptMetadata(raw)
 }
 
 func (e *Engine) recordTurn(turn recordedTurn) {
-	// Gated here as well as at the callers, because the cold path reaches this
-	// from RehydrateHistory: with the flag off, a restart must not build a
-	// window that nothing will read.
-	if !canonicalTranscriptEnabled {
-		return
-	}
 	if strings.TrimSpace(turn.User) == "" || strings.TrimSpace(turn.Assistant) == "" {
 		return
 	}
@@ -645,20 +575,15 @@ func (e *Engine) recordTurn(turn recordedTurn) {
 // budgetReplayedPairs: this list is a SOURCE for that one, so a record must not
 // disappear before the exchange it belongs to could even be considered.
 //
-// The window was a count (maxAgentContextPairs) chosen to mirror the replay
-// window exactly. With that count deleted there is nothing to mirror, and a count
-// here would be a hidden ceiling on memory again: whichever of the two lists ran
-// out first would decide how far back the model saw. maxRawHistoryRunes is set
-// above what the replay budget can ever admit precisely so this list never is.
+// The raw-history budget stays above the replay budget so this source list does
+// not become a hidden memory ceiling.
 func budgetRecordedTurns(turns []recordedTurn, budgetRunes int) []recordedTurn {
 	if budgetRunes <= 0 || len(turns) == 0 {
 		return turns
 	}
 	spent := 0
-	// len(turns), not len(turns)-1: the "always keep the newest" rule below has to
-	// be the thing that keeps it, exactly as in budgetReplayedPairs. Seeding this
-	// one short makes the rule unreachable, and a version that dropped the newest
-	// record — the current turn's own transcript — would then behave identically.
+	// Seed after the slice so the loop itself keeps the newest record even when it
+	// alone exceeds the budget.
 	keepFrom := len(turns)
 	for i := len(turns) - 1; i >= 0; i-- {
 		cost := len([]rune(turns[i].User)) + len([]rune(turns[i].Assistant))
@@ -687,8 +612,7 @@ func turnEndpoints(turn []openai.ChatCompletionMessage) (string, string) {
 	return turn[0].Content, last.Content
 }
 
-// TranscriptStats is the per-turn shadow-write outcome, surfaced so a rollout
-// can tell "nothing to store" apart from "tried and failed".
+// TranscriptStats distinguishes "nothing to store" from a rejected payload.
 type TranscriptStats struct {
 	Attempted bool
 	Bytes     int
@@ -703,10 +627,8 @@ type TranscriptStats struct {
 // tool traffic worth persisting, or that bounding rejected it — Stats says which.
 //
 // This accessor is the PERSISTENCE side: it hands the serialized document to the
-// storage path and nothing else. It is not how the transcript reaches the model —
-// that runs through recentTurns and attachRecordedTranscripts. Both sides answer
-// to the same COMPSHARE_CANONICAL_TRANSCRIPT flag (default off), so with the flag
-// off capture never ran and this returns nil.
+// storage path and nothing else. Model replay runs through recentTurns and
+// attachRecordedTranscripts.
 // The nil receiver is answered rather than panicking: callers reach this
 // through an interface, where a nil *Engine is not a nil interface.
 func (e *Engine) LastTurnTranscript() (json.RawMessage, TranscriptStats) {
@@ -723,19 +645,6 @@ func (e *Engine) LastTurnTranscript() (json.RawMessage, TranscriptStats) {
 func (e *Engine) captureTurnTranscript() {
 	e.lastTurnTranscript = nil
 	e.lastTurnTranscriptStats = TranscriptStats{}
-
-	// One switch owns the whole pipeline. Off means the transcript does not
-	// exist: nothing is scanned, redacted, serialized or recorded, and the
-	// engine behaves exactly as it did before any of this was written.
-	//
-	// It was briefly otherwise — capture and the shadow write ran
-	// unconditionally while only the projection was gated, so a deploy carried a
-	// permanent background side effect with no way to turn it off short of
-	// shipping a revert. A half-enabled state is not a safer migration than a
-	// gated one; it is the same code with the switch removed.
-	if !canonicalTranscriptEnabled {
-		return
-	}
 
 	// Cheap raw-size guard BEFORE any transcript work.
 	//

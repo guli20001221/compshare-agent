@@ -244,7 +244,7 @@ func TestBuildCreateConfirmForm_ZoneOptionsUseDisplayNames(t *testing.T) {
 }
 
 func TestBuildCreateConfirmForm_ZoneLabelsFallBackToIdWithoutDescribes(t *testing.T) {
-	// No ZoneDescribes (manual/CLI path or catalog unavailable) → labels are the
+	// No ZoneDescribes (catalog unavailable) → labels are the
 	// bare zone ids, byte-identical to the pre-change behavior.
 	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090"})
 	wfCtx.referenceData.ZoneCatalog = noDescribeZoneCatalog("cn-wlcb-01", "cn-sh2-02")

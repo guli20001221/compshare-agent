@@ -12,7 +12,7 @@ import (
 // SessionStateSchemaV1 is the first persisted JSON schema version for SessionState.
 const SessionStateSchemaV1 = "1.0"
 
-// SessionStateSchemaV2 historically added a durable context frame. The field is
+// SessionStateSchemaV2 historically added a persisted context frame. The field is
 // now retired, but V2 rows remain readable so a later write can drop that unused
 // semantic sidecar without a migration.
 const SessionStateSchemaV2 = "2.0"
@@ -25,9 +25,8 @@ const SessionStateSchemaV3 = "3.0"
 // workflow-slot fields are ignored; selection provenance remains live.
 const SessionStateSchemaV4 = "4.0"
 
-// SessionStateSchemaV5 added legacy semantic-memory fields and explicit
-// freshness. TaskSnapshot and ConversationDigest are deleted; V5 rows still
-// decode and those unknown fields are dropped on the next write.
+// SessionStateSchemaV5 added fields that are now retired plus explicit selection
+// freshness. V5 rows remain readable and unknown fields disappear on rewrite.
 const SessionStateSchemaV5 = "5.0"
 
 // SessionStateSchemaV6 persists bounded evidence from answers that passed the
@@ -36,7 +35,7 @@ const SessionStateSchemaV5 = "5.0"
 // or forcing another retrieval.
 const SessionStateSchemaV6 = "6.0"
 
-// SessionStateSchemaV7 is the current envelope version. Older semantic-memory
+// SessionStateSchemaV7 is the current envelope version. Older summary
 // fields are deliberately ignored when old rows are decoded.
 const SessionStateSchemaV7 = "7.0"
 
@@ -47,8 +46,8 @@ const SessionStateSchemaCurrent = SessionStateSchemaV7
 // agent_session_state.schema_version string) but the version is not in
 // knownSessionStateSchemaVersions. Callers (handleChat) MUST treat this
 // like a parse failure: continue the chat turn but skip persistence so
-// the row is left untouched for the binary version that does recognize
-// it. See ParsePersistedContext docstring for the rollout rationale.
+// the row is left untouched for a binary version that recognizes it. See
+// ParsePersistedContext for the compatibility rationale.
 var ErrUnknownSessionStateSchema = errors.New("engine: unknown SessionState schema_version")
 
 // knownSessionStateSchemaVersions enumerates every schema_version string
@@ -86,24 +85,25 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 // Older rows can contain retired semantic fields. Normal JSON decoding ignores
 // them, and a later write omits them without a migration.
 type SessionState struct {
-	SchemaVersion                  string                  `json:"schema_version"`
-	SelectedInstanceID             string                  `json:"selected_instance_id,omitempty"`
-	SelectedInstanceName           string                  `json:"selected_instance_name,omitempty"`
-	SelectedInstanceSource         string                  `json:"selected_instance_source,omitempty"`
-	SelectedInstanceAtUnix         int64                   `json:"selected_instance_at_unix,omitempty"`
-	SelectedInstanceFreshness      string                  `json:"selected_instance_freshness,omitempty"`
-	PendingSelectionKind           string                  `json:"pending_selection_kind,omitempty"`
-	PendingSelectionProducedAtUnix int64                   `json:"pending_selection_produced_at_unix,omitempty"`
-	PendingSelectionTTLSeconds     int                     `json:"pending_selection_ttl_seconds,omitempty"`
-	PendingSelectionItems          []PendingSelectionItem  `json:"pending_selection_items,omitempty"`
-	VerifiedKnowledge              []VerifiedKnowledgeTurn `json:"verified_knowledge,omitempty"`
+	SchemaVersion                  string                 `json:"schema_version"`
+	SelectedInstanceID             string                 `json:"selected_instance_id,omitempty"`
+	SelectedInstanceName           string                 `json:"selected_instance_name,omitempty"`
+	SelectedInstanceSource         string                 `json:"selected_instance_source,omitempty"`
+	SelectedInstanceAtUnix         int64                  `json:"selected_instance_at_unix,omitempty"`
+	SelectedInstanceFreshness      string                 `json:"selected_instance_freshness,omitempty"`
+	PendingSelectionKind           string                 `json:"pending_selection_kind,omitempty"`
+	PendingSelectionProducedAtUnix int64                  `json:"pending_selection_produced_at_unix,omitempty"`
+	PendingSelectionTTLSeconds     int                    `json:"pending_selection_ttl_seconds,omitempty"`
+	PendingSelectionItems          []PendingSelectionItem `json:"pending_selection_items,omitempty"`
+	VerifiedEvidence               []VerifiedEvidenceTurn `json:"verified_knowledge,omitempty"`
 }
 
-// VerifiedKnowledgeTurn is compact, durable provenance for an answer that
-// already passed the semantic evidence verifier. It is reference-only memory:
+// VerifiedEvidenceTurn is compact, persisted provenance for an answer that
+// already passed the evidence verifier. It is a reference-only ledger:
 // it can support later read-only prose, never authorize writes or satisfy a
 // real-time state query.
-type VerifiedKnowledgeTurn struct {
+// The JSON key remains verified_knowledge for stored-session compatibility.
+type VerifiedEvidenceTurn struct {
 	Question       string                   `json:"question,omitempty"`
 	Evidence       knowledge.EvidenceLedger `json:"evidence"`
 	VerifiedAtUnix int64                    `json:"verified_at_unix,omitempty"`

@@ -1,8 +1,8 @@
 // Package embedding provides a minimal ModelVerse-compatible embedding client
-// and float-vector helpers used by the hybrid retrieval branch.
+// and float-vector helpers used by offline retrieval evaluation.
 //
 // The cosine helper accumulates in float64 and divides once at the end so the
-// runtime ranking matches the Python eval helper retrieval_scoring.cosine_similarity
+// Go ranking matches the Python eval helper retrieval_scoring.cosine_similarity
 // byte-for-byte on the same inputs. Any drift here breaks the Go-Python parity
 // contract enforced by the 377-Q parity test.
 package embedding

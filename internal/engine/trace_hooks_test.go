@@ -4,43 +4,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/compshare-agent/internal/governance"
-	"github.com/compshare-agent/internal/llm"
-	"github.com/compshare-agent/internal/observability"
 	"github.com/stretchr/testify/require"
 )
-
-func TestAttachTraceHooksWiresEveryEngineObserver(t *testing.T) {
-	eng := &Engine{}
-	eng.AttachTraceHooks(TraceHooks{
-		Retrieval: func(observability.RetrievalTrace) {}, Freshness: func(observability.FreshnessTrace) {},
-		Diagnosis: func(observability.DiagnosisTrace) {}, Outcome: func(observability.OutcomeTrace) {},
-		Renderer: func(observability.RendererTrace) {}, HardBlock: func(observability.EngineHardBlockTrace) {},
-		Completion: func(observability.TurnCompletionTrace) {},
-		RateLimit:  func(governance.Decision) {}, TokenUsage: func(llm.TokenUsage) {},
-		Confirmation: func(observability.ConfirmationTrace) {},
-	})
-	require.NotNil(t, eng.retrievalTraceObserver)
-	require.NotNil(t, eng.freshnessTraceObserver)
-	require.NotNil(t, eng.diagnosisTraceObserver)
-	require.NotNil(t, eng.outcomeTraceObserver)
-	require.NotNil(t, eng.rendererTraceObserver)
-	require.NotNil(t, eng.hardBlockObserver)
-	require.NotNil(t, eng.turnCompletionObserver)
-	require.NotNil(t, eng.rateLimitObserver)
-	require.NotNil(t, eng.tokenUsageObserver)
-	require.NotNil(t, eng.confirmationTraceObserver)
-}
 
 func TestTraceSnapshotReportsOnlyBoundedContinuityMetadata(t *testing.T) {
 	eng := &Engine{
 		turnContextViewThisTurn: AgentContext{
 			CurrentQuestion:    "secret question",
 			RecentConversation: []ConversationPair{{User: "secret user", Assistant: "secret answer"}},
-			ContinuityNotices:  []string{"secret notice"},
 		},
 		promptSectionIDsThisTurn:             []string{"identity", "knowledge_turn_policy", "user_state"},
-		memoryUpdateSourceThisTurn:           memoryUpdateStructured,
+		verifiedEvidenceUpdateThisTurn:       evidenceUpdateRecorded,
 		groundingOutcomeThisTurn:             groundingSupported,
 		promptMessagesRawPeakThisTurn:        12,
 		promptMessagesAssembledPeakThisTurn:  9,
@@ -50,13 +24,13 @@ func TestTraceSnapshotReportsOnlyBoundedContinuityMetadata(t *testing.T) {
 		selectedInstanceFreshnessAtTurnStart: ContinuityFreshnessExpired,
 	}
 	snapshot := eng.TraceSnapshot(time.Now())
-	require.Equal(t, []string{"recent_pairs", "notices"}, snapshot.ContextSources)
+	require.Equal(t, []string{"recent_pairs"}, snapshot.ContextSources)
 	require.Equal(t, string(ResponseAgent), snapshot.ResponseContract)
 	require.Equal(t, []string{"identity", "knowledge_turn_policy", "user_state"}, snapshot.PromptSectionIDs)
 	require.Equal(t, 12, snapshot.PromptMessagesRawPeak)
 	require.Equal(t, 9, snapshot.PromptMessagesAssembledPeak)
 	require.True(t, snapshot.PromptMessagesCapApplied)
-	require.Equal(t, memoryUpdateStructured, snapshot.MemoryUpdateSource)
+	require.Equal(t, evidenceUpdateRecorded, snapshot.EvidenceUpdateSource)
 	require.Equal(t, groundingSupported, snapshot.GroundingOutcome)
 	require.Equal(t, "uhost-start", snapshot.SelectedInstanceIDAtStart)
 	require.Equal(t, SelectedInstanceSourceUser, snapshot.SelectedInstanceSourceAtStart)

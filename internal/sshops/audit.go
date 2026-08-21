@@ -11,7 +11,7 @@ import (
 type AuditEvent struct {
 	RequestUUID string
 	// TurnID is the server-side turn identity; TaskHash is the sha256 of the raw task text.
-	// Together they are the (turn_id, task_hash) UNIQUE key that stops a durable replay of the
+	// Together they are the (turn_id, task_hash) UNIQUE key that stops a retry of the
 	// SAME turn from re-entering the box (INV-9). The engine-side per-turn gate (INV-11) is the
 	// primary defense against a one-word Task tweak; this DB key covers cross-turn/replay only.
 	TurnID            string

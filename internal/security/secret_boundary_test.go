@@ -110,7 +110,7 @@ func TestRedactAssistantConversationTextMarksRedactedCommandsAsNonReusable(t *te
 	assert.Contains(t, persisted, redactedConversationCredentialNotice,
 		"a persisted redacted command must say that it cannot be copied after reload")
 	assert.Equal(t, persisted, RedactAssistantConversationText(persisted),
-		"the durable notice must be idempotent across hot/cold replay boundaries")
+		"the persisted notice must be idempotent across hot/cold replay boundaries")
 }
 
 func TestRestoreUserProvidedCredentialURLsOnlyRestoresAnExactCurrentTurnEcho(t *testing.T) {

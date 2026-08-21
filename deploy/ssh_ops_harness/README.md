@@ -43,16 +43,8 @@ sudoers.d drop-in 都是可确认操作。只有不可恢复的数据/启动/登
 
 ## 运行环境
 
-生产 Docker 镜像会安装并在构建时验证 Python 依赖与固定版本的 `claude` CLI，宿主机不需要再装。
-镜像构建和 Docker 1.12.6 目标机门禁见 [`../docker/README.md`](../docker/README.md)。
-
-只有继续使用旧的宿主机/ally 部署时，才需要手动执行：
-
-```bash
-/opt/miniforge3/envs/py313/bin/python -m pip install -r /opt/compshare-agent/deploy/ssh_ops_harness/requirements.txt
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 < deploy/migrations/0011_create_ssh_ops_audit.sql
-psql "$DATABASE_URL" -v ON_ERROR_STOP=1 < deploy/migrations/0013_add_ssh_ops_context_observability.sql
-```
+生产 Docker 镜像会安装并在构建时验证 Python 依赖与固定版本的 `claude` CLI，运行节点不需要再安装。
+数据库迁移和 Kubernetes 发布由 GitLab 的手动生产任务执行，顺序见 [`../k8s/README.md`](../k8s/README.md)。
 
 还需要固定为 `2.1.218` 的 **`claude` CLI**。SDK 自带的 `2.1.185` 会被默认优先选择，所以
 harness 显式设置 `cli_path` 使用 PATH 中的受控版本。它通过 `ANTHROPIC_BASE_URL=https://api.modelverse.cn` 和

@@ -20,24 +20,10 @@ const (
 // other caller is untouched); nothing mutates it.
 var knowledgeQueryPlannerTemperature float32 = 0
 
-// The two rules about query FORM are not style preferences. The retriever ends in
-// a cross-encoder that scores (query, document) pairs, and it is sensitive to the
-// query's shape in both directions — measured 2026-08-09 on 12 real user turns the
-// production stack currently fails (eval/reports/rag_retrieval_probe_2026-08-09.md
-// §9), plus the 37-case manual GT as the regression set:
-//
-//   - Written form rescues elliptical utterances. The same gold document, same
-//     corpus, same reranker: "现在网速是多少" scored 0.0 and its written form 0.991;
-//     "当前SSH接口是多少" went from never delivered to 0.99. Feeding the rewrite to
-//     retrieval ALONE and leaving the raw words on the reranker delivered 0 of 12 —
-//     the documents were already being retrieved, the raw words were scoring them at
-//     0.009. So the form has to reach the reranker, which is why it belongs in
-//     search_queries rather than in some retrieval-only expansion.
-//
-//   - Rewriting precise tokens destroys queries that work today. Blanket rewriting
-//     took the regression set from 32/37 delivered to 27/37, and every case it broke
-//     carried an exact token: "226604 资源不足 创建实例报错" went from 0.994 to not
-//     even entering the candidate pool, "导出账单 图片" from 0.777 to 0.054.
+// The planner expands elliptical conversation into a standalone query while
+// preserving exact error codes, ports, model names and commands. Both forms are
+// searched because the reranker benefits from complete questions while precise
+// tokens can be damaged by blanket rewriting.
 const knowledgeQueryPlannerPrompt = `你是知识检索问题整理器。仅输出 JSON，不回答问题。
 把当前用户问题结合必要的对话历史整理成：
 {"answer_question":"用户现在真正要解决的、脱离历史也能理解的完整问题","search_queries":["用于检索的完整问题"]}
@@ -70,28 +56,6 @@ func (e *Engine) planKnowledgeQuery(ctx context.Context, proposed string) knowle
 	if e == nil || e.llmClient == nil || strings.TrimSpace(proposed) == "" || !e.turnContextViewReady {
 		return fallback
 	}
-	// This used to return early on a first turn, on the reasoning that a first
-	// turn has no reference to resolve and so the call could not earn its cost.
-	// That reasoning covered de-referencing, which was the planner's only job at
-	// the time. Writing the query in the form the reranker can score is a second
-	// job, and it does not depend on there being any history.
-	//
-	// Measured over 422 real sessions / 858 user turns: 39% of the turns whose
-	// evidence falls under the floor are first turns, so skipping here would leave
-	// two fifths of the failing population untouched. The floor-drop rate is in
-	// fact HIGHER mid-conversation (36% vs 20%) — ellipsis needs context to be
-	// possible — but 60% of sessions never get a second turn at all.
-	//
-	// The arms in eval/reports/rag_retrieval_probe_2026-08-09.md §9-10 were run
-	// with an empty conversation, so they measured exactly this configuration: the
-	// 5/12 rescue and the 33/37 non-regression are first-turn evidence. Keeping
-	// the early return would have shipped a change validated in a state the code
-	// then excluded.
-	//
-	// Cost is one bounded planner call per SearchKnowledge that would otherwise
-	// have skipped it. Retrieval fan-out is unchanged — the plan is still capped
-	// at maxKnowledgePlanQueries.
-
 	input := knowledgeQueryPlanInput{
 		Conversation:  append([]ConversationPair(nil), e.turnContextViewThisTurn.RecentConversation...),
 		Current:       strings.TrimSpace(e.turnContextViewThisTurn.CurrentQuestion),
@@ -109,22 +73,7 @@ func (e *Engine) planKnowledgeQuery(ctx context.Context, proposed string) knowle
 		ResponseFormat: &openai.ChatCompletionResponseFormat{
 			Type: openai.ChatCompletionResponseFormatTypeJSONObject,
 		},
-		// Pinned sampling. This call resolves references and restates one
-		// question as retrieval queries — a rewrite, not a judgement, so the
-		// same input should not produce a different retrieval set run to run.
-		//
-		// It still does. A/A over 50 real 2026-06-26..07-09 questions (same arm
-		// twice, deterministic BM25 retrieval so only this call varied):
-		//
-		//	provider default : chunk-set flip 56%, mean Jaccard 0.708, count flip 16%
-		//	pinned to 0      : chunk-set flip 50%, mean Jaccard 0.754, count flip 10%
-		//
-		// So the pin removes one confound and little else — the residual is not
-		// sampling temperature. Anything that compares retrieval arms case by
-		// case is unreadable at a 50% self-flip rate; such a comparison needs
-		// repeated runs per case, or a metric that does not key on chunk-set
-		// identity. Keeping the pin because a rewrite should not be sampled, NOT
-		// because it made this call reproducible.
+		// Rewriting is a deterministic transformation, not a creative answer.
 		Temperature: &knowledgeQueryPlannerTemperature,
 	})
 	if err != nil || resp == nil {
@@ -152,22 +101,9 @@ func (e *Engine) planKnowledgeQuery(ctx context.Context, proposed string) knowle
 	return withAgentQueryAnchor(plan, strings.TrimSpace(proposed))
 }
 
-// withAgentQueryAnchor keeps the query the Agent actually chose in the retrieval
-// set instead of letting the planner replace it outright.
-//
-// The evidence floor is applied PER QUERY (engine.go, isWeakEvidence inside the
-// per-query loop, hits zeroed before MergeEvidenceLedgers unions them), so adding
-// a query can only add evidence: a weak one contributes nothing rather than
-// dragging the round down. That is what makes an anchor safe here, and it is the
-// property the 2026-08-09 arms measured. Rewrite-only replaced today's query and
-// scored 27/37 on the regression set against 32/37 shipped; keeping both and taking
-// whichever survives the floor scored 33/37 while still rescuing 4 of the 12 failing
-// turns. The union arm broke nothing, which the replacement arm could not manage.
-//
-// LAST, not first. Retrievals are charged against maxRetrievalQueriesPerTurn in
-// order, so the front slot is the one guaranteed to run, and it belongs to the
-// written-form rewrite — that is the leg measured to rescue turns the anchor's own
-// wording is what loses.
+// withAgentQueryAnchor retains the model's precise query alongside the rewrite.
+// It is appended last so the bounded retrieval budget prioritizes the standalone
+// form; weak queries contribute no evidence rather than lowering other results.
 func withAgentQueryAnchor(plan knowledgeQueryPlan, proposed string) knowledgeQueryPlan {
 	if proposed == "" || len(plan.SearchQueries) >= maxKnowledgePlanQueries {
 		return plan

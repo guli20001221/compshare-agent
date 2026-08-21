@@ -2,7 +2,7 @@
 // schema) so the hybrid retriever can add a cross-encoder rerank stage on
 // top of cosine top-K.
 //
-// Lane B.0 API probe (2026-05-19) confirmed the endpoint accepts:
+// The endpoint accepts:
 //
 //	POST /v1/rerank {"model","query","documents":[...],"top_n":N}
 //
@@ -44,9 +44,8 @@ type Client interface {
 	Rerank(ctx context.Context, query string, docs []string, topN int) ([]Result, error)
 }
 
-// ClientOptions wires a ModelVerse-style /v1/rerank client. Mirrors
-// internal/embedding.ClientOptions intentionally so cmd/trace.go can read
-// both from the same env block.
+// ClientOptions wires a ModelVerse-style /v1/rerank client for offline
+// retrieval evaluation.
 type ClientOptions struct {
 	BaseURL    string
 	APIKey     string
@@ -79,9 +78,7 @@ func NewModelverseClient(opts ClientOptions) (Client, error) {
 		timeout := opts.Timeout
 		if timeout <= 0 {
 			// B.0 probe measured ~3.8s for a 50-doc single batch. Default to
-			// 5s — bounds tail while covering our top-20 use case
-			// comfortably. Override via ClientOptions.Timeout / env
-			// RAG_RERANKER_TIMEOUT_MS.
+			// 5s — bounds tail while covering our top-20 use case.
 			timeout = 5 * time.Second
 		}
 		httpClient = &http.Client{Timeout: timeout}

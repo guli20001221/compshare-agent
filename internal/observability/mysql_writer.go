@@ -12,17 +12,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	// PostgreSQL driver registered via blank import. The Server bootstrap (A3) is
-	// responsible for verifying connectivity at startup so callers of this
-	// package never see driver-registration failures. (Type/name retained as
-	// MySQLWriter for call-site stability; backend is PostgreSQL.)
+	// PostgreSQL driver registration. The public type keeps its historical name
+	// for source compatibility; the backend and SQL are PostgreSQL.
 	_ "github.com/lib/pq"
 )
 
-// MySQLWriter is a Writer that persists TraceRecords into agent_traces in a
-// MySQL 8.0 database. Designed for the console-deployment server path where
-// trace volume can be ~10/s/pod and trace inserts MUST NOT block the engine
-// reply loop.
+// MySQLWriter persists TraceRecords to the PostgreSQL agent_traces table. The
+// historical type name is retained for source compatibility.
 //
 // Buffering & back-pressure:
 //   - Append is non-blocking: it pushes to a buffered queue and returns nil.
@@ -81,17 +77,16 @@ type TraceWriterStats struct {
 const traceWriterHealthLogEvery = 100
 
 // persistedTrace bundles tenant context with the trace record. TraceRecord
-// itself has no tenant field — callers add tenant identifiers via Enqueue
-// (recommended; explicit context) or via Append (legacy/CLI; tenants are 0
-// which is fine for file-style sinks but produces zeroed columns in MySQL).
+// itself has no tenant field — request handlers add tenant identifiers via
+// Enqueue, while the generic Writer method Append uses a zero tenant context.
 type persistedTrace struct {
 	tenant TenantContext
 	record TraceRecord
 }
 
-// TenantContext is the per-request identity attached to a trace row when
-// persisting to MySQL. Populated by the server WS handler before calling
-// MySQLWriter.Enqueue. CLI path (Append) leaves these at zero.
+// TenantContext is the per-request identity attached to a trace row. The server
+// WS handler populates it before calling MySQLWriter.Enqueue. Append leaves
+// these at zero.
 type TenantContext struct {
 	TopOrgID     int64
 	OrgID        int64
@@ -112,9 +107,7 @@ type MySQLWriterOptions struct {
 // connectivity, and starts the background worker goroutine. Caller MUST
 // Close to drain.
 //
-// The DSN MUST include charset=utf8mb4 to support emoji + Chinese in
-// user_message / trace_json. parseTime=true is recommended so created_at
-// round-trips as time.Time without conversion shims.
+// The DSN uses PostgreSQL connection-string syntax.
 func NewMySQLWriter(dsn string, opts MySQLWriterOptions) (*MySQLWriter, error) {
 	if dsn == "" {
 		return nil, errors.New("mysql writer: dsn is empty")
@@ -174,9 +167,8 @@ func detectPromotedColumns(db *sql.DB, logger *log.Logger) bool {
 	return true
 }
 
-// Append satisfies the Writer interface. CLI / legacy callers use this when
-// they do not need to attach tenant context. Equivalent to Enqueue with a
-// zero TenantContext.
+// Append satisfies Writer for callers without tenant context. It is equivalent
+// to Enqueue with a zero TenantContext.
 func (w *MySQLWriter) Append(record TraceRecord) error {
 	return w.Enqueue(TenantContext{}, record)
 }
@@ -445,7 +437,7 @@ func promotedColumnValues(rec TraceRecord) []any {
 		nullableStr(rec.Outcome.AbortCause),
 		nullableStr(rec.Outcome.ErrorClass),
 		nullableStr(rec.Outcome.Resolution),
-		nullableStr(rec.IntentRouter.RouteStatus),
+		nil, // retired route_status column; retained in SQL for schema compatibility
 		nullableStr(rec.Retrieval.DeriveRefusalType()),
 		nullableStr(rec.State.ResolutionSource),
 	}
@@ -489,7 +481,7 @@ func rowFromTrace(p persistedTrace) ([]any, error) {
 		rec.TurnIndex,
 		createdAt,
 		statusFromTrace(rec),
-		string(rec.IntentRouter.Intent),
+		"", // retired intent column; retained in SQL for schema compatibility
 		len(rec.ToolCalls),
 		citedJSON,
 		rec.Outcome.TotalLatencyMS,

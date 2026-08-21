@@ -350,8 +350,8 @@ func TestRefreshRecordsSyncEvents(t *testing.T) {
 	)}
 
 	reg := NewRegistry()
-	require.NoError(t, reg.Refresh(ctx, exec, RefreshReasonInit))
-	assert.Equal(t, string(SyncEventInit), reg.Snapshot().SyncEvent)
+	require.NoError(t, reg.Refresh(ctx, exec, RefreshReasonManual))
+	assert.Equal(t, string(SyncEventSyncRefresh), reg.Snapshot().SyncEvent)
 	assert.NotEmpty(t, reg.Snapshot().SnapshotID)
 
 	require.NoError(t, reg.Refresh(ctx, exec, RefreshReasonManual))
@@ -376,7 +376,7 @@ func TestRefreshFailurePreservesPreviousSnapshot(t *testing.T) {
 	reg := NewRegistry()
 	require.NoError(t, reg.Refresh(ctx, &registryRefreshExecutor{result: describeResult(
 		host("uhost-a", "train-a", "Running", "4090", 1),
-	)}, RefreshReasonInit))
+	)}, RefreshReasonManual))
 	before := reg.Snapshot()
 
 	err := reg.Refresh(ctx, &registryRefreshExecutor{err: errors.New("platform timeout")}, RefreshReasonManual)
@@ -395,7 +395,7 @@ func TestRefreshFailurePreservesPreviousSnapshot(t *testing.T) {
 func TestRefreshFailureWithoutPreviousSnapshot(t *testing.T) {
 	reg := NewRegistry()
 
-	err := reg.Refresh(context.Background(), &registryRefreshExecutor{err: errors.New("network down")}, RefreshReasonInit)
+	err := reg.Refresh(context.Background(), &registryRefreshExecutor{err: errors.New("network down")}, RefreshReasonManual)
 
 	require.Error(t, err)
 	snap := reg.Snapshot()
@@ -409,7 +409,7 @@ func TestRefreshParseFailureRecordsFailed(t *testing.T) {
 
 	err := reg.Refresh(context.Background(), &registryRefreshExecutor{result: map[string]any{
 		"TotalCount": 0,
-	}}, RefreshReasonInit)
+	}}, RefreshReasonManual)
 
 	require.Error(t, err)
 	snap := reg.Snapshot()
@@ -424,7 +424,7 @@ func TestNeedsRefreshAndInvalidationWhitelist(t *testing.T) {
 	reg := NewRegistry(WithClock(func() time.Time { return now }))
 	require.NoError(t, reg.Refresh(context.Background(), &registryRefreshExecutor{result: describeResult(
 		host("uhost-a", "train-a", "Running", "4090", 1),
-	)}, RefreshReasonInit))
+	)}, RefreshReasonManual))
 
 	assert.False(t, reg.NeedsRefresh(now.Add(29*time.Second)))
 	assert.True(t, reg.NeedsRefresh(now.Add(31*time.Second)))
@@ -455,7 +455,7 @@ func TestNeedsRefreshAndInvalidationWhitelist(t *testing.T) {
 			reg := NewRegistry(WithClock(func() time.Time { return now }))
 			require.NoError(t, reg.Refresh(context.Background(), &registryRefreshExecutor{result: describeResult(
 				host("uhost-a", "train-a", "Running", "4090", 1),
-			)}, RefreshReasonInit))
+			)}, RefreshReasonManual))
 			assert.True(t, reg.MarkInvalidated(action))
 			assert.True(t, reg.NeedsRefresh(now.Add(time.Second)))
 		})
@@ -473,7 +473,7 @@ func TestNeedsRefreshAndInvalidationWhitelist(t *testing.T) {
 			reg := NewRegistry(WithClock(func() time.Time { return now }))
 			require.NoError(t, reg.Refresh(context.Background(), &registryRefreshExecutor{result: describeResult(
 				host("uhost-a", "train-a", "Running", "4090", 1),
-			)}, RefreshReasonInit))
+			)}, RefreshReasonManual))
 			assert.False(t, reg.MarkInvalidated(action))
 			assert.False(t, reg.NeedsRefresh(now.Add(time.Second)))
 		})

@@ -15,7 +15,7 @@ import (
 )
 
 // SSHOpsAuditStore is the synchronous, fail-closed AuditWriter backing the consent-gated SSH-ops
-// lane (COMPSHARE_SSH_OPS). It implements sshops.AuditWriter against the ssh_ops_audit table
+// lane. It implements sshops.AuditWriter against the ssh_ops_audit table
 // (deploy/migrations/0011 + 0013). The SSH credential is NEVER written — only tenant identity, the target
 // instance, the (PII-redacted) task text, aggregate context coverage, and the outcome. Begin's row
 // carries the REQUESTED context coverage; Finish overwrites it with what was applied, clearing it when
@@ -72,7 +72,7 @@ func (s *SSHOpsAuditStore) Begin(ctx context.Context, ev sshops.AuditEvent) (str
 	// INV-4: the task is free-form operator/model text — redact PII before it is persisted. The
 	// task_hash column is the raw-task sha256 the caller computed (the INV-9 dedup identity); it is
 	// stored verbatim and, being a hash, carries nothing sensitive. UNIQUE(turn_id, task_hash) makes
-	// a durable replay of the same turn fail here, which the fail-closed caller turns into a refusal.
+	// a retry of the same turn fail here, which the fail-closed caller turns into a refusal.
 	_, err := s.db.ExecContext(ctx, `
 INSERT INTO ssh_ops_audit
     (id, request_uuid, turn_id, task_hash, top_organization_id, organization_id, instance_id, task, phase,

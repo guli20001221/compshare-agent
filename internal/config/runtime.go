@@ -5,94 +5,48 @@ import (
 	"strings"
 )
 
-// This file moves the runtime feature flags that used to be configured ONLY via
-// environment variables (read in cmd/trace.go / cmd/shared_deps.go / cmd/cli.go /
-// cmd/server.go) into the YAML config, so a deployment can be configured from a
-// single config.yaml with no env file. Precedence is "YAML wins, env is the
-// fallback": a field set in YAML overrides the matching env var; a field omitted
-// in YAML falls through to the env var, and if that is unset too, to the binary's
-// documented built-in default (the cmd/ *FromEnv parsers — some default ON, some
-// OFF). The bridge is (*Config).RuntimeGetenv, which overlays the YAML fields on
-// top of os.Getenv so the existing cmd/ parsers keep reading through one getenv —
-// the same shape as the pre-existing serverTraceGetenv shim for MYSQL_DSN.
-
-// FeaturesConfig holds the boolean capability toggles. Each *bool is tri-state:
-//
-//   - nil            → field omitted in YAML; fall back to the env var, then to
-//     the built-in default for that flag (NOT all default off — e.g.
-//     knowledge verification default ON).
-//   - &true / &false → explicit value; it WINS over any env var.
-type FeaturesConfig struct {
-	MutatingTools         *bool `yaml:"mutating_tools"`          // COMPSHARE_ENABLE_MUTATING_TOOLS (default off)
-	DurableTurns          *bool `yaml:"durable_turns"`           // COMPSHARE_DURABLE_TURNS (server-only, default off)
-	ConfirmForm           *bool `yaml:"confirm_form"`            // COMPSHARE_CONFIRM_FORM (server-only, default off)
-	GuidedCreate          *bool `yaml:"guided_create"`           // COMPSHARE_GUIDED_CREATE (server-only, default off)
-	CanonicalTranscript   *bool `yaml:"canonical_transcript"`    // COMPSHARE_CANONICAL_TRANSCRIPT (Go default off; deploy config enables it)
-	ReactResultProjection *bool `yaml:"react_result_projection"` // USE_REACT_RESULT_PROJECTION (Go default off; deploy on)
+// AuthorizationConfig controls whether account-changing product tools may be
+// exposed. It does not select an alternate Agent implementation.
+type AuthorizationConfig struct {
+	MutatingTools *bool `yaml:"mutating_tools"` // COMPSHARE_ENABLE_MUTATING_TOOLS (default off)
 }
 
 // RetrievalConfig holds the remote knowledge retrieval knobs.
 // Empty string / zero int means "omitted — fall through to env, then default".
 type RetrievalConfig struct {
-	KnowledgeRetrieval string `yaml:"knowledge_retrieval"` // USE_KNOWLEDGE_RETRIEVAL: curated|off
-	MCPURL             string `yaml:"mcp_url"`             // COMPSHARE_KB_MCP_URL (complete remote compshare-kb /mcp URL)
-	MCPBearerToken     string `yaml:"mcp_bearer_token"`    // COMPSHARE_KB_MCP_BEARER_TOKEN (read-only token; optional in trusted cluster)
-	MCPTimeoutMS       int    `yaml:"mcp_timeout_ms"`      // COMPSHARE_KB_MCP_TIMEOUT_MS
+	MCPURL         string `yaml:"mcp_url"`          // COMPSHARE_KB_MCP_URL (complete remote compshare-kb /mcp URL)
+	MCPBearerToken string `yaml:"mcp_bearer_token"` // COMPSHARE_KB_MCP_BEARER_TOKEN (read-only token; optional in trusted cluster)
+	MCPTimeoutMS   int    `yaml:"mcp_timeout_ms"`   // COMPSHARE_KB_MCP_TIMEOUT_MS
 }
 
 // TraceConfig holds the per-turn JSONL/DB trace sink settings.
 type TraceConfig struct {
-	Enabled *bool  `yaml:"enabled"` // COMPSHARE_TRACE_ENABLED (Go default off; deploy on)
-	Sink    string `yaml:"sink"`    // COMPSHARE_TRACE_SINK: file|mysql|both
-	Dir     string `yaml:"dir"`     // COMPSHARE_TRACE_DIR (file/both only)
+	Sink string `yaml:"sink"` // COMPSHARE_TRACE_SINK: file|mysql; empty disables tracing
+	Dir  string `yaml:"dir"`  // COMPSHARE_TRACE_DIR (file only)
 }
 
-// RuntimeGetenv returns a getenv function that overlays the YAML runtime-flag
-// fields (agent.features / agent.retrieval / agent.trace) on top
-// of the supplied base getenv (normally os.Getenv). A field SET in YAML wins; a
-// field omitted in YAML falls through to base(key). This keeps "YAML is the
-// source of truth, env is the fallback" while the cmd/ flag parsers continue to
-// read every flag through a single getenv — see cmd/server.go + cmd/cli.go for
-// the wiring, and serverTraceGetenv for the same shim shape used for MYSQL_DSN.
-//
-// Bool fields encode to the canonical on/off string the matching cmd parser
-// accepts WITHOUT logging an "unknown value" warning. Strings/ints pass through verbatim and only override when
-// non-empty / positive, so an omitted YAML value never masks the env fallback.
+// RuntimeGetenv overlays typed YAML operational settings on environment
+// fallbacks. An explicit YAML value wins; an omitted value falls through.
 func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	if c == nil {
 		return base
 	}
 	overrides := map[string]string{}
 
-	f := c.Agent.Features
-	// mutating_tools treats "0" as an unknown value (warn); its clean "off" is
-	// the empty string. Every other bool parser
-	// accepts "0" as off, and the default-ON flags REQUIRE "0" for off ("" =
-	// on for those), so they must not use the empty-string off form.
-	putBoolEnv(overrides, "COMPSHARE_ENABLE_MUTATING_TOOLS", f.MutatingTools, "1", "")
-	putBoolEnv(overrides, "COMPSHARE_DURABLE_TURNS", f.DurableTurns, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_CONFIRM_FORM", f.ConfirmForm, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_GUIDED_CREATE", f.GuidedCreate, "1", "0")
-	putBoolEnv(overrides, "USE_REACT_RESULT_PROJECTION", f.ReactResultProjection, "1", "0")
-	putBoolEnv(overrides, "COMPSHARE_CANONICAL_TRANSCRIPT", f.CanonicalTranscript, "1", "0")
+	a := c.Agent.Authorization
+	// The mutating-tools parser uses an empty string for the disabled state.
+	putBoolEnv(overrides, "COMPSHARE_ENABLE_MUTATING_TOOLS", a.MutatingTools, "1", "")
 
 	r := c.Agent.Retrieval
-	putStrEnv(overrides, "USE_KNOWLEDGE_RETRIEVAL", r.KnowledgeRetrieval)
 	putStrEnv(overrides, "COMPSHARE_KB_MCP_URL", r.MCPURL)
 	putStrEnv(overrides, "COMPSHARE_KB_MCP_BEARER_TOKEN", r.MCPBearerToken)
 	putIntEnv(overrides, "COMPSHARE_KB_MCP_TIMEOUT_MS", r.MCPTimeoutMS)
 
 	t := c.Agent.Trace
-	putBoolEnv(overrides, "COMPSHARE_TRACE_ENABLED", t.Enabled, "1", "0")
 	putStrEnv(overrides, "COMPSHARE_TRACE_SINK", t.Sink)
 	putStrEnv(overrides, "COMPSHARE_TRACE_DIR", t.Dir)
 
-	// ssh_ops.enabled is tri-state like the feature bools; a YAML "false" WINS over
-	// COMPSHARE_SSH_OPS=1 in the env (P2 gate 3). The non-bool harness settings are read
-	// straight off cfg.Agent.SSHOps by the cmd wiring, not through getenv.
-	putBoolEnv(overrides, "COMPSHARE_SSH_OPS", c.Agent.SSHOps.Enabled, "1", "0")
-
-	// Expose the resolved answer-model key to legacy getenv-based callers.
+	// Expose the resolved answer-model key to components configured via getenv.
 	// MYSQL_DSN stays handled by serverTraceGetenv.
 	putStrEnv(overrides, "LLM_API_KEY", c.Agent.LLM.APIKey)
 

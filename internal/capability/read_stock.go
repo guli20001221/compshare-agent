@@ -14,8 +14,7 @@ import (
 	"github.com/compshare-agent/internal/zones"
 )
 
-// Stock-availability read capability (migrated from the legacy intent route).
-// This is the heaviest read capability: a plain listing renders the catalog
+// Stock availability is the heaviest read capability: a plain listing renders the catalog
 // Normal/SoldOut status, but a matched-model turn runs a multi-call capacity
 // precheck (support zones + a probe image + a per-model /
 // per-zone CheckCompShareResourceCapacity) with graceful partial-failure
@@ -28,21 +27,7 @@ const (
 	stockAction          = "DescribeAvailableCompShareInstanceTypes"
 
 	noStockReply = "未获取到机型库存数据。"
-	// soldOutDisclaimer is the ONE caveat line under a plain listing. Two earlier
-	// versions of it were wrong in opposite directions:
-	//
-	//   1. The "开售 ≠ 可创建" half was appended to EVERY machine-type row, so a live
-	//      catalog of 12 models printed the same 30-character parenthetical 12
-	//      times and buried the answer.
-	//   2. It then still claimed 平台不公开精确剩余数量，仅 Normal/SoldOut 两态 —
-	//      which stopped being true the moment the listing started printing
-	//      「独占约 271 张」 directly above it. A caveat that contradicts the data it
-	//      sits under is worse than no caveat: it tells the user one of the two is
-	//      a lie without saying which.
-	//
-	// What remains is the one thing the numbers genuinely do not say: they are a
-	// point-in-time snapshot of cards, not a guarantee that a particular
-	// CPU/memory/disk combination can be created.
+	// Catalog counts are snapshots; concrete configurations still need a capacity check.
 	soldOutDisclaimer  = "数量为本轮实时快照，仅供参考；某个具体配置能否创建仍需容量预检。"
 	stockListingHeader = "当前可售机型："
 
@@ -101,11 +86,8 @@ func stockReadSpec() ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabil
 			// Deliberately undescribed. A description telling the model to carry the
 			// card forward when the user elides it would be the natural companion to
 			// deleting the server-side carry — but it costs ~200 bytes on EVERY
-			// request of every turn, and TestCentralAgentStaticPromptAndToolWindowStayWithinBudget
-			// leaves ~23. Buying that needs evidence the model actually omits
-			// gpu_type under the canonical transcript, which replays the earlier
-			// stock call verbatim; RC017's evidence predates the transcript and was
-			// gathered when prior tool calls were deleted from history.
+			// Canonical transcript replay gives the model the earlier stock call;
+			// keep the schema concise and let it carry the referenced GPU explicitly.
 			"gpu_type":       stringParam(),
 			"zone_mentions":  arrayParam(stringParam()).described("用户本轮明确提到的可用区原文片段；查询多个可用区时全部列出。不要自行改写为其他区域或默认区域。"),
 			"inventory_pool": enumParam(stockInventoryPoolUnspecified, deployment.GPUInventoryPoolExclusive, deployment.GPUInventoryPoolSpot).described("用户明确询问独占库存时填 Exclusive，明确询问抢占式库存时填 Spot；未限定时填 Unspecified。"),
@@ -160,8 +142,6 @@ func stockRender(resp StockAvailabilityResponse) ReadResult {
 	r.Envelope = resp.Envelope
 	return r
 }
-
-// --- Relocated from intent/routing_registry.go (Slots/handler → typed req/rt) ----
 
 // stockModelCardTotals sums a model's card counts across every zone the catalog
 // knows. The per-zone breakdown belongs to a zone-specific question; a "有什么卡"
@@ -263,10 +243,7 @@ func renderStockReply(raw map[string]any, userText string, inventory *deployment
 	return prefix + strings.Join(lines, "\n") + "\n" + soldOutDisclaimer
 }
 
-// renderStockStatusLine names one machine type and its sale state in the
-// product's own words. The upstream enum (Normal/SoldOut) is the wire value, not
-// a label to show the user — every other user-facing render in this package
-// translates its enum, and this one used to print the English through.
+// renderStockStatusLine translates known upstream sale-state values.
 func renderStockStatusLine(name, status string) string {
 	switch {
 	case strings.EqualFold(status, "Normal"):
@@ -341,11 +318,8 @@ func buildStockEnvelope(raw map[string]any, userText string) envelope.Envelope {
 	return env
 }
 
-// stockCapacityPrecheck reproduces the legacy renderStockWithCapacityPrecheck.
-// It returns (reply, ok, terminal): ok=false means no matched Normal model, so
-// the caller falls through to the plain listing; a non-empty terminal Status is
-// a hard upstream failure. The legacy "intent must be stock" guard is omitted —
-// this capability IS stock, so it was vacuously satisfied.
+// stockCapacityPrecheck returns (reply, ok, terminal). ok=false falls through
+// to the plain listing; a terminal status is an upstream failure.
 func stockCapacityPrecheck(ctx context.Context, rt ReadRuntime, req StockAvailabilityRequest, stockRaw map[string]any) (string, bool, ReadResult) {
 	entries := matchedNormalStockEntries(stockRaw, strings.TrimSpace(req.GPUType))
 	if len(entries) == 0 {
@@ -412,11 +386,7 @@ func stockCapacityPrecheck(ctx context.Context, rt ReadRuntime, req StockAvailab
 		eligibleChecks, poolReply := requestedInventoryPoolView(inventory, checks, pool)
 		return joinStockReply(renderStockCapacityReply(eligibleChecks), poolReply), true, ReadResult{}
 	}
-	// The raw snapshot is NOT appended as a second block underneath the capacity
-	// answer — that is what made this reply long enough to be deleted wholesale in
-	// 7c7b742b, and deleting it took the card counts with it, leaving a stock
-	// question answered without a quantity. It goes inline on the zone line it
-	// belongs to instead, so the answer stays one table and still says how many.
+	// Keep inventory counts inline with their zone so the answer remains one table.
 	return renderStockCapacityReplyWithCounts(checks, inventory), true, ReadResult{}
 }
 
@@ -537,11 +507,9 @@ func normalizeInventoryPool(pool string) string {
 	}
 }
 
-// requestedInventoryPoolView separates two facts that used to be conflated:
-// pool membership is authoritative product support, while the numeric count is
-// only a point-in-time snapshot. Unsupported rows are removed from capacity
-// conclusions because that API does not validate ChargeType; supported zeroes
-// remain eligible and never become a global no-stock claim.
+// requestedInventoryPoolView treats pool membership as product support and the
+// numeric count as a point-in-time snapshot. Unsupported rows are excluded;
+// supported zeroes remain eligible and never become a global no-stock claim.
 func requestedInventoryPoolView(snapshot *deployment.GPUInventorySnapshot, checks []stockCapacityCheck, pool string) ([]stockCapacityCheck, string) {
 	if snapshot == nil || len(checks) == 0 {
 		return checks, ""
@@ -976,12 +944,12 @@ func renderStockCapacityReplyLines(checks []stockCapacityCheck, inventory *deplo
 		// Every model reaching here came from matchedNormalStockEntries, so the
 		// catalog already reports Status=Normal (机型开售). checkedSpecs==0 means no
 		// zone yielded a usable capacity-precheck result — the precheck either
-		// failed to run (CLI with empty project_id → RetCode 230; HTTP missing
+		// failed to run (empty project_id → RetCode 230; request missing
 		// ProjectId → RetCode 292) or ran but returned no Specs. Don't bury the
 		// known catalog truth under "无法确认是否有可创建库存" (which wrongly implies we
 		// can't even tell it is on sale). Fall back to the catalog-level 开售
 		// statement and be explicit that exact creatability was not verified this
-		// turn. (#3b graceful degradation — a precheck failure must not override
+		// turn. A precheck failure must not override
 		// the catalog answer.)
 		return fmt.Sprintf("%s 机型当前开售；本次容量预检未完成，尚未确认具体配置的可创建性，精确库存请以控制台创建页为准。", models)
 	}

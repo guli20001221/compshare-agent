@@ -9,13 +9,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The bug these tests lock: with durable_turns off, the legacy WS/HTTP transport
-// passed no TurnID, so the per-turn AgentContext had an empty TurnID.
+// These tests require every turn to have an identity even when its caller omits
+// TurnID. Without one, the per-turn AgentContext had an empty TurnID.
 // deriveProposalProvenance stamped a standalone user_explicit field's evidence
 // with MessageID="" (view.TurnID), and verifyCurrentQuestionEvidence rejects an
 // empty MessageID FIRST — the server disowning its own evidence — producing a
 // bogus `rejected:ImageName=unverified_source` that dead-ended the create card.
-// The fix backfills an ephemeral turn-local id at ChatWithOptions entry so a turn
+// ChatWithOptions therefore supplies an ephemeral turn-local id so every turn
 // always has an identity, without relaxing the resolver's trust boundary.
 
 // createImageNameProposal is a CreateInstanceWorkflow proposal that names an image
@@ -32,7 +32,7 @@ func createImageNameProposal(turnID, imageName string) map[string]any {
 }
 
 // TestChatBackfillsTurnIDWhenTransportEmpty is the regression guard: it drives the
-// REAL turn entry with the empty ChatOptions the legacy transport produced, and
+// REAL turn entry with empty ChatOptions and
 // asserts the compiled turn view got a non-empty identity. Before the fix this
 // field is "" (the whole root cause); after the fix it is the ephemeral backfill.
 // This is the test that would have caught the live failure — every existing
@@ -41,25 +41,23 @@ func TestChatBackfillsTurnIDWhenTransportEmpty(t *testing.T) {
 	eng := NewWithDeps(&deltaMockLLM{}, &mockExecutor{}, func(string, map[string]any) bool { return false })
 	eng.InitWithContext("用户当前没有实例。")
 
-	_, err := eng.ChatWithOptions(context.Background(), "你好", nil, ChatOptions{ /* TurnID: "" — legacy transport passes none */ })
+	_, err := eng.ChatWithOptions(context.Background(), "你好", nil, ChatOptions{})
 
 	require.NoError(t, err)
 	require.NotEmpty(t, eng.turnContextViewThisTurn.TurnID,
 		"a turn whose transport passed no TurnID must still be given a non-empty server-side identity")
 }
 
-// TestChatKeepsProvidedTurnID proves the backfill only fills the empty case: a
-// durable turn's real identity must pass through untouched (never overwritten by
-// the ephemeral id).
+// TestChatKeepsProvidedTurnID proves the fallback only fills the empty case.
 func TestChatKeepsProvidedTurnID(t *testing.T) {
 	eng := NewWithDeps(&deltaMockLLM{}, &mockExecutor{}, func(string, map[string]any) bool { return false })
 	eng.InitWithContext("用户当前没有实例。")
 
-	_, err := eng.ChatWithOptions(context.Background(), "你好", nil, ChatOptions{TurnID: "turn-durable-provided"})
+	_, err := eng.ChatWithOptions(context.Background(), "你好", nil, ChatOptions{TurnID: "turn-provided"})
 
 	require.NoError(t, err)
-	require.Equal(t, "turn-durable-provided", eng.turnContextViewThisTurn.TurnID,
-		"a provided durable turn id must not be overwritten by the ephemeral backfill")
+	require.Equal(t, "turn-provided", eng.turnContextViewThisTurn.TurnID,
+		"a provided turn id must not be overwritten by the ephemeral fallback")
 }
 
 // TestEmptyTurnIDSelfRejectsStandaloneImageName is the root-cause characterization:
@@ -73,7 +71,7 @@ func TestEmptyTurnIDSelfRejectsStandaloneImageName(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, msg, "", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(zoneUserCtx(), createImageNameProposal("", "InfiniteTalk"))
+	resolved, err := eng.resolveActionProposal(zoneUserCtx(), createImageNameProposal("", "InfiniteTalk"))
 	require.NoError(t, err)
 
 	require.True(t, hasRejection(resolved.action.RejectedProblems, "ImageName", actionresolver.RejectUnverifiedSource),
@@ -93,7 +91,7 @@ func TestBackfilledTurnIDLetsStandaloneImageNameReachCard(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, msg, turnID, time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(zoneUserCtx(), createImageNameProposal(turnID, "InfiniteTalk"))
+	resolved, err := eng.resolveActionProposal(zoneUserCtx(), createImageNameProposal(turnID, "InfiniteTalk"))
 	require.NoError(t, err)
 
 	require.False(t, hasRejection(resolved.action.RejectedProblems, "ImageName", actionresolver.RejectUnverifiedSource),
@@ -104,10 +102,8 @@ func TestBackfilledTurnIDLetsStandaloneImageNameReachCard(t *testing.T) {
 		"the create opens the guided form for the still-missing GPU/zone, image pre-filled")
 }
 
-// TestResolverResultParityAcrossTurnIDIdentity is the durable/legacy parity guard:
-// the SAME standalone-image create must resolve identically whether the turn id
-// came from a durable transport or from the engine's ephemeral backfill — the fix
-// removes the transport-dependent divergence.
+// TestResolverResultParityAcrossTurnIDIdentity requires the same proposal result
+// for caller-provided and engine-generated turn identities.
 func TestResolverResultParityAcrossTurnIDIdentity(t *testing.T) {
 	resolve := func(turnID string) actionresolver.ResolvedAction {
 		eng := newZoneEngine(zoneCatalogExec(), "")
@@ -115,18 +111,18 @@ func TestResolverResultParityAcrossTurnIDIdentity(t *testing.T) {
 		eng.lastUserMsg = msg
 		eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, msg, turnID, time.Now())
 		eng.turnContextViewReady = true
-		resolved, err := eng.resolveActionProposalShadow(zoneUserCtx(), createImageNameProposal(turnID, "InfiniteTalk"))
+		resolved, err := eng.resolveActionProposal(zoneUserCtx(), createImageNameProposal(turnID, "InfiniteTalk"))
 		require.NoError(t, err)
 		return resolved.action
 	}
 
-	durable := resolve("turn-durable-explicit")
+	provided := resolve("turn-explicit")
 	backfilled := resolve(newZoneEngine(zoneCatalogExec(), "").ephemeralTurnID())
 
-	require.Equal(t, durable.ReadyForIntake, backfilled.ReadyForIntake, "same intake outcome regardless of turn-id origin")
-	require.Empty(t, durable.RejectedProblems)
+	require.Equal(t, provided.ReadyForIntake, backfilled.ReadyForIntake, "same intake outcome regardless of turn-id origin")
+	require.Empty(t, provided.RejectedProblems)
 	require.Empty(t, backfilled.RejectedProblems)
-	require.Equal(t, durable.Provenance["ImageName"].Source, backfilled.Provenance["ImageName"].Source,
+	require.Equal(t, provided.Provenance["ImageName"].Source, backfilled.Provenance["ImageName"].Source,
 		"same re-derived source regardless of turn-id origin")
 }
 
@@ -143,7 +139,7 @@ func TestBackfilledTurnIDDoesNotTrustAbsentImageName(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, msg, turnID, time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposalShadow(zoneUserCtx(), createImageNameProposal(turnID, "GhostImage"))
+	resolved, err := eng.resolveActionProposal(zoneUserCtx(), createImageNameProposal(turnID, "GhostImage"))
 	require.NoError(t, err)
 
 	require.Equal(t, actionresolver.SourceAgentInference, resolved.action.Provenance["ImageName"].Source,

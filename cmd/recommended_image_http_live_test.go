@@ -97,7 +97,7 @@ func TestRecommendedImageCarryOverRealHTTP(t *testing.T) {
 	historicalSession.MessageCount = 2
 	sessions.byID[sessionID] = historicalSession
 	sessions.mu.Unlock()
-	handlers := newServerHandlers(cfg, sessions, messages, nil, pool, nil, cfg.RuntimeGetenv(os.Getenv))
+	handlers := newServerHandlers(cfg, sessions, messages, nil, pool, nil)
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
 	router.GET("/", handlers.HandleWS)

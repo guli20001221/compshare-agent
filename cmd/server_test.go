@@ -1,10 +1,8 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
-	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -44,7 +42,7 @@ func TestValidateServerConfigRequiresMySQLDSN(t *testing.T) {
 func TestValidateServerConfigAcceptsRequiredFields(t *testing.T) {
 	cfg := &config.Config{Agent: config.AgentConfig{
 		MySQL: config.MySQLConfig{DSN: "user:pass@tcp(127.0.0.1:3306)/db?parseTime=true"},
-		Meta:  config.MetaConfig{Welcome: "welcome", SuggestedPrompts: []string{"p"}, MaxInputLength: 4000},
+		Meta:  config.MetaConfig{Welcome: "welcome", SuggestedPrompts: []string{"p"}},
 		HTTP:  config.HTTPConfig{MaxInputLength: 4000},
 		STS: config.STSConfig{
 			ServiceAK:       "test-ak",
@@ -60,7 +58,7 @@ func TestValidateServerConfigAcceptsRequiredFields(t *testing.T) {
 func TestValidateServerConfigRequiresSTSFields(t *testing.T) {
 	cfg := &config.Config{Agent: config.AgentConfig{
 		MySQL:     config.MySQLConfig{DSN: "user:pass@tcp(127.0.0.1:3306)/db?parseTime=true"},
-		Meta:      config.MetaConfig{Welcome: "welcome", SuggestedPrompts: []string{"p"}, MaxInputLength: 4000},
+		Meta:      config.MetaConfig{Welcome: "welcome", SuggestedPrompts: []string{"p"}},
 		HTTP:      config.HTTPConfig{MaxInputLength: 4000},
 		PublicKey: "legacy-ak",
 	}}
@@ -73,7 +71,7 @@ func TestValidateServerConfigRequiresSTSFields(t *testing.T) {
 func TestValidateServerConfigAcceptsLegacyCredentialsWhenSTSAbsent(t *testing.T) {
 	cfg := &config.Config{Agent: config.AgentConfig{
 		MySQL:      config.MySQLConfig{DSN: "user:pass@tcp(127.0.0.1:3306)/db?parseTime=true"},
-		Meta:       config.MetaConfig{Welcome: "welcome", SuggestedPrompts: []string{"p"}, MaxInputLength: 4000},
+		Meta:       config.MetaConfig{Welcome: "welcome", SuggestedPrompts: []string{"p"}},
 		HTTP:       config.HTTPConfig{MaxInputLength: 4000},
 		PublicKey:  "legacy-ak",
 		PrivateKey: "legacy-sk",
@@ -86,7 +84,7 @@ func TestValidateServerConfigAcceptsLegacyCredentialsWhenSTSAbsent(t *testing.T)
 func TestValidateServerConfigRequiresSTSServiceSK(t *testing.T) {
 	cfg := &config.Config{Agent: config.AgentConfig{
 		MySQL: config.MySQLConfig{DSN: "user:pass@tcp(127.0.0.1:3306)/db?parseTime=true"},
-		Meta:  config.MetaConfig{Welcome: "welcome", SuggestedPrompts: []string{"p"}, MaxInputLength: 4000},
+		Meta:  config.MetaConfig{Welcome: "welcome", SuggestedPrompts: []string{"p"}},
 		HTTP:  config.HTTPConfig{MaxInputLength: 4000},
 		STS:   config.STSConfig{ServiceAK: "ak", ServiceSK: "", URL: "https://api.ucloud.cn/", RoleUrnTemplate: "tpl"},
 	}}
@@ -98,7 +96,7 @@ func TestValidateServerConfigRequiresSTSServiceSK(t *testing.T) {
 func TestValidateServerConfigRequiresSTSURL(t *testing.T) {
 	cfg := &config.Config{Agent: config.AgentConfig{
 		MySQL: config.MySQLConfig{DSN: "user:pass@tcp(127.0.0.1:3306)/db?parseTime=true"},
-		Meta:  config.MetaConfig{Welcome: "welcome", SuggestedPrompts: []string{"p"}, MaxInputLength: 4000},
+		Meta:  config.MetaConfig{Welcome: "welcome", SuggestedPrompts: []string{"p"}},
 		HTTP:  config.HTTPConfig{MaxInputLength: 4000},
 		STS:   config.STSConfig{ServiceAK: "ak", ServiceSK: "sk", URL: "", RoleUrnTemplate: "tpl"},
 	}}
@@ -110,7 +108,7 @@ func TestValidateServerConfigRequiresSTSURL(t *testing.T) {
 func TestValidateServerConfigRequiresSTSRoleUrnTemplate(t *testing.T) {
 	cfg := &config.Config{Agent: config.AgentConfig{
 		MySQL: config.MySQLConfig{DSN: "user:pass@tcp(127.0.0.1:3306)/db?parseTime=true"},
-		Meta:  config.MetaConfig{Welcome: "welcome", SuggestedPrompts: []string{"p"}, MaxInputLength: 4000},
+		Meta:  config.MetaConfig{Welcome: "welcome", SuggestedPrompts: []string{"p"}},
 		HTTP:  config.HTTPConfig{MaxInputLength: 4000},
 		STS:   config.STSConfig{ServiceAK: "ak", ServiceSK: "sk", URL: "https://api.ucloud.cn/", RoleUrnTemplate: ""},
 	}}
@@ -122,7 +120,7 @@ func TestValidateServerConfigRequiresSTSRoleUrnTemplate(t *testing.T) {
 func TestValidateServerConfigAcceptsSTSDefaultRoleUrnWithoutTemplate(t *testing.T) {
 	cfg := &config.Config{Agent: config.AgentConfig{
 		MySQL: config.MySQLConfig{DSN: "user:pass@tcp(127.0.0.1:3306)/db?parseTime=true"},
-		Meta:  config.MetaConfig{Welcome: "welcome", SuggestedPrompts: []string{"p"}, MaxInputLength: 4000},
+		Meta:  config.MetaConfig{Welcome: "welcome", SuggestedPrompts: []string{"p"}},
 		HTTP:  config.HTTPConfig{MaxInputLength: 4000},
 		STS: config.STSConfig{
 			ServiceAK:      "ak",
@@ -141,8 +139,6 @@ func TestServerTraceGetenvUsesConfiguredMySQLDSN(t *testing.T) {
 		switch key {
 		case "MYSQL_DSN":
 			return "env-dsn"
-		case "COMPSHARE_TRACE_ENABLED":
-			return "1"
 		case "COMPSHARE_TRACE_SINK":
 			return "mysql"
 		default:
@@ -152,7 +148,6 @@ func TestServerTraceGetenvUsesConfiguredMySQLDSN(t *testing.T) {
 	require.NoError(t, err)
 
 	require.Equal(t, "configured-dsn", getenv("MYSQL_DSN"))
-	require.Equal(t, "1", getenv("COMPSHARE_TRACE_ENABLED"))
 	require.True(t, traceMySQLSinkEnabled(getenv))
 }
 
@@ -171,91 +166,15 @@ func TestServerTraceGetenvAppliesProductionHostOverride(t *testing.T) {
 	require.Equal(t, "disable", parsed.Query().Get("sslmode"))
 }
 
-func TestServerDurableCoordinatorReceivesProductionTraceWriter(t *testing.T) {
-	writer := &captureAppendWriter{}
-	secretKey := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
-	opts, err := serverTurnCoordinatorOptions(func(key string) string {
-		if key == "COMPSHARE_ENABLE_MUTATING_TOOLS" {
-			return "1"
-		}
-		if key == "COMPSHARE_TURN_SECRET_KEY" {
-			return secretKey
-		}
-		return ""
-	}, writer)
-	require.NoError(t, err)
-	require.Same(t, writer, opts.TraceWriter)
-	require.True(t, opts.MutatingToolsEnabled)
-	require.NotEmpty(t, opts.ReplicaID)
-	require.Len(t, opts.SecretKey, 32)
-}
-
-func TestServerDurableCoordinatorRejectsMissingSecretKey(t *testing.T) {
-	_, err := serverTurnCoordinatorOptions(func(string) string { return "" }, nil)
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "COMPSHARE_TURN_SECRET_KEY")
-}
-
-type recordingInteractionFeatures struct {
-	confirmForm  bool
-	guidedCreate bool
-}
-
-func (r *recordingInteractionFeatures) SetConfirmFormEnabled(value bool) {
-	r.confirmForm = value
-}
-
-func (r *recordingInteractionFeatures) SetGuidedCreateEnabled(value bool) {
-	r.guidedCreate = value
-}
-
-func TestConfigureInteractionFeaturesEnablesTheDurableHandlerCapabilities(t *testing.T) {
-	tests := []struct {
-		name                    string
-		values                  map[string]string
-		wantConfirm, wantGuided bool
-	}{
-		{name: "both enabled", values: map[string]string{
-			"COMPSHARE_CONFIRM_FORM": "1", "COMPSHARE_GUIDED_CREATE": "1",
-		}, wantConfirm: true, wantGuided: true},
-		{name: "form only", values: map[string]string{
-			"COMPSHARE_CONFIRM_FORM": "1", "COMPSHARE_GUIDED_CREATE": "0",
-		}, wantConfirm: true},
-		{name: "guided requires form", values: map[string]string{
-			"COMPSHARE_CONFIRM_FORM": "0", "COMPSHARE_GUIDED_CREATE": "1",
-		}},
-		{name: "unknown values fail closed", values: map[string]string{
-			"COMPSHARE_CONFIRM_FORM": "maybe", "COMPSHARE_GUIDED_CREATE": "maybe",
-		}},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			got := &recordingInteractionFeatures{}
-			configureInteractionFeatures(got, func(key string) string { return tc.values[key] })
-			assert.Equal(t, tc.wantConfirm, got.confirmForm)
-			assert.Equal(t, tc.wantGuided, got.guidedCreate)
-		})
-	}
-}
-
-func TestNewServerHandlersActuallyAdvertisesConfiguredInteractionFeatures(t *testing.T) {
+func TestNewServerHandlersAdvertisesInteractionCapabilities(t *testing.T) {
 	cfg := &config.Config{Agent: config.AgentConfig{
 		LLM: config.LLMConfig{Model: "test-model"},
 		Meta: config.MetaConfig{
-			Welcome: "welcome", SuggestedPrompts: []string{"prompt"}, MaxInputLength: 4000,
+			Welcome: "welcome", SuggestedPrompts: []string{"prompt"},
 		},
+		HTTP: config.HTTPConfig{MaxInputLength: 4000},
 	}}
-	handlers := newServerHandlers(
-		cfg, nil, serverTestMessageStore{}, nil, nil, nil,
-		func(key string) string {
-			switch key {
-			case "COMPSHARE_CONFIRM_FORM", "COMPSHARE_GUIDED_CREATE":
-				return "1"
-			default:
-				return ""
-			}
-		},
-	)
+	handlers := newServerHandlers(cfg, nil, serverTestMessageStore{}, nil, nil, nil)
 	gin.SetMode(gin.TestMode)
 	recorder := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(recorder)
@@ -268,7 +187,7 @@ func TestNewServerHandlersActuallyAdvertisesConfiguredInteractionFeatures(t *tes
 	}
 	require.NoError(t, json.Unmarshal(recorder.Body.Bytes(), &response))
 	assert.Equal(t, []string{"confirm_form_v1", "guided_create_v1"}, response.Features,
-		"removing the server construction wiring must make this gate fail")
+		"server capabilities are fixed; each client still opts in per turn")
 }
 
 type serverTestMessageStore struct{}
@@ -284,45 +203,25 @@ func (serverTestMessageStore) GetWithOwnerCheck(context.Context, store.Owner, st
 	return store.Message{}, sql.ErrNoRows
 }
 
-func TestBuildHTTPServerPoolAppliesSharedDepsEnv(t *testing.T) {
+func TestBuildHTTPServerPoolWiresKnowledgeRetriever(t *testing.T) {
 	cfg := &config.Config{Agent: config.AgentConfig{
-		LLM: config.LLMConfig{BaseURL: "http://localhost:1", Model: "deepseek-v4-flash"},
+		LLM: config.LLMConfig{BaseURL: "http://localhost:1", Model: "gpt-5.6-terra"},
 	}}
 
 	pool, err := buildHTTPServerPool(cfg, serverTestMessageStore{}, func(key string) string {
 		switch key {
-		case "USE_KNOWLEDGE_RETRIEVAL":
-			return "off"
+		case "COMPSHARE_KB_MCP_URL":
+			return "http://compshare-kb.example/mcp"
 		}
 		return ""
 	}, nil) // nil db: this test does not exercise the SSH-ops lane
 	require.NoError(t, err)
 	defer pool.Close()
 
-	eng, err := pool.Get(context.Background(), store.Owner{TopOrganizationID: 1, OrganizationID: 2}, "sess")
+	eng, release, err := pool.Lease(context.Background(), store.Owner{TopOrganizationID: 1, OrganizationID: 2}, "sess")
 	require.NoError(t, err)
-	require.Nil(t, eng.KnowledgeRetrieverPointer(), "disabled retrieval must stay disabled in pooled sessions")
-}
-
-func TestApplySharedDepsReactResultProjectionFromEnv(t *testing.T) {
-	cfg := &config.Config{Agent: config.AgentConfig{
-		LLM: config.LLMConfig{BaseURL: "http://localhost:1", Model: "deepseek-v4-flash"},
-	}}
-	deps := &engine.SharedDeps{}
-
-	err := applySharedDepsFromEnv(deps, cfg, func(key string) string {
-		switch key {
-		case "USE_REACT_RESULT_PROJECTION":
-			return "1"
-		case "USE_KNOWLEDGE_RETRIEVAL":
-			return "off"
-		default:
-			return ""
-		}
-	})
-
-	require.NoError(t, err)
-	require.True(t, deps.ReactResultProjectionEnabled)
+	release()
+	require.IsType(t, &knowledge.MCPRetriever{}, eng.KnowledgeRetrieverPointer())
 }
 
 func TestApplySharedDepsDefaultsToKnowledgeMCP(t *testing.T) {
@@ -330,7 +229,7 @@ func TestApplySharedDepsDefaultsToKnowledgeMCP(t *testing.T) {
 		LLM: config.LLMConfig{
 			BaseURL: "http://localhost:1",
 			APIKey:  "llm-key",
-			Model:   "deepseek-v4-flash",
+			Model:   "gpt-5.6-terra",
 		},
 	}}
 	deps := &engine.SharedDeps{}

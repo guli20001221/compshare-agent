@@ -2,14 +2,12 @@ package main
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -18,7 +16,6 @@ import (
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/ocr"
 	"github.com/compshare-agent/internal/store"
-	"github.com/compshare-agent/internal/turncoord"
 	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
 )
@@ -60,10 +57,8 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	messageStore := store.NewMessageStore(db)
 	feedbackStore := store.NewFeedbackStore(db)
 
-	// overlayGetenv makes the YAML runtime-flag sections (agent.features /
-	// retrieval / trace / planner) win over the OS env, with env as the
-	// fallback for any field omitted in YAML. Every flag the server reads below
-	// goes through it so a single config.yaml can configure the whole server.
+	// overlayGetenv makes YAML operational settings win over the OS environment,
+	// with environment variables as fallback for omitted fields.
 	overlayGetenv := cfg.RuntimeGetenv(os.Getenv)
 	serverGetenv, err := serverTraceGetenv(overlayGetenv, cfg.Agent.MySQL)
 	if err != nil {
@@ -97,30 +92,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	defer pool.Close()
 	log.Printf("startup: shared HTTP dependencies initialized")
 
-	handlers := newServerHandlers(cfg, sessionStore, messageStore, feedbackStore, pool, traceWriter, overlayGetenv)
-	switch value := overlayGetenv("COMPSHARE_DURABLE_TURNS"); value {
-	case "1":
-		// OpenMySQL has already run the full column-level VerifySchema probe,
-		// including every durable turn/lease/event/interaction table. Construct
-		// the coordinator only after that fail-fast check succeeds.
-		coordinatorOptions, err := serverTurnCoordinatorOptions(overlayGetenv, traceWriter)
-		if err != nil {
-			return err
-		}
-		coordinator := turncoord.NewCoordinator(
-			store.NewPostgresTurnStore(db),
-			sessionStore,
-			turncoord.EngineFactoryFromPool(pool),
-			coordinatorOptions,
-		)
-		handlers.SetTurnCoordinator(coordinator)
-		defer coordinator.Close()
-		log.Printf("durable turns enabled: every WebSocket chat uses the globally fenced commit path")
-	case "", "0":
-		// Compatibility-only mode for local rollback and old tests.
-	default:
-		return fmt.Errorf("unknown COMPSHARE_DURABLE_TURNS value %q", value)
-	}
+	handlers := newServerHandlers(cfg, sessionStore, messageStore, feedbackStore, pool, traceWriter)
 	if cfg.Agent.OCR.Model != "" {
 		handlers.SetOCRClient(ocr.NewClient(cfg.Agent.OCR))
 		log.Printf("OCR enabled: model=%s", cfg.Agent.OCR.Model)
@@ -161,25 +133,6 @@ func runServer(cmd *cobra.Command, _ []string) error {
 	return serveUntilSignal(srv)
 }
 
-func serverTurnCoordinatorOptions(getenv getenvFunc, traceWriter observability.Writer) (turncoord.Options, error) {
-	encodedKey := strings.TrimSpace(getenv("COMPSHARE_TURN_SECRET_KEY"))
-	secretKey, err := base64.StdEncoding.DecodeString(encodedKey)
-	if err != nil || len(secretKey) != 32 {
-		return turncoord.Options{}, fmt.Errorf("COMPSHARE_TURN_SECRET_KEY must be base64 for exactly 32 random bytes")
-	}
-	return turncoord.Options{
-		ReplicaID:            serverReplicaID(),
-		MutatingToolsEnabled: getenv("COMPSHARE_ENABLE_MUTATING_TOOLS") == "1",
-		TraceWriter:          traceWriter,
-		SecretKey:            secretKey,
-	}, nil
-}
-
-type interactionFeatureSetter interface {
-	SetConfirmFormEnabled(bool)
-	SetGuidedCreateEnabled(bool)
-}
-
 func newServerHandlers(
 	cfg *config.Config,
 	sessions store.SessionStore,
@@ -187,52 +140,8 @@ func newServerHandlers(
 	feedback store.FeedbackStore,
 	pool httpapi.EnginePool,
 	traceWriter observability.Writer,
-	getenv func(string) string,
 ) *httpapi.Handlers {
-	handlers := httpapi.NewHandlers(cfg, sessions, messages, feedback, pool, traceWriter)
-	configureInteractionFeatures(handlers, getenv)
-	return handlers
-}
-
-// configureInteractionFeatures installs the server half of the feature gate
-// for both the durable and compatibility transports. Durable confirmations now
-// persist the reviewed form and resolution, so withholding these capabilities
-// when COMPSHARE_DURABLE_TURNS=1 would silently disable the production path.
-func configureInteractionFeatures(handlers interactionFeatureSetter, getenv func(string) string) {
-	confirmForm := serverFeatureEnabled(getenv, "COMPSHARE_CONFIRM_FORM")
-	if confirmForm {
-		handlers.SetConfirmFormEnabled(true)
-		log.Printf("confirm form enabled: opted-in clients may review and edit a persisted confirmation card")
-	}
-	guidedCreate := serverFeatureEnabled(getenv, "COMPSHARE_GUIDED_CREATE")
-	if guidedCreate && !confirmForm {
-		log.Printf("warning: COMPSHARE_GUIDED_CREATE requires COMPSHARE_CONFIRM_FORM=1, treating guided create as off")
-		return
-	}
-	if guidedCreate {
-		handlers.SetGuidedCreateEnabled(true)
-		log.Printf("guided create enabled: opted-in clients use the persisted guided GPU create flow")
-	}
-}
-
-func serverFeatureEnabled(getenv func(string) string, name string) bool {
-	switch value := getenv(name); value {
-	case "1":
-		return true
-	case "", "0":
-		return false
-	default:
-		log.Printf("warning: unknown %s value %q, treating as off", name, value)
-		return false
-	}
-}
-
-func serverReplicaID() string {
-	host, err := os.Hostname()
-	if err != nil || host == "" {
-		host = "unknown-host"
-	}
-	return fmt.Sprintf("%s/%d", host, os.Getpid())
+	return httpapi.NewHandlers(cfg, sessions, messages, feedback, pool, traceWriter)
 }
 
 func closeServerTraceWriter(writer observability.Writer) {
@@ -268,9 +177,6 @@ func validateServerConfig(cfg *config.Config) error {
 	}
 	if len(cfg.Agent.Meta.SuggestedPrompts) == 0 {
 		return fmt.Errorf("agent.meta.suggested_prompts is required for server")
-	}
-	if cfg.Agent.HTTP.MaxInputLength != cfg.Agent.Meta.MaxInputLength {
-		return fmt.Errorf("agent.http.max_input_length must equal agent.meta.max_input_length")
 	}
 	stsEnabled := cfg.Agent.STS.ServiceAK != "" || cfg.Agent.STS.ServiceSK != ""
 	if !stsEnabled {

@@ -153,23 +153,12 @@ func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {
 	}
 }
 
-func TestSensitiveRequestToolExplainsServerSideSecretInjection(t *testing.T) {
-	var description string
-	var parameters any
+func TestOperationWithRequiredSensitiveInputIsNotAdvertised(t *testing.T) {
 	for _, tool := range centralAgentToolWindow(true, false) {
 		if tool.Function != nil && tool.Function.Name == "RequestResetPassword" {
-			description = tool.Function.Description
-			parameters = tool.Function.Parameters
-			break
+			t.Fatal("an operation with no model-safe path for its required password must not be advertised")
 		}
 	}
-	require.NotEmpty(t, description)
-	require.Contains(t, description, "敏感值已由服务端安全接收")
-	properties := parameters.(map[string]any)["properties"].(map[string]any)
-	require.NotContains(t, properties, "Password")
-	require.NotContains(t, properties, proposalChargeTypeUserQuoteField,
-		"a request with no normalized enum fields must not gain an irrelevant quote object")
-	require.NotContains(t, properties, proposalImageSourceUserQuoteField)
 }
 
 func TestRequestToolCarriesNormalizedEnumUserQuotes(t *testing.T) {
@@ -242,11 +231,11 @@ func TestOnlyImageSourceOperationsAdvertiseSourceUserQuotes(t *testing.T) {
 		require.NotContains(t, properties, proposalImageSourceUserQuoteField, tool.Function.Name)
 	}
 }
+
 func TestKnowledgeOnlyWindowExcludesPlatformAndActionCapabilities(t *testing.T) {
 	names := toolNameSet(centralAgentKnowledgeToolWindow())
 	require.Contains(t, names, "SearchKnowledge")
 	require.Contains(t, names, "ReadChunk")
-	require.NotContains(t, names, "UpdateTaskState")
 
 	for name := range names {
 		require.NotContains(t, name, "Request", "public Q&A must not expose action proposals")
@@ -258,7 +247,6 @@ func TestKnowledgeOnlyWindowExcludesPlatformAndActionCapabilities(t *testing.T) 
 func TestKnowledgeOnlyExecutionAllowlistIsFailClosed(t *testing.T) {
 	require.True(t, knowledgeOnlyToolAllowed("SearchKnowledge"))
 	require.True(t, knowledgeOnlyToolAllowed("ReadChunk"))
-	require.False(t, knowledgeOnlyToolAllowed("UpdateTaskState"))
 	require.False(t, knowledgeOnlyToolAllowed("DescribeCompShareInstance"))
 	require.False(t, knowledgeOnlyToolAllowed("DiagnoseInstanceInternals"))
 	require.False(t, knowledgeOnlyToolAllowed("RequestStopInstance"))

@@ -1,9 +1,6 @@
 package capability
 
-import "github.com/compshare-agent/internal/intent"
+import "github.com/compshare-agent/internal/platform"
 
-// The read-request interface and MissingField vocabulary are re-exported so the
-// catalog and kernel keep compiling; every concrete request contract now lives
-// in the capability package beside the handler that consumes it.
-type ReadRequest = intent.ReadRequest
-type MissingField = intent.MissingField
+type ReadRequest = platform.ReadRequest
+type MissingField = platform.MissingField

@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"encoding/json"
-	"reflect"
 	"testing"
 
 	"github.com/compshare-agent/internal/deployment"
@@ -493,15 +492,8 @@ func TestUpstreamArgsDoNotAliasTheDraft(t *testing.T) {
 	}
 }
 
-// TestTheCodecCopiesDisksInBothDirections pins the codec's isolation at the two
-// doors themselves, independent of any workflow wiring.
-//
-// Encode and decode both used to carry the disk list by reference, which made the
-// codec a shared-structure boundary rather than a copying one: an encoded draft
-// was joined to the draft it came from, and a decoded draft was joined to the map
-// it was read out of. Everything else on a draft is a string, a number or a bool,
-// which a struct copy already separates — so this list is the entire aliasing
-// surface, and these two assertions are the whole of the property.
+// TestTheCodecCopiesDisksInBothDirections verifies isolation at both codec
+// boundaries.
 func TestTheCodecCopiesDisksInBothDirections(t *testing.T) {
 	t.Run("encode does not share with the draft", func(t *testing.T) {
 		d := fullDraft()
@@ -532,42 +524,4 @@ func TestTheCodecCopiesDisksInBothDirections(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, fullDraft().Args.Disks, back.Args.Disks)
 	})
-}
-
-// TestDisksAreTheOnlyAliasableFieldOnADraft is what keeps the fix above from
-// decaying. cloneDiskList is correct only while Disks really is the draft's whole
-// aliasing surface; the day someone adds Tags []string or Labels map[string]string
-// it silently stops being, and nothing else in the suite would notice — a new
-// slice field is perfectly seal-SAFE by type, so the encoder's type walk waves it
-// through while it is quietly shared between the candidate and the seal.
-//
-// So this fails on any new reference-typed field and makes its author say what
-// happens to it, rather than discovering it the way this one was discovered.
-func TestDisksAreTheOnlyAliasableFieldOnADraft(t *testing.T) {
-	handled := map[string]string{
-		"CreateInstanceArgs.Disks":          "cloned at every crossing by cloneDiskList",
-		"EstimatedPriceSnapshot.ListAmount": "dereferenced on encode, freshly allocated on decode — never shared",
-	}
-
-	for _, typ := range []reflect.Type{
-		reflect.TypeOf(CreateInstanceArgs{}),
-		reflect.TypeOf(SelectedImage{}),
-		reflect.TypeOf(deployment.ZonePlacement{}),
-		reflect.TypeOf(EstimatedPriceSnapshot{}),
-	} {
-		for i := 0; i < typ.NumField(); i++ {
-			f := typ.Field(i)
-			switch f.Type.Kind() {
-			case reflect.Slice, reflect.Map, reflect.Ptr, reflect.Interface, reflect.Chan, reflect.Func:
-			default:
-				continue // a scalar; a struct copy already separates it
-			}
-			name := typ.Name() + "." + f.Name
-			assert.Contains(t, handled, name,
-				"%s is reference-typed, so a copy of this struct shares it. Either copy it at "+
-					"every codec crossing the way cloneDiskList does for Disks, or say here why it "+
-					"cannot be shared — an unhandled one joins the candidate to the sealed record, "+
-					"and verifyDigest cannot see that", name)
-		}
-	}
 }

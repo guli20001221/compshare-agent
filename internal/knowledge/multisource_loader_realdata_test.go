@@ -36,8 +36,7 @@ func TestLoadExternalCorpusPinnedRealData(t *testing.T) {
 // TestMergePlatformAndExternalRealData proves the platform and external corpora
 // merge into one in-memory index through LoadPinnedCorporaWithEmbeddings: no
 // chunk_id collision across the two sources, a single homogeneous qwen3 vector
-// space, and a complete chunk↔vector bijection over the union. This is the
-// runtime shape cmd/trace.go will produce in Phase 2.
+// space, and a complete chunk↔vector bijection over the union.
 func TestMergePlatformAndExternalRealData(t *testing.T) {
 	platformCorpus := filepath.Join("..", "..", "deploy", "kb", "stage2b_w0.jsonl")
 	platformSidecar := filepath.Join("..", "..", "deploy", "kb", "embeddings_"+CorpusDigestExpected+"_qwen3-embedding-8b.jsonl")

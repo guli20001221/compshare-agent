@@ -20,7 +20,7 @@ import (
 // rebuild, which is what it is for.
 //
 // This file covers the chain that actually runs once the canonical transcript is
-// the sole semantic memory:
+// the sole semantic history:
 //
 //	capture -> metadata -> Parse -> RehydrateHistory -> buildMessagesForLLM -> cap
 //
@@ -114,10 +114,6 @@ func requireTranscriptWasReplayed(t *testing.T, assembled []openai.ChatCompletio
 }
 
 func TestEndToEndHotColdParityAcrossTransforms(t *testing.T) {
-	prev := canonicalTranscriptEnabled
-	SetCanonicalTranscriptEnabled(true)
-	defer SetCanonicalTranscriptEnabled(prev)
-
 	const (
 		secret    = "abcdef0123456789abcdef0123456789"
 		secretURL = "http://10.0.0.4:8888/lab?token=" + secret
@@ -247,10 +243,6 @@ func TestEndToEndHotColdParityAcrossTransforms(t *testing.T) {
 // session silently degrades from tool-backed history to a plain text pair after a
 // restart even though the transcript itself is present and valid.
 func TestHotAndColdReplayAcrossPersistenceRedactions(t *testing.T) {
-	prev := canonicalTranscriptEnabled
-	SetCanonicalTranscriptEnabled(true)
-	defer SetCanonicalTranscriptEnabled(prev)
-
 	cases := []struct {
 		name        string
 		question    string
@@ -330,7 +322,7 @@ func TestHotAndColdReplayAcrossPersistenceRedactions(t *testing.T) {
 	}
 }
 
-func TestPersistenceAlignedEndpointTextIsCanonicalTranscriptScoped(t *testing.T) {
+func TestHistoryUsesPersistenceAlignedEndpointText(t *testing.T) {
 	const (
 		question = "请查 alice@example.com 对应的实例"
 		answer   = "关联项目 12345678-1234-1234-1234-1234567890ab 当前正常。"
@@ -340,18 +332,10 @@ func TestPersistenceAlignedEndpointTextIsCanonicalTranscriptScoped(t *testing.T)
 		{Role: openai.ChatMessageRoleAssistant, Content: answer},
 	}}
 
-	prev := canonicalTranscriptEnabled
-	SetCanonicalTranscriptEnabled(false)
-	off := eng.recentCompleteConversationPairs()
-	SetCanonicalTranscriptEnabled(true)
 	on := eng.recentCompleteConversationPairs()
-	SetCanonicalTranscriptEnabled(prev)
-
-	require.Equal(t, []ConversationPair{{User: question, Assistant: answer}}, off,
-		"the feature gate preserves the pre-canonical history form")
 	require.Equal(t, []ConversationPair{{
 		User: security.RedactUserConversationText(question), Assistant: security.RedactAssistantConversationText(answer),
-	}}, on, "canonical history uses the same endpoint forms that cold rehydration reads")
+	}}, on, "history uses the same endpoint forms that cold rehydration reads")
 }
 
 // Canonical-history compaction is a different axis: it keeps complete dialogue
@@ -359,10 +343,6 @@ func TestPersistenceAlignedEndpointTextIsCanonicalTranscriptScoped(t *testing.T)
 // a tool result whose declaring call is absent, and it must derive the same view
 // before and after a restart.
 func TestEndToEndHotColdParityWhenReplayBudgetCompactsDetail(t *testing.T) {
-	prev := canonicalTranscriptEnabled
-	SetCanonicalTranscriptEnabled(true)
-	defer SetCanonicalTranscriptEnabled(prev)
-
 	type exchange struct {
 		question string
 		answer   string
@@ -372,12 +352,8 @@ func TestEndToEndHotColdParityWhenReplayBudgetCompactsDetail(t *testing.T) {
 	hot := &Engine{messages: []openai.ChatCompletionMessage{paritySystemMessage()}}
 	var history []exchange
 
-	// The fixture is SIZED OFF the budget rather than against a copy of it. Six
-	// 3000-rune exchanges used to overflow because the budget was 12000; when it
-	// was raised to 48000 this test kept passing every assertion about how a trim
-	// behaves while no longer trimming at all, and only the "precondition" guard
-	// below caught it. Deriving the count means the next change to either constant
-	// re-sizes the fixture instead of silently disarming the test.
+	// Derive the fixture from the production budget so it always exercises
+	// compaction when that budget changes.
 	//
 	// padRunes stays under maxTranscriptMessageRunes so the producer does not
 	// truncate the result and change what is being measured.
@@ -408,10 +384,8 @@ func TestEndToEndHotColdParityWhenReplayBudgetCompactsDetail(t *testing.T) {
 		history = append(history, exchange{question: q, answer: a, metadata: payload})
 	}
 
-	// The trim measured below has to be maxReplayedHistoryRunes and not one of the
-	// two SOURCE lists running out first. That premise used to be
-	// `exchangeCount <= maxAgentContextPairs`; with the count windows deleted, the
-	// direct form is that every exchange is still on hand when the budget runs.
+	// Both source lists must still contain every exchange when replay compaction
+	// starts, otherwise this test would measure an upstream retention limit.
 	require.Len(t, hot.recentTurns, exchangeCount,
 		"premise: budgetRecordedTurns must not be what drops an exchange here")
 

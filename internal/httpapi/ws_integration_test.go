@@ -32,7 +32,6 @@ func wsTestHandlers(t *testing.T, client engine.LLMClient, confirm engine.Confir
 		&config.Config{Agent: config.AgentConfig{
 			LLM:  config.LLMConfig{Model: "model-x"},
 			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
-			Meta: config.MetaConfig{MaxInputLength: 4000},
 			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
 		}},
 		&mockSessions{byID: map[string]store.Session{

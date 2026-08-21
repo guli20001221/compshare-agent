@@ -29,8 +29,7 @@ func Sanitize(action string, result map[string]any) map[string]any {
 	return out
 }
 
-// SanitizeArgs returns a deep copy of args with sensitive fields replaced.
-// Used to prevent passwords etc. from appearing in event callbacks.
+// SanitizeArgs returns a deep copy safe for event callbacks.
 func SanitizeArgs(action string, args map[string]any) map[string]any {
 	if args == nil {
 		return nil

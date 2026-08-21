@@ -2,34 +2,15 @@ package textutil
 
 import "strings"
 
-// MapOutsideCode applies f to every stretch of markdown PROSE in s, leaving
-// fenced code blocks (``` / ~~~) and inline code spans (`...`) byte-identical.
-//
-// Why this exists: the citation strippers used to rewrite the whole answer.
-// They deleted every [n] and collapsed every run of spaces — inside code too.
-// A correct PyTorch snippet came out the other side as:
-//
-//	def main():
-//	 rank = int(os.environ["RANK"])     <- four-space indent collapsed to one
-//	 x = outputs                        <- outputs[1] lost its subscript
-//	 if rank == 0:
-//	 print(sys.argv)                    <- and so did sys.argv[1]
-//
-// which is not merely ugly, it does not run: the user copies it and gets an
-// IndentationError. This is a GPU-platform assistant whose knowledge corpus is
-// vLLM / SGLang / PyTorch, so code in the answer is the normal case, not an edge
-// case — and the damage was silent, with no log, no trace and no failed guard.
-//
-// Citations never appear inside code, so restricting the rewrite to prose costs
-// nothing. That restriction is the whole fix.
+// MapOutsideCode applies f to Markdown prose while leaving fenced and inline
+// code byte-identical.
 //
 // Fence detection is deliberately literal rather than a CommonMark parse: a line
 // whose first non-space run is ``` or ~~~ toggles a block of that character. An
 // unterminated fence swallows the rest of the string — the safe direction, since
 // unstripped prose merely shows a stray [1] while stripped code is broken code.
 //
-// f must be pure and must not add or remove newlines; it is called once per run
-// of consecutive prose lines, with those lines' own newlines still attached.
+// f must not add or remove newlines.
 func MapOutsideCode(s string, f func(string) string) string {
 	if s == "" {
 		return s

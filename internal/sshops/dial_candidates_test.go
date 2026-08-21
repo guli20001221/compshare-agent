@@ -9,49 +9,27 @@ import (
 	"time"
 )
 
-// The two encodings are quoted in the deploy config and will be read out of production logs by
-// whoever runs the experiment, so the arithmetic is pinned rather than trusted. A silent change
-// here would move the address without moving the documentation, and the run would then be
-// testing something nobody described.
-func TestPublicIPv6CandidatesProduceBothEncodings(t *testing.T) {
-	got, err := publicIPv6Candidates("2002:a40:2e05::", "203.0.113.9")
+func TestPublicIPv6CandidateUsesTheProductionLow32BitEncoding(t *testing.T) {
+	got, err := publicIPv6Candidate("2002:a40:2e05::", "203.0.113.9")
 	if err != nil {
-		t.Fatalf("build candidates: %v", err)
+		t.Fatalf("build candidate: %v", err)
 	}
-	want := []dialCandidate{
-		{label: "public-v6-simple", host: "2002:a40:2e05::cb00:7109"},
-		{label: "public-v6-rfc6052", host: "2002:a40:2e05:cb00:7100:900::"},
+	want := dialCandidate{label: "public-v6-simple", host: "2002:a40:2e05::cb00:7109"}
+	if got != want {
+		t.Errorf("candidate = %+v, want %+v", got, want)
 	}
-	if len(got) != len(want) {
-		t.Fatalf("got %d candidates, want %d: %+v", len(got), len(want), got)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("candidate %d = %+v, want %+v", i, got[i], want[i])
-		}
-	}
-	// 2002:a40:2e05::203.0.113.9 is how the address was written down; it must be the same
-	// address the simple encoding produces, or the config comment describes a different dial.
-	if literal := net.ParseIP("2002:a40:2e05::203.0.113.9"); literal == nil || literal.String() != want[0].host {
-		t.Errorf("the dotted-quad spelling parses to %v, want %s", literal, want[0].host)
+	if literal := net.ParseIP("2002:a40:2e05::203.0.113.9"); literal == nil || literal.String() != want.host {
+		t.Errorf("the dotted-quad spelling parses to %v, want %s", literal, want.host)
 	}
 }
 
-// RFC 6052 defines this layout for a /48 prefix only. Emitting it for a longer prefix would
-// overwrite prefix bits and dial an address the operator never configured — a worse outcome
-// than not offering the encoding, because the resulting failure would look like the prefix's.
-func TestRFC6052EncodingIsOmittedWhenThePrefixIsLongerThan48(t *testing.T) {
-	got, err := publicIPv6Candidates("2002:a40:2e05:dead::", "203.0.113.9")
+func TestPublicIPv6CandidatePreservesLongerConfiguredPrefix(t *testing.T) {
+	got, err := publicIPv6Candidate("2002:a40:2e05:dead::", "203.0.113.9")
 	if err != nil {
-		t.Fatalf("build candidates: %v", err)
+		t.Fatalf("build candidate: %v", err)
 	}
-	for _, c := range got {
-		if c.label == "public-v6-rfc6052" {
-			t.Fatalf("a /64-shaped prefix must not get the /48 encoding, got %+v", got)
-		}
-	}
-	if len(got) != 1 || got[0].host != "2002:a40:2e05:dead::cb00:7109" {
-		t.Errorf("got %+v, want only the simple encoding", got)
+	if got.host != "2002:a40:2e05:dead::cb00:7109" {
+		t.Errorf("got %+v, want the configured prefix with the IPv4 in its low 32 bits", got)
 	}
 }
 
@@ -92,7 +70,7 @@ func TestAdvertisedPublicIPv4IsNeverACandidate(t *testing.T) {
 				}
 			}
 			if len(cands) == 0 {
-				t.Fatal("no candidates at all — the prefix forms must always be offered")
+				t.Fatal("no candidates at all — the translated address must always be offered")
 			}
 		})
 	}
@@ -106,8 +84,8 @@ func TestResolverFailureStillTriesThePrefixAndRecordsWhy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build candidates: %v", err)
 	}
-	if len(cands) != 2 {
-		t.Fatalf("want the two prefix forms, got %+v", cands)
+	if len(cands) != 1 {
+		t.Fatalf("want the translated candidate, got %+v", cands)
 	}
 	if len(notes) != 1 || !strings.Contains(notes[0], "gateway timeout") {
 		t.Errorf("the resolver failure must be recorded, got %v", notes)
@@ -151,12 +129,11 @@ func TestPodHostIsStillNeverRewrittenWithAPrefixConfigured(t *testing.T) {
 	}
 }
 
-// The probe is what makes a failed experiment attributable: the address and the failure class
-// have to survive into the trace, because "the lane could not connect" is the sentence that has
-// already cost this investigation three rounds.
+// Failed candidates retain their label and address so operators can distinguish
+// routing failures without exposing credentials.
 func TestProbeReportsTheAddressAndFailureClass(t *testing.T) {
 	port := closedLocalPort(t)
-	_, _, trace, ok := firstReachable(context.Background(),
+	_, trace, ok := firstReachable(context.Background(),
 		[]dialCandidate{{label: "internal-ipv6", host: "::1"}}, port)
 	if ok {
 		t.Fatal("nothing is listening; the probe must not report success")
@@ -176,13 +153,10 @@ func TestProbePicksTheFirstCandidateThatListens(t *testing.T) {
 
 	// Prefix "::" over 0.0.0.1 is exactly ::1, so the listener stands in for a reachable
 	// translated address without needing a real translator.
-	got, idx, _, ok := firstReachable(context.Background(), []dialCandidate{
+	got, _, ok := firstReachable(context.Background(), []dialCandidate{
 		{label: "internal-ipv6", host: "100::1"}, // RFC 6666 discard prefix — never answers
 		{label: "public-v6-simple", host: "::1"},
 	}, port)
-	if ok && idx != 1 {
-		t.Fatalf("winner index %d does not point at the candidate returned (%+v)", idx, got)
-	}
 	if !ok {
 		t.Skip("the discard-prefix candidate did not fail fast on this host")
 	}
@@ -191,9 +165,7 @@ func TestProbePicksTheFirstCandidateThatListens(t *testing.T) {
 	}
 }
 
-// When nothing answers the lane refuses rather than picking one hopefully. A hopeful pick is
-// another silent 16-second timeout that settles nothing; a refusal naming the addresses tried is
-// the result the experiment is being run for.
+// When nothing answers, refuse instead of returning an unverified address.
 func TestNothingReachableRefusesAndNamesWhatWasTried(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
@@ -208,195 +180,6 @@ func TestNothingReachableRefusesAndNamesWhatWasTried(t *testing.T) {
 	if !strings.Contains(err.Error(), "::1") {
 		t.Errorf("the refusal must name an address that was tried, got %v", err)
 	}
-}
-
-// On a zone the internal route already reaches, the prefix candidates are never dialled — so
-// without this the experiment cannot be run where it gives a clean answer. 华北二A is reachable
-// from the deployment, which makes a prefix failure THERE attributable to the prefix; a failure
-// on a zone with no route at all is ambiguous between "no translator" and "translator that also
-// cannot reach that cluster".
-func TestCandidatesAfterTheWinnerAreStillProbed(t *testing.T) {
-	accepted := make(chan struct{}, 8)
-	ln := listenLoopbackV6(t, accepted)
-	port := ln.Addr().(*net.TCPAddr).Port
-
-	<-probeRemaining(context.Background(), []dialCandidate{
-		{label: "public-v6-simple", host: "::1"},
-		{label: "public-v6-rfc6052", host: "::1"},
-	}, port, "uhost-x")
-
-	// Wait for the accepts rather than reading a length: the probe returns when its DIAL
-	// completes, which is before the listener's goroutine has recorded the connection. Counting
-	// at that moment passes or fails on scheduling, which is how this assertion was written the
-	// first time and why it failed under -run and passed for the whole package.
-	waitForAccepts(t, accepted, 2)
-}
-
-// The diagnosis moves on the moment the address is chosen, so the request context is normally
-// already cancelled by the time these run. Inheriting that cancellation would make the probe
-// silently never happen — and "the log line was missing" would read as "the prefix failed".
-func TestTrailingProbesSurviveRequestCancellation(t *testing.T) {
-	accepted := make(chan struct{}, 8)
-	ln := listenLoopbackV6(t, accepted)
-	port := ln.Addr().(*net.TCPAddr).Port
-
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-
-	<-probeRemaining(ctx, []dialCandidate{{label: "public-v6-simple", host: "::1"}}, port, "uhost-x")
-
-	waitForAccepts(t, accepted, 1)
-}
-
-// waitForAccepts blocks for exactly n connections and then checks no extra one arrives, so both
-// "probed too few" and "probed something it should not have" are caught.
-func waitForAccepts(t *testing.T, accepted <-chan struct{}, n int) {
-	t.Helper()
-	for i := range n {
-		select {
-		case <-accepted:
-		case <-time.After(5 * time.Second):
-			t.Fatalf("only %d of %d candidates were probed", i, n)
-		}
-	}
-	select {
-	case <-accepted:
-		t.Fatalf("more than %d connections were made", n)
-	case <-time.After(150 * time.Millisecond):
-	}
-}
-
-// Nothing left to probe must not leave a goroutine or a channel that never closes: the winner is
-// frequently the last candidate, so this is the common case, not an edge one.
-func TestNoTrailingCandidatesClosesImmediately(t *testing.T) {
-	select {
-	case <-probeRemaining(context.Background(), nil, 22, "uhost-x"):
-	case <-time.After(2 * time.Second):
-		t.Fatal("probeRemaining(nil) never completed")
-	}
-}
-
-// The wiring, not just the helper: choosing an address must ALSO leave the untried candidates
-// probed. Without this assertion the trailing probe could be dropped from pickReachableDialHost
-// and every test above would still pass, while the prefix silently stopped being exercised on
-// exactly the zones that can judge it.
-func TestChoosingAnAddressStillProbesTheRest(t *testing.T) {
-	accepted := make(chan struct{}, 8)
-	ln := listenLoopbackV6(t, accepted)
-	port := ln.Addr().(*net.TCPAddr).Port
-
-	// Prefix "::" over 0.0.0.1 is ::1, so the same listener stands in for both the internal
-	// address and the translated one; the /48 form (::100:0:0) is the candidate that never answers.
-	host, err := pickReachableDialHost(context.Background(), map[string]any{"UHostId": "uhost-x"},
-		"0.0.0.1", port, "::", "::1", nil)
-	if err != nil || host != "::1" {
-		t.Fatalf("got (%q, %v), want the internal address to win", host, err)
-	}
-	// One accept for the winner, one more for the trailing simple form.
-	waitForAccepts(t, accepted, 2)
-}
-
-// "This deployment has no route to customer EIPs" is the premise the whole design rests on, and
-// any single measurement of it goes stale within the day — the fleet it was measured against is
-// replaced that fast (re-measured in-cluster 2026-08-16: timeout on every target in both regions).
-// Probing it as a control on every run makes a network change that opened that route visible
-// immediately, rather than leaving us routing around a problem that had already been fixed.
-//
-// The pairing that matters: it appears in the DIAGNOSTIC list and is absent from the DIAL list,
-// for the same inputs. Asserting only one half would let a refactor move it across.
-func TestTheAdvertisedEIPIsMeasuredButNeverDialled(t *testing.T) {
-	const eip = "203.0.113.9"
-	cands, _, err := dialCandidatesFor(eip, "2002:a40:2e05::", "2003:da8:2004:1000::5", nil)
-	if err != nil {
-		t.Fatalf("build candidates: %v", err)
-	}
-	for _, c := range cands {
-		if c.host == eip {
-			t.Fatalf("the EIP must never be dialled, found it in %+v", cands)
-		}
-	}
-
-	diag := diagnosticProbes(cands, 0, eip)
-	var found bool
-	for _, c := range diag {
-		if c.host == eip {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("the EIP must be probed as a control, got %+v", diag)
-	}
-}
-
-// The diagnostic list must not re-probe the winner, or the log would claim an address was "not
-// dialled" while it is the one the harness got — and every trailing candidate has to be there,
-// or the prefix silently stops being measured on the zone that can judge it.
-func TestDiagnosticProbesCoverExactlyTheUntriedCandidatesPlusTheControl(t *testing.T) {
-	cands := []dialCandidate{
-		{label: "internal-ipv6", host: "2003:da8::5"},
-		{label: "public-v6-simple", host: "2002:a40:2e05::cb00:7109"},
-		{label: "public-v6-rfc6052", host: "2002:a40:2e05:cb00:7100:900::"},
-	}
-	got := diagnosticProbes(cands, 0, "203.0.113.9")
-	want := []string{cands[1].host, cands[2].host, "203.0.113.9"}
-	if len(got) != len(want) {
-		t.Fatalf("got %d probes, want %d: %+v", len(got), len(want), got)
-	}
-	for i, h := range want {
-		if got[i].host != h {
-			t.Errorf("probe %d = %s, want %s", i, got[i].host, h)
-		}
-	}
-	// Winner last: only the control is left.
-	if last := diagnosticProbes(cands, len(cands)-1, "203.0.113.9"); len(last) != 1 || last[0].host != "203.0.113.9" {
-		t.Errorf("with the last candidate winning, only the control remains; got %+v", last)
-	}
-}
-
-// Building the diagnostic list must not scribble on the dial list's backing array: append() on a
-// re-sliced slice writes in place when there is spare capacity, and the corrupted entry would be
-// a dial candidate for the NEXT instance.
-func TestDiagnosticProbesDoNotMutateTheCandidateSlice(t *testing.T) {
-	cands := make([]dialCandidate, 2, 8)
-	cands[0] = dialCandidate{label: "internal-ipv6", host: "2003:da8::5"}
-	cands[1] = dialCandidate{label: "public-v6-simple", host: "2002:a40:2e05::cb00:7109"}
-	before := append([]dialCandidate(nil), cands...)
-
-	_ = diagnosticProbes(cands, 0, "203.0.113.9")
-
-	for i := range before {
-		if cands[i] != before[i] {
-			t.Fatalf("candidate %d was mutated: %+v -> %+v", i, before[i], cands[i])
-		}
-	}
-	if grown := cands[:cap(cands)]; grown[2].host == "203.0.113.9" {
-		t.Fatal("the control was written into the dial slice's spare capacity")
-	}
-}
-
-// listenLoopbackV6 accepts connections on IPv6 loopback and signals each one, so a test can
-// count probes instead of parsing the log.
-func listenLoopbackV6(t *testing.T, accepted chan<- struct{}) net.Listener {
-	t.Helper()
-	ln, err := net.Listen("tcp", "[::1]:0")
-	if err != nil {
-		t.Skipf("no IPv6 loopback here: %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			select {
-			case accepted <- struct{}{}:
-			default:
-			}
-			_ = conn.Close()
-		}
-	}()
-	return ln
 }
 
 // closedLocalPort returns a port on loopback with nothing listening, so a connect fails

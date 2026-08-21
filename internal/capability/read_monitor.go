@@ -9,16 +9,12 @@ import (
 	"github.com/compshare-agent/internal/readprojection"
 )
 
-// Monitor read capabilities (migrated from the legacy intent route). Current
-// monitoring runs here; historical monitoring is added in a later slice once the
-// time-window interpretation is relocated. Both share the target contract, the
-// upstream call and the deterministic render/envelope.
+// Current and historical monitoring share the target contract, upstream call
+// and deterministic evidence renderer.
 
 const (
 	// monitorCurrentCapabilityLabel is both the current-monitor tool label and
-	// the failure-reply label for BOTH current and historical monitoring — the
-	// legacy handler hardcoded "monitor_query" as the failure label regardless of
-	// which monitor intent ran.
+	// the failure-reply label for both current and historical monitoring.
 	monitorCurrentCapabilityLabel = string(intent.IntentMonitorQuery)
 	// monitorHistoryCapabilityLabel is the historical-monitor tool + observation
 	// label; the failure reply still uses monitorCurrentCapabilityLabel.
@@ -26,9 +22,7 @@ const (
 	monitorAction                 = "GetCompShareInstanceMonitor"
 )
 
-// MonitorCurrentRequest is the current-monitor request contract. It carries no
-// time window (current is "now"), so unlike the legacy path there is no
-// time-window validation to run.
+// MonitorCurrentRequest carries no time window because current means now.
 type MonitorCurrentRequest struct {
 	Targets []platform.TargetRef `json:"targets,omitempty"`
 	Metrics []platform.Metric    `json:"metrics,omitempty"`

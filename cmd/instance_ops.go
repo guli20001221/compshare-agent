@@ -23,8 +23,8 @@ import (
 const instanceOpsAction = "DiagnoseInstanceInternals"
 
 // instanceOpsDiagnoser is the sshops.Service surface the adapter delegates to. It is an interface
-// (not the concrete *sshops.Service) so the adapter's rate-limit gate can be unit-tested with a fake
-// that records whether the diagnosis was reached at all — proving a denial spawns nothing (P2 gate 5).
+// (not the concrete *sshops.Service) so rate-limit denial can be tested without
+// spawning a diagnosis.
 type instanceOpsDiagnoser interface {
 	DiagnoseWithContext(ctx context.Context, d sshops.Describer, owner sshops.Owner, instanceID, task string, modelContext opscontext.Context, onStep func(sshops.Step), onConfirm sshops.ConfirmFunc) (sshops.Result, error)
 }
@@ -37,7 +37,7 @@ type instanceOpsDiagnoser interface {
 type instanceOpsRunner struct {
 	diag      instanceOpsDiagnoser
 	describer sshops.Describer
-	limiter   governance.RateLimiter // may be nil (CLI single-user path) → no cross-turn cap
+	limiter   governance.RateLimiter // may be nil in isolated tests → no cross-turn cap
 }
 
 func newInstanceOpsRunner(diag instanceOpsDiagnoser, describer sshops.Describer, limiter governance.RateLimiter) *instanceOpsRunner {
@@ -134,15 +134,8 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 		if errors.As(err, &notRunning) {
 			return engine.InstanceOpsVerdict{}, fmt.Errorf("%w: %s", engine.ErrInstanceOpsNotRunning, notRunning.State)
 		}
-		// Everything else collapses into ONE constant user-facing sentence ("实例内排查未能完成，
-		// 请稍后重试"), which is right for the user — the harness reached no conclusion, so the model
-		// must not narrate one — but it left the operator with nothing at all. The distinct causes
-		// behind that sentence (rate-limit denial, describe failure, instance not in the response,
-		// password unavailable, fail-closed audit refusal, harness spawn failure, whole-run timeout)
-		// are indistinguishable from the outside, and the failures that happen BEFORE audit.Begin
-		// write no row either — so on 2026-08-06 a reproducible production failure could not be
-		// placed in a layer at all. These errors are documented credential-free (sshops/service.go),
-		// which is what makes logging them verbatim safe.
+		// The user gets a stable failure sentence; the credential-free internal
+		// error is logged so support can identify the failing layer.
 		log.Printf("ssh-ops: diagnosis failed for instance %s: %v", req.InstanceID, err)
 		return engine.InstanceOpsVerdict{}, err
 	}
@@ -200,7 +193,7 @@ func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback, apiKeyFallback st
 	// Freeze the wording gate here rather than at each call site: this function is the one place
 	// that has both the config and the knowledge that the lane is actually being built, and it runs
 	// once per process before any session exists. Setting it unconditionally (not only when true)
-	// matters — a CLI run after a server run in the same test binary must not inherit the other's
+	// matters — repeated server construction in one test process must not inherit an earlier
 	// mode and quietly describe the wrong product.
 	tools.SetInstanceOpsWritesEnabled(sc.AllowWrites)
 	sup := sshops.Supervisor{
@@ -247,41 +240,11 @@ func instanceOpsHostResolver(cfg *config.Config, describer sshops.Describer) (ss
 	return tools.NewInstanceIPv6Resolver(cfg.Agent.STS.IAMURL, describer), nil
 }
 
-// serverInstanceOpsRunner decides whether the HTTP server wires the SSH-ops lane, and builds it if so.
-// It returns nil (with a logged reason) — never an error for a deliberately-off lane — unless ALL hold:
-//   - COMPSHARE_SSH_OPS is enabled
-//   - the credential provider is per-tenant STS, not a shared static account: under static AK/SK there
-//     is no upstream tenant scoping on the target instance, so the lane must refuse (INV-12 / gate 7)
-//   - a database is available for the fail-closed audit store
-//   - that database's ssh_ops_audit carries every column the writer names
-//
-// Which failures take the SERVER down and which only take the LANE down is a deliberate layering:
-//
-//   - core tables (sessions, messages, the turn protocol) missing → boot failure. The product cannot
-//     run without them, and store.VerifySchema already refuses at OpenMySQL.
-//   - SSH-ops CONFIGURATION wrong (no harness_path/base_url/key, internal_ipv6 without iam_url, an
-//     unparseable public_ipv6_prefix) → boot failure. The artifact is broken: restarting it a hundred
-//     times produces the same lane that cannot enter any box, so a silent downgrade would let a bad
-//     edit be reported as a failed experiment.
-//   - the ssh_ops_audit table or one of its columns missing → LANE DISABLED, loudly. Nothing is wrong
-//     with the artifact; the environment is not ready yet, and one migration job fixes it without a
-//     new image. The safety property the audit exists for — do not enter a user's instance when the
-//     access cannot be recorded — is fully delivered by a nil runner: the tool is absent from the
-//     model's window (engine.go centralAgentToolWindow), the prompt does not advertise write mode
-//     (engine.go refreshSystemPrompt), and even a replayed or hallucinated call gets INV-10's inert
-//     refusal (instance_ops_dispatch.go). No credential is fetched and no SSH is dialled.
-//
-// It deliberately does NOT require durable turns. The lane is READ-ONLY, so the only thing the durable
-// path adds is disconnect-survival (a detached worker ctx) and per-step replay persistence — both are
-// UX robustness, not safety. On the current non-durable transport a client disconnect cancels the ctx
-// and kills the (read-only) harness mid-run; Diagnose still finalizes the audit row (its Finish runs on
-// a WithoutCancel ctx), so the outcome is a clean retry, not corruption or an orphaned record. The same
-// chatStream driver serves the legacy SSE and the non-durable WS path with the confirm card + live
-// StepEvent stream, so the lane works on production today; enabling durable later only makes the
-// harness survive a disconnect. A genuine misconfiguration (lane enabled but harness settings missing)
-// returns an error so boot fails loudly rather than silently disabling the lane.
-func serverInstanceOpsRunner(cfg *config.Config, getenv func(string) string, describer sshops.Describer, db *sql.DB) (engine.InstanceOpsRunner, error) {
-	if !serverFeatureEnabled(getenv, "COMPSHARE_SSH_OPS") {
+// serverInstanceOpsRunner wires SSH operations only with tenant-scoped STS and
+// a complete audit schema. Invalid lane configuration fails startup; a missing
+// optional audit migration disables only this lane and is logged explicitly.
+func serverInstanceOpsRunner(cfg *config.Config, describer sshops.Describer, db *sql.DB) (engine.InstanceOpsRunner, error) {
+	if cfg == nil || strings.TrimSpace(cfg.Agent.SSHOps.HarnessPath) == "" {
 		return nil, nil
 	}
 	if cfg.Agent.STS.ServiceAK == "" || cfg.Agent.STS.ServiceSK == "" {
@@ -292,22 +255,8 @@ func serverInstanceOpsRunner(cfg *config.Config, getenv func(string) string, des
 		log.Printf("ssh-ops disabled: no database for the fail-closed audit store")
 		return nil, nil
 	}
-	// Check the audit columns once, here, where the lane is being turned on. Without this a missing
-	// migration does not degrade the lane — it lets Begin succeed (its columns are all from 0011),
-	// the harness enter the box, and only Finish fail, which under allow_writes means an instance was
-	// changed and the row that says what happened is stuck at 'started'.
-	//
-	// The failure DISABLES THE LANE rather than failing the boot, which is the layering above: this
-	// is an environment state, not a broken artifact. The safety boundary is "audit unavailable → do
-	// not enter a user's instance", and a nil runner delivers exactly that; taking chat and the
-	// create flow down with it would be a different, larger promise that the audit table never made.
-	// It matters concretely because deploy/k8s/deployment.yaml is replicas: 1 with strategy: Recreate
-	// — the old Pod is gone before the new one starts, so a boot error here is a full outage with no
-	// version to fall back to, over an optional lane's optional column.
-	//
-	// The probe is boot-only by design. After the migration runs, the lane comes back on the next
-	// restart/redeploy; nothing polls for it, because a background re-check would add a moving part
-	// to buy an operation the operator is already performing.
+	// Probe once at boot. Audit unavailable means no instance entry; after a
+	// migration the same image must be restarted to re-enable the lane.
 	probeCtx, cancelProbe := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancelProbe()
 	if err := store.VerifySSHOpsAuditSchema(probeCtx, db); err != nil {
@@ -330,22 +279,14 @@ func serverInstanceOpsRunner(cfg *config.Config, getenv func(string) string, des
 		return nil, fmt.Errorf("ssh-ops: %w", err)
 	}
 	limiter := governance.NewInMemoryRateLimiter(cfg.Agent.RateLimit.Limits())
-	durable := getenv("COMPSHARE_DURABLE_TURNS") == "1"
-	// deploy/ssh_ops_harness/README.md tells the operator to confirm the lane is live by finding
-	// this line, so it has to name which of the two products booted. Saying "read-only" while
-	// allow_writes is on is the same defect as the consent card saying it: the one place someone
-	// checks would confirm the wrong thing.
 	mode := "read-only diagnosis"
 	if cfg.Agent.SSHOps.AllowWrites {
 		mode = "diagnosis WITH REPAIR (allow_writes=true; destructive commands still refused)"
 	}
-	// The dialled address family belongs on this line for the same reason the mode does:
-	// this is the line an operator greps to confirm what booted, and "which address do we
-	// dial" is the difference between a lane that can enter a box and one that cannot.
 	route := "public address from SshLoginCommand"
 	if hostResolver != nil {
 		route = "internal IPv6 via " + cfg.Agent.STS.IAMURL
 	}
-	log.Printf("ssh-ops enabled: consent-gated in-instance %s (per-tenant STS, fail-closed audit, durable=%t, dialling the %s; on the non-durable transport a client disconnect ends the run and the user retries)", mode, durable, route)
+	log.Printf("ssh-ops enabled: consent-gated in-instance %s (per-tenant STS, fail-closed audit, dialling the %s; a client disconnect ends the run and the user retries)", mode, route)
 	return newInstanceOpsRunner(svc, describer, limiter), nil
 }

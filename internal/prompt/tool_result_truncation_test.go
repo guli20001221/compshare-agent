@@ -8,17 +8,8 @@ import (
 	"unicode/utf8"
 )
 
-// The shape below is the upstream DescribeCompShareInstance response as the
-// vendor documents it — the same 46-key UHostSet row that ships in this repo's
-// own KB (deploy/kb/stage2b_w0.jsonl, source_refs
-// gitlab-compshare-docs__action-DescribeCompShareInstance). The doc's example
-// uses 8-character placeholder values; real payloads carry real image names, SSH
-// commands and disk sets, so the fixture uses realistic lengths. Instance IDs are
-// synthetic (uhost-1exampleaa0N) — never a live one.
-//
-// This matters: the old truncation tests used 2-3-field stubs, which fit under
-// the cap after the list shrink and therefore never reached the hard cut at all.
-// The bug lived in a branch the tests could not enter.
+// describeInstanceRow approximates the documented upstream row size with
+// synthetic identifiers so truncation tests exercise realistic payloads.
 func describeInstanceRow(i int) map[string]any {
 	return map[string]any{
 		"UHostId":          fmt.Sprintf("uhost-1exampleaa%02d", i),
@@ -97,13 +88,6 @@ func describeInstanceResult(n int) map[string]any {
 	}
 }
 
-// TestFormatToolResult_RealInstancePayloadStaysParseable is the gate the old
-// TestFormatToolResult_ValidJSON only claimed to be. It calls json.Unmarshal.
-//
-// Before the fix, the list-shrink to 5 rows still exceeded 4000 runes on this
-// payload, so FormatToolResult fell through to `string(best[:maxRunes])` and
-// handed the model a document that stops mid-key. From three instances up, that
-// was the ordinary path, not a last resort.
 func TestFormatToolResult_RealInstancePayloadStaysParseable(t *testing.T) {
 	for _, n := range []int{1, 2, 3, 4, 10, 30} {
 		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
@@ -125,19 +109,8 @@ func TestFormatToolResult_RealInstancePayloadStaysParseable(t *testing.T) {
 	}
 }
 
-// TestFormatToolResult_ATruncatedListSaysSoToTheModel guards the half of the bug
-// that made it dangerous rather than merely lossy.
-//
-// The old code appended the "已截取前 5 条" notice as the LAST element of the
-// shrunk list — and then byte-cut the tail. The notice was the first thing to go.
-// Meanwhile Go marshals map keys in sorted order, so "TotalCount":30 sorts before
-// "UHostSet" and survived intact. The model was told there were thirty instances,
-// shown one or two, and given no signal that anything was missing. Asking a model
-// to account for twenty-eight rows it cannot see is how phantom instances get
-// invented.
-//
-// So the count the model reads and the rows the model can read must be
-// reconcilable from the payload alone.
+// A truncated list must carry enough information for the model to reconcile the
+// retained rows with TotalCount.
 func TestFormatToolResult_ATruncatedListSaysSoToTheModel(t *testing.T) {
 	for _, n := range []int{3, 4, 10, 30} {
 		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
@@ -184,10 +157,6 @@ func TestFormatToolResult_ATruncatedListSaysSoToTheModel(t *testing.T) {
 	}
 }
 
-// TestFormatToolResult_GiantScalarStaysParseable upgrades the old
-// ...GiantScalarStaysBounded gate. Bounded was never the hard part; the old code
-// hit the bound by cutting bytes, which is exactly what produced the invalid
-// JSON. Bounded AND parseable is the property that matters.
 func TestFormatToolResult_GiantScalarStaysParseable(t *testing.T) {
 	out := FormatToolResult(map[string]any{
 		"RetCode": 0,
@@ -207,10 +176,7 @@ func TestFormatToolResult_GiantScalarStaysParseable(t *testing.T) {
 	}
 }
 
-// TestFormatToolResult_NestedListStaysParseable covers the shape the old
-// one-level truncateMapArrays could not reach at all (it only trimmed top-level
-// []any), so it fell straight through to the byte-cut. CompshareImageGroup[].Data[]
-// is exactly this shape in production.
+// Nested image versions exercise recursive list truncation.
 func TestFormatToolResult_NestedListStaysParseable(t *testing.T) {
 	inner := make([]any, 100)
 	for i := range inner {
@@ -232,9 +198,7 @@ func TestFormatToolResult_NestedListStaysParseable(t *testing.T) {
 	}
 }
 
-// TestFormatToolResult_UnderCapIsByteIdentical pins the no-op guarantee: a result
-// that already fits is returned untouched. Without this, the shrink ladder could
-// silently start rewriting every tool result in the codebase.
+// Results that fit are returned unchanged.
 func TestFormatToolResult_UnderCapIsByteIdentical(t *testing.T) {
 	small := describeInstanceResult(1)
 	direct, err := json.Marshal(small)

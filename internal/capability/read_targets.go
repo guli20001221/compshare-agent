@@ -10,47 +10,13 @@ import (
 	"github.com/compshare-agent/internal/readprojection"
 )
 
-// resolveReadTargetSnapshots resolves structured TargetRefs to registry
-// snapshots. It began as the typed-capability twin of the legacy intent
-// resolveResourceTargetSnapshots and keeps its shape (ID / name resolve,
-// ambiguity handling, dedupe + stable UHostId sort) and its structured
-// *platform.ReadFallbackReason return, so a read capability never depends on the
-// intent router's result type. MISS handling deliberately no longer matches the
-// legacy behaviour — that parity is what the invariant below had to break.
+// resolveReadTargetSnapshots resolves IDs and names with stable deduplication.
+// An empty ref list is valid; each caller decides whether it needs a target.
 //
-// An empty ref list returns (nil, nil, nil): whether that is a fallback is
-// request-specific (monitor needs a target; resource_info lists everything), so
-// the decision is left to the caller.
-//
-// THE INVARIANT, stated once: a registry WITHOUT standing to assert absence
-// (never-synced / stale / truncated — see entity.CanAssertAbsence) must never
-// turn a lookup into a refusal. "I have not seen it" is not "it does not exist",
-// and refusing on it produces the worst failure this system has: the user names
-// an instance they are looking at and is told it cannot be found.
-//
-// It is enforced here in two shapes, because the two ref kinds can be rescued
-// differently:
-//
-//   - an exact ID passes THROUGH: the caller's DescribeCompShareInstance point-
-//     query confirms or denies it. The synthesized snapshot carries only the id;
-//     callers derive the real instance from the response (monitor re-Describes
-//     via monitorTargetsNeedVerification, resource_info re-parses, refund renders
-//     RefundPriceSet rows and only decorates labels with names it has).
-//   - a NAME cannot pass through — DescribeCompShareInstance takes ids, so there
-//     is nothing to hand upstream. Instead we sync one full listing and re-resolve
-//     against it. Whatever the warm registry then says is a fact about the
-//     account rather than an artefact of an empty cache.
-//
-// The production HTTP/WS path never calls engine.Init(), so its registry is cold
-// for the whole session unless something warms it: the name branch's warm-up is
-// the ordinary path there, not an edge case. Measured 2026-07-29: 「host-不要删除
-// 验证七天回收 这台实例现在是什么状态」 answered 「暂时无法按这个名称定位到实例」 5/5
-// with ZERO upstream calls, while the same instance by id answered normally and
-// the same name against a warm registry resolved exactly. The matcher was never
-// the problem.
-//
-// A registry WITH standing stays authoritative — a real miss is a real "not in
-// your account", and no upstream call is made to second-guess it.
+// A registry that cannot assert absence must not turn a cache miss into a
+// refusal. Exact IDs pass through for an upstream point query. Names require a
+// full-list sync before resolution because the upstream query accepts IDs only.
+// A fresh, complete registry remains authoritative.
 //
 // rt.Now is the freshness reference clock: absence is asserted only against a
 // registry still fresh as of that instant, so a stale-but-complete snapshot no
@@ -175,9 +141,7 @@ func readTargetFallbackResult(reason platform.ReadFallbackReason) ReadResult {
 	return ReadFallbackBeforeTool(reason)
 }
 
-// dedupeInstanceSnapshots removes duplicate snapshots by UHostId, preserving
-// first-seen order. Relocated verbatim from intent.dedupeInstanceSnapshots so a
-// migrated capability resolves targets without the intent package.
+// dedupeInstanceSnapshots removes duplicate UHostIds in first-seen order.
 func dedupeInstanceSnapshots(values []entity.InstanceSnapshot) []entity.InstanceSnapshot {
 	if len(values) < 2 {
 		return values

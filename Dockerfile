@@ -33,8 +33,7 @@ RUN npm install --global --omit=dev --no-audit --no-fund \
 
 
 # The runtime base is mirrored in UHub so the production build does not depend
-# on Docker Hub egress. A real run on the target engine remains a release gate
-# (see deploy/docker/README.md).
+# on Docker Hub egress.
 FROM ${PYTHON_IMAGE} AS runtime
 ARG CLAUDE_CODE_VERSION=2.1.218
 ARG VCS_REF=unknown
@@ -53,8 +52,7 @@ RUN apt-get update \
     && useradd --uid 10001 --gid 10001 --create-home \
          --home-dir "$HOME" --shell /usr/sbin/nologin compshare
 
-# Preserve the production interpreter contract requested for the host deploy,
-# while making the environment self-contained in the image.
+# Keep the Python environment self-contained in the image.
 COPY deploy/ssh_ops_harness/requirements.txt /tmp/ssh-ops-requirements.txt
 RUN python3 -m venv /opt/miniforge3/envs/py313 \
     && /opt/miniforge3/envs/py313/bin/pip install --no-cache-dir \
@@ -75,9 +73,8 @@ COPY deploy/conf/config.prod.yaml ./deploy/conf/config.prod.yaml
 COPY deploy/migrations ./deploy/migrations
 COPY deploy/ssh_ops_harness ./deploy/ssh_ops_harness
 
-# Fail the image build if the mixed Go/Python/Claude runtime is incomplete.  The
-# Python suites are offline guardrail/protocol tests; the target-host smoke in
-# deploy/docker/README.md covers the old daemon and its seccomp profile.
+# Fail the image build if the mixed Go/Python/Claude runtime is incomplete.
+# The Python suites are offline guardrail/protocol tests.
 RUN test -x ./compshare-agent \
     && test -f ./deploy/ssh_ops_harness/harness.py \
     && /opt/miniforge3/envs/py313/bin/python -c \

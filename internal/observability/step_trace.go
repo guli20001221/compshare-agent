@@ -20,11 +20,8 @@ const (
 	StepStateTimeout         StepState = "timeout"
 )
 
-// StepTrace is the per-step workflow audit record. It is intentionally not a reuse of
-// workflow.StepEvent (which is an 8-field, no-json-tag, CLI-display-only
-// type with a different field set). StepTrace serializes into the existing
-// per-turn trace_json as TraceRecord.Steps[] — zero DDL, no new table/column.
-// ErrorCategory is a free-form string (user_abort/api_error/timeout/...).
+// StepTrace is the persisted per-step workflow record. It is separate from the
+// user-facing workflow event and is embedded in the turn trace JSON.
 type StepTrace struct {
 	SessionID     string         `json:"session_id"`
 	TurnID        string         `json:"turn_id"`
@@ -45,14 +42,7 @@ type StepTrace struct {
 	CompensateOf string     `json:"compensate_of,omitempty"`
 }
 
-// RedactStepDerivedFields runs each StepTrace's Args/Result through the trace
-// secret-redaction boundary (security.RedactForTrace), in place. It is the
-// step-trace analogue of RedactQueryDerivedFields — a SEPARATE function because
-// RedactQueryDerivedValue covers only the query subtree, not step Args/Result
-// (memory: sanitization-covers-all-derived-fields — cover the whole derivation
-// tree from one choke point). Wired into prepareForPersist so BOTH the file and
-// MySQL sinks cover step traces automatically. RedactForTrace returns a
-// redacted copy and is idempotent, so multi-sink fan-out stays safe.
+// RedactStepDerivedFields redacts step arguments and results before persistence.
 func RedactStepDerivedFields(steps []StepTrace) {
 	for i := range steps {
 		if steps[i].Args != nil {

@@ -1,19 +1,17 @@
-"""Binary gate for the 2026-07-23 policy change: deny-by-EFFECT instead of an allowlist.
+"""Binary gate for the read-by-effect policy.
 
 Run:  python test_policy_readonly.py   ->  exits non-zero on ANY miss (CI gate).
 
 The lane is read-only diagnosis, so a command is refused only when it (1) changes the
 box, (2) executes arbitrary code, (3) leaves the box over the network, or (4) blocks
-forever. Everything else — including secret-bearing reads, which on this platform are
-the operator's own keys and already visible in the console — is allowed, because the
-previous allowlist was both a maintenance treadmill and a measured cause of WRONG root
-causes (a live N=3 repro went 1/3 -> 3/3 correct purely by widening reads).
+forever. Everything else, including tenant-owned secret-bearing reads, is allowed and
+scrubbed before it can reach output.
 
 Command strings below are CLASSIFIED, never executed.
 """
 import guardrails as g
 
-# --- newly ALLOWED by the policy change (each was refused under the old allowlist) ---
+# --- allowed reads ---
 NOW_ALLOWED = [
     ("ls /root", "read_only"),
     ("ls -la /root/models", "read_only"),
@@ -60,19 +58,11 @@ STILL_REFUSED = [
     ("kill -9 1234", "mutating"),
     ("echo hi > /tmp/x", "mutating"),
     ("nvidia-smi | tee /tmp/out", "mutating"),
-    # 2026-07-30: this expectation is REVERSED on purpose, and it is the only assertion in the
-    # harness suites that the blast-radius re-tiering reversed. It used to read "in-place edit of
-    # /etc is caught by the (stricter) destructive tier, not merely mutating" — a path-prefix rule.
-    # A live run showed what that costs: a service broken by its own config in /etc could be
-    # diagnosed exactly and never repaired, because every natural edit of /etc was hard-refused.
-    # The tier now keys on whether the write is RECOVERABLE, so the three cases below pin the new
-    # boundary rather than the old one. /etc/hosts is a config file - wrong, you put it back.
-    # /etc/fstab is not - wrong, the box does not boot, and nothing inside it can fix that.
+    # Recoverable configuration changes are confirmable; boot/access loss is refused.
     ("sed -i s/a/b/ /etc/hosts", "mutating"),         # recoverable /etc config -> consent card
     ("sed -i s/a/b/ /etc/fstab", "destructive"),      # unbootable -> hard refuse, no card offered
     ("sed -i s/a/b/ /workspace/app.conf", "mutating"),
-    # 2026-07-26: `python -c` payloads are proven read-only structurally (AST) instead of
-    # matched against a literal list, so an import with no call is a read. The dangerous
+    # `python -c` payloads are proven read-only structurally by AST. The dangerous
     # part is the CALL, and an unallowlisted call is still refused — see the pairs below.
     ("python -c 'import torch'", "read_only"),
     ("python -c 'import os; os.system(1)'", "mutating"),
@@ -98,8 +88,7 @@ STILL_REFUSED = [
     # --- holes found by running the old locked corpus against the new policy ---
     ("nvidia-smi | sh", "mutating"),                 # untrusted box output piped into a shell
     ("cat /etc/passwd | bash", "mutating"),
-    # Re-baselined 2026-08-20: a path-qualified Python probe uses the same structural read proof
-    # as bare Python. Relative executables and unsafe payloads remain mutating.
+    # A path-qualified Python probe uses the same structural proof as bare Python.
     ("/root/badenv/bin/python -c 'import torch'", "read_only"),
     ("/tmp/python -c 'import torch; print(torch.cuda.is_available())'", "read_only"),
     ("python3 -c 'print(1)'", "read_only"),

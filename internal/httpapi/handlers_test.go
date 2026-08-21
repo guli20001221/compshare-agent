@@ -174,7 +174,6 @@ func newTestHandlers() *Handlers {
 			Meta: config.MetaConfig{
 				Welcome:          "welcome",
 				SuggestedPrompts: []string{"p1"},
-				MaxInputLength:   4000,
 			},
 			HTTP: config.HTTPConfig{
 				MaxInputLength:       4000,

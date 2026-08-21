@@ -6,19 +6,9 @@ import (
 	"strings"
 )
 
-// model_specs.go is what survives of the model-sizing tool: the arithmetic that
-// turns a model NAME into a VRAM number.
-//
-// It no longer maps that number onto a card. Everything that did — fitGPUs,
-// RecommendGPUType(Within), GetModelVRAMRequirement — read the static gpuSpecs
-// table, which asserted platform facts (which cards exist, their VRAM, their
-// per-host limit) from a constant in this repo. Those facts belong to the
-// upstream catalog, so the table and its readers were deleted.
-//
-// What is left is genuinely model-side and not platform-side: parameter count
-// and bytes-per-weight are properties of the MODEL, not of CompShare's fleet.
-// FittingGPUAlternatives (gpu_live.go) combines this arithmetic with live
-// catalog entries, and is the only production consumer.
+// model_specs.go estimates model-side VRAM demand from a model name. It contains
+// no platform GPU catalog; FittingGPUAlternatives combines the estimate with
+// live catalog entries.
 
 // bytesPerParam maps a quantization label to bytes-per-weight. FP16/BF16 store
 // 2 bytes; INT8/FP8 1 byte; INT4 0.5 byte. Default (and most conservative for a

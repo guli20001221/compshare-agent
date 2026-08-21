@@ -60,11 +60,10 @@ func TestModelRepositoryHandle_Empty(t *testing.T) {
 func TestModelRepositoryDescriptionDoesNotClaimDeployability(t *testing.T) {
 	description := NewReadCapability(modelRepositoryReadSpec()).Tool.Function.Description
 	for _, want := range []string{
-		"不要用于一般的部署、运行、快速安装或 ComfyUI 使用问题",
-		"社区镜像目录已返回该具名模型的可用精确兼容候选时，不要调用本工具",
-		"仅在用户明确询问预置权重、下载、源码安装或 adapter/权重路径时使用",
-		"不是镜像目录",
-		"不能证明当前可直接创建或已支持该模型",
+		"预置权重和标签",
+		"下载、源码安装、adapter 或权重路径问题",
+		"不是可创建的镜像目录",
+		"不能证明平台已支持部署",
 	} {
 		require.Contains(t, description, want)
 	}

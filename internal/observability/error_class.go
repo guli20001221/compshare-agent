@@ -6,12 +6,8 @@ import (
 	"errors"
 )
 
-// error_class.go is the single, shared chat-error classifier for the trace's
-// outcome.error_class axis. Before this, the CLI recorder discarded chatErr
-// entirely (cmd/trace.go: `_ = chatErr`) and the HTTP recorder only synthesized a
-// coarse "chat_error" hard-block — so the two paths produced no error_class / a
-// different one (critique must-fix #1). Routing both recorders through this one
-// function makes the axis consistent.
+// error_class.go owns the stable outcome.error_class taxonomy used by trace
+// recorders. Keeping classification here prevents transport-specific labels.
 
 // ErrorClass* are the coarse trace labels for outcome.error_class. They classify
 // WHY a turn errored, at a granularity useful for GROUP BY in the dashboard — not
@@ -26,11 +22,8 @@ const (
 // ClassifyErrorClass maps a chat error to a coarse, stable trace label. Returns
 // "" for a nil error (a non-error turn carries no error_class).
 //
-// This is deliberately SEPARATE from httpapi.classifyChatError, which maps the
-// same error to an *APIError for the HTTP response code / messages.error_code —
-// an HTTP-protocol concern carrying httpapi types. The CLI path has no HTTP
-// response, so the only divergence that ever mattered for observability is the
-// trace label, and that is what this unifies across both recorders.
+// This is deliberately separate from httpapi.classifyChatError, which maps the
+// same error to an *APIError for the HTTP response code / messages.error_code.
 func ClassifyErrorClass(err error) string {
 	if err == nil {
 		return ""

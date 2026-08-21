@@ -2,11 +2,8 @@
 
 Run:  python test_guardrails.py   ->  exits non-zero on ANY miss (CI gate).
 
-Covers the original tiers, the DESIGN-production.md §4 corpus, AND every confirmed finding from
-TWO adversarial red-team rounds (each locked here as a regression guard) — both residual bypasses
-(too-safe tier / leaked secret) and false-positives (legit diagnostic wrongly refused or
-over-redacted). A regression means an unvetted command reaches a live root shell, a secret reaches
-the model/SSE/DB, OR the lane's own diagnostics get destroyed.
+Covers command tiers, bypass shapes, secret redaction and false positives. A regression means an
+unvetted command can reach a root shell, a secret can reach output, or useful diagnostics are lost.
 
 Secret-shaped fixtures are assembled by runtime concatenation so this source carries no complete
 secret literal (keeps scripts/secret_scan.ps1 green).
@@ -48,13 +45,7 @@ CLASSIFY_CASES = [
     ("docker ps", "read_only"),
     ("pip list", "read_only"),
     ("jupyter --version", "read_only"),
-    # `dd --version` and `usermod --help` were read_only from 2026-06 until 2026-08-16 via a
-    # help/version fast-path that has since been deleted outright (see the tombstone at the top
-    # of guardrails.py). They are the entire measured cost of that deletion, together with
-    # `curl --version` below: two confirmation cards and one hard refusal -- `usermod --help`
-    # lands in the destructive scan once nothing exempts it, and a destructive verdict cannot
-    # be clicked through the way a card can. That is the whole price of dropping a rule whose
-    # safety argument could not be made once the transport was taken into account.
+    # No help/version fast path: normal classification owns these commands.
     ("dd --version", "mutating"),
     ("usermod --help", "destructive"),
     ("df /etc/passwd", "read_only"),                  # r2 FP: df reads fs, not the file
@@ -96,7 +87,7 @@ CLASSIFY_CASES = [
     ("echo hi > /tmp/x", "mutating"),
     # find -exec now classifies its INNER command with the same gate: a read-only inner
     # (grep/cat/ls) is allowed, a mutating/destructive inner is refused exactly as it would
-    # be standalone. This is the 2026-07-25 narrow relaxation (was a blanket -exec refusal).
+    # be standalone.
     ("find . -name *.log -exec grep ERROR {} +", "read_only"),       # read-only inner, `+` terminator
     (r"find /workspace -name '*.py' -exec grep -l CUDA {} \;", "read_only"),  # `\;` terminator (escaped, not a chain split)
     (r"find /etc -name '*.conf' -exec grep -l comfy {} ';'", "read_only"),    # quoted `;` terminator
@@ -222,10 +213,7 @@ CLASSIFY_CASES = [
     ("cat /proc/net/tcp | grep 'x", "mutating"),            # unbalanced single quote -> fail closed
     ("cat /proc/net/tcp | grep 'root' > /tmp/x", "mutating"),  # real-file redirect still banned
 
-    # === F8: mount/partition config reads for data-disk diagnosis now auto-run ===
-    # WHY: a live "买了数据盘 df 看不到" repro — the harness diagnosed it from lsblk+df, but
-    # `cat /proc/partitions` and `cat /etc/fstab` were refused. The raw block-device table and the
-    # mount config are exactly what confirms a raw+unmounted disk / a wrong fstab entry. Exact paths.
+    # Exact mount/partition configuration reads needed for data-disk diagnosis.
     ("cat /proc/partitions", "read_only"),
     ("cat /etc/fstab", "read_only"),
     ("cat /etc/mtab", "read_only"),
@@ -233,11 +221,7 @@ CLASSIFY_CASES = [
     ("cat /proc/partitions | grep vdb", "read_only"),          # piped to safe filter
     ("cat /etc/fstab | grep -v 'swap'", "read_only"),
 
-    # === F12: the LISTING forms of two writer binaries now auto-run ===
-    # WHY: a live OOM diagnosis on 2026-08-07 put `swapon --show` behind a human confirmation card
-    # with a countdown. Whether a box has swap and whether it is full is the FIRST fork in OOM
-    # triage, so the gate stood in front of the question the run existed to answer — for a command
-    # that opens no file and changes nothing. `mount` with no operands is the same shape: it lists.
+    # Listing forms of writer binaries auto-run; state-changing forms below still need approval.
     # Both binaries stay in _MUTATING_BINARIES; only these forms are carved out, before the set
     # test, the way the interpreter / curl / env carve-outs already work.
     ("swapon --show", "read_only"),
@@ -270,10 +254,7 @@ CLASSIFY_CASES = [
     ("cat /etc/ssh/sshd_config", "mutating"),
     ("cat /proc/kmsg", "mutating"),                            # not in exact set (a kmsg read can block)
 
-    # === F7: venv / site-packages introspection (content + metadata) now auto-runs ===
-    # WHY: a live CPU-only-torch repro — harness landed the right cause but couldn't CONFIRM it,
-    # every venv read refused (run python/pip stays mutating; ls/cat under /root denied by F4).
-    # site-packages holds dependency CODE (torch/version.py's `cuda=None` is the tell), not secrets.
+    # Venv/site-packages dependency introspection; secret-file rules still apply.
     ("cat /root/badenv/lib/python3.10/site-packages/torch/version.py", "read_only"),
     ("ls /root/badenv/lib/python3.10/site-packages/", "read_only"),
     ("ls /root/badenv/lib/python3.10/site-packages", "read_only"),      # no trailing slash
@@ -291,13 +272,12 @@ CLASSIFY_CASES = [
     ("ls /root", "mutating"),                                             # /root listing still denied
     # An interpreter under /root never got special treatment: `--version` on this very path
     # was already read_only. What made this refused was the payload, and `import torch` is
-    # now provably read-only (2026-07-26 AST rule below). Executing a RELATIVE path
+    # provably read-only by the AST rule below. Executing a relative path
     # (`./python …`) is still refused, which is the rule that guards unknown binaries.
-    # Re-baselined 2026-08-20: the interpreter path no longer defeats the existing AST proof.
     # This import is proven read-only; unsafe payloads below still card regardless of the path.
     ("/root/badenv/bin/python -c 'import torch'", "read_only"),
 
-    # === 2026-07-26: `python -c` is classified STRUCTURALLY (AST), not by literal match ===
+    # `python -c` is classified structurally by AST, not by literal match.
     # The previous rule allowed exactly seven torch payloads. It was sound but unusable:
     # reading a field out of a YAML/JSON config, or checking any library's version other than
     # torch's, was refused although plainly read-only — and every new probe needed a code
@@ -442,11 +422,7 @@ CLASSIFY_CASES = [
     ("frobnicate --all", "mutating"),
 
     # --- destructive -> hard refuse, checked FIRST ---
-    # `rm -rf /tmp/x` was pinned destructive here and is DELIBERATELY re-baselined to mutating on
-    # 2026-08-08: /tmp is scratch by definition, so the operator can judge the card without
-    # enumerating the directory. It is the same reasoning that already exempted `rm /tmp/scratch`
-    # from the unconditional-rm rule in 2026-07-30. The narrowing is scoped to regenerable trees
-    # (see _REGENERABLE_TREE) and is pinned in both directions under F13 below.
+    # Recursive deletion of a provably regenerable tree is confirmable, not auto-run.
     ("rm -rf /tmp/x", "mutating"),
     ("dd if=/dev/zero of=/dev/sda", "destructive"),
     ("mkfs.ext4 /dev/vdb", "destructive"),
@@ -456,7 +432,7 @@ CLASSIFY_CASES = [
     ("reboot -h", "destructive"),
     ("poweroff -h", "destructive"),
 
-    # --- F14: the deleted help/version fast-path (2026-08-16) ---
+    # The deleted help/version fast path must not return.
     # It sat at classify() step 0, ahead of the destructive scan AND the multi-line refusal,
     # so anything it accepted ran with no consent card in read-only mode as well as write
     # mode. These pin every shape that reopens if anyone adds one back.
@@ -545,13 +521,7 @@ CLASSIFY_CASES = [
     ("swapoff -a", "mutating"),
     ("install -m 440 /tmp/x /etc/sudoers.d/90-x", "mutating"),
 
-    # === 2026-07-30: the destructive tier is scanned PER COMMAND, not over the whole string ===
-    # Most destructive rules have the shape "write-verb ... sensitive-path". Scanned over the
-    # whole string they PAIRED ACROSS a `;`, so two commands that are each harmless were refused
-    # together. Measured on a live repair run: `chmod u+rx /root/models && ...` was hard-refused,
-    # and the model then reached the same end state with `install -d -m 755 /root/models`, which
-    # passed. For a CONSENT gate that is worse than not refusing at all — it teaches the model to
-    # respell rather than to stop and ask.
+    # The destructive tier scans each command separately so a verb and path cannot pair across `;`.
     #
     # (a) FIRST the pins — written before the change, and each destructive both before and after.
     #     Only the first TWO are load-bearing, and it is worth being exact about which: quote
@@ -582,12 +552,7 @@ CLASSIFY_CASES = [
     ("truncate -s 10G /workspace/big; echo -s 0", "destructive"),     # `-s 0` exemption borrowed
     ("cp /tmp/x /var/lib/mysql/ibdata1; ls /tmp", "destructive"),      # `$` destination anchor evaded
 
-    # --- F13 (2026-08-08): the kill that hid in a flag ------------------------------------------
-    # `fuser` was in NO set in this module and in none of the cases above, so every kill form
-    # classified read_only — executing with no consent card, and executing in READ-ONLY mode, under
-    # a card that says 只读排查. Measured 10/10 across wrappers and chains. `kill 6934` and
-    # `pkill -f x` were mutating the whole time, so the gate stood in front of the small kill and
-    # waved through `fuser -km /workspace`, which SIGKILLs every process on the filesystem.
+    # fuser kill flags mutate even though ordinary fuser probes are reads.
     ("fuser -k 8188/tcp", "mutating"),
     ("fuser -k /dev/nvidia0", "mutating"),
     ("fuser -k -9 /workspace", "mutating"),
@@ -657,7 +622,7 @@ CLASSIFY_CASES = [
     ("rm -rf /root/.cachexyz", "destructive"),             # `.cache` must be a whole component
     ("rm -rf /root/notcache", "destructive"),
 
-    # --- F15: executing a file by ABSOLUTE path (2026-08-16) ---
+    # Executing a file by absolute path.
     # ONE general rule: a program named by absolute path auto-runs as a read only from the four
     # system program directories. Everything else asks first, except path-qualified Python whose
     # payload independently passes the AST/module read-only proof pinned above.
@@ -717,9 +682,7 @@ CLASSIFY_CASES = [
 
 
 # =============================================================================
-# 2026-07-23 POLICY CHANGE (product owner's decision) — re-baseline, not a weakening.
-#
-# The lane moved from "curated read allowlist" to "deny by EFFECT": a command is
+# Read-by-effect policy: a command is
 # refused only if it writes, executes arbitrary code, leaves the box, or blocks
 # forever. Every command below is a READ, so it is now `read_only`.
 #
@@ -732,13 +695,11 @@ CLASSIFY_CASES = [
 # visible in the console, so they disclose nothing the requesting tenant cannot
 # already see. scrub_output still strips the literal SSH credential from output.
 #
-# The case INPUTS above are deliberately left byte-identical — the corpus still
-# exercises every one of these strings; only the expected tier moved, and it moved
-# HERE, in one auditable place. Reverting the policy = delete this set.
+# The case inputs remain byte-identical; this set records their explicit read-by-effect expectation.
 # Anything NOT listed here keeps its original locked expectation, so a genuine
 # regression (a write/exec/egress command sliding into read_only) still fails.
 # =============================================================================
-POLICY_RELAXED_TO_READ = {
+READ_BY_EFFECT_CASES = {
     # secret-bearing reads (operator's own box)
     "cat /var/log/cloud-init-output.log", "cat /var/log/auth.log",
     "strings /var/log/cloud-init.log", "cat /var/log/syslog",
@@ -777,14 +738,14 @@ POLICY_RELAXED_TO_READ = {
 def run_classify():
     misses = []
     for cmd, want in CLASSIFY_CASES:
-        if cmd in POLICY_RELAXED_TO_READ:
+        if cmd in READ_BY_EFFECT_CASES:
             want = "read_only"
         got = classify(cmd)
         if got != want:
             misses.append((cmd, want, got))
             print(f"XX  classify({cmd!r}) = {got}  (want {want})")
     print(f"classify: {len(CLASSIFY_CASES) - len(misses)}/{len(CLASSIFY_CASES)} passed"
-          f"  ({len(POLICY_RELAXED_TO_READ)} re-baselined by the 2026-07-23 policy change)")
+          f"  ({len(READ_BY_EFFECT_CASES)} explicit read-by-effect cases)")
     return misses
 
 

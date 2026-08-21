@@ -38,9 +38,9 @@ The old aggregate gates are not blocking gates:
 
 Those values remain useful diagnostics, but mixed FAQ sections can legitimately lower them.
 
-## Retrieval gate (post-hybrid)
+## Retrieval gate
 
-When `RAG_HYBRID_ENABLED=1` in production, the binding retrieval gate is hybrid Top-3:
+The offline hybrid Top-3 gate is:
 
 ```powershell
 python scripts/rag_w0/evaluate_retrieval.py `
@@ -53,11 +53,11 @@ python scripts/rag_w0/evaluate_retrieval.py `
   --env F:/compshare-agent/.env.local
 ```
 
-The gate is **`top_3_hit_rate >= 0.85`** on the frozen 377-Q golden — binary, no soft tolerance (memory `feedback_hard_contractual_gates_binary`). When `RAG_HYBRID_ENABLED` is unset the BM25 baseline remains diagnostic but is not blocking.
+The gate is **`top_3_hit_rate >= 0.85`** on the frozen 377-Q golden. The BM25 baseline remains diagnostic rather than blocking.
 
 ### Go-Python parity contract
 
-Under `--mode hybrid` the per-question Top-3 chunk_id sets from `scripts/rag_w0/evaluate_retrieval.py` and from `internal/knowledge/retriever_parity_test.go` (with the same embedding sidecar + query embedding cache) must match byte-for-byte on the same 377-Q. Drift here means the Go runtime and the Python eval pipeline have diverged and the gate above is unreliable.
+Under `--mode hybrid` the per-question Top-3 chunk_id sets from `scripts/rag_w0/evaluate_retrieval.py` and from `internal/knowledge/retriever_parity_test.go` (with the same embedding sidecar + query embedding cache) must match byte-for-byte on the same 377-Q. Drift means the two offline reference implementations disagree and the gate is unreliable.
 
 Reproduce locally:
 
