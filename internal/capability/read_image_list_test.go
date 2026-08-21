@@ -167,6 +167,15 @@ func TestImageListRender_PlatformFilterAndCleanDisplay(t *testing.T) {
 	noMatch := renderImageListReply(raw, "ImageSet", fieldOrder, "Debian 12", platform.ListModeFiltered)
 	assert.Contains(t, noMatch, "未找到匹配的镜像")
 
+	byID := renderImageListReply(raw, "ImageSet", fieldOrder, "img-2", platform.ListModeFiltered)
+	assert.Contains(t, byID, "PyTorch 2.1", "a create workflow's returned image id must support a follow-up lookup")
+	assert.NotContains(t, byID, "Ubuntu")
+	assert.NotContains(t, byID, "img-2", "matching by id must not leak the raw id into the clean display")
+	byIDEnvelope := buildImageListEnvelope(raw, "ImageSet", fieldOrder, "img-2", platform.ListModeFiltered,
+		"DescribeCompShareImages", "platform")
+	require.Len(t, byIDEnvelope.Subjects, 1)
+	assert.Equal(t, "image:img-2", byIDEnvelope.Subjects[0].ID)
+
 	all := renderImageListReply(raw, "ImageSet", fieldOrder, "", platform.ListModeAll)
 	assert.Contains(t, all, "名称=Ubuntu 22.04 LTS")
 	assert.Contains(t, all, "镜像类型=System")
