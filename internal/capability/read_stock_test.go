@@ -433,19 +433,96 @@ func TestStockHandle_MultipleNamedZonesAreExactAndNeverCrossZone(t *testing.T) {
 	assert.ElementsMatch(t, []string{"cn-bj2-03", "cn-wlcb-03"}, zonesCalled)
 }
 
-func TestStockHandle_UnresolvedNamedZoneFailsClosed(t *testing.T) {
-	exec := &mapReadExec{results: map[string]map[string]any{
+func unmatchedZoneStockExec() *mapReadExec {
+	return &mapReadExec{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{
 			map[string]any{"Name": "4090", "Zone": "cn-sh2-02", "Status": "Normal"},
 		}},
 		"DescribeCompShareSupportZone": stockSupportZonesFixture(),
 	}}
+}
 
-	result := runStock(t, exec, StockAvailabilityRequest{GPUType: "4090", ZoneMentions: []string{"华北九Z"}})
-	require.Equal(t, platform.ReadStatusConflict, result.Status)
+// TestStockHandle_UnmatchedZoneMentionHandsBackTheLiveCatalog pins the repair for
+// the dead end a 2026-08-17 turn hit. A customer asked about H20 in 华北2a; the
+// capability's own DescribeCompShareSupportZone call had already put
+// 华北二A / cn-wlcb-01 in a local variable; the answer was to ask the customer to
+// restate the zone, and no inventory query ran at all.
+//
+// The mechanism was the status, not the model. Zero matches were reported as
+// ReadConflict, which the engine renders as choose_alternative /
+// AMBIGUOUS_SELECTION / ask_user_to_choose — "several candidates, pick one" —
+// while attaching no candidates, so the one recovery the tool-result contract
+// offers the model did not exist. The catalog is the answer; it goes back with
+// the result instead.
+func TestStockHandle_UnmatchedZoneMentionHandsBackTheLiveCatalog(t *testing.T) {
+	exec := unmatchedZoneStockExec()
+
+	result := runStock(t, exec, StockAvailabilityRequest{GPUType: "4090", ZoneMentions: []string{"华北2a"}})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	require.False(t, result.NeedsClarification,
+		"零匹配不是歧义：没有候选可选时，把回合交回给用户就是死路")
+	assert.Contains(t, result.Reply, "「华北2a」", "the model must see which mention failed, verbatim")
+	assert.Contains(t, result.Reply, "本次未按可用区查询库存",
+		"the unanswered part of the question is a fact the model needs")
 	for _, call := range exec.calls {
 		assert.NotEqual(t, "CheckCompShareResourceCapacity", call.action,
-			"an unresolved requested zone must never degrade into an all-zone precheck")
+			"an unmatched requested zone must never degrade into an all-zone precheck")
+	}
+}
+
+// TestStockHandle_UnmatchedZoneMentionOffersEveryZoneTheCatalogReturned is the
+// invariant the bug broke: the candidate set the model can choose from must equal
+// the zone set the live call returned. The old code narrowed it to the empty set
+// while asking the model to choose. Any future narrowing — a cap, a "closest
+// match" filter, a same-region slice — rebuilds the same dead end, so the
+// expectation here is written out by hand from the fixture rather than derived
+// from the code under test.
+func TestStockHandle_UnmatchedZoneMentionOffersEveryZoneTheCatalogReturned(t *testing.T) {
+	result := runStock(t, unmatchedZoneStockExec(),
+		StockAvailabilityRequest{GPUType: "4090", ZoneMentions: []string{"华北2a"}})
+
+	wantZoneIDs := []string{"cn-wlcb-01", "cn-sh2-02", "cn-bj2-03", "cn-wlcb-03"}
+	wantNames := []string{"华北二A", "上海二B", "华北一C", "华北二C"}
+	for i, zoneID := range wantZoneIDs {
+		assert.Contains(t, result.Reply, zoneID, "candidate %s must be readable in the reply", zoneID)
+		assert.Contains(t, result.Reply, wantNames[i], "候选必须带用户看得懂的展示名，否则模型无从判断 华北2a 指哪个")
+	}
+
+	require.NotNil(t, result.Envelope, "the candidates must be grounded evidence, not free text")
+	gotZoneIDs := make([]string, 0, len(result.Envelope.Subjects))
+	for _, subject := range result.Envelope.Subjects {
+		gotZoneIDs = append(gotZoneIDs, subject.ID)
+	}
+	assert.ElementsMatch(t, wantZoneIDs, gotZoneIDs)
+	assert.Equal(t, "DescribeCompShareSupportZone", result.ToolAction,
+		"the candidates are attributed to the call that actually produced them")
+}
+
+// TestStockHandle_ZoneMentionNeverReportsNoMatchAsAmbiguity keeps the two outcomes
+// apart across the shapes real users type. Conflict promises the model a candidate
+// list; a mention that matched nothing has none to promise.
+func TestStockHandle_ZoneMentionNeverReportsNoMatchAsAmbiguity(t *testing.T) {
+	for _, mention := range []string{"华北2a", "华北九Z", "华北二", "wlcb", "北京"} {
+		t.Run(mention, func(t *testing.T) {
+			result := runStock(t, unmatchedZoneStockExec(),
+				StockAvailabilityRequest{GPUType: "4090", ZoneMentions: []string{mention}})
+			require.NotEqual(t, platform.ReadStatusConflict, result.Status)
+			require.False(t, result.NeedsClarification)
+		})
+	}
+}
+
+// TestStockZoneResolutionKeepsNoAliasTable is the other half: handing the catalog
+// back is what makes an alias table unnecessary, so the table must not creep in
+// beside it. "华北2a" resolving server-side would mean someone taught this layer
+// that 2 means 二 — the mapping the action resolver deleted on purpose.
+func TestStockZoneResolutionKeepsNoAliasTable(t *testing.T) {
+	supportZones := zones.ParseSupportZones(stockSupportZonesFixture())
+	for _, mention := range []string{"华北2a", "华北2A", "华北二区A", "wlcb-01"} {
+		_, unresolved := stockZoneFilterFromMentions([]string{mention}, supportZones)
+		assert.Equal(t, []string{mention}, unresolved,
+			"%s must stay unresolved: 语义判断归 Agent，这一层只归一化格式", mention)
 	}
 }
 
