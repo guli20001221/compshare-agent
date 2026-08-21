@@ -38,7 +38,7 @@ func NewSSHOpsAuditStore(db *sql.DB) *SSHOpsAuditStore { return &SSHOpsAuditStor
 //
 // The reason it exists at all is that the failure it catches is silent, late, and lands on the wrong
 // side of the safety boundary. Begin names only the 0011 columns, so against a database missing 0013
-// or 0014 the fail-closed record is written, the harness RUNS — and under allow_writes it can change
+// or 0014 the fail-closed record is written, the harness RUNS — and it can change
 // the instance — and only then does Finish's single UPDATE error on the missing column. That loses
 // the disposition, the error class and the counts in one go and orphans the row at 'started': the
 // exact state the detached-context Finish exists to prevent, reached by a different route. A deploy

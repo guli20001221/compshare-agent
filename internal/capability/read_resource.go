@@ -112,9 +112,8 @@ func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime
 	}
 	// Display truncation only when the caller did not pin a specific id set
 	// ("list my instances" / "list before a write op"); explicit ids are never
-	// truncated. Multi-turn instance selection is populated by the engine from the
-	// raw DescribeCompShareInstance observation, not from this read result, so the
-	// response no longer carries a selection-candidate copy.
+	// truncated. The typed Observe effect below carries exactly these displayed
+	// rows to the engine for ordinal selection; hidden/truncated rows never enter it.
 	if len(ids) == 0 {
 		truncated, shown, isTruncated := readprojection.TruncateInstancesForDisplay(instances, 0)
 		instances = truncated
@@ -141,10 +140,14 @@ func resourceRender(resp ResourceInfoResponse) ReadResult {
 // existence evidence. resource_info is the ONLY read that emits it: its subjects
 // come from the upstream response, not a pre-query snapshot.
 func resourceObserve(resp ResourceInfoResponse) []ReadEffect {
-	if len(resp.VerifiedInstanceIDs) == 0 {
-		return nil
+	var effects []ReadEffect
+	if len(resp.VerifiedInstanceIDs) > 0 {
+		effects = append(effects, RememberVerifiedInstances{IDs: append([]string(nil), resp.VerifiedInstanceIDs...)})
 	}
-	return []ReadEffect{RememberVerifiedInstances{IDs: append([]string(nil), resp.VerifiedInstanceIDs...)}}
+	if len(resp.Instances) > 1 {
+		effects = append(effects, RememberDisplayedInstances{Instances: append([]entity.InstanceSnapshot(nil), resp.Instances...)})
+	}
+	return effects
 }
 
 // filterInstancesByRequestedID keeps only instances whose UHostId is one of the

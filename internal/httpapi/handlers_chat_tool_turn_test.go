@@ -24,8 +24,8 @@ func (m *toolTurnLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatRes
 				ID:   "call-1",
 				Type: openai.ToolTypeFunction,
 				Function: openai.FunctionCall{
-					Name:      "DescribeCompShareInstance",
-					Arguments: `{"Limit":100}`,
+					Name:      "ReadCapability_resource_info",
+					Arguments: `{}`,
 				},
 			}},
 			Usage: llm.TokenUsage{PromptTokens: 1, CompletionTokens: 1, TotalTokens: 2},

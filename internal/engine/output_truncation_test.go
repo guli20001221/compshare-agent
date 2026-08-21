@@ -42,7 +42,7 @@ func TestLengthStoppedToolCallIsNeverExecuted(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{
 			StopReason: "length",
-			ToolCalls:  []openai.ToolCall{toolCall("partial-tool", "DescribeCompShareInstance", `{}`)},
+			ToolCalls:  []openai.ToolCall{toolCall("partial-tool", "ReadCapability_resource_info", `{}`)},
 		},
 		{Content: "我需要先重新确认后再继续。"},
 	}}

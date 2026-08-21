@@ -9,7 +9,6 @@ import (
 
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
-	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
 )
@@ -97,9 +96,6 @@ func TestInstanceOps_PerCommandRefusalNamesTheActualCause(t *testing.T) {
 		{"cancelled", observability.ConfirmationReasonBrokerCancelled, "确认请求已取消", "未批准"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			defer tools.SetInstanceOpsWritesEnabled(tools.InstanceOpsWritesEnabled())
-			tools.SetInstanceOpsWritesEnabled(true)
-
 			runner := &confirmingInstanceOpsRunner{command: "systemctl restart comfyui"}
 			model := &mockLLM{responses: []llm.ChatResponse{
 				{ToolCalls: []openai.ToolCall{toolCall("t1", "DiagnoseInstanceInternals",
@@ -145,9 +141,6 @@ func TestInstanceOps_PerCommandRefusalNamesTheActualCause(t *testing.T) {
 // approve path too, so a bug that mixed the two up would show here rather than as a write that
 // quietly did not happen.
 func TestInstanceOps_ApprovedWriteStillRuns(t *testing.T) {
-	defer tools.SetInstanceOpsWritesEnabled(tools.InstanceOpsWritesEnabled())
-	tools.SetInstanceOpsWritesEnabled(true)
-
 	runner := &confirmingInstanceOpsRunner{command: "systemctl restart comfyui"}
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("t1", "DiagnoseInstanceInternals",

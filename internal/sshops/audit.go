@@ -7,7 +7,7 @@ import (
 
 // AuditEvent is one consented SSH-ops attempt. It NEVER carries the credential — only the tenant
 // identity, the target instance, the task text, and the outcome. The persisted row is the
-// fail-closed record that a human-consented, read-only in-instance access happened.
+// fail-closed record that an authorized in-instance repair session happened.
 type AuditEvent struct {
 	RequestUUID string
 	// TurnID is the server-side turn identity; TaskHash is the sha256 of the raw task text.
@@ -20,7 +20,7 @@ type AuditEvent struct {
 	OrganizationID    uint32
 	InstanceID        string
 	Task              string
-	Phase             string // "read_only" in Phase 1
+	Phase             string // currently "read_write"; retained for audit-schema compatibility
 	// ContextSchemaVersion and ContextFactCoverage are aggregate observability
 	// only. Begin records the requested context; Finish retains them only after
 	// the harness confirms it constructed a model prompt containing that context. Neither stores

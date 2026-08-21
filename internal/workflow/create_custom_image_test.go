@@ -45,10 +45,13 @@ func customImageContainerInstanceResult(state string) map[string]any {
 
 func customImageMockExecutor() *mockExecutor {
 	return &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance":        customImageInstanceResult("Stopped"),
-		"DescribeCompShareSupportZone":     customImageSupportZoneResult(),
-		"CreateCompShareCustomImage":       {"CompShareImageId": "cimg-custom-001"},
-		"GetCompShareImageCreateProgress":  {"Process": float64(65.5), "TotalDuration": float64(300), "RemainingDuration": float64(105)},
+		"DescribeCompShareInstance":       customImageInstanceResult("Stopped"),
+		"DescribeCompShareSupportZone":    customImageSupportZoneResult(),
+		"CreateCompShareCustomImage":      {"CompShareImageId": "cimg-custom-001"},
+		"GetCompShareImageCreateProgress": {"Process": float64(65.5), "TotalDuration": float64(300), "RemainingDuration": float64(105)},
+		"DescribeCompShareCustomImages": {"ImageSet": []any{map[string]any{
+			"CompShareImageId": "cimg-custom-001", "Status": "Making",
+		}}},
 		"TerminateCompShareCustomImage":    {"RetCode": 0},
 		"PublishCompShareCustomImage":      {"RetCode": 0},
 		"ModifyCompShareImageShareAccount": {"RetCode": 0},
@@ -241,6 +244,33 @@ func TestCreateCustomImage_RunningVMCreatesWithoutStopping(t *testing.T) {
 	_, created := findExecutorCall(executor.calls, "CreateCompShareCustomImage")
 	require.True(t, created, "image creation must proceed from a running VM")
 	assert.Len(t, executor.calls, 4, "query instance + query zone + create + optional progress")
+}
+
+func TestCreateCustomImage_RunningPodReadsBackCatalogStatusInsteadOfCallingVMProgress(t *testing.T) {
+	executor := customImageMockExecutor()
+	executor.results["DescribeCompShareInstance"] = customImageContainerInstanceResult("Running")
+	executor.results["DescribeCompShareSupportZone"] = map[string]any{"ZoneInfo": []any{map[string]any{
+		"Zone": "cn-pod-01", "Region": "cn-pod",
+		"ZoneId": float64(8300), "RegionId": float64(1000010),
+	}}}
+	eng := NewEngine(executor, func(string, map[string]any) bool { return true }, nil)
+
+	result, err := eng.Run(context.Background(), CreateCustomImageDef(), map[string]any{
+		"UHostId": "cpod-src",
+		"Name":    "snapshot-v1",
+	})
+
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.NotNil(t, result.Data)
+	assert.Equal(t, "cimg-custom-001", result.Data["CompShareImageId"])
+	assert.Equal(t, "Making", result.Data["Status"])
+	_, vmProgressCalled := findExecutorCall(executor.calls, "GetCompShareImageCreateProgress")
+	assert.False(t, vmProgressCalled, "the VM progress endpoint rejects UHub-backed Pod images")
+	readback, ok := findExecutorCall(executor.calls, "DescribeCompShareCustomImages")
+	require.True(t, ok)
+	assert.Equal(t, "cimg-custom-001", readback.args["CompShareImageId"])
+	assert.Equal(t, 1, readback.args["Limit"])
 }
 
 func TestCreateCustomImage_MissingSourceZoneRegionStopsBeforeConfirmation(t *testing.T) {

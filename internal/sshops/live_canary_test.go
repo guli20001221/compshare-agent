@@ -109,14 +109,11 @@ func TestLiveCreateOpsCanary(t *testing.T) {
 
 // TestLiveOpsWriteCanary runs the real write-authorized lane but approves exactly one caller-named
 // operation. It exists for reversible, dedicated-test-instance fault injection and recovery; an
-// unexpected model proposal is denied. The three independent switches make it impossible for the
+// unexpected model proposal is denied. The explicit test switch plus exact command match make it impossible for the
 // ordinary live suite to mutate a box accidentally.
 func TestLiveOpsWriteCanary(t *testing.T) {
 	if os.Getenv("SSHH_WRITE_CANARY") != "1" {
 		t.Skip("set SSHH_WRITE_CANARY=1 and run this exact test")
-	}
-	if os.Getenv("SSHH_ALLOW_WRITES") != "1" {
-		t.Fatal("SSHH_ALLOW_WRITES=1 is also required")
 	}
 	instanceID := os.Getenv("SSHH_INSTANCE")
 	task := os.Getenv("SSHH_TASK")
@@ -138,9 +135,6 @@ func TestLiveOpsWriteCanary(t *testing.T) {
 	describer, ctx := liveRealDescriber(t)
 	audit := &MemAuditWriter{}
 	supervisor := liveSupervisor()
-	if !supervisor.AllowWrites {
-		t.Fatal("live supervisor did not enter write mode")
-	}
 	approved := 0
 	result, err := NewService(supervisor, audit).DiagnoseWithContext(
 		ctx, describer,

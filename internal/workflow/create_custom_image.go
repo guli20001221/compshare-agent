@@ -163,14 +163,29 @@ func stepCreateCustomImage() Step {
 
 func stepGetCustomImageCreateProgress() Step {
 	return Step{
-		Name:     "查询镜像制作进度",
-		Type:     StepToolCall,
-		Tool:     "GetCompShareImageCreateProgress",
+		Name: "查询镜像制作状态",
+		Type: StepToolCall,
+		ToolFunc: func(wfCtx *Context) string {
+			// Pod custom images are backed by UHub.  Although the platform routes
+			// GetCompShareImageCreateProgress through the shared image handler, that
+			// handler explicitly rejects UHub-backed images.  Read the just-created
+			// catalog row instead; VM images keep the percentage-progress API.
+			if isPodInstanceResult(wfCtx.Result("查询源实例")) {
+				return "DescribeCompShareCustomImages"
+			}
+			return "GetCompShareImageCreateProgress"
+		},
 		Optional: true,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			imageID := customImageID(wfCtx.Result("创建自制镜像"))
 			if imageID == "" {
-				return nil, fmt.Errorf("CompShareImageId is empty; skip progress query")
+				return nil, fmt.Errorf("CompShareImageId is empty; skip creation-status query")
+			}
+			if isPodInstanceResult(wfCtx.Result("查询源实例")) {
+				return map[string]any{
+					"CompShareImageId": imageID,
+					"Limit":            1,
+				}, nil
 			}
 			return addCustomImagePlacementArgs(map[string]any{
 				"CompShareImageId": imageID,
@@ -185,13 +200,36 @@ func customImageResultData(wfCtx *Context) map[string]any {
 	if imageID != "" {
 		out["CompShareImageId"] = imageID
 	}
-	if progress := wfCtx.Result("查询镜像制作进度"); len(progress) > 0 {
-		out["Progress"] = progress
+	if readback := wfCtx.Result("查询镜像制作状态"); len(readback) > 0 {
+		if isPodInstanceResult(wfCtx.Result("查询源实例")) {
+			if status := customImageCatalogStatus(readback, imageID); status != "" {
+				out["Status"] = status
+			}
+		} else {
+			out["Progress"] = readback
+		}
 	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+func customImageCatalogStatus(result map[string]any, imageID string) string {
+	rows, _ := result["ImageSet"].([]any)
+	for _, raw := range rows {
+		row, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		id, _ := row["CompShareImageId"].(string)
+		if id != imageID {
+			continue
+		}
+		status, _ := row["Status"].(string)
+		return status
+	}
+	return ""
 }
 
 func customImageID(result map[string]any) string {

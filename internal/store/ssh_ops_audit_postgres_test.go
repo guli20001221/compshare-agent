@@ -180,7 +180,7 @@ func TestSSHOpsAuditStore_NoStepsStoresNullNotEmptyArray(t *testing.T) {
 // probe prevents, against a real un-migrated database rather than a description of one.
 //
 // The dangerous property is that Begin names only 0011 columns: on a database missing 0013 or 0014
-// the fail-closed record is written and the harness runs — with allow_writes it can change the
+// the fail-closed record is written and the harness runs — it can change the
 // instance — and only Finish fails, taking the disposition, err_class and counts with it and leaving
 // the row at 'started'. The probe is what turns that into a boot error.
 func TestSSHOpsAuditSchemaProbeStopsTheLaneBeforeAnUnrecordableRun(t *testing.T) {

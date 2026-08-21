@@ -165,6 +165,23 @@ func imageQueryMatchFields(fieldOrder []string) []string {
 	return out
 }
 
+// primaryImageQueryMatchFields includes the stable image id in addition to
+// human names. The primary query is copied from the user's request, so an id
+// returned by a just-completed create workflow must be usable for a follow-up
+// status lookup. Semantic expansion deliberately keeps using
+// imageQueryMatchFields above: generated purpose words should never match an
+// opaque id by accident.
+func primaryImageQueryMatchFields(fieldOrder []string) []string {
+	out := imageQueryMatchFields(fieldOrder)
+	for _, f := range fieldOrder {
+		if f == "CompShareImageId" {
+			out = append(out, f)
+			break
+		}
+	}
+	return out
+}
+
 // filterImageSetByAnyQuery keeps every row matching AT LEAST ONE query. Union,
 // never intersection: an expansion may only add candidates, so a bad expansion
 // term costs nothing and cannot hide the images the user's own words found.
@@ -403,14 +420,10 @@ func renderImageListReply(raw map[string]any, listKey string, fieldOrder []strin
 		return noImageListReply
 	}
 	query := imageFilterQuery(searchQuery, mode)
-	// Match keywords against name-like fields only (not status/id/type).
-	matchFields := []string{}
-	for _, f := range fieldOrder {
-		switch f {
-		case "Name", "ImageName", "CompShareImageName", "Author":
-			matchFields = append(matchFields, f)
-		}
-	}
+	// Match the user's primary query against names or the stable image id. Status
+	// and type remain non-search fields: asking for "Available" must not dump the
+	// entire usable catalog.
+	matchFields := primaryImageQueryMatchFields(fieldOrder)
 
 	filtered := make([]map[string]any, 0, len(items))
 	for _, item := range items {
@@ -482,13 +495,7 @@ func formatImageDisplayLine(entry map[string]any, fieldOrder []string) string {
 func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []string, searchQuery string, mode platform.ListMode, action string, category string) envelope.Envelope {
 	items := mapSliceAt(raw, listKey)
 	query := imageFilterQuery(searchQuery, mode)
-	matchFields := []string{}
-	for _, f := range fieldOrder {
-		switch f {
-		case "Name", "ImageName", "CompShareImageName", "Author":
-			matchFields = append(matchFields, f)
-		}
-	}
+	matchFields := primaryImageQueryMatchFields(fieldOrder)
 	filtered := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		entry, ok := item.(map[string]any)

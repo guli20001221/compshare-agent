@@ -11,9 +11,9 @@ import (
 
 type BuildOptions struct {
 	MutatingToolsEnabled bool
-	// InstanceOpsWritesEnabled independently authorizes confirmation-gated
-	// changes inside one instance; it does not enable platform mutations.
-	InstanceOpsWritesEnabled bool
+	// InstanceOpsEnabled advertises the independently confirmation-gated repair
+	// lane inside one instance; it does not enable platform mutations.
+	InstanceOpsEnabled bool
 	// FeishuConsoleHandoff is a response-only contract for the public Feishu
 	// adapter. It does not add tools or change user authorization.
 	FeishuConsoleHandoff bool
@@ -74,11 +74,11 @@ func BuildSystemWithOptionsAndTrace(userContext string, opts BuildOptions) (stri
 	sections := []PromptSection{{ID: "identity", Text: segmentIdentity}}
 	if !opts.MutatingToolsEnabled {
 		boundary := segmentReadOnlyBoundary
-		if opts.InstanceOpsWritesEnabled {
+		if opts.InstanceOpsEnabled {
 			boundary = segmentReadOnlyBoundaryWithInstanceRepair
 		}
 		sections = append(sections, PromptSection{ID: "readonly_boundary", Text: boundary})
-	} else if opts.InstanceOpsWritesEnabled {
+	} else if opts.InstanceOpsEnabled {
 		// No read-only boundary exists in this mode, so the repair lane needs its
 		// own concise prompt section.
 		sections = append(sections, PromptSection{ID: "instance_repair_lane", Text: segmentInstanceRepairLane})

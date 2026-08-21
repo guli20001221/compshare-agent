@@ -105,7 +105,7 @@ func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
 	responses[1] = plannerEcho("vllm 显存不足")
 	for i := 2; i <= maxReActRounds; i++ {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
-			toolCall("tc", "DescribeCompShareInstance", `{}`),
+			toolCall("tc", "ReadCapability_resource_info", `{}`),
 		}}
 	}
 	// Index maxReActRounds is consumed by the one-call grounded recovery, NOT
@@ -134,7 +134,7 @@ func TestChat_RoundCeiling_DoesNotGuessFromInstanceKeywords(t *testing.T) {
 	responses := make([]llm.ChatResponse, maxReActRounds)
 	for i := range responses {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
-			toolCall(fmt.Sprintf("list-%d", i), "DescribeCompShareInstance", `{}`),
+			toolCall(fmt.Sprintf("list-%d", i), "ReadCapability_resource_info", `{}`),
 		}}
 	}
 	target := map[string]any{
@@ -178,7 +178,7 @@ func TestChat_RoundCeiling_DoesNotClassifyPunctuationFollowup(t *testing.T) {
 	responses := make([]llm.ChatResponse, maxReActRounds)
 	for i := range responses {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
-			toolCall(fmt.Sprintf("list-%d", i), "DescribeCompShareInstance", `{}`),
+			toolCall(fmt.Sprintf("list-%d", i), "ReadCapability_resource_info", `{}`),
 		}}
 	}
 	describe := map[string]any{"UHostSet": []any{
@@ -205,7 +205,7 @@ func TestChat_RoundCeiling_DoesNotParseTargetFromFreeText(t *testing.T) {
 	responses := make([]llm.ChatResponse, maxReActRounds)
 	for i := range responses {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
-			toolCall(fmt.Sprintf("list-%d", i), "DescribeCompShareInstance", `{}`),
+			toolCall(fmt.Sprintf("list-%d", i), "ReadCapability_resource_info", `{}`),
 		}}
 	}
 	describe := map[string]any{"UHostSet": []any{

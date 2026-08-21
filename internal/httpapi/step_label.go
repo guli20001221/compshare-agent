@@ -3,7 +3,6 @@ package httpapi
 import (
 	"strings"
 
-	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
 )
 
@@ -78,11 +77,13 @@ var stepActionLabels = map[string]string{
 
 	// --- internal/tools: standalone consts, outside the Registry list -------
 	// The lane's own card says 实例内排查与修复 (it authorizes entering the box). This one authorizes
-	// ONE change and is shown with the literal command, so it must not reuse that label — a user who
+	// ONE command and is shown with the literal command, so it must not reuse that label — a user who
 	// sees the same words twice cannot tell which question they just answered.
 	// The same gate now covers literal shell commands and hash-bound structured file/job operations.
-	// "操作" is the honest common label; the card summary still shows the exact effect being approved.
-	"InstanceOpsWriteCommand": "执行实例内修复操作",
+	// The classifier can also route an unproven-but-read-only shell shape here. Calling every such
+	// request a "repair" is observably false and makes the user believe a read will change the box.
+	// The exact command/effect in the card remains the authority; this label states only what is known.
+	"InstanceOpsWriteCommand": "确认执行实例内命令",
 
 	// --- internal/engine: not a tool at all -------------------------------
 	// The deterministic notice a turn emits when the PREVIOUS diagnosis ended without a verdict.
@@ -100,7 +101,7 @@ func stepActionLabel(action string) string {
 	// version of this comment claimed it was the card, and that mistake is why the
 	// card kept saying 只读 in write mode for a while: fixing this one read as
 	// having fixed both. The card is serverOwnedConfirmLabel below.
-	if action == "DiagnoseInstanceInternals" && tools.InstanceOpsWritesEnabled() {
+	if action == "DiagnoseInstanceInternals" {
 		return "实例内排查与修复"
 	}
 	if label := workflow.StepLabel(action); label != "" {
@@ -127,10 +128,7 @@ func stepActionLabel(action string) string {
 func serverOwnedConfirmLabel(action string) string {
 	switch action {
 	case "DiagnoseInstanceInternals":
-		if tools.InstanceOpsWritesEnabled() {
-			return "进入实例排查与修复"
-		}
-		return "进入实例只读排查"
+		return "进入实例排查与修复"
 	case "InstanceOpsWriteCommand":
 		// Same string the step stream uses, from the same map, so the card the user
 		// approves and the line they then watch scroll cannot drift apart.

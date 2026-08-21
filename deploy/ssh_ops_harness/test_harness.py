@@ -219,7 +219,7 @@ finally:
     harness.shutil.which = _real_which
 
 
-# --- Phase-1 dispatch: read_only runs, mutating/destructive are refused WITHOUT touching SSH ---
+# --- No confirmation channel: proven reads run; mutations/destructive actions stay refused ------
 calls = []
 
 
@@ -252,7 +252,7 @@ check("output-credential-scrubbed", "Pl4inPwd77x" not in r_ro["text"])   # box e
 check("audit-count", len(harness.AUDIT) == 3)
 check("audit-dispositions",
       [e["disposition"] for e in harness.AUDIT]
-      == ["refused_destructive", "refused_mutating_phase1", "ran_read_only"])
+      == ["refused_destructive", "refused_not_approved", "ran_read_only"])
 check("audit-no-credential", all("Pl4inPwd77x" not in str(e) for e in harness.AUDIT))
 
 
@@ -517,13 +517,6 @@ try:
 except SystemExit:
     check("inv9-accepts-good", False)
 
-good_write = opts(harness.ALLOWED_TOOLS_WRITE, harness.DISALLOWED_TOOLS, [])
-try:
-    harness.assert_tool_surface(good_write, allow_writes=True)
-    check("inv9-accepts-write-surface", True)
-except SystemExit:
-    check("inv9-accepts-write-surface", False)
-
 for name, bad in [
     ("inv9-rejects-extra-allowed", opts(harness.ALLOWED_TOOLS + ["Bash"], harness.DISALLOWED_TOOLS, [])),
     ("inv9-rejects-missing-disallowed", opts(harness.ALLOWED_TOOLS, ["Read"], [])),
@@ -563,17 +556,6 @@ for name, bad in [
     except SystemExit:
         check(name, True)
 
-for name, candidate, mode in [
-    ("inv9-read-mode-rejects-file-writer", good_write, False),
-    ("inv9-write-mode-requires-file-writer", good, True),
-]:
-    try:
-        harness.assert_tool_surface(candidate, allow_writes=mode)
-        check(name, False)
-    except SystemExit:
-        check(name, True)
-
-
 # The working root must be EMPTY and reachable-CLAUDE.md-free: the CLI walks up from cwd, so a root
 # inside the repo would inject this project's architecture doc — and one under $HOME the operator's
 # personal one — into an agent whose verdict is shown to the customer. Nothing is staged into it any
@@ -590,11 +572,10 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
     _real_opts = None
     try:
         harness.resolve_claude_cli = lambda: "stub-claude"
-        _real_opts = harness.build_options(object(), "test-model", 5, False)  # SystemExit on INV-9 drift
+        _real_opts = harness.build_options(object(), "test-model", 5)  # SystemExit on INV-9 drift
         check("inv9-real-build-options-passes", True)
-        _real_write_opts = harness.build_options(object(), "test-model", 5, True)
-        check("inv9-real-write-build-options-passes",
-              list(_real_write_opts.allowed_tools) == harness.ALLOWED_TOOLS_WRITE)
+        check("inv9-real-options-use-the-single-repair-surface",
+              list(_real_opts.allowed_tools) == harness.ALLOWED_TOOLS)
     except SystemExit as exc:
         print(f"XX  inv9-real-build-options-passes: {exc}")
         FAILS.append("inv9-real-build-options-passes")
@@ -872,12 +853,12 @@ def _fake_server(**kwargs):
 _fake_sdk.tool = _fake_tool
 _fake_sdk.create_sdk_mcp_server = _fake_server
 _saved_sdk = sys.modules.get("claude_agent_sdk")
-_saved_stdin, _saved_conn, _saved_allow = sys.stdin, harness._CONN, harness._ALLOW_WRITES
+_saved_stdin, _saved_conn = sys.stdin, harness._CONN
 _saved_targets, _saved_preflight = harness._ENDPOINT_TARGETS, harness.preflight_probe
 _saved_stage, _saved_options = harness.stage_clean_workdir, harness.build_options
 try:
     sys.modules["claude_agent_sdk"] = _fake_sdk
-    harness.stage_clean_workdir = lambda _allow_writes: None
+    harness.stage_clean_workdir = lambda: None
     harness.preflight_probe = lambda _conn: None
     harness.build_options = lambda *_args, **_kwargs: object()
     sys.stdin = _io.StringIO(_json.dumps({
@@ -890,12 +871,12 @@ try:
     _main_output = _capture(lambda: _asyncio.run(harness.main()))
     sys.stdin = _io.StringIO(_json.dumps({
         "host": "10.0.0.9", "user": "root", "port": 22, "password": "context-test-password",
-        "task": "修复配置", "context": _reference_context, "allow_writes": True,
+        "task": "修复配置", "context": _reference_context, "allow_writes": False,
     }) + "\n")
     _main_write_output = _capture(lambda: _asyncio.run(harness.main()))
 finally:
     sys.stdin = _saved_stdin
-    harness._CONN, harness._ALLOW_WRITES = _saved_conn, _saved_allow
+    harness._CONN = _saved_conn
     harness._ENDPOINT_TARGETS = _saved_targets
     harness.preflight_probe, harness.stage_clean_workdir, harness.build_options = _saved_preflight, _saved_stage, _saved_options
     if _saved_sdk is None:
@@ -909,13 +890,14 @@ check("context-main-passes-labelled-prompt-to-sdk",
 check("context-main-receipt-matches-sdk-prompt",
       '"context_applied": true' in _main_output.replace('"context_applied":true', '"context_applied": true'))
 check("context-main-verdict-still-emits", "mocked contextual diagnosis" in _main_output)
-_read_tools = _captured_sdk_servers[0]["tools"]
-_write_tools = _captured_sdk_servers[1]["tools"]
-check("main-registers-exact-read-tool-surface",
-      [tool._test_tool_name for tool in _read_tools] == [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
-check("main-registers-exact-write-tool-surface",
-      [tool._test_tool_name for tool in _write_tools] == [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS_WRITE])
-_endpoint_tool = next(tool for tool in _read_tools if tool._test_tool_name == "endpoint_probe")
+_first_tools = _captured_sdk_servers[0]["tools"]
+_legacy_flag_tools = _captured_sdk_servers[1]["tools"]
+check("main-registers-exact-single-repair-tool-surface",
+      [tool._test_tool_name for tool in _first_tools] == [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
+check("removed-mode-flag-cannot-change-the-tool-surface",
+      [tool._test_tool_name for tool in _legacy_flag_tools] ==
+      [tool._test_tool_name for tool in _first_tools])
+_endpoint_tool = next(tool for tool in _first_tools if tool._test_tool_name == "endpoint_probe")
 _endpoint_contract = _json.dumps({"description": _endpoint_tool._test_tool_description,
                                   "schema": _endpoint_tool._test_tool_schema})
 check("endpoint-tool-exposes-only-opaque-target-id",
@@ -937,11 +919,11 @@ async def _exploding_query(prompt, options):
 
 
 _fake_sdk.query = _exploding_query
-_saved_stdin, _saved_conn, _saved_allow, _saved_preflight = sys.stdin, harness._CONN, harness._ALLOW_WRITES, harness.preflight_probe
+_saved_stdin, _saved_conn, _saved_preflight = sys.stdin, harness._CONN, harness.preflight_probe
 _saved_stage, _saved_options = harness.stage_clean_workdir, harness.build_options
 try:
     sys.modules["claude_agent_sdk"] = _fake_sdk
-    harness.stage_clean_workdir = lambda _allow_writes: None
+    harness.stage_clean_workdir = lambda: None
     harness.preflight_probe = lambda _conn: None
     harness.build_options = lambda *_args, **_kwargs: object()
     sys.stdin = _io.StringIO(_json.dumps({
@@ -951,7 +933,7 @@ try:
     _failed_output = _capture(lambda: _asyncio.run(harness.main()))
 finally:
     sys.stdin = _saved_stdin
-    harness._CONN, harness._ALLOW_WRITES = _saved_conn, _saved_allow
+    harness._CONN = _saved_conn
     harness.preflight_probe, harness.stage_clean_workdir, harness.build_options = _saved_preflight, _saved_stage, _saved_options
     _fake_sdk.query = _fake_query
     if _saved_sdk is None:
@@ -991,11 +973,11 @@ async def _auth_failure_query(prompt, options):
 
 
 _fake_sdk.query = _auth_failure_query
-_saved_stdin, _saved_conn, _saved_allow, _saved_preflight = sys.stdin, harness._CONN, harness._ALLOW_WRITES, harness.preflight_probe
+_saved_stdin, _saved_conn, _saved_preflight = sys.stdin, harness._CONN, harness.preflight_probe
 _saved_stage, _saved_options = harness.stage_clean_workdir, harness.build_options
 try:
     sys.modules["claude_agent_sdk"] = _fake_sdk
-    harness.stage_clean_workdir = lambda _allow_writes: None
+    harness.stage_clean_workdir = lambda: None
     harness.preflight_probe = lambda _conn: None
     harness.build_options = lambda *_args, **_kwargs: object()
     sys.stdin = _io.StringIO(_json.dumps({
@@ -1005,7 +987,7 @@ try:
     _auth_failed_output = _capture(lambda: _asyncio.run(harness.main()))
 finally:
     sys.stdin = _saved_stdin
-    harness._CONN, harness._ALLOW_WRITES = _saved_conn, _saved_allow
+    harness._CONN = _saved_conn
     harness.preflight_probe, harness.stage_clean_workdir, harness.build_options = _saved_preflight, _saved_stage, _saved_options
     _fake_sdk.query = _fake_query
     if _saved_sdk is None:
@@ -1076,7 +1058,7 @@ check("proto-step-fields-present",
       all(set(o) == {"command", "tier", "disposition", "reason", "exit", "bytes"} for o in _pobjs))
 # ...and it must be the specific value, or the server is back to guessing.
 check("proto-step-reason-is-the-specific-disposition",
-      [o.get("reason") for o in _pobjs][:2] == ["refused_destructive", "refused_mutating_phase1"])
+      [o.get("reason") for o in _pobjs][:2] == ["refused_destructive", "refused_not_approved"])
 
 # INV-6: the box echoed the credential and a marker; NEITHER may appear in an @@STEP line.
 check("proto-inv6-no-output-in-step",

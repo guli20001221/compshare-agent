@@ -1,5 +1,5 @@
-"""Production harness wrapper — Claude Agent SDK sub-agent on a THIRD-PARTY model doing CONSENTED,
-read-only SSH diagnostics on ONE GPU instance, behind the reasoning-blind guardrails.
+"""Production harness wrapper — Claude Agent SDK sub-agent on a THIRD-PARTY model doing CONSENTED
+SSH diagnosis and confirmation-gated repair on ONE GPU instance, behind reasoning-blind guardrails.
 
 Spawned per consented ops-task by the Go server. Boundary contract:
   - The SSH credential arrives ONCE over a stdin handshake (a single JSON line) into a module
@@ -9,11 +9,9 @@ Spawned per consented ops-task by the Go server. Boundary contract:
     and never names a credential.
   - Built-in tools (Bash/Read/Write/...) are stripped so only reviewed in-process operations tools
     exist, asserted by INV-9. Without this the harness's built-in Bash runs on the LOCAL host.
-  - READ-ONLY by default: mutating commands are refused unless the handshake carries allow_writes
-    (agent.ssh_ops.allow_writes, default off). Destructive commands are refused in BOTH modes, and
-    so is command substitution / multi-line input — that shape gate is the injection firewall, not
-    part of the read-only policy, because classify() only ever sees the literal command string.
-    Box output is capped + secret-scrubbed (incl. the literal credential) in both modes.
+  - Commands proven read-only run immediately; every other reversible guest-local effect requires
+    approval of that exact command. Irrecoverable and tenant/control-plane boundary violations,
+    command substitution, and multi-line input are refused. Box output is capped and secret-scrubbed.
 
 The pure logic (handshake, classify-dispatch, scrub, INV-9 check) is SDK-independent and unit-tested
 offline; the SDK wiring (the ssh_exec MCP tool + the agent loop) is in main(), behind a guarded import.
@@ -35,10 +33,6 @@ import ssh_transport
 _CONN = None          # {"host","user","port","password"|"key"}  (+ optional "instance_id","model")
 _ENDPOINT_TARGETS = {}  # opaque id -> private server-selected HTTP/TCP target; never rendered
 AUDIT = []            # per-command: {command, tier, executed, exit_code, disposition}
-# Whether the `mutating` tier may execute. Arrives on the handshake (agent.ssh_ops.allow_writes),
-# defaults False, and is set ONCE in main() before the agent loop starts. It never widens the
-# destructive tier and never relaxes the shape gate — see run_command.
-_ALLOW_WRITES = False
 # Monotonic id for confirm requests. The reply must carry the SAME id: a decision that arrived
 # for an earlier command must never approve the one currently pending, so the match is explicit
 # rather than "whatever line showed up next".
@@ -57,8 +51,6 @@ _MAX_CONFIRMABLE_COMMAND = 2000
 ALLOWED_TOOLS = [
     "mcp__ssh_ops__ssh_exec", "mcp__ssh_ops__endpoint_probe",
     "mcp__ssh_ops__poll_background_job",
-]
-ALLOWED_TOOLS_WRITE = ALLOWED_TOOLS + [
     "mcp__ssh_ops__atomic_text_replace", "mcp__ssh_ops__start_background_job",
 ]
 DISALLOWED_TOOLS = [
@@ -104,16 +96,7 @@ or arbitrary network access.
 If the tool rejects only the command form, rewrite it into a supported plain command. Never rephrase
 a command to bypass a policy refusal or a decision the user did not approve."""
 
-_SYSTEM_PROMPT_READ_ONLY_MODE = """## Authorization: diagnosis only
-Use only commands the executor accepts as read-only. Do not change the instance. When the root cause
-is established, describe the smallest evidence-backed repair and its verification as not executed.
-
-## Final response
-Reply concisely in Chinese. Start with `已定位` or `未定位` plus a one-sentence conclusion. Add
-only the evidence needed to support uncertainty, then give the smallest next step. Clearly state
-that any proposed repair was not executed."""
-
-_SYSTEM_PROMPT_WRITE_MODE = """## Authorization: diagnose, repair, verify
+_SYSTEM_PROMPT_REPAIR_MODE = """## Authorization: diagnose, repair, verify
 The user has authorized the repair workflow. Read-only operations run immediately; each state-changing
 command or structured operation still requires approval of that exact effect. Diagnose first, then send the smallest
 evidence-backed repair through the tool instead of stopping at a recommendation. Approval covers that
@@ -147,50 +130,30 @@ without a post-change observation tied to the original success criterion."""
 # This agent has a different identity, surface and permission model from the Claude Code coding
 # assistant, so the Agent SDK's custom-prompt path is intentional. Keep diagnosis policy here and
 # transport mechanics in the tool descriptions; classifier/shape rules remain executable code.
-SYSTEM_PROMPT = _SYSTEM_PROMPT_CORE + "\n\n" + _SYSTEM_PROMPT_READ_ONLY_MODE
-SYSTEM_PROMPT_WRITE = _SYSTEM_PROMPT_CORE + "\n\n" + _SYSTEM_PROMPT_WRITE_MODE
+SYSTEM_PROMPT = _SYSTEM_PROMPT_CORE + "\n\n" + _SYSTEM_PROMPT_REPAIR_MODE
 
-TOOL_DESC = """Execute one bounded diagnostic command string on the target instance over SSH and
-return its output and exit status. Use this whenever an answer depends on current guest state; each
-call is a fresh, non-interactive SSH session, so working directory and environment changes do not
-carry into the next call. The policy executes only effects it can prove read-only and refuses state
-changes, destructive operations, command substitution, and multi-line input; supported read-only
-pipes or chains and direct probes through the application's actual interpreter are allowed when the
-classifier can prove them safe. Commands are stopped after 25 seconds, so keep observations targeted
-and bounded. For a managed workload, verify controller ownership with its process or endpoint; a
-surviving listener or transitional controller state alone is not a healthy service contract."""
+TOOL_DESC = """Run one command on the target instance over SSH. Only positively proven read-only calls run
+immediately; unknown effects require exact approval. Output includes the exit status. For an evidence-backed
+state-changing repair, send the smallest concrete command; it runs only after the user approves that exact
+command. Stay within the diagnosed fault: replacing or re-downloading an application, moving its directory
+aside, or disabling an unrelated service needs a separate user decision unless the task requests it. Observe
+enough pre-state to verify or undo the change and prefer a backup. Reversible guest changes go to exact
+approval. Only irreversible data, boot, or recovery loss; control-plane crossings; reboot/power-off;
+account/password changes; disabling SSH/networking; command substitution; and multi-line input are refused.
+Supported pipes, chains, globs, redirection, and read-only probes through the application's actual
+interpreter are accepted. Rewrite only command-form rejections; do not route around policy or approval.
 
-TOOL_DESC_WRITE = """Execute one command on the target instance over SSH. Read-only calls run
-immediately. For an evidence-backed state-changing repair, send the smallest concrete command; it
-runs only after the user approves that exact command. Stay within the diagnosed fault; replacing
-or re-downloading an application, moving its directory aside, or disabling an unrelated service needs
-a separate user decision unless the task requests it. Observe enough pre-state to
-verify or undo the change and prefer a backup. Reversible guest changes go to exact approval; irreversible
-data/boot/recovery loss, control-plane crossings, reboot/power-off, account/password changes, disabling
-SSH/networking, command substitution, and multi-line input are refused. The classifier accepts supported
-pipes, chains, globs, redirection, and read-only probes through the application's actual interpreter.
-Rewrite only command-form rejections; do not route around policy or approval.
+Each call is a fresh, non-interactive SSH session stopped after 25 seconds. Use structured background-job
+tools for installs, downloads, compilation, or other long work; do not hand-roll detachment or resend an
+unchanged timed-out foreground command.
 
-Each shell call is a fresh, non-interactive SSH session and is stopped after 25 seconds. Use the
-structured background-job tools for package installation, downloads, compilation, or anything else
-that cannot finish within that bound; do not hand-roll detachment or resend a timed-out foreground command.
-
-For an image- or platform-managed service, use its existing supervisor, service unit, entrypoint, or
-launcher rather than starting an inner binary or synthesizing a replacement. Do not invent a
-platform-facing port, path, root, authentication mode, or substitute service when that contract is
-absent. Before starting it, reconcile any surviving child outside that ownership. Bounded-poll
-transitional manager states to a terminal result. Verify the full service contract owned by the launcher;
-guest-local success alone does not establish an external route. Restarting the instance is unavailable through this tool; if it is
-required, stop and ask whether the user wants the instance restarted instead of seeking a guest-shell
-workaround."""
-
-
-def tool_description(allow_writes: bool) -> str:
-    return TOOL_DESC_WRITE if allow_writes else TOOL_DESC
-
-
-def system_prompt(allow_writes: bool) -> str:
-    return SYSTEM_PROMPT_WRITE if allow_writes else SYSTEM_PROMPT
+For an image- or platform-managed service, use its existing supervisor, service unit, entrypoint, or launcher
+rather than starting an inner binary or synthesizing a replacement. Never invent a platform-facing port, path, root,
+authentication mode, or substitute service. Before starting it, reconcile any surviving child outside that
+ownership. Bounded-poll transitional manager states to a terminal result. Verify the full service contract owned
+by the launcher; guest-local success does not establish an external route. Restarting the instance is unavailable
+through this tool. If required, stop and ask whether the user wants the instance restarted rather than seeking a
+guest-shell workaround."""
 
 
 def read_handshake(line: str) -> dict:
@@ -418,12 +381,9 @@ def render_prompt(task, reference_context):
 
 
 def set_conn(conn: dict) -> None:
-    """Latch BOTH the connection and the write gate. They are set together, from the same handshake,
-    exactly once — so there is no window where a command could be classified against one gate and
-    executed under another, and no code path that turns writes on later."""
-    global _CONN, _ALLOW_WRITES, _ENDPOINT_TARGETS
+    """Latch the connection and private endpoint targets from the one-shot handshake."""
+    global _CONN, _ENDPOINT_TARGETS
     _CONN = conn
-    _ALLOW_WRITES = bool(conn.get("allow_writes"))
     _ENDPOINT_TARGETS = endpoint_probe.normalize_targets(conn.get("endpoint_targets"))
 
 
@@ -656,12 +616,7 @@ def run_command(command: str) -> dict:
                                  "multi-line scripts. Resend as separate plain commands:\n  "
                                  f"{command}"),
                         "is_error": True, "tier": tier, "executed": False}
-            if not _ALLOW_WRITES:
-                entry["disposition"] = "refused_mutating_phase1"
-                return {"text": ("⛔ NOT EXECUTED — this changes the box and Phase-1 SSH ops are "
-                                 f"read-only. Report it as an OPTIONAL fix for the user:\n  {command}"),
-                        "is_error": True, "tier": tier, "executed": False}
-            # Authorized by config; now authorized by a human, per command. The lane-level card
+            # The lane-level card
             # the user clicked to let us in never names what will change, so it cannot be the
             # consent for a specific write. The human must judge the effect of each exact command.
             # A command the card cannot carry in full is refused, not trimmed to fit. The card is
@@ -850,11 +805,7 @@ def preflight_probe(conn):
 TOOLS_BASE = []
 
 
-def allowed_tools(allow_writes: bool):
-    return ALLOWED_TOOLS_WRITE if allow_writes else ALLOWED_TOOLS
-
-
-def assert_tool_surface(opts, allow_writes: bool = False) -> None:
+def assert_tool_surface(opts) -> None:
     """INV-9: fail CLOSED unless only the reviewed MCP tools exist and no built-in exists.
     A built-in Bash/Read here would run on the LOCAL control-plane host and bypass the SSH guardrails
     entirely (the spike's #1 safety bug).
@@ -890,7 +841,7 @@ def assert_tool_surface(opts, allow_writes: bool = False) -> None:
             f"INV-9: tools must be exactly {TOOLS_BASE} — no built-in may EXIST "
             f"(allowed_tools grants auto-approval, not existence), got {tools!r}")
     allowed = list(getattr(opts, "allowed_tools", None) or [])
-    expected_allowed = allowed_tools(allow_writes)
+    expected_allowed = ALLOWED_TOOLS
     if allowed != expected_allowed:
         raise SystemExit(f"INV-9: allowed_tools must be exactly {expected_allowed}, got {allowed}")
     disallowed = set(getattr(opts, "disallowed_tools", None) or [])
@@ -971,7 +922,7 @@ def _stage_candidates(tmp: str, home: str, tree: str):
     return preferred + last_resort
 
 
-def stage_clean_workdir(allow_writes: bool = False) -> str:
+def stage_clean_workdir() -> str:
     """Create an EMPTY working root with NO discoverable CLAUDE.md above it, chdir there, return it.
 
     It no longer stages anything — the bundled skills are gone — but the chdir is not optional and
@@ -990,8 +941,6 @@ def stage_clean_workdir(allow_writes: bool = False) -> str:
     checks remain, but only to order the candidates (see _stage_candidates, which is also what
     guarantees there IS a next one when TEMP itself is the poisoned directory).
 
-    allow_writes is kept in the signature (unused) because the caller passes the mode and a future
-    per-mode staging decision belongs here, not at the call site.
     """
     home = os.path.expanduser("~")
     # The deployed tree, not just this directory: production runs the harness out of
@@ -1061,13 +1010,13 @@ def resolve_claude_cli() -> str:
     return _native_windows_cli(cli)
 
 
-def build_options(server, model, max_turns=DEFAULT_MAX_TURNS, allow_writes=False):
+def build_options(server, model, max_turns=DEFAULT_MAX_TURNS):
     from claude_agent_sdk import ClaudeAgentOptions
     opts = ClaudeAgentOptions(
         tools=list(TOOLS_BASE),                          # INV-9: no built-in exists (no Skill/Bash/Read/Write)
-        system_prompt=system_prompt(allow_writes),
+        system_prompt=SYSTEM_PROMPT,
         mcp_servers={"ssh_ops": server},
-        allowed_tools=list(allowed_tools(allow_writes)),
+        allowed_tools=list(ALLOWED_TOOLS),
         disallowed_tools=list(DISALLOWED_TOOLS),
         setting_sources=[],                              # load NO filesystem settings; see assert_tool_surface
         skills=[],                                       # explicit skills-OFF; None would keep CLI defaults
@@ -1075,7 +1024,7 @@ def build_options(server, model, max_turns=DEFAULT_MAX_TURNS, allow_writes=False
         model=model,
         cli_path=resolve_claude_cli(),                    # never silently use the SDK's older bundled CLI
     )
-    assert_tool_surface(opts, allow_writes)               # fail closed before any turn runs
+    assert_tool_surface(opts)                             # fail closed before any turn runs
     return opts
 
 
@@ -1099,14 +1048,14 @@ async def main():
     set_conn(read_handshake(raw))
 
     # Must run BEFORE the SDK spawns the CLI: it chdirs to the empty root the CLI would otherwise
-    # scan upward from. set_conn() above has already latched _ALLOW_WRITES.
-    stage_clean_workdir(_ALLOW_WRITES)
+    # scan upward from.
+    stage_clean_workdir()
 
     # The task rides the stdin handshake, NOT argv — argv is visible to `ps` on the host, and the task
     # is free-form operator/model text that must stay off the process table (INV-3/4).
     task = (_CONN.get("task") or "").strip() or (
         "对这台 GPU 实例做一次健康巡检：确认 GPU 型号/驱动/显存占用、磁盘使用、内存、系统负载，"
-        "判断是否健康并指出任何异常。" + ("先诊断出根因，再修复并验证。" if _ALLOW_WRITES else ""))
+        "判断是否健康并指出任何异常。先诊断出根因，再修复并验证。")
     reference_context = prepare_reference_context(_CONN.get("context"))
     prompt = render_prepared_prompt(task, reference_context)
 
@@ -1117,10 +1066,10 @@ async def main():
     if reason is not None:
         # The audit has to be able to tell this apart from a diagnosis that ran; see @@OUTCOME.
         _emit_outcome("preflight_failed", _PREFLIGHT_ERR_CLASS, context_applied=False)
-        _emit_verdict(f"⚠ {'实例内排查' if _ALLOW_WRITES else '只读诊断'}未能开始：{reason}")
+        _emit_verdict(f"⚠ 实例内排查未能开始：{reason}")
         return
 
-    @tool("ssh_exec", tool_description(_ALLOW_WRITES), {"command": str})
+    @tool("ssh_exec", TOOL_DESC, {"command": str})
     async def ssh_exec(args):
         r = run_command(args.get("command") or "")
         return {"content": [{"type": "text", "text": r["text"]}],
@@ -1154,80 +1103,79 @@ async def main():
                 **({"is_error": True} if not result.get("ok") else {})}
 
     sdk_tools = [ssh_exec, probe_endpoint, poll_background_job]
-    if _ALLOW_WRITES:
-        @tool("atomic_text_replace", atomic_file.TOOL_DESCRIPTION, atomic_file.input_schema(),
-              annotations=ToolAnnotations(title="Atomically edit one text file", readOnlyHint=False,
-                                          destructiveHint=True, idempotentHint=False, openWorldHint=True))
-        async def atomic_text_replace(args):
-            plan = await asyncio.to_thread(atomic_file.prepare_replace, _CONN, args)
-            if not plan.get("ok"):
-                rendered = json.dumps(plan, ensure_ascii=False, separators=(",", ":"))
-                display = "atomic_text_replace path=" + str(plan.get("path") or "invalid")[:512]
-                _record_structured_step(display, "mutating", "refused_precondition",
-                                        len(rendered.encode("utf-8")))
-                return {"content": [{"type": "text", "text": rendered}], "structuredContent": plan,
-                        "is_error": True}
-            display = atomic_file.confirmation_display(plan)
-            approved, refusal = _request_confirm(display)
-            if not approved:
-                _record_structured_step(display, "mutating", refusal)
-                text = _confirmation_refusal_text(refusal, display)
-                return {"content": [{"type": "text", "text": text}], "is_error": True}
-            result = await asyncio.to_thread(atomic_file.apply_replace, _CONN, plan)
+
+    @tool("atomic_text_replace", atomic_file.TOOL_DESCRIPTION, atomic_file.input_schema(),
+          annotations=ToolAnnotations(title="Atomically edit one text file", readOnlyHint=False,
+                                      destructiveHint=True, idempotentHint=False, openWorldHint=True))
+    async def atomic_text_replace(args):
+        plan = await asyncio.to_thread(atomic_file.prepare_replace, _CONN, args)
+        if not plan.get("ok"):
+            rendered = json.dumps(plan, ensure_ascii=False, separators=(",", ":"))
+            display = "atomic_text_replace path=" + str(plan.get("path") or "invalid")[:512]
+            _record_structured_step(display, "mutating", "refused_precondition",
+                                    len(rendered.encode("utf-8")))
+            return {"content": [{"type": "text", "text": rendered}], "structuredContent": plan,
+                    "is_error": True}
+        display = atomic_file.confirmation_display(plan)
+        approved, refusal = _request_confirm(display)
+        if not approved:
+            _record_structured_step(display, "mutating", refusal)
+            text = _confirmation_refusal_text(refusal, display)
+            return {"content": [{"type": "text", "text": text}], "is_error": True}
+        result = await asyncio.to_thread(atomic_file.apply_replace, _CONN, plan)
+        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        # A failed rollback is still an executed mutation and must be reported as one. Every
+        # clean failure/precondition refusal remains failed/refused rather than overstating it.
+        disposition = "ran_mutating" if result.get("ok") or result.get("box_may_be_changed") else "atomic_file_failed"
+        _record_structured_step(display, "mutating", disposition, len(rendered.encode("utf-8")))
+        return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
+                **({"is_error": True} if not result.get("ok") else {})}
+
+    sdk_tools.append(atomic_text_replace)
+
+    @tool("start_background_job", remote_job.START_DESCRIPTION, remote_job.start_schema(),
+          annotations=ToolAnnotations(title="Start a remote background job", readOnlyHint=False,
+                                      destructiveHint=True, idempotentHint=False, openWorldHint=True))
+    async def start_background_job(args):
+        command = str(args.get("command") or "").strip()
+        purpose = " ".join(str(args.get("purpose") or "").split())[:200]
+        display = remote_job.confirmation_display(command, purpose)
+        tier = guardrails.classify(command)
+        refusal = ""
+        message = ""
+        if not command or len(command) > 1500 or not purpose:
+            refusal, message = "refused_precondition", "invalid or oversized background-job request"
+        elif remote_job.command_is_self_backgrounding(command):
+            refusal, message = "refused_form", (
+                "the job payload must stay in the foreground; the job tool owns detachment")
+        elif tier == "destructive":
+            refusal, message = "refused_destructive", "destructive commands are unavailable"
+        elif guardrails.is_unmanaged_platform_service_launch(command):
+            refusal, message = "refused_unmanaged_platform_service", (
+                "a standalone process cannot substitute for the platform-managed entry")
+        elif guardrails.is_form_violation(command) or "\n" in command:
+            refusal, message = "refused_form", "command form rejected"
+        elif len(display) > _MAX_CONFIRMABLE_COMMAND:
+            refusal, message = "refused_unconfirmable", "operation is too long for an exact approval card"
+        if refusal:
+            _record_structured_step(display[:_MAX_CONFIRMABLE_COMMAND], "mutating", refusal)
+            result = {"ok": False, "error_class": refusal, "message": message}
             rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-            # A failed rollback is still an executed mutation and must be reported as one. Every
-            # clean failure/precondition refusal remains failed/refused rather than overstating it.
-            disposition = "ran_mutating" if result.get("ok") or result.get("box_may_be_changed") else "atomic_file_failed"
-            _record_structured_step(display, "mutating", disposition, len(rendered.encode("utf-8")))
             return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
-                    **({"is_error": True} if not result.get("ok") else {})}
+                    "is_error": True}
+        approved, refusal = _request_confirm(display)
+        if not approved:
+            _record_structured_step(display, "mutating", refusal)
+            text = _confirmation_refusal_text(refusal, display)
+            return {"content": [{"type": "text", "text": text}], "is_error": True}
+        result = await asyncio.to_thread(remote_job.start, _CONN, command, purpose, _secrets())
+        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        disposition = "ran_mutating" if result.get("ok") or result.get("box_may_be_changed") else "remote_job_failed"
+        _record_structured_step(display, "mutating", disposition, len(rendered.encode("utf-8")))
+        return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
+                **({"is_error": True} if not result.get("ok") else {})}
 
-        sdk_tools.append(atomic_text_replace)
-
-        @tool("start_background_job", remote_job.START_DESCRIPTION, remote_job.start_schema(),
-              annotations=ToolAnnotations(title="Start a remote background job", readOnlyHint=False,
-                                          destructiveHint=True, idempotentHint=False, openWorldHint=True))
-        async def start_background_job(args):
-            command = str(args.get("command") or "").strip()
-            purpose = " ".join(str(args.get("purpose") or "").split())[:200]
-            display = remote_job.confirmation_display(command, purpose)
-            tier = guardrails.classify(command)
-            refusal = ""
-            message = ""
-            if not command or len(command) > 1500 or not purpose:
-                refusal, message = "refused_precondition", "invalid or oversized background-job request"
-            elif remote_job.command_is_self_backgrounding(command):
-                refusal, message = "refused_form", (
-                    "the job payload must stay in the foreground; the job tool owns detachment")
-            elif tier == "destructive":
-                refusal, message = "refused_destructive", "destructive commands are unavailable"
-            elif guardrails.is_unmanaged_platform_service_launch(command):
-                refusal, message = "refused_unmanaged_platform_service", (
-                    "a standalone process cannot substitute for the platform-managed entry")
-            elif guardrails.is_form_violation(command) or "\n" in command:
-                refusal, message = "refused_form", "command form rejected"
-            elif len(display) > _MAX_CONFIRMABLE_COMMAND:
-                refusal, message = "refused_unconfirmable", "operation is too long for an exact approval card"
-            if refusal:
-                _record_structured_step(display[:_MAX_CONFIRMABLE_COMMAND], "mutating", refusal)
-                result = {"ok": False, "error_class": refusal, "message": message}
-                rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-                return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
-                        "is_error": True}
-            approved, refusal = _request_confirm(display)
-            if not approved:
-                _record_structured_step(display, "mutating", refusal)
-                text = _confirmation_refusal_text(refusal, display)
-                return {"content": [{"type": "text", "text": text}], "is_error": True}
-            result = await asyncio.to_thread(
-                remote_job.start, _CONN, command, purpose, _secrets())
-            rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-            disposition = "ran_mutating" if result.get("ok") or result.get("box_may_be_changed") else "remote_job_failed"
-            _record_structured_step(display, "mutating", disposition, len(rendered.encode("utf-8")))
-            return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
-                    **({"is_error": True} if not result.get("ok") else {})}
-
-        sdk_tools.append(start_background_job)
+    sdk_tools.append(start_background_job)
 
     server = create_sdk_mcp_server(
         name="ssh-ops", version="2.0.0", tools=sdk_tools)
@@ -1235,7 +1183,7 @@ async def main():
         turns = int(_CONN.get("max_turns") or DEFAULT_MAX_TURNS)
     except (TypeError, ValueError):
         turns = DEFAULT_MAX_TURNS
-    options = build_options(server, _CONN.get("model", "gpt-5.6-terra"), turns, _ALLOW_WRITES)
+    options = build_options(server, _CONN.get("model", "gpt-5.6-terra"), turns)
 
     # The activity stream is the @@STEP lines emitted from run_command as each command settles. The
     # model's mid-loop reasoning TextBlocks are NOT commands and are NOT scrubbed, so they are dropped;
@@ -1259,8 +1207,8 @@ async def main():
             # finished audit row claiming context_applied=true for a model that never ran. Unsent = false,
             # which is the honest direction. A SystemMessage(init) deliberately does NOT count: it means
             # the CLI started, which is exactly the state an auth failure also reaches. The value itself
-            # still says whether the bounded, validated context is in the prompt supplied to the SDK, so
-            # a prompt-size fallback (prepare_reference_context -> None) is still false.
+            # still says whether the bounded, validated context is in the SDK prompt, so a prompt-size
+            # fallback (prepare_reference_context -> None) remains false.
             if not context_receipt_sent and _model_turn_began(msg, kind):
                 _emit_outcome("", "", context_applied=reference_context is not None)
                 context_receipt_sent = True

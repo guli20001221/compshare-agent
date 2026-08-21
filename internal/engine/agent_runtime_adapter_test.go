@@ -12,7 +12,7 @@ import (
 
 func TestChatRunsThroughAgentRuntimeLifecycle(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{toolCall("tc1", "DescribeCompShareInstance", `{}`)}},
+		{ToolCalls: []openai.ToolCall{toolCall("tc1", "ReadCapability_resource_info", `{}`)}},
 		{Content: "4090 有 24GB 显存"},
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
@@ -26,7 +26,7 @@ func TestChatRunsThroughAgentRuntimeLifecycle(t *testing.T) {
 	require.Equal(t, []agentruntime.Event{
 		{Type: agentruntime.EventRoundStarted, Round: 0},
 		{Type: agentruntime.EventModelStep, Round: 0, ToolCallCount: 1},
-		{Type: agentruntime.EventObservation, Round: 0, Action: "DescribeCompShareInstance"},
+		{Type: agentruntime.EventObservation, Round: 0, Action: "ReadCapability_resource_info"},
 		{Type: agentruntime.EventRoundStarted, Round: 1},
 		{Type: agentruntime.EventModelStep, Round: 1, HasFinalText: true},
 		{Type: agentruntime.EventFinished, Round: 1, FinishReason: agentruntime.FinishFinalAnswer},
@@ -37,7 +37,7 @@ func TestChatRoundCeilingIsReportedByAgentRuntime(t *testing.T) {
 	responses := make([]llm.ChatResponse, maxReActRounds)
 	for i := range responses {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
-			toolCall("tc", "DescribeCompShareInstance", `{}`),
+			toolCall("tc", "ReadCapability_resource_info", `{}`),
 		}}
 	}
 	eng := NewWithDeps(&mockLLM{responses: responses}, &mockExecutor{}, nil)

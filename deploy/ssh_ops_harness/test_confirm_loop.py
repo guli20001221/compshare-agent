@@ -29,9 +29,8 @@ ssh_transport.run_ssh = lambda conn, cmd, secrets=None: {
     "exit_code": 0, "stdout": "fake", "stderr": "", "truncated": False}
 
 
-def dispatch(command, allow_writes=True, **kw):
-    harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw",
-                      "allow_writes": allow_writes})
+def dispatch(command, **kw):
+    harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw"})
     del harness.AUDIT[:]
     with confirm_stub.approving(**kw) as io_obj:
         res = harness.run_command(command)
@@ -148,18 +147,8 @@ res, entry, io_obj = dispatch(DESTRUCTIVE)
 check("destructive-refused", entry["disposition"] == "refused_destructive")
 check("destructive-never-asks", len(io_obj.requests) == 0)
 
-# --- read-only mode does not ask either ---------------------------------------------------------
-# With writes off the answer is already no; asking would be theatre.
-res, entry, io_obj = dispatch(WRITE, allow_writes=False)
-check("readonly-refuses-without-asking",
-      entry["disposition"] == "refused_mutating_phase1" and len(io_obj.requests) == 0)
-# The person on the other end of this lane is the customer who owns the instance, not an operator
-# of ours. The write-mode prompts are pinned in test_write_mode.py; this is the read-only path's
-# one model-visible sentence, which was left behind when the rest was renamed.
-check("readonly-refusal-names-the-user", "for the user" in res["text"] and "operator" not in res["text"])
-
 # --- ids are per-request, so a reply cannot be replayed onto the next command --------------------
-harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw", "allow_writes": True})
+harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw"})
 with confirm_stub.approving() as io_obj:
     harness.run_command(WRITE)
     harness.run_command("chmod 644 /tmp/f")

@@ -25,9 +25,8 @@ func TestProdOverlayEnablesTheInternalIPv6Route(t *testing.T) {
 	}
 	// Inheritance must still hold, or "only network overrides live here" has quietly stopped
 	// being true and the overlay is dropping product settings from the baseline.
-	if !prod.Agent.SSHOps.AllowWrites || prod.Agent.SSHOps.HarnessPath == "" {
-		t.Errorf("the overlay must inherit the baseline's ssh_ops settings, got allow_writes=%v harness_path=%q",
-			prod.Agent.SSHOps.AllowWrites, prod.Agent.SSHOps.HarnessPath)
+	if prod.Agent.SSHOps.HarnessPath == "" {
+		t.Error("the overlay must inherit the baseline's ssh_ops harness path")
 	}
 }
 

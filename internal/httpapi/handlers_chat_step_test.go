@@ -36,7 +36,7 @@ func TestDispatchChat_EmitsStepEvents(t *testing.T) {
 	assert.True(t, sink.has("step"), "expected at least one step event")
 	assert.Contains(t, body, `"Type":"tool_call"`)
 	assert.Contains(t, body, `"Type":"tool_result"`)
-	assert.Contains(t, body, `"Action":"DescribeCompShareInstance"`)
+	assert.Contains(t, body, `"Action":"ReadCapability_resource_info"`)
 
 	// Args must NOT leak into step events (they contain API parameters).
 	assert.NotContains(t, body, `"Limit"`)
@@ -140,6 +140,7 @@ func TestDispatchChatTraceRecordsToolCall(t *testing.T) {
 
 	require.Len(t, traceWriter.records, 1)
 	trace := traceWriter.records[0]
-	require.Len(t, trace.ToolCalls, 1)
-	assert.Equal(t, "DescribeCompShareInstance", trace.ToolCalls[0].Action)
+	require.Len(t, trace.ToolCalls, 2)
+	assert.Equal(t, "ReadCapability_resource_info", trace.ToolCalls[0].Action)
+	assert.Equal(t, "DescribeCompShareInstance", trace.ToolCalls[1].Action)
 }

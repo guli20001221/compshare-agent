@@ -190,12 +190,6 @@ func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback, apiKeyFallback st
 			return nil, fmt.Errorf("agent.ssh_ops.public_ipv6_prefix %q is not an IPv6 address", prefix)
 		}
 	}
-	// Freeze the wording gate here rather than at each call site: this function is the one place
-	// that has both the config and the knowledge that the lane is actually being built, and it runs
-	// once per process before any session exists. Setting it unconditionally (not only when true)
-	// matters — repeated server construction in one test process must not inherit an earlier
-	// mode and quietly describe the wrong product.
-	tools.SetInstanceOpsWritesEnabled(sc.AllowWrites)
 	sup := sshops.Supervisor{
 		Python:      sc.Python,
 		HarnessPath: sc.HarnessPath,
@@ -203,18 +197,12 @@ func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback, apiKeyFallback st
 		APIKey:      apiKey,
 		Model:       model,
 		Timeout:     sc.Timeout,
-		AllowWrites: sc.AllowWrites,
 	}
-	// Both halves come from the same config field on purpose. AllowWrites on the Supervisor is what
-	// actually authorizes the harness; WithWrites only labels the audit. Wiring them from one source
-	// is what keeps "what the row says we entered under" and "what the harness was allowed to do"
-	// from drifting apart.
 	// PublicIPv6Prefix rides along here rather than at the call sites for the same reason: it is
 	// an addressing decision that belongs to the deployment, and threading it separately would let
 	// one entrypoint wire the resolver while another forgot the prefix, producing two lanes that
 	// dial differently on the same host.
 	base := []sshops.ServiceOption{
-		sshops.WithWrites(sc.AllowWrites),
 		sshops.WithPublicIPv6Prefix(sc.PublicIPv6Prefix),
 	}
 	return sshops.NewService(sup, audit, append(base, opts...)...), nil
@@ -279,14 +267,10 @@ func serverInstanceOpsRunner(cfg *config.Config, describer sshops.Describer, db 
 		return nil, fmt.Errorf("ssh-ops: %w", err)
 	}
 	limiter := governance.NewInMemoryRateLimiter(cfg.Agent.RateLimit.Limits())
-	mode := "read-only diagnosis"
-	if cfg.Agent.SSHOps.AllowWrites {
-		mode = "diagnosis WITH REPAIR (allow_writes=true; destructive commands still refused)"
-	}
 	route := "public address from SshLoginCommand"
 	if hostResolver != nil {
 		route = "internal IPv6 via " + cfg.Agent.STS.IAMURL
 	}
-	log.Printf("ssh-ops enabled: consent-gated in-instance %s (per-tenant STS, fail-closed audit, dialling the %s; a client disconnect ends the run and the user retries)", mode, route)
+	log.Printf("ssh-ops enabled: consent-gated in-instance diagnosis with per-command repair confirmation (per-tenant STS, fail-closed audit, dialling the %s; a client disconnect ends the run and the user retries)", route)
 	return newInstanceOpsRunner(svc, describer, limiter), nil
 }

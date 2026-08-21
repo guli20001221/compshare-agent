@@ -1031,7 +1031,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateCustomImageWorkflow",
-			Description: "从实例发起自制镜像制作。仅在用户已明确实例和镜像名称时调用；缺任一项先追问。展示确认卡，确认后发起制作；成功仅表示已开始，初始状态为 Making，变为 Available 后才可用于创建、共享或克隆。不会关闭源实例；不用于社区发布或跨可用区克隆。普通虚机可运行或关机，容器来源必须运行。",
+			Description: "从实例发起自制镜像制作。需要源实例和用户指定的镜像名称；未知字段留空，绝不能编造名称。展示确认卡，确认后发起制作；成功仅表示已开始，初始状态为 Making，变为 Available 后才可用于创建、共享或克隆。不会关闭源实例；不用于社区发布或跨可用区克隆。普通虚机可运行或关机，容器来源必须运行。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1041,7 +1041,7 @@ var Registry = []openai.Tool{
 					},
 					"Name": map[string]any{
 						"type":        "string",
-						"description": "要创建的自制镜像名称。用户没给名称时，应先追问名称，不要编造。",
+						"description": "要创建的自制镜像名称。用户未提供时留空，不要编造。",
 					},
 					"Description": map[string]any{
 						"type":        "string",
@@ -1056,7 +1056,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CloneCustomImageWorkflow",
-			Description: "将当前账号已有且可用的自制镜像克隆到另一个可用区的候选请求。只适用于自制镜像；从实例制作新镜像或复制平台、社区、共享镜像不使用。",
+			Description: "将当前账号已有且可用的自制镜像克隆到另一个可用区的候选请求。源镜像、目标可用区或新名称未知时留空，绝不能编造；服务端会返回缺失字段或候选。只适用于自制镜像；从实例制作新镜像或复制平台、社区、共享镜像不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1070,7 +1070,7 @@ var Registry = []openai.Tool{
 					},
 					"TargetImageName": map[string]any{
 						"type":        "string",
-						"description": "克隆后目标镜像的名称，最多 50 个字符。用户未给名称时先追问，不要编造。",
+						"description": "克隆后目标镜像的名称，最多 50 个字符。用户未提供时留空，不要编造。",
 						"maxLength":   50,
 					},
 					"TargetImageDescription": map[string]any{
@@ -1179,14 +1179,8 @@ var Registry = []openai.Tool{
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
-			Name: "DiagnoseInstanceInternals",
-			Description: "登录到指定实例内部排查问题。仅在用户已明确指定实例或当前选择已唯一绑定时使用；多个实例且未指定目标时先让用户选择，绝不能从列表自行挑选。若上下文中的 user_selected 目标已过期，只能用同一 ID 请求新的授权卡，不能把它视为已授权。适用于根因在实例内部、平台 API 看不到的故障：" +
-				"GPU 掉卡 / nvidia-smi 报错 / CUDA 找不到设备、显存被占满、服务或端口起不来（ComfyUI、Jupyter、vLLM 等）、" +
-				"磁盘写满、数据盘未挂载、Python 环境与依赖异常、进程卡死或负载异常。执行前会请用户在卡片上授权；" +
-				"实例内变更还会逐条请用户确认。若是平台提供的 Web 入口（如 FileBrowser/Jupyter）打不开，先查询 DescribeCompShareSoftwarePort 等平台端口事实；" +
-				"实例内只能检查既有服务，不能从某个二进制自行猜端口、根目录或认证并新起替代服务。只有已证实的镜像 supervisor/启动器才可在逐条确认后修复。" +
-				"不用于：SSH 连不上或登录失败、费用与计费（用 DiagnoseBilling）、" +
-				"平台侧安全组与端口开放（不在实例内）、不针对具体实例的通用知识问题。",
+			Name:        "DiagnoseInstanceInternals",
+			Description: InstanceOpsDescription(),
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

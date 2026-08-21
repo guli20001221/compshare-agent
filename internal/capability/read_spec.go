@@ -115,6 +115,14 @@ type RememberVerifiedInstances struct{ IDs []string }
 
 func (RememberVerifiedInstances) readEffect() {}
 
+// RememberDisplayedInstances carries the typed, already-truncated candidates that resource_info
+// actually exposed to the model. The engine commits their ordinal order only if the final reply
+// visibly names at least two of them, so a later “第 N 台” can resolve without trusting hidden rows
+// from the upstream response.
+type RememberDisplayedInstances struct{ Instances []entity.InstanceSnapshot }
+
+func (RememberDisplayedInstances) readEffect() {}
+
 // ReadUnavailable marks a deliberately-unsupported capability: a deterministic
 // "not available in real time" answer plus the supported alternatives, produced
 // without any upstream call.

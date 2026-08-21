@@ -5,8 +5,6 @@ import (
 	"testing"
 
 	openai "github.com/sashabaranov/go-openai"
-
-	"github.com/compshare-agent/internal/tools"
 )
 
 // findTool returns the DiagnoseInstanceInternals entry of a built window, or nil.
@@ -20,61 +18,35 @@ func findInstanceOpsTool(window []openai.Tool) *string {
 	return nil
 }
 
-// The model plans around the description, not around the guardrails. Told it may only read, it
-// stops at a verdict; told it may repair, it gathers evidence and then acts. So the description is
-// not cosmetic — leaving the read-only text in place while the harness accepts writes produces a
-// lane that is authorized to fix and declines to, which reads as a model capability limit.
-//
-// The inverse is the dangerous one: promising repair while the harness refuses means every fix the
-// model proposes is rejected mid-run, burning the turn budget on retries.
-func TestInstanceOpsDescriptionFollowsTheWriteGate(t *testing.T) {
-	defer tools.SetInstanceOpsWritesEnabled(tools.InstanceOpsWritesEnabled())
-
-	tools.SetInstanceOpsWritesEnabled(false)
-	ro := findInstanceOpsTool(centralAgentToolWindow(false, true))
-	if ro == nil {
+// The lane has one production contract: inspect immediately, propose the exact repair command, run
+// it only after that command is approved, and verify the result. A deployment-wide read-only switch
+// made the prompt, confirmation card and harness disagree; keeping one contract makes that drift
+// unrepresentable while the command classifier still auto-runs only positively proven reads.
+func TestInstanceOpsDescriptionOffersConfirmationGatedRepair(t *testing.T) {
+	desc := findInstanceOpsTool(centralAgentToolWindow(false, true))
+	if desc == nil {
 		t.Fatal("DiagnoseInstanceInternals missing from the window with the lane on")
 	}
-	if !strings.Contains(*ro, "只执行只读命令") {
-		t.Fatalf("read-only description lost its read-only promise: %q", *ro)
+	if strings.Contains(*desc, "只执行只读命令") {
+		t.Fatalf("single repair contract regressed to the removed read-only product mode: %q", *desc)
 	}
-	if strings.Contains(*ro, "可以直接执行修复命令") {
-		t.Fatalf("read-only description promises repair: %q", *ro)
+	if !strings.Contains(*desc, "可以直接执行修复命令") {
+		t.Fatalf("description does not offer confirmation-gated repair: %q", *desc)
 	}
-	if !strings.Contains(*ro, "绝不能从列表自行挑选") {
-		t.Fatalf("read-only description omits the target-selection boundary: %q", *ro)
+	if !strings.Contains(*desc, "绝不能从列表自行挑选") {
+		t.Fatalf("description omits the target-selection boundary: %q", *desc)
 	}
-	if !strings.Contains(*ro, "不能把它视为已授权") {
-		t.Fatalf("read-only description omits the expired-selection reauthorization boundary: %q", *ro)
-	}
-
-	tools.SetInstanceOpsWritesEnabled(true)
-	rw := findInstanceOpsTool(centralAgentToolWindow(false, true))
-	if rw == nil {
-		t.Fatal("DiagnoseInstanceInternals missing from the window with the lane on")
-	}
-	if !strings.Contains(*rw, "可以直接执行修复命令") {
-		t.Fatalf("write description does not offer repair: %q", *rw)
-	}
-	if !strings.Contains(*rw, "绝不能从列表自行挑选") {
-		t.Fatalf("write description omits the target-selection boundary: %q", *rw)
-	}
-	if !strings.Contains(*rw, "不能把它视为已授权") {
-		t.Fatalf("write description omits the expired-selection reauthorization boundary: %q", *rw)
+	if !strings.Contains(*desc, "不能把它视为已授权") {
+		t.Fatalf("description omits the expired-selection reauthorization boundary: %q", *desc)
 	}
 	// Still has to name the hard limits, or the model plans around commands it can never run.
-	if !strings.Contains(*rw, "始终会被拒绝") {
-		t.Fatalf("write description omits the destructive refusal: %q", *rw)
-	}
-	if *ro == *rw {
-		t.Fatal("description did not change with the write gate")
+	if !strings.Contains(*desc, "始终会被拒绝") {
+		t.Fatalf("description omits the destructive refusal: %q", *desc)
 	}
 }
 
-// With the lane off the tool is absent entirely (INV-10) — the write gate must not resurrect it.
-func TestWriteGateDoesNotExposeTheToolWhenTheLaneIsOff(t *testing.T) {
-	defer tools.SetInstanceOpsWritesEnabled(tools.InstanceOpsWritesEnabled())
-	tools.SetInstanceOpsWritesEnabled(true)
+// With the lane off the tool is absent entirely (INV-10).
+func TestDisabledLaneDoesNotExposeTheTool(t *testing.T) {
 	if findInstanceOpsTool(centralAgentToolWindow(false, false)) != nil {
 		t.Fatal("lane off but DiagnoseInstanceInternals is in the window (INV-10)")
 	}

@@ -19,11 +19,10 @@ plane; a high-impact but reversible guest change belongs behind a confirmation c
 Redaction is precision-first, classification anchors flags to the relevant binary, and the
 transport enforces a per-command timeout.
 
-The read tier is not deny-by-default. A command that
-matches no rule at all falls through to read_only: `evil`, `evil -q` and `frobnicate --all`
-auto-run. The remaining gap is an unknown bare name resolved through the remote PATH. Closing
-that gap requires an executable-identity policy and is intentionally outside this literal-shape
-classifier.
+The auto-run tier is positively proven. A command that matches no curated read shape is
+`mutating` and therefore reaches an exact confirmation card; an unknown bare name resolved through
+the remote PATH never executes unattended. This is intentionally conservative about automation,
+not about repair: the operator can still approve any reversible guest-local command.
 
 Running a FILE is no longer part of that gap, and the rule for it is deliberately small: a
 program named by absolute path auto-runs as a read only from /bin, /sbin, /usr/bin and
@@ -280,7 +279,7 @@ _STREAM_BLOCK = {
 
 # nvidia-smi: query/read flags ONLY. NOT -r/-pl/-pm/-e/-l (mutate/stream), NOT dmon/pmon.
 _NVIDIA = re.compile(
-    r"nvidia-smi(\s+(-q|-L|-a|-i\s+\d+|-d\s+\w+|--id=\d+|--query[\w.-]*=\S+|--format=\S+|--display=\S+|topo(\s+-m)?))*"
+    r"nvidia-smi(\s+(-q|-L|-a|--help|-i\s+\d+|-d\s+\w+|--id=\d+|--query[\w.-]*=\S+|--format=\S+|--display=\S+|topo(\s+-m)?))*"
 )
 
 # Simple flag-only-safe diagnostics (no file CONTENT, no stream/mutate args). fullmatch.
@@ -299,10 +298,16 @@ _STRUCTURED_DIAG = [re.compile(p) for p in [
     # util-linux lists, older versions did not, and the difference is not worth guessing at.
     r"swapon(\s+(-s|--summary|--show(=\S+)?|--noheadings|--raw|--bytes))+",
     r"mount(\s+(-l|--list))*",
-    r"(nvcc|python3?|pip3?|conda|docker|git|gcc|g\+\+|cmake|go|java|node|npm|ruff|jupyter)\s+(--version|-V|version)",
+    r"(nvcc|python3?|pip3?|conda|docker|podman|nerdctl|git|gcc|g\+\+|cmake|go|java|node|npm|ruff|jupyter)\s+(--version|-V|version)",
     r"pip3?\s+(list|show|freeze)(\s+\S+)*",
+    r"pip3?\s+cache\s+dir",
     r"conda\s+(list|info|env\s+list)(\s+\S+)*",
-    r"docker\s+(ps|images|info|version|stats\s+--no-stream)(\s+\S+)*",
+    r"(docker|podman|nerdctl)\s+(ps|images|info|version|stats\s+--no-stream)(\s+\S+)*",
+    # POSIX `test` only evaluates file metadata/string/integer predicates and changes no state.
+    # Shell expansion/substitution/redirection is rejected before this pattern, so allowing the
+    # builtin itself removes confirmation cards from ordinary `test -r FILE && cat FILE` probes
+    # without making an arbitrary operand executable.
+    r"test(\s+\S+)*",
     # Process-manager state: on these GPU images the web app (ComfyUI/Jupyter/filebrowser) is run by
     # supervisord, so "is my service supposed to be running, and did it die?" is answered here.
     # ONLY the reporting subcommands — start/stop/restart/reload/update stay unmatched => mutating.
@@ -326,10 +331,13 @@ _STRUCTURED_DIAG = [re.compile(p) for p in [
     r"sysctl\s+[\w.]+",                                  # read ONE key (a `name=value` write has '=', fails)
     r"(fdisk|parted)\s+(-l|--list)(\s+\S+)*",            # partition LIST (interactive editor stays destructive)
     r"sgdisk\s+(-p|--print)(\s+\S+)*",                   # GPT partition table print
+    r"sshd\s+-t",                                       # validate daemon config without applying it
+    r"fuser(\s+\S+)*",                                  # kill forms are rejected before this proof
 ]]
 
 # Readers that emit raw file CONTENT — strict: every target must be a curated-safe absolute path.
-_CONTENT_READERS = {"cat", "nl", "tac", "strings", "od", "xxd", "hexdump"}
+_CONTENT_READERS = {"cat", "nl", "tac", "strings", "od", "xxd", "hexdump",
+                    "sort", "base64"}
 # Readers that emit only metadata — lenient: bare names/flags/cwd ok, sensitive absolute path denies.
 # `du` is deliberately NOT here — it emits ONLY a size (not even a filename), so it gets its own,
 # broader user-dir allowlist below (F5).
@@ -357,6 +365,7 @@ _SAFE_READ_EXACT = {
     # mount silently fails on boot; both are diagnosed by reading these. fstab/mtab hold device
     # UUIDs + mount options, not user secrets (secret files still tripwire via _DENY_PATH_SUBSTR).
     "/etc/fstab", "/etc/mtab",
+    "/etc/ssh/sshd_config",                             # server settings, not keys/credentials
     "/proc/meminfo", "/proc/cpuinfo", "/proc/loadavg", "/proc/uptime",
     "/proc/version", "/proc/stat", "/proc/diskstats", "/proc/mounts", "/proc/swaps",
     "/proc/partitions",                                  # F8: raw block-device table (name/size)
@@ -429,6 +438,7 @@ _META_SAFE_PREFIXES = ("/dev/", "/usr/", "/sys/", "/proc/", "/lib/", "/lib64/",
 # F11: non-home application/data dirs, where these GPU images put the served app (/workspace/ComfyUI,
 # /data/..., mounted volumes). Metadata-only, and deliberately NOT /root or /home — see _safe_meta_path.
 _META_APP_PREFIXES = ("/workspace", "/data", "/mnt")
+_META_STATE_PREFIXES = ("/var/lib/docker", "/var/lib/containerd")
 
 # --- F7: venv / Python-package introspection (content + metadata) ------------------------------
 # Python-env diagnosis ("torch.cuda.is_available() 是 False / import 报没这个模块") fundamentally
@@ -508,6 +518,8 @@ def _safe_meta_path(p: str) -> bool:
         return False
     if any(p == pre or p.startswith(pre + "/") for pre in _META_APP_PREFIXES):
         return True
+    if any(p == pre or p.startswith(pre + "/") for pre in _META_STATE_PREFIXES):
+        return True
     return any(p == pre.rstrip("/") or p.startswith(pre) for pre in _META_SAFE_PREFIXES)
 
 
@@ -541,7 +553,8 @@ def _safe_meta_read(tokens) -> bool:
 # proved the harness could confirm "disk full" via df yet not point at the 47G culprit in /root).
 # The secret-FILE tripwire substrings (.ssh, id_rsa, shadow, .env, ...) still deny even a size read
 # (defense in depth); only the whole-dir `/root` block is lifted for `du`.
-_DU_USER_PREFIXES = ("/root", "/home", "/workspace", "/data", "/mnt")
+_DU_USER_PREFIXES = ("/root", "/home", "/workspace", "/data", "/mnt",
+                     "/var/lib/docker", "/var/lib/containerd")
 _DU_DENY_SUBSTR = tuple(d for d in _DENY_PATH_SUBSTR if d != "/root")
 
 
@@ -736,6 +749,10 @@ def _is_read_only(cmd: str) -> bool:
         return _interval_ok(tokens)
     if binary == "nvidia-smi":
         return _NVIDIA.fullmatch(cmd) is not None
+    if binary == "fuser" and _KILL_FLAG_BINARIES["fuser"].search(cmd):
+        return False
+    if binary in ("grep", "egrep", "fgrep"):
+        return _safe_grep_file_read(tokens)
     # Match the allowlist on the BASENAME-normalized command as well: a venv/conda interpreter is
     # invoked by absolute path (`/usr/local/miniconda3/envs/comfyui/bin/python --version`), which is
     # exactly as read-only as the bare form. This is the ONLY route by which a path-qualified
@@ -752,6 +769,35 @@ def _is_read_only(cmd: str) -> bool:
     if binary in _META_READERS:
         return _safe_meta_read(tokens)
     return False
+
+
+def _safe_grep_file_read(tokens, allow_find_placeholder=False) -> bool:
+    """Allow grep to read explicitly safe files, while preserving stdin-only pipeline handling.
+
+    This deliberately supports only option forms that take no following value. More elaborate grep
+    invocations remain available behind exact confirmation rather than being guessed safe.
+    """
+    no_value_options = {
+        "-a", "--text", "-c", "--count", "-E", "--extended-regexp", "-F", "--fixed-strings",
+        "-H", "--with-filename", "-h", "--no-filename", "-i", "--ignore-case", "-l",
+        "--files-with-matches", "-L", "--files-without-match", "-n", "--line-number", "-q",
+        "--quiet", "--silent", "-s", "--no-messages", "-v", "--invert-match", "-w",
+        "--word-regexp", "-x", "--line-regexp",
+    }
+    positional = []
+    for token in tokens[1:]:
+        if token == "--":
+            continue
+        if token.startswith("-"):
+            if token not in no_value_options and not re.fullmatch(r"-[acEFHhilLnoqsvwx]+", token):
+                return False
+            continue
+        positional.append(token)
+    if len(positional) < 2:
+        return False
+    files = positional[1:]
+    return all((allow_find_placeholder and path == "{}") or
+               ("/" in path and _safe_path(path)) for path in files)
 
 
 def _is_safe_filter(seg: str) -> bool:
@@ -801,7 +847,8 @@ def _is_safe_readonly_command(cmd: str) -> bool:
     segs = [s.strip() for s in segs]
     if any(not s for s in segs):                          # empty => `||` or dangling pipe
         return False
-    if not _is_read_only(segs[0]):
+    source = _strip_sudo(_strip_shell_keywords(segs[0]).strip())
+    if not _is_read_only(source):
         return False
     return all(_is_safe_filter(s) for s in segs[1:])
 
@@ -837,7 +884,7 @@ def _strip_sudo(cmd: str) -> str:
 # This is only used to word the refusal; it never grants execution. Accurate feedback lets the
 # model split an unsupported command shape instead of retrying another equivalent wrapper.
 # =============================================================================
-# Tier 2: mutating — refused in Phase 1. Everything NOT matching is read_only.
+# Tier 2: mutating — confirmation-gated. Anything not proven read-only lands here.
 #
 # The boundary is defined by effect rather than a curated command allowlist. Reads are allowed by
 # default, and only these classes stay refused:
@@ -1262,20 +1309,25 @@ def _find_is_mutating(seg: str, depth: int) -> bool:
         argv = shlex.split(seg)
     except ValueError:
         return True                                       # unparseable: fail closed
-    saw_exec = False
     i = 0
     while i < len(argv):
         if argv[i] in ("-exec", "-execdir"):
-            saw_exec = True
             inner, i = [], i + 1
+            had_placeholder = False
             while i < len(argv) and argv[i] not in (";", "+"):
-                if argv[i] != "{}":
+                if argv[i] == "{}":
+                    had_placeholder = True
+                else:
                     inner.append(argv[i])
                 i += 1
             if not inner:
                 return True                               # -exec with no command
             inner_str = " ".join(inner)
-            if any(p.search(inner_str) for p in _DESTRUCTIVE) or _is_mutating_segment(inner_str, depth + 1):
+            inner_binary = _basename(_unquote(inner[0])).lower()
+            grep_read = (had_placeholder and inner_binary in ("grep", "egrep", "fgrep") and
+                         _safe_grep_file_read(inner + ["{}"], allow_find_placeholder=True))
+            if any(p.search(inner_str) for p in _DESTRUCTIVE) or (not grep_read and
+                                                                  _is_mutating_segment(inner_str, depth + 1)):
                 return True
         i += 1
     return False                                          # pure search, or -exec of a read-only inner
@@ -1334,9 +1386,10 @@ def _wrapper_is_mutating(binary: str, tokens, depth: int) -> bool:
 
 
 def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
-    """True if this ONE command changes the box, executes code, leaves the box, or
-    blocks forever. Deny-by-effect — anything else is a read. `_depth` bounds the
-    recursion when classifying a find -exec inner command against this same gate."""
+    """True unless this ONE command is positively proven read-only.
+
+    Explicit writers, arbitrary execution, egress and blocking forms are caught first; unknown
+    commands then reach the confirmation tier. `_depth` bounds recursive wrapper/find analysis."""
     # Strip everything that can merely PRECEDE the real command, to a fixed point: `then sudo rm ...`
     # needs both strippers, and either one alone leaves the other's prefix in token 0.
     seg, prev = seg.strip(), None
@@ -1344,7 +1397,7 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
         prev = seg
         seg = _strip_sudo(_strip_shell_keywords(seg).strip())
     if not seg:
-        return False
+        return True                                      # syntax fragment, not a proven read
     if ">" in _SAFE_REDIR.sub(" ", seg):                  # real-file redirection writes
         return True
     # `2>/dev/null` / `2>&1` / `>/dev/null` change nothing, but they are bare WORDS to a naive
@@ -1354,7 +1407,7 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     tokens = seg.split()
     if not tokens:
         return False
-    raw0 = tokens[0]
+    raw0 = _unquote(tokens[0])
     binary = _basename(raw0).lower()
     if _SUBSTITUTION.search(seg):                         # substitution executes, even quoted
         return True
@@ -1405,7 +1458,7 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     if binary in ("curl", "wget"):
         return not _http_probe_ok(tokens)                 # loopback probe stays allowed
     if binary == "env":
-        return not _env_is_read(tokens)
+        return True                                       # environment values may contain credentials
     if binary == "top":                                   # needs BOTH batch mode and an iteration cap
         return not (re.search(r"(?:^|\s)-\w*b", seg) and re.search(r"-\w*n\s*\d+", seg))
     if binary == "nvidia-smi" and re.search(r"(?:^|\s)(dmon|pmon|-l\b|--loop)", seg):
@@ -1439,7 +1492,14 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     # fragile. Re-spelling token 0 as its basename keeps the anchor's protection and drops its
     # dependence on the invocation. ORed, never substituted, so this can only ADD matches.
     respelled = " ".join([binary] + tokens[1:]) if binary != raw0 else seg
-    return any(p.search(seg) or p.search(respelled) for p in _MUTATING_FORMS)
+    if any(p.search(seg) or p.search(respelled) for p in _MUTATING_FORMS):
+        return True
+    # Auto-run is allowlisted, not inferred from the absence of a known writer.
+    # This is the critical boundary for bare commands such as `redis-cli
+    # FLUSHALL`, `npm run build`, or a future executable the classifier has
+    # never seen: all remain available after an exact confirmation, but none can
+    # change the guest without one.
+    return not (_is_safe_readonly_command(seg) or _is_safe_readonly_command(respelled))
 
 
 # Chaining is ACCEPTED now: each segment is classified independently and every one of
@@ -1640,7 +1700,9 @@ def classify(command: str) -> str:
         return "destructive"
     if "\n" in cmd:                                       # 2) never accept a multi-line script
         return "mutating"
-    for seg in _split_chain(cmd):                         # 3) every segment must be a read
+    if _is_safe_readonly_command(cmd):                    # 3) preserve reviewed read-only pipelines
+        return "read_only"
+    for seg in _split_chain(cmd):                         # 4) every chain segment must be a read
         if _is_mutating_segment(seg):
             return "mutating"
     return "read_only"
