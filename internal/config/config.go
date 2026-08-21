@@ -63,6 +63,7 @@ type AgentConfig struct {
 	// env-driven behavior unchanged.
 	Features  FeaturesConfig  `yaml:"features"`
 	Retrieval RetrievalConfig `yaml:"retrieval"`
+	WebSearch WebSearchConfig `yaml:"web_search"`
 	Trace     TraceConfig     `yaml:"trace"`
 	SSHOps    SSHOpsConfig    `yaml:"ssh_ops"`
 }

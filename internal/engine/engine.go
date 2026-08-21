@@ -30,6 +30,7 @@ import (
 	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/textutil"
 	"github.com/compshare-agent/internal/tools"
+	"github.com/compshare-agent/internal/websearch"
 	"github.com/compshare-agent/internal/workflow"
 	"github.com/compshare-agent/internal/zones"
 
@@ -74,6 +75,11 @@ const (
 	// prevents one wide rewrite from consuming every later corrective hop.
 	maxSearchKnowledgeCallsPerTurn = 4
 	maxRetrievalQueriesPerTurn     = 8
+	// maxWebSearchCallsPerTurn is deliberately lower than the KB-search budget:
+	// web search is an explicitly configured fallback, not a second corpus to
+	// iterate over. One bounded, cited observation is enough to decide whether it
+	// helps; a second query would merely leak more of a user turn externally.
+	maxWebSearchCallsPerTurn = 1
 )
 
 const actionOutcomeUncertainReply = "上游请求已发出，但本次没有收到可确认的结果。为避免重复操作，系统不会自动重试；请先查询资源当前状态，再决定下一步。"
@@ -183,6 +189,13 @@ type KnowledgeRetriever interface {
 	RetrieveContext(ctx context.Context, question, productArea string) knowledge.RetrievalResult
 }
 
+// WebSearcher is an optional, read-only external-search fallback. It is only
+// exposed in a normal Agent turn after SearchKnowledge produced no substantive
+// curated evidence; it is not a general-purpose browsing capability.
+type WebSearcher interface {
+	Search(ctx context.Context, query string) ([]websearch.Result, error)
+}
+
 // HistoryMessage is a simplified turn for rehydrating a conversation from
 // persistent storage (e.g. MySQL). Only user and assistant roles are accepted;
 // all other roles and empty content are silently skipped.
@@ -282,6 +295,7 @@ type Engine struct {
 	zoneCatalogThisTurn              *deployment.ZoneCatalogSnapshot
 	registry                         *entity.EntityRegistry
 	knowledgeRetriever               KnowledgeRetriever
+	webSearcher                      WebSearcher
 	agentRuntimeEventsThisTurn       []agentruntime.Event
 	agentRuntimeObserver             func(agentruntime.Event)
 	rendererTraceObserver            func(observability.RendererTrace)
@@ -327,6 +341,28 @@ type Engine struct {
 	// bounded query-plan fan-out. It is intentionally separate from the Agent's
 	// call budget so one rewrite cannot hide the availability of later searches.
 	searchKnowledgeQueriesThisTurn int
+	// webSearchAvailableThisTurn becomes true only after an AVAILABLE curated-KB
+	// search returned no substantive evidence, or after the Agent explicitly
+	// assessed the retrieved evidence as incomplete. It is both the model-window
+	// gate and the execution-boundary gate; no prompt-only path can open it.
+	webSearchAvailableThisTurn bool
+	// webSearchAssessmentPendingThisTurn is the intermediate state for the case
+	// that a KB search did return citable chunks, but they may not cover every
+	// fact in the user's question. The Agent must inspect the evidence (and read
+	// a returned chunk in full when appropriate) before it can say that a
+	// specific fact is missing. Only then can it open the external fallback.
+	webSearchAssessmentPendingThisTurn bool
+	// webSearchQueryThisTurn is the one reviewed, bounded external query for the
+	// turn. It is either the resolved question after an empty KB result or the
+	// focused query produced by AssessKnowledgeEvidence. SearchWeb has no
+	// model-authored query parameter, so its caller cannot change what crosses
+	// the outbound privacy boundary after the eligibility decision.
+	webSearchQueryThisTurn string
+	// webSearchSuppressedThisTurn keeps the external fallback out of restricted
+	// public/knowledge-only turns even if an invented tool call reaches the
+	// dispatcher after an empty KB result.
+	webSearchSuppressedThisTurn bool
+	webSearchCallsThisTurn      int
 	// searchKnowledgeLedgerThisTurn is the per-turn ChunkID-keyed, deduped
 	// evidence ledger (the union of every SearchKnowledge call's items this turn,
 	// #126). The route-independent grounded-answer validator checks the final
@@ -584,6 +620,7 @@ type Engine struct {
 type SharedDeps struct {
 	LLMClient          LLMClient
 	KnowledgeRetriever KnowledgeRetriever
+	WebSearcher        WebSearcher
 	RateLimiter        governance.RateLimiter
 	// MaxTokensPerTurn caps total LLM tokens summed across one user turn.
 	// 0 = disabled. Process-wide constant; copied into every NewSession.
@@ -662,6 +699,7 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		// ── shared (pointer-equal across sessions) ──
 		llmClient:          deps.LLMClient,
 		knowledgeRetriever: deps.KnowledgeRetriever,
+		webSearcher:        deps.WebSearcher,
 		rateLimiter:        deps.RateLimiter,
 		maxTokensPerTurn:   deps.MaxTokensPerTurn,
 
@@ -765,6 +803,13 @@ func (e *Engine) SetKnowledgeRetriever(retriever KnowledgeRetriever) {
 	// code owns env parsing and only calls this after USE_KNOWLEDGE_RETRIEVAL
 	// and corpus loading succeed.
 	e.knowledgeRetriever = retriever
+}
+
+// SetWebSearcher injects the optional external MCP fallback for CLI/test use.
+// Server bootstrap normally assigns it through SharedDeps after validating the
+// explicit off-by-default runtime configuration.
+func (e *Engine) SetWebSearcher(searcher WebSearcher) {
+	e.webSearcher = searcher
 }
 
 func (e *Engine) SetRendererTraceObserver(observer func(observability.RendererTrace)) {
@@ -982,6 +1027,11 @@ func (e *Engine) LLMClientPointer() LLMClient { return e.llmClient }
 // KnowledgeRetrieverPointer returns the underlying KnowledgeRetriever for
 // session-isolation tests. Test-only.
 func (e *Engine) KnowledgeRetrieverPointer() KnowledgeRetriever { return e.knowledgeRetriever }
+
+// WebSearcherPointer returns the optional shared external-search adapter for
+// session-isolation tests. It is not an authorization signal; the per-turn
+// webSearchAvailableThisTurn gate owns whether this session may call it.
+func (e *Engine) WebSearcherPointer() WebSearcher { return e.webSearcher }
 
 // RateLimiterPointer returns the underlying RateLimiter for
 // session-isolation tests. Test-only.
@@ -1372,6 +1422,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	defer func() { e.knowledgeOnlyThisTurn = false }()
 	e.publicPlatformReadOnlyThisTurn = opts.PublicPlatformReadOnly && !opts.KnowledgeOnly
 	defer func() { e.publicPlatformReadOnlyThisTurn = false }()
+	e.webSearchSuppressedThisTurn = opts.KnowledgeOnly || opts.PublicPlatformReadOnly
+	defer func() { e.webSearchSuppressedThisTurn = false }()
 	e.feishuConsoleHandoffThisTurn = opts.FeishuConsoleHandoff
 	defer func() { e.feishuConsoleHandoffThisTurn = false }()
 	e.secretInputsThisTurn = opts.SecretInputs
@@ -1461,6 +1513,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeCapabilitiesThisTurn = nil
 	e.searchKnowledgeCallsThisTurn = 0
 	e.searchKnowledgeQueriesThisTurn = 0
+	e.webSearchAvailableThisTurn = false
+	e.webSearchAssessmentPendingThisTurn = false
+	e.webSearchQueryThisTurn = ""
+	e.webSearchCallsThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
 	e.resolvedKnowledgeQuestionThisTurn = ""
 	e.searchKnowledgeActivitiesThisTurn = nil
@@ -1625,7 +1681,12 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// travels as its own field (llm.ChatRequest.Tools), so nothing about it is
 		// visible in the message list — the production window is 40 schemas and
 		// 22,806 runes, larger than the system prompt by an order of magnitude.
-		toolWindow := centralAgentToolWindow(e.mutatingToolsEnabled, e.instanceOps != nil)
+		toolWindow := centralAgentToolWindowWithWebSearch(
+			e.mutatingToolsEnabled,
+			e.instanceOps != nil,
+			e.webSearchAssessmentMayRun(),
+			e.webSearchMayRun(),
+		)
 		if opts.KnowledgeOnly {
 			toolWindow = centralAgentKnowledgeToolWindow()
 		} else if opts.PublicPlatformReadOnly {
@@ -1643,6 +1704,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		if e.readChunkCallsThisTurn >= maxReadChunkCallsPerTurn &&
 			toolListContainsFunction(toolWindow, "ReadChunk") {
 			toolWindow = toolListWithoutFunction(toolWindow, "ReadChunk")
+		}
+		if e.webSearchCallsThisTurn >= maxWebSearchCallsPerTurn &&
+			toolListContainsFunction(toolWindow, webSearchAction) {
+			toolWindow = toolListWithoutFunction(toolWindow, webSearchAction)
 		}
 		// A whole-catalog read is complete after one successful observation. The
 		// model may still reason over that observation, but cannot spend later
@@ -2691,6 +2756,11 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		e.emitSearchKnowledgeRetrievalTrace(resolvedQuestion, plannedQuery, retrieved, rawHits, floorDroppedAll, activityID)
 	}
 	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, combined, searchKnowledgeLedgerTurnMaxItems)
+	// External search is a *fallback* after an available curated search either
+	// returned no substantive evidence or leaves a specifically assessed coverage
+	// gap. A KB outage is not evidence of a corpus gap, and any earlier/later
+	// curated evidence withdraws a prior fallback before it can run.
+	e.setWebSearchEligibilityAfterKnowledge(successfulQueries)
 	message := "搜索完成"
 	if successfulQueries == 0 && unavailableQueries > 0 {
 		message = "知识库服务暂时不可用"
@@ -3001,6 +3071,24 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		e.knowledgeQAAgentLoopThisTurn = true
 		args = e.safeExecutor.FilterArgs(action, args)
 		return e.executeSearchKnowledge(ctx, args, onStep)
+	}
+
+	// AssessKnowledgeEvidence is a local, bounded decision point. It does not
+	// fetch anything: it records whether the already-returned KB evidence covers
+	// every fact needed for the answer. Keeping it separate from SearchWeb makes
+	// the semantic "chunk exists but is insufficient" path explicit and keeps an
+	// invented search call from turning a relevant-but-partial chunk into a first
+	// hop to an external provider.
+	if action == assessKnowledgeEvidenceAction {
+		return e.executeAssessKnowledgeEvidence(args, onStep)
+	}
+
+	// SearchWeb never belongs to a route in tools.Registry: it is dynamically
+	// offered only after the curated knowledge lane supplied no usable evidence.
+	// Keep its gate here as well, so an invented tool call cannot bypass the
+	// model window or the "KB first" ordering rule.
+	if action == webSearchAction {
+		return e.executeSearchWeb(ctx, args, onStep)
 	}
 
 	// ReadChunk shares that lane: it can read only an evidence ID returned by the

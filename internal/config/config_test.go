@@ -918,6 +918,12 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
     mcp_url: http://compshare-kb.example/mcp
     mcp_bearer_token: read-only-test-token
     mcp_timeout_ms: 12000
+  web_search:
+    enabled: true
+    provider: exa
+    mcp_url: https://mcp.exa.ai/mcp
+    mcp_api_key: test-key
+    mcp_timeout_ms: 7000
   trace:
     enabled: true
     sink: mysql
@@ -933,6 +939,12 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
 	assert.Equal(t, "http://compshare-kb.example/mcp", cfg.Agent.Retrieval.MCPURL)
 	assert.Equal(t, "read-only-test-token", cfg.Agent.Retrieval.MCPBearerToken)
 	assert.Equal(t, 12000, cfg.Agent.Retrieval.MCPTimeoutMS)
+	require.NotNil(t, cfg.Agent.WebSearch.Enabled)
+	assert.True(t, *cfg.Agent.WebSearch.Enabled)
+	assert.Equal(t, "exa", cfg.Agent.WebSearch.Provider)
+	assert.Equal(t, "https://mcp.exa.ai/mcp", cfg.Agent.WebSearch.MCPURL)
+	assert.Equal(t, "test-key", cfg.Agent.WebSearch.MCPAPIKey)
+	assert.Equal(t, 7000, cfg.Agent.WebSearch.MCPTimeoutMS)
 	require.NotNil(t, cfg.Agent.Trace.Enabled)
 	assert.True(t, *cfg.Agent.Trace.Enabled)
 	assert.Equal(t, "mysql", cfg.Agent.Trace.Sink)
@@ -950,6 +962,13 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 			MCPBearerToken: "read-only-test-token",
 			MCPTimeoutMS:   9000,
 			// KnowledgeRetrieval omitted → base env fallback
+		},
+		WebSearch: WebSearchConfig{
+			Enabled:      boolPtr(true),
+			Provider:     "exa",
+			MCPURL:       "https://mcp.exa.ai/mcp",
+			MCPAPIKey:    "test-key",
+			MCPTimeoutMS: 7000,
 		},
 		Trace: TraceConfig{Sink: "file"},
 	}}
@@ -970,6 +989,11 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	assert.Equal(t, "http://kb.example/mcp", getenv("COMPSHARE_KB_MCP_URL"), "remote knowledge endpoint comes from YAML")
 	assert.Equal(t, "read-only-test-token", getenv("COMPSHARE_KB_MCP_BEARER_TOKEN"), "read-only MCP token comes from YAML")
 	assert.Equal(t, "9000", getenv("COMPSHARE_KB_MCP_TIMEOUT_MS"), "remote knowledge timeout comes from YAML")
+	assert.Equal(t, "1", getenv("COMPSHARE_WEB_SEARCH_ENABLED"), "web search remains an explicit opt-in")
+	assert.Equal(t, "exa", getenv("COMPSHARE_WEB_SEARCH_PROVIDER"))
+	assert.Equal(t, "https://mcp.exa.ai/mcp", getenv("COMPSHARE_WEB_SEARCH_MCP_URL"))
+	assert.Equal(t, "test-key", getenv("COMPSHARE_WEB_SEARCH_MCP_API_KEY"))
+	assert.Equal(t, "7000", getenv("COMPSHARE_WEB_SEARCH_MCP_TIMEOUT_MS"))
 	assert.Equal(t, "off", getenv("USE_KNOWLEDGE_RETRIEVAL"), "omitted string → env fallback")
 	assert.Equal(t, "file", getenv("COMPSHARE_TRACE_SINK"))
 	assert.Equal(t, "resolved-llm-key", getenv("LLM_API_KEY"), "resolved answer-model secret is exposed")

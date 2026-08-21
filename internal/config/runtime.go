@@ -40,6 +40,19 @@ type RetrievalConfig struct {
 	MCPTimeoutMS       int    `yaml:"mcp_timeout_ms"`      // COMPSHARE_KB_MCP_TIMEOUT_MS
 }
 
+// WebSearchConfig configures an optional, read-only external-search MCP
+// fallback. It is deliberately separate from RetrievalConfig: the curated KB is
+// an on-by-default product dependency, while web search defaults off and is only
+// exposed after the KB is empty or an explicit evidence-coverage assessment finds
+// a necessary gap.
+type WebSearchConfig struct {
+	Enabled      *bool  `yaml:"enabled"`        // COMPSHARE_WEB_SEARCH_ENABLED (default off)
+	Provider     string `yaml:"provider"`       // COMPSHARE_WEB_SEARCH_PROVIDER (exa; default when enabled)
+	MCPURL       string `yaml:"mcp_url"`        // COMPSHARE_WEB_SEARCH_MCP_URL (must be Exa's official endpoint)
+	MCPAPIKey    string `yaml:"mcp_api_key"`    // COMPSHARE_WEB_SEARCH_MCP_API_KEY (sent as Exa x-api-key)
+	MCPTimeoutMS int    `yaml:"mcp_timeout_ms"` // COMPSHARE_WEB_SEARCH_MCP_TIMEOUT_MS
+}
+
 // TraceConfig holds the per-turn JSONL/DB trace sink settings.
 type TraceConfig struct {
 	Enabled *bool  `yaml:"enabled"` // COMPSHARE_TRACE_ENABLED (Go default off; deploy on)
@@ -81,6 +94,13 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 	putStrEnv(overrides, "COMPSHARE_KB_MCP_URL", r.MCPURL)
 	putStrEnv(overrides, "COMPSHARE_KB_MCP_BEARER_TOKEN", r.MCPBearerToken)
 	putIntEnv(overrides, "COMPSHARE_KB_MCP_TIMEOUT_MS", r.MCPTimeoutMS)
+
+	w := c.Agent.WebSearch
+	putBoolEnv(overrides, "COMPSHARE_WEB_SEARCH_ENABLED", w.Enabled, "1", "0")
+	putStrEnv(overrides, "COMPSHARE_WEB_SEARCH_PROVIDER", w.Provider)
+	putStrEnv(overrides, "COMPSHARE_WEB_SEARCH_MCP_URL", w.MCPURL)
+	putStrEnv(overrides, "COMPSHARE_WEB_SEARCH_MCP_API_KEY", w.MCPAPIKey)
+	putIntEnv(overrides, "COMPSHARE_WEB_SEARCH_MCP_TIMEOUT_MS", w.MCPTimeoutMS)
 
 	t := c.Agent.Trace
 	putBoolEnv(overrides, "COMPSHARE_TRACE_ENABLED", t.Enabled, "1", "0")

@@ -43,7 +43,7 @@ package engine
 //   (concrete-type guard for tools.ExternalExecutor.SetProjectId)
 // - SharedDeps doc comment + struct (engine.go:181-217) — explains the
 //   process-singleton model and why setters here are dangerous, then
-//   declares the 13 fields the audit reasons about.
+//   declares the fields the audit reasons about.
 // - Memory feedback_shared_struct_setter_leaks_across_sessions
 //   (originSession c2083e21) — the principle.
 
@@ -56,6 +56,7 @@ import (
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/websearch"
 )
 
 // mutatingVerbPrefixes is the banned-verb list. Any exported method on a
@@ -91,6 +92,7 @@ var sharedDepConcreteTypes = []reflect.Type{
 	reflect.TypeOf((*llm.Client)(nil)),                     // SharedDeps.LLMClient
 	reflect.TypeOf((*knowledge.Retriever)(nil)),            // SharedDeps.KnowledgeRetriever
 	reflect.TypeOf((*knowledge.MCPRetriever)(nil)),         // SharedDeps.KnowledgeRetriever (remote adapter)
+	reflect.TypeOf((*websearch.MCPClient)(nil)),            // SharedDeps.WebSearcher (optional external fallback)
 	reflect.TypeOf((*governance.InMemoryRateLimiter)(nil)), // SharedDeps.RateLimiter
 	reflect.TypeOf((*knowledge.EmbeddingSidecar)(nil)),     // injected into knowledge.Retriever
 	reflect.TypeOf((*embedding.Client)(nil)),               // upstream of knowledge.EmbeddingSidecar
@@ -176,6 +178,8 @@ func TestSharedDeps_AuditCoversAllSharedDepFields(t *testing.T) {
 			requireAudited(t, audited, "github.com/compshare-agent/internal/llm.Client", field.Name)
 		case "KnowledgeRetriever":
 			requireAudited(t, audited, "github.com/compshare-agent/internal/knowledge.Retriever", field.Name)
+		case "WebSearcher":
+			requireAudited(t, audited, "github.com/compshare-agent/internal/websearch.MCPClient", field.Name)
 		case "RateLimiter":
 			requireAudited(t, audited, "github.com/compshare-agent/internal/governance.InMemoryRateLimiter", field.Name)
 		default:
