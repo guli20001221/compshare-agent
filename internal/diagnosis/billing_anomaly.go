@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/tools"
 )
 
@@ -320,8 +321,10 @@ func billingInstanceFact(host map[string]any) BillingInstanceFact {
 	// Spot instances describe as ChargeType "Postpay" (or, if billed under the
 	// CHARGE_BY_SPOT enum, an empty string that maps to nothing) PLUS a separate
 	// IsSpot=true flag — upstream never emits ChargeType "Spot". Key off IsSpot so
-	// spot is counted/priced as hourly regardless of the ChargeType string.
-	isSpot, _ := host["IsSpot"].(bool)
+	// spot is counted/priced as hourly regardless of the ChargeType string. The
+	// read is shared with the instance projection (entity.InstanceIsSpot) so the
+	// billing card and the instance list cannot disagree about the same row.
+	isSpot := entity.InstanceIsSpot(host)
 	instancePrice, hasInstancePrice := billingPriceField(host, "InstancePrice")
 	diskPrice, hasDiskPrice := billingPriceField(host, "DiskPrice")
 	imagePrice, hasImagePrice := billingPriceField(host, "CompShareImagePrice")

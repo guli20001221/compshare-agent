@@ -49,7 +49,7 @@ func TestEveryWorkflowActionIsClassifiedForInvalidation(t *testing.T) {
 				"workflow %q is unclassified for cache invalidation: either add it to invalidatesRegistry "+
 					"(if it mutates a field of InstanceSnapshot: %s) or record here why it does not. "+
 					"Leaving it out silently serves a stale snapshot.",
-				action, "UHostId/Name/State/OsType/GPU/GpuType/ImageType/CPU/Memory/Zone/Region/ChargeType/ExpireTime/AutoRenew")
+				action, "UHostId/Name/State/OsType/GPU/GpuType/ImageType/CPU/Memory/Zone/Region/ChargeType/IsSpot/ExpireTime/AutoRenew")
 		})
 	}
 }
