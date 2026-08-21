@@ -920,7 +920,8 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
     mcp_timeout_ms: 12000
   web_search:
     enabled: true
-    mcp_url: https://search.example/mcp
+    provider: exa
+    mcp_url: https://mcp.exa.ai/mcp
     mcp_bearer_token: test-token
     mcp_timeout_ms: 7000
   trace:
@@ -940,7 +941,8 @@ func TestLoad_RuntimeSectionsFromYAML(t *testing.T) {
 	assert.Equal(t, 12000, cfg.Agent.Retrieval.MCPTimeoutMS)
 	require.NotNil(t, cfg.Agent.WebSearch.Enabled)
 	assert.True(t, *cfg.Agent.WebSearch.Enabled)
-	assert.Equal(t, "https://search.example/mcp", cfg.Agent.WebSearch.MCPURL)
+	assert.Equal(t, "exa", cfg.Agent.WebSearch.Provider)
+	assert.Equal(t, "https://mcp.exa.ai/mcp", cfg.Agent.WebSearch.MCPURL)
 	assert.Equal(t, "test-token", cfg.Agent.WebSearch.MCPBearerToken)
 	assert.Equal(t, 7000, cfg.Agent.WebSearch.MCPTimeoutMS)
 	require.NotNil(t, cfg.Agent.Trace.Enabled)
@@ -963,7 +965,8 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 		},
 		WebSearch: WebSearchConfig{
 			Enabled:        boolPtr(true),
-			MCPURL:         "https://search.example/mcp",
+			Provider:       "exa",
+			MCPURL:         "https://mcp.exa.ai/mcp",
 			MCPBearerToken: "test-token",
 			MCPTimeoutMS:   7000,
 		},
@@ -987,7 +990,8 @@ func TestRuntimeGetenv_YAMLWinsWithEnvFallback(t *testing.T) {
 	assert.Equal(t, "read-only-test-token", getenv("COMPSHARE_KB_MCP_BEARER_TOKEN"), "read-only MCP token comes from YAML")
 	assert.Equal(t, "9000", getenv("COMPSHARE_KB_MCP_TIMEOUT_MS"), "remote knowledge timeout comes from YAML")
 	assert.Equal(t, "1", getenv("COMPSHARE_WEB_SEARCH_ENABLED"), "web search remains an explicit opt-in")
-	assert.Equal(t, "https://search.example/mcp", getenv("COMPSHARE_WEB_SEARCH_MCP_URL"))
+	assert.Equal(t, "exa", getenv("COMPSHARE_WEB_SEARCH_PROVIDER"))
+	assert.Equal(t, "https://mcp.exa.ai/mcp", getenv("COMPSHARE_WEB_SEARCH_MCP_URL"))
 	assert.Equal(t, "test-token", getenv("COMPSHARE_WEB_SEARCH_MCP_BEARER_TOKEN"))
 	assert.Equal(t, "7000", getenv("COMPSHARE_WEB_SEARCH_MCP_TIMEOUT_MS"))
 	assert.Equal(t, "off", getenv("USE_KNOWLEDGE_RETRIEVAL"), "omitted string → env fallback")

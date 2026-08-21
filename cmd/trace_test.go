@@ -249,7 +249,7 @@ func TestKnowledgeMCPTimeoutFromEnv(t *testing.T) {
 	assertDuration("bad", 0)
 }
 
-func TestWebSearchFromEnvIsExplicitAndRequiresAnEndpoint(t *testing.T) {
+func TestWebSearchFromEnvIsExplicitAndUsesPinnedExaAdapter(t *testing.T) {
 	enabled, unknown := webSearchEnabledFromEnv(func(string) string { return "" })
 	require.False(t, enabled, "external search must not become active from an omitted deployment setting")
 	require.Empty(t, unknown)
@@ -260,25 +260,23 @@ func TestWebSearchFromEnvIsExplicitAndRequiresAnEndpoint(t *testing.T) {
 		}
 		return ""
 	})
-	require.ErrorContains(t, err, "COMPSHARE_WEB_SEARCH_MCP_URL")
-	require.False(t, enabled)
-	require.Nil(t, searcher)
+	require.NoError(t, err)
+	require.True(t, enabled)
+	require.IsType(t, &websearch.ExaMCPClient{}, searcher)
 
 	searcher, enabled, err = webSearcherFromEnv(func(key string) string {
 		switch key {
 		case "COMPSHARE_WEB_SEARCH_ENABLED":
 			return "1"
-		case "COMPSHARE_WEB_SEARCH_MCP_URL":
-			return "https://search.example/mcp"
-		case "COMPSHARE_WEB_SEARCH_MCP_TIMEOUT_MS":
-			return "9000"
+		case "COMPSHARE_WEB_SEARCH_PROVIDER":
+			return "anysearch"
 		default:
 			return ""
 		}
 	})
-	require.NoError(t, err)
-	require.True(t, enabled)
-	require.IsType(t, &websearch.MCPClient{}, searcher)
+	require.ErrorContains(t, err, "COMPSHARE_WEB_SEARCH_PROVIDER")
+	require.False(t, enabled)
+	require.Nil(t, searcher)
 }
 
 func TestWebSearchMCPTimeoutFromEnv(t *testing.T) {

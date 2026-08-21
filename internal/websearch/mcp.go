@@ -26,6 +26,9 @@ const (
 	maxQueryRunes     = 512
 	maxTitleRunes     = 240
 	maxSnippetRunes   = 1200
+	maxExaTextBytes   = 96 << 10
+
+	defaultExaMCPEndpoint = "https://mcp.exa.ai/mcp"
 )
 
 // Result is one externally sourced, linkable observation. URL is required and
@@ -61,6 +64,25 @@ type MCPClient struct {
 	maxResults int
 }
 
+// ExaMCPOptions configures the official Exa-hosted MCP endpoint. Endpoint is
+// optional only so the public canonical endpoint can be the secure default;
+// any override must still name that exact HTTPS endpoint.
+type ExaMCPOptions struct {
+	Endpoint    string
+	BearerToken string
+	Timeout     time.Duration
+	HTTPClient  *http.Client
+	MaxResults  int
+}
+
+// ExaMCPClient adapts Exa's provider-specific web_search_exa text result to
+// the narrow Result contract consumed by the Agent. The rest of the product
+// never sees Exa's tool name or response format.
+type ExaMCPClient struct {
+	client     *mcpclient.Client
+	maxResults int
+}
+
 // NewMCPClient constructs a client but makes no network request. A missing or
 // malformed endpoint is rejected at process startup rather than on a user turn.
 func NewMCPClient(options MCPOptions) (*MCPClient, error) {
@@ -83,6 +105,38 @@ func NewMCPClient(options MCPOptions) (*MCPClient, error) {
 	return &MCPClient{client: client, maxResults: limit}, nil
 }
 
+// NewExaMCPClient constructs the provider-specific Exa adapter. Permitting an
+// arbitrary endpoint here would let deployment configuration silently turn the
+// supposedly Exa-reviewed integration into a different search provider.
+func NewExaMCPClient(options ExaMCPOptions) (*ExaMCPClient, error) {
+	endpoint := strings.TrimSpace(options.Endpoint)
+	if endpoint == "" {
+		endpoint = defaultExaMCPEndpoint
+	}
+	normalized, err := mcpclient.NormalizeEndpoint(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("Exa MCP endpoint: %w", err)
+	}
+	parsed, err := url.Parse(normalized)
+	if err != nil || parsed.Scheme != "https" || !strings.EqualFold(parsed.Hostname(), "mcp.exa.ai") || parsed.Path != "/mcp" {
+		return nil, fmt.Errorf("Exa MCP endpoint must be %s", defaultExaMCPEndpoint)
+	}
+	client, err := mcpclient.New(mcpclient.Options{
+		Endpoint: normalized, BearerToken: options.BearerToken, Timeout: options.Timeout, HTTPClient: options.HTTPClient,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("Exa MCP: %w", err)
+	}
+	limit := options.MaxResults
+	if limit == 0 {
+		limit = defaultMaxResults
+	}
+	if limit < 1 || limit > maxResults {
+		return nil, fmt.Errorf("Exa web-search numResults must be 1..%d, got %d", maxResults, limit)
+	}
+	return &ExaMCPClient{client: client, maxResults: limit}, nil
+}
+
 // Search calls the configured MCP tool and returns only safe, bounded, unique
 // HTTPS sources. A malformed item is discarded rather than forwarded as an
 // unclickable or private-network link; an empty validated set is a valid search
@@ -91,12 +145,9 @@ func (c *MCPClient) Search(ctx context.Context, query string) ([]Result, error) 
 	if c == nil || c.client == nil {
 		return nil, errors.New("web search MCP client is not configured")
 	}
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return nil, errors.New("web search query is required")
-	}
-	if utf8.RuneCountInString(query) > maxQueryRunes {
-		return nil, fmt.Errorf("web search query exceeds %d runes", maxQueryRunes)
+	query, err := validateQuery(query)
+	if err != nil {
+		return nil, err
 	}
 
 	var response struct {
@@ -109,6 +160,80 @@ func (c *MCPClient) Search(ctx context.Context, query string) ([]Result, error) 
 		return nil, err
 	}
 	return sanitizeResults(response.Results, c.maxResults), nil
+}
+
+// Search calls Exa's official web_search_exa tool. Exa returns human-readable
+// Title/URL/Highlights blocks rather than a JSON result object, so only
+// complete blocks are accepted and every candidate still crosses the same URL
+// and size policy as a generic provider result.
+func (c *ExaMCPClient) Search(ctx context.Context, query string) ([]Result, error) {
+	if c == nil || c.client == nil {
+		return nil, errors.New("Exa MCP client is not configured")
+	}
+	query, err := validateQuery(query)
+	if err != nil {
+		return nil, err
+	}
+	text, err := c.client.CallText(ctx, "web_search_exa", map[string]any{
+		"query": query, "numResults": c.maxResults,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if len(text) > maxExaTextBytes {
+		return nil, fmt.Errorf("Exa web-search response exceeds %d bytes", maxExaTextBytes)
+	}
+	return sanitizeResults(parseExaResults(text), c.maxResults), nil
+}
+
+func validateQuery(query string) (string, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return "", errors.New("web search query is required")
+	}
+	if utf8.RuneCountInString(query) > maxQueryRunes {
+		return "", fmt.Errorf("web search query exceeds %d runes", maxQueryRunes)
+	}
+	return query, nil
+}
+
+func parseExaResults(text string) []Result {
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	blocks := strings.Split(text, "\n---\n")
+	results := make([]Result, 0, len(blocks))
+	for _, block := range blocks {
+		result, ok := parseExaBlock(block)
+		if ok {
+			results = append(results, result)
+		}
+	}
+	return results
+}
+
+func parseExaBlock(block string) (Result, bool) {
+	var result Result
+	var highlights []string
+	inHighlights := false
+	for _, line := range strings.Split(block, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if !inHighlights {
+			key, value, hasField := strings.Cut(trimmed, ":")
+			switch {
+			case hasField && key == "Title" && result.Title == "":
+				result.Title = strings.TrimSpace(value)
+			case hasField && key == "URL" && result.URL == "":
+				result.URL = strings.TrimSpace(value)
+			case hasField && key == "Highlights" && strings.TrimSpace(value) == "":
+				inHighlights = true
+			}
+			continue
+		}
+		if trimmed != "" && trimmed != "..." {
+			highlights = append(highlights, trimmed)
+		}
+	}
+	result.Snippet = strings.Join(highlights, "\n")
+	return result, result.Title != "" && result.URL != "" && result.Snippet != ""
 }
 
 func sanitizeResults(items []Result, limit int) []Result {

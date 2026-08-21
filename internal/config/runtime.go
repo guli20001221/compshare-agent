@@ -46,7 +46,8 @@ type RetrievalConfig struct {
 // exposed after that KB returned no substantive evidence.
 type WebSearchConfig struct {
 	Enabled        *bool  `yaml:"enabled"`          // COMPSHARE_WEB_SEARCH_ENABLED (default off)
-	MCPURL         string `yaml:"mcp_url"`          // COMPSHARE_WEB_SEARCH_MCP_URL
+	Provider       string `yaml:"provider"`         // COMPSHARE_WEB_SEARCH_PROVIDER (exa; default when enabled)
+	MCPURL         string `yaml:"mcp_url"`          // COMPSHARE_WEB_SEARCH_MCP_URL (must be Exa's official endpoint)
 	MCPBearerToken string `yaml:"mcp_bearer_token"` // COMPSHARE_WEB_SEARCH_MCP_BEARER_TOKEN
 	MCPTimeoutMS   int    `yaml:"mcp_timeout_ms"`   // COMPSHARE_WEB_SEARCH_MCP_TIMEOUT_MS
 }
@@ -95,6 +96,7 @@ func (c *Config) RuntimeGetenv(base func(string) string) func(string) string {
 
 	w := c.Agent.WebSearch
 	putBoolEnv(overrides, "COMPSHARE_WEB_SEARCH_ENABLED", w.Enabled, "1", "0")
+	putStrEnv(overrides, "COMPSHARE_WEB_SEARCH_PROVIDER", w.Provider)
 	putStrEnv(overrides, "COMPSHARE_WEB_SEARCH_MCP_URL", w.MCPURL)
 	putStrEnv(overrides, "COMPSHARE_WEB_SEARCH_MCP_BEARER_TOKEN", w.MCPBearerToken)
 	putIntEnv(overrides, "COMPSHARE_WEB_SEARCH_MCP_TIMEOUT_MS", w.MCPTimeoutMS)

@@ -5,9 +5,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/compshare-agent/internal/mcpclient"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -54,6 +57,88 @@ func TestMCPClientSearchUsesFixedToolContractAndFiltersUnsafeSources(t *testing.
 		"fragments must not turn one source into multiple citations")
 }
 
+func TestExaMCPClientUsesProviderToolAndFiltersFormattedText(t *testing.T) {
+	server := mcp.NewServer(&mcp.Implementation{Name: "test-exa", Version: "1.0.0"}, nil)
+	mcp.AddTool(server, &mcp.Tool{Name: "web_search_exa"}, func(_ context.Context, _ *mcp.CallToolRequest, input exaSearchInput) (*mcp.CallToolResult, struct{}, error) {
+		if input.Query != "优云智算 文档" {
+			return nil, struct{}{}, errors.New("unexpected query")
+		}
+		if input.NumResults != 3 {
+			return nil, struct{}{}, errors.New("unexpected numResults")
+		}
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: `Title: 优云智算文档
+URL: https://www.compshare.cn/docs/guide#one
+Published: N/A
+Highlights:
+首条可引用资料。
+...
+
+---
+
+Title: 重复页面
+URL: https://www.compshare.cn/docs/guide#two
+Highlights:
+同一地址不能重复。
+
+---
+
+Title: 不安全地址
+URL: http://example.com/not-for-users
+Highlights:
+应被丢弃。
+
+---
+
+Title: 没有摘要
+URL: https://example.com/empty
+Published: N/A`}}}, struct{}{}, nil
+	})
+	handler := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return server }, &mcp.StreamableHTTPOptions{
+		Stateless: true, JSONResponse: true,
+	})
+	httpServer := httptest.NewServer(handler)
+	defer httpServer.Close()
+
+	transport, err := mcpclient.New(mcpclient.Options{Endpoint: httpServer.URL, Timeout: time.Second})
+	require.NoError(t, err)
+	client := &ExaMCPClient{client: transport, maxResults: 3}
+
+	results, err := client.Search(context.Background(), "优云智算 文档")
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	assert.Equal(t, "优云智算文档", results[0].Title)
+	assert.Equal(t, "https://www.compshare.cn/docs/guide", results[0].URL)
+	assert.Equal(t, "首条可引用资料。", results[0].Snippet)
+}
+
+func TestNewExaMCPClientPinsTheOfficialEndpoint(t *testing.T) {
+	client, err := NewExaMCPClient(ExaMCPOptions{})
+	require.NoError(t, err)
+	require.NotNil(t, client)
+
+	_, err = NewExaMCPClient(ExaMCPOptions{Endpoint: "https://search.example/mcp"})
+	require.ErrorContains(t, err, "https://mcp.exa.ai/mcp")
+}
+
+// TestExaMCPClientLive is intentionally opt-in: it proves the production
+// transport against Exa without making normal CI depend on a third-party rate
+// limit. Its query is fixed public documentation text, never a user turn.
+func TestExaMCPClientLive(t *testing.T) {
+	if os.Getenv("COMPSHARE_EXA_LIVE_TEST") != "1" {
+		t.Skip("set COMPSHARE_EXA_LIVE_TEST=1 to probe Exa's hosted MCP")
+	}
+	client, err := NewExaMCPClient(ExaMCPOptions{Timeout: 20 * time.Second, MaxResults: 3})
+	require.NoError(t, err)
+	results, err := client.Search(context.Background(), "优云智算 官方文档")
+	require.NoError(t, err)
+	require.NotEmpty(t, results)
+	for _, result := range results {
+		assert.True(t, strings.HasPrefix(result.URL, "https://"))
+		assert.NotEmpty(t, result.Title)
+		assert.NotEmpty(t, result.Snippet)
+	}
+}
+
 func TestMCPClientRejectsInvalidLimitsAndQueries(t *testing.T) {
 	_, err := NewMCPClient(MCPOptions{Endpoint: "https://search.example/mcp", MaxResults: maxResults + 1})
 	require.Error(t, err)
@@ -84,4 +169,9 @@ type searchInput struct {
 
 type searchOutput struct {
 	Results []Result `json:"results"`
+}
+
+type exaSearchInput struct {
+	Query      string `json:"query"`
+	NumResults int    `json:"numResults"`
 }

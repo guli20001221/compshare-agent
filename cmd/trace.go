@@ -252,22 +252,32 @@ func webSearchMCPTimeoutFromEnv(getenv getenvFunc) time.Duration {
 	return time.Duration(ms) * time.Millisecond
 }
 
+func webSearchProviderFromEnv(getenv getenvFunc) (string, string) {
+	raw := strings.ToLower(strings.TrimSpace(getenv("COMPSHARE_WEB_SEARCH_PROVIDER")))
+	switch raw {
+	case "", "exa":
+		return "exa", ""
+	default:
+		return "", raw
+	}
+}
+
 func webSearcherFromEnv(getenv getenvFunc) (engine.WebSearcher, bool, error) {
 	enabled, unknown := webSearchEnabledFromEnv(getenv)
 	if unknown != "" || !enabled {
 		return nil, false, nil
 	}
-	endpoint := strings.TrimSpace(getenv("COMPSHARE_WEB_SEARCH_MCP_URL"))
-	if endpoint == "" {
-		return nil, false, errors.New("COMPSHARE_WEB_SEARCH_MCP_URL is required when web search is enabled")
+	provider, unknown := webSearchProviderFromEnv(getenv)
+	if unknown != "" {
+		return nil, false, fmt.Errorf("unsupported COMPSHARE_WEB_SEARCH_PROVIDER %q (want exa)", unknown)
 	}
-	searcher, err := websearch.NewMCPClient(websearch.MCPOptions{
-		Endpoint:    endpoint,
+	searcher, err := websearch.NewExaMCPClient(websearch.ExaMCPOptions{
+		Endpoint:    strings.TrimSpace(getenv("COMPSHARE_WEB_SEARCH_MCP_URL")),
 		BearerToken: strings.TrimSpace(getenv("COMPSHARE_WEB_SEARCH_MCP_BEARER_TOKEN")),
 		Timeout:     webSearchMCPTimeoutFromEnv(getenv),
 	})
 	if err != nil {
-		return nil, false, fmt.Errorf("web-search MCP client: %w", err)
+		return nil, false, fmt.Errorf("web-search %s client: %w", provider, err)
 	}
 	return searcher, true, nil
 }

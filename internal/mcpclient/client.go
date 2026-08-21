@@ -58,12 +58,38 @@ func New(options Options) (*Client, error) {
 // content fallback) into output. It does not retry: tool semantics own whether
 // an invocation is safe to repeat.
 func (c *Client) Call(ctx context.Context, name string, arguments map[string]any, output any) error {
+	result, err := c.callTool(ctx, name, arguments)
+	if err != nil {
+		return err
+	}
+	if err := DecodeToolResult(result, output); err != nil {
+		return fmt.Errorf("decode MCP tool %q: %w", strings.TrimSpace(name), err)
+	}
+	return nil
+}
+
+// CallText invokes one MCP tool and returns its non-empty text content. It is
+// deliberately separate from Call: callers that consume a provider-owned text
+// format must parse it themselves instead of treating arbitrary text as JSON.
+func (c *Client) CallText(ctx context.Context, name string, arguments map[string]any) (string, error) {
+	result, err := c.callTool(ctx, name, arguments)
+	if err != nil {
+		return "", err
+	}
+	text, err := toolResultTextValue(result)
+	if err != nil {
+		return "", fmt.Errorf("decode MCP tool %q text: %w", strings.TrimSpace(name), err)
+	}
+	return text, nil
+}
+
+func (c *Client) callTool(ctx context.Context, name string, arguments map[string]any) (*mcp.CallToolResult, error) {
 	if c == nil {
-		return errors.New("MCP client is not configured")
+		return nil, errors.New("MCP client is not configured")
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
-		return errors.New("MCP tool name is required")
+		return nil, errors.New("MCP tool name is required")
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -82,18 +108,15 @@ func (c *Client) Call(ctx context.Context, name string, arguments map[string]any
 		MaxRetries:           -1,
 	}, nil)
 	if err != nil {
-		return fmt.Errorf("connect MCP: %w", err)
+		return nil, fmt.Errorf("connect MCP: %w", err)
 	}
 	defer func() { _ = session.Close() }()
 
 	result, err := session.CallTool(ctx, &mcp.CallToolParams{Name: name, Arguments: arguments})
 	if err != nil {
-		return fmt.Errorf("call MCP tool %q: %w", name, err)
+		return nil, fmt.Errorf("call MCP tool %q: %w", name, err)
 	}
-	if err := DecodeToolResult(result, output); err != nil {
-		return fmt.Errorf("decode MCP tool %q: %w", name, err)
-	}
-	return nil
+	return result, nil
 }
 
 // NormalizeEndpoint validates a Streamable HTTP MCP endpoint. It accepts http
@@ -173,13 +196,38 @@ func (e *toolError) Error() string {
 }
 
 func toolResultText(result *mcp.CallToolResult) string {
+	text, _ := toolResultTextContent(result)
+	return text
+}
+
+func toolResultTextValue(result *mcp.CallToolResult) (string, error) {
+	if result == nil {
+		return "", errors.New("empty tool result")
+	}
+	if result.IsError {
+		message := toolResultText(result)
+		if message == "" {
+			message = "MCP tool returned an error"
+		}
+		return "", &toolError{message: message}
+	}
+	return toolResultTextContent(result)
+}
+
+func toolResultTextContent(result *mcp.CallToolResult) (string, error) {
+	if result == nil {
+		return "", errors.New("empty tool result")
+	}
 	texts := make([]string, 0, len(result.Content))
 	for _, content := range result.Content {
 		if text, ok := content.(*mcp.TextContent); ok && strings.TrimSpace(text.Text) != "" {
 			texts = append(texts, strings.TrimSpace(text.Text))
 		}
 	}
-	return strings.Join(texts, "; ")
+	if len(texts) == 0 {
+		return "", errors.New("tool result did not include text content")
+	}
+	return strings.Join(texts, "\n"), nil
 }
 
 func cloneHTTPClientWithBearer(base *http.Client, bearerToken string) *http.Client {
