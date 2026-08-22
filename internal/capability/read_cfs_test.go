@@ -100,6 +100,32 @@ func TestCFSCreatePriceHandle_PodZone(t *testing.T) {
 	assert.NotContains(t, result.Reply, "CFS 共享文件存储（只读查询）")
 }
 
+func TestCFSCreatePriceRejectsNonOperationalHourlyModesBeforeUpstream(t *testing.T) {
+	reg := NewReadCapability(cfsCreatePriceReadSpec())
+	for _, chargeType := range []string{"Dynamic", "Postpay"} {
+		t.Run(chargeType, func(t *testing.T) {
+			exec := &mapReadExec{results: map[string]map[string]any{}}
+			result := reg.Run(context.Background(), CFSCreatePriceRequest{
+				Zone: "cn-bj2-03", TargetSizeGB: 50, ChargeType: chargeType,
+			}, ReadRuntime{Executor: exec})
+
+			require.Equal(t, platform.ReadStatusHandled, result.Status)
+			assert.Empty(t, exec.calls, "unsupported billing must stop before support-zone and price calls")
+			assert.Contains(t, result.Reply, "仅支持包月、包年或包日")
+		})
+	}
+}
+
+func TestCFSCreatePriceSchemaDoesNotAcceptLegacyHourlyModes(t *testing.T) {
+	reg := NewReadCapability(cfsCreatePriceReadSpec())
+	for _, chargeType := range []string{"Dynamic", "Postpay"} {
+		_, err := reg.Decode(map[string]any{
+			"zone": "cn-bj2-03", "target_size_gb": 50, "charge_type": chargeType,
+		})
+		require.Error(t, err, chargeType)
+	}
+}
+
 func TestCFSCreatePriceHandle_RejectsNonPodZone(t *testing.T) {
 	exec := &mapReadExec{results: map[string]map[string]any{
 		"DescribeCompShareSupportZone": cfsSupportZonesFixture(false),

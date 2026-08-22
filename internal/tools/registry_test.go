@@ -258,15 +258,19 @@ func TestAlignedToolSchemasMatchCurrentUpstreamContracts(t *testing.T) {
 		t.Fatal("reinstall must not promise a user-controlled password the upstream ignores")
 	}
 
-	cfs := properties("CreateCFSWorkflow")
-	charge, _ := cfs["ChargeType"].(map[string]any)
-	enums, _ := charge["enum"].([]string)
-	if !slices.Equal(enums, []string{"Month", "Year", "Day", "Dynamic"}) {
-		t.Fatalf("CFS must preserve the exact upstream wire values, got %v", enums)
-	}
-	desc, _ := charge["description"].(string)
-	if !strings.Contains(desc, "Dynamic（按量）") {
-		t.Fatalf("CFS wire enum must be explained as the user-facing on-demand mode, got %q", desc)
+	for _, tc := range []struct{ tool, field string }{
+		{"CreateCFSWorkflow", "ChargeType"},
+		{"GetCompShareCFSPrice", "ChargeType"},
+	} {
+		charge, _ := properties(tc.tool)[tc.field].(map[string]any)
+		enums, _ := charge["enum"].([]string)
+		if !slices.Equal(enums, []string{"Month", "Year", "Day"}) {
+			t.Fatalf("%s new-purchase schema must expose only operational billing modes, got %v", tc.tool, enums)
+		}
+		desc, _ := charge["description"].(string)
+		if strings.Contains(desc, "Dynamic") || strings.Contains(desc, "按量") || strings.Contains(desc, "Postpay") {
+			t.Fatalf("%s must not advertise a non-operational hourly mode, got %q", tc.tool, desc)
+		}
 	}
 
 	for _, tc := range []struct {

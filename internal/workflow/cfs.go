@@ -3,6 +3,8 @@ package workflow
 import (
 	"fmt"
 	"strings"
+
+	"github.com/compshare-agent/internal/cfsbilling"
 )
 
 // CFS create size bounds (GB). Upstream exposes no limits API, so these values
@@ -319,15 +321,13 @@ func normalizeCreateCFSParams(wfCtx *Context) error {
 	// zone-string guess.
 	region := resolvedRegion
 	chargeType := cfsChargeType(wfCtx.Params)
-	switch chargeType {
-	case "Month", "Year", "Day", "Dynamic":
-		// Dynamic is the upstream CFS wire value for its hourly/on-demand
-		// product. It remains an internal protocol value; all user-facing cards
-		// and resource renders call it 按量.
-	case "Postpay":
-		return fmt.Errorf("CFS 的按量计费需要使用当前产品支持的按量选项，请重新选择计费方式。")
-	default:
-		return fmt.Errorf("CFS 计费方式无效，请选择包月、包年、包日或按量。")
+	if !cfsbilling.SupportsNewPurchase(chargeType) {
+		switch chargeType {
+		case cfsbilling.Dynamic, cfsbilling.Postpay:
+			return fmt.Errorf("CFS 当前新购仅支持包月、包年或包日，不支持按量或后付费。")
+		default:
+			return fmt.Errorf("CFS 计费方式无效，请选择包月、包年或包日。")
+		}
 	}
 	quantity := paramNum(wfCtx.Params, "Quantity", 1)
 	if quantity <= 0 {
@@ -398,23 +398,11 @@ func cfsChargeType(params map[string]any) string {
 	}
 }
 
-// cfsChargeTypeLabel is the single presentation boundary for the CFS-specific
-// billing protocol. Dynamic must remain on the wire until the upstream API
-// changes, but exposing that legacy enum to users would make one product appear
-// to have two different on-demand modes.
+// cfsChargeTypeLabel is the single workflow presentation boundary. The create
+// path only reaches current purchase modes; the shared renderer also keeps old
+// response values intelligible without making them purchasable again.
 func cfsChargeTypeLabel(chargeType string) string {
-	switch strings.ToLower(strings.TrimSpace(chargeType)) {
-	case "dynamic":
-		return "按量"
-	case "day":
-		return "包日"
-	case "month":
-		return "包月"
-	case "year":
-		return "包年"
-	default:
-		return strings.TrimSpace(chargeType)
-	}
+	return cfsbilling.DisplayLabel(strings.TrimSpace(chargeType))
 }
 
 func cfsIDFromCreateResult(result map[string]any) string {

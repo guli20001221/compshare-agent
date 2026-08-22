@@ -1,6 +1,9 @@
 package tools
 
-import openai "github.com/sashabaranov/go-openai"
+import (
+	"github.com/compshare-agent/internal/cfsbilling"
+	openai "github.com/sashabaranov/go-openai"
+)
 
 // Registry holds all registered tools for function calling.
 var Registry = []openai.Tool{
@@ -854,7 +857,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "GetCompShareCFSPrice",
-			Description: "查询创建 CFS 共享文件存储的价格。Size 单位 GB，上游支持 50 到 2048；必须指定可用区，且 CFS 当前只支持 Pod/容器可用区，不支持普通 UCloud 区。计费支持包月、包年、包日和按量；按量在该接口中的兼容参数值为 Dynamic。只传 Zone/Region 字符串，内部会处理上游字段。",
+			Description: "查询创建 CFS 共享文件存储的价格。Size 单位 GB，上游支持 50 到 2048；必须指定可用区，且 CFS 当前只支持 Pod/容器可用区，不支持普通 UCloud 区。新购计费仅支持包月、包年和包日，不支持按量或后付费。只传 Zone/Region 字符串，内部会处理上游字段。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -864,8 +867,8 @@ var Registry = []openai.Tool{
 					},
 					"ChargeType": map[string]any{
 						"type":        "string",
-						"description": "计费方式：Month（包月）/ Year（包年）/ Day（包日）/ Dynamic（按量）。",
-						"enum":        []string{"Month", "Year", "Day", "Dynamic"},
+						"description": "计费方式：Month（包月）/ Year（包年）/ Day（包日）。",
+						"enum":        cfsbilling.NewPurchaseTypes(),
 					},
 					"Quantity": map[string]any{
 						"type":        "integer",
@@ -1153,7 +1156,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateCFSWorkflow",
-			Description: "创建 CFS 共享文件存储的候选请求。仅支持 Pod/容器可用区；计费支持包月、包年、包日和按量，按量的接口兼容值为 Dynamic；扩容已有 CFS 不使用。",
+			Description: "创建 CFS 共享文件存储的候选请求。仅支持 Pod/容器可用区；新购计费仅支持包月、包年和包日，不支持按量或后付费；扩容已有 CFS 不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1171,8 +1174,8 @@ var Registry = []openai.Tool{
 					},
 					"ChargeType": map[string]any{
 						"type":        "string",
-						"description": "计费方式：Month（包月）/ Year（包年）/ Day（包日）/ Dynamic（按量），默认包月。",
-						"enum":        []string{"Month", "Year", "Day", "Dynamic"},
+						"description": "计费方式：Month（包月）/ Year（包年）/ Day（包日），默认包月。",
+						"enum":        cfsbilling.NewPurchaseTypes(),
 					},
 					"Quantity": map[string]any{
 						"type":        "number",
