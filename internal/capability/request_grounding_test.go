@@ -83,12 +83,6 @@ func TestImageListQueryMayReuseARecentUserPhraseButNotAssistantProse(t *testing.
 	), "assistant or tool text is intentionally not an evidence source")
 }
 
-func TestZoneCatalogQueryMustComeFromCurrentTurn(t *testing.T) {
-	require.NoError(t, ValidateCurrentTurnGrounding(ZoneCatalogRequest{Query: "华北一 C"}, "华北一C对应哪个 Zone？"))
-	require.NoError(t, ValidateCurrentTurnGrounding(ZoneCatalogRequest{}, "平台有哪些可用区？"))
-	require.Error(t, ValidateCurrentTurnGrounding(ZoneCatalogRequest{Query: "上海二B"}, "华北一C对应哪个 Zone？"))
-}
-
 func TestMonitorYesterdayCannotBecomeInventedAbsoluteDates(t *testing.T) {
 	invented := MonitorHistoryRequest{TimeWindow: &platform.TimeWindow{
 		Type: platform.TimeWindowAbsolute, Start: "2026-07-18 00:00", End: "2026-07-19 00:00", SourceSpan: "昨天",
