@@ -36,21 +36,28 @@ func TestZoneCatalogReadListsStructuredLiveFacts(t *testing.T) {
 	require.Equal(t, zoneCatalogAction, result.ToolAction)
 }
 
-func TestZoneCatalogReadExactDisplayNameAllowsFormattingSpaces(t *testing.T) {
+func TestZoneCatalogReadRejectsFiltersAndAlwaysReturnsTheCompleteDirectory(t *testing.T) {
 	reg := NewReadCapability(zoneCatalogReadSpec())
-	req, err := reg.Decode(map[string]any{"query": "华北一 C"})
+	_, err := reg.Decode(map[string]any{"query": "上海二"})
+	require.Error(t, err, "the model-facing catalog must not regain a local filter")
+
+	req, err := reg.Decode(map[string]any{})
 	require.NoError(t, err)
 	result := reg.Run(context.Background(), req, ReadRuntime{ZoneCatalog: testZoneCatalog(
-		testZoneEntry("cn-bj2-03", "华北一C", "cn-bj2", 5001, 3003, true),
-		testZoneEntry("cn-wlcb-01", "华北二A", "cn-wlcb", 10027, 3007, false),
+		testZoneEntry("cn-sh2-01", "上海二A", "cn-sh2", 5001, 3003, true),
+		testZoneEntry("cn-sh2-02", "上海二B", "cn-sh2", 10027, 3007, false),
 	)})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
-	require.Len(t, result.Envelope.Subjects, 1)
-	require.Equal(t, "cn-bj2-03", result.Envelope.Subjects[0].ID)
+	require.Len(t, result.Envelope.Subjects, 2)
+	require.ElementsMatch(t, []string{"cn-sh2-01", "cn-sh2-02"}, []string{
+		result.Envelope.Subjects[0].ID,
+		result.Envelope.Subjects[1].ID,
+	})
+	require.NotContains(t, result.Reply, "没有找到")
 }
 
-func TestZoneCatalogReadKeepsEmptyUnavailableAndConflictDistinct(t *testing.T) {
+func TestZoneCatalogReadKeepsEmptyAndUnavailableDistinct(t *testing.T) {
 	reg := NewReadCapability(zoneCatalogReadSpec())
 
 	t.Run("successful empty", func(t *testing.T) {
@@ -65,16 +72,5 @@ func TestZoneCatalogReadKeepsEmptyUnavailableAndConflictDistinct(t *testing.T) {
 		require.NoError(t, err)
 		result := reg.Run(context.Background(), req, ReadRuntime{ZoneCatalog: deployment.NewZoneCatalogSnapshot(false, nil)})
 		require.Equal(t, platform.ReadStatusUnavailable, result.Status)
-	})
-
-	t.Run("ambiguous display name", func(t *testing.T) {
-		req, err := reg.Decode(map[string]any{"query": "重复名称"})
-		require.NoError(t, err)
-		result := reg.Run(context.Background(), req, ReadRuntime{ZoneCatalog: testZoneCatalog(
-			testZoneEntry("zone-a", "重复名称", "region-a", 1, 1, false),
-			testZoneEntry("zone-b", "重复名称", "region-b", 2, 2, true),
-		)})
-		require.Equal(t, platform.ReadStatusConflict, result.Status)
-		require.True(t, result.NeedsClarification)
 	})
 }

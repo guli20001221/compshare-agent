@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"unicode"
 
 	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/envelope"
@@ -17,13 +16,10 @@ const (
 	zoneCatalogAction          = "DescribeCompShareSupportZone"
 )
 
-// ZoneCatalogRequest optionally narrows the live catalog to one literal display
-// name or ZoneID. Empty query lists the complete catalog. The capability does no
-// semantic guessing: the Agent understands the question, while this handler only
-// verifies an exact catalog relation.
-type ZoneCatalogRequest struct {
-	Query string `json:"query,omitempty"`
-}
+// ZoneCatalogRequest has no filters: the catalog is small, and returning the
+// complete live directory lets the Agent interpret partial or ambiguous user
+// wording without this layer manufacturing an absence from an exact-match miss.
+type ZoneCatalogRequest struct{}
 
 func (ZoneCatalogRequest) MissingFields() []platform.MissingField { return nil }
 
@@ -43,14 +39,14 @@ type ZoneCatalogResponse struct {
 func zoneCatalogReadSpec() ReadCapabilitySpec[ZoneCatalogRequest, ZoneCatalogResponse] {
 	return ReadCapabilitySpec[ZoneCatalogRequest, ZoneCatalogResponse]{
 		Label:       zoneCatalogCapabilityLabel,
-		Description: "一次查询平台当轮完整可用区目录，返回展示名称、ZoneID、Region 以及容器区或虚机区属性。query 仅用于核实用户本轮明确提到的单个名称或 ZoneID；列出全部区域时留空。",
-		Params:      objectParam(map[string]schemaNode{"query": stringParam()}),
+		Description: "查询平台当轮完整可用区目录，返回展示名称、ZoneID、Region 以及容器区或虚机区属性。根据完整目录判断用户提到的区域；存在多个合理候选时不要自行选择。",
+		Params:      objectParam(nil),
 		Handle:      zoneCatalogHandle,
 		Render:      zoneCatalogRender,
 	}
 }
 
-func zoneCatalogHandle(_ context.Context, req ZoneCatalogRequest, rt ReadRuntime) (ZoneCatalogResponse, ReadResult) {
+func zoneCatalogHandle(_ context.Context, _ ZoneCatalogRequest, rt ReadRuntime) (ZoneCatalogResponse, ReadResult) {
 	snapshot := rt.ZoneCatalog
 	if snapshot == nil || !snapshot.Available() {
 		return ZoneCatalogResponse{}, ReadUnavailable("可用区目录当前不可用，请稍后重试。", nil)
@@ -59,28 +55,7 @@ func zoneCatalogHandle(_ context.Context, req ZoneCatalogRequest, rt ReadRuntime
 	if len(records) == 0 {
 		return ZoneCatalogResponse{}, ReadEmpty("平台当前没有返回可用区目录。")
 	}
-	query := normalizeZoneLookup(req.Query)
-	if query == "" {
-		return ZoneCatalogResponse{Records: records}, ReadResult{}
-	}
-	matches := make([]ZoneCatalogRecord, 0, 1)
-	for _, record := range records {
-		if normalizeZoneLookup(record.ZoneID) == query || normalizeZoneLookup(record.DisplayName) == query {
-			matches = append(matches, record)
-		}
-	}
-	switch len(matches) {
-	case 0:
-		return ZoneCatalogResponse{}, ReadEmpty(fmt.Sprintf("当前可用区目录中没有找到 %s。", strings.TrimSpace(req.Query)))
-	case 1:
-		return ZoneCatalogResponse{Records: matches}, ReadResult{}
-	default:
-		labels := make([]string, 0, len(matches))
-		for _, match := range matches {
-			labels = append(labels, match.DisplayName+"（"+match.ZoneID+"）")
-		}
-		return ZoneCatalogResponse{}, ReadConflict("该区域名称对应多个可用区，请明确选择：" + strings.Join(labels, "、"))
-	}
+	return ZoneCatalogResponse{Records: records}, ReadResult{}
 }
 
 func zoneCatalogRecords(snapshot *deployment.ZoneCatalogSnapshot) []ZoneCatalogRecord {
@@ -101,15 +76,6 @@ func zoneCatalogRecords(snapshot *deployment.ZoneCatalogSnapshot) []ZoneCatalogR
 		})
 	}
 	return out
-}
-
-func normalizeZoneLookup(value string) string {
-	return strings.ToLower(strings.Map(func(r rune) rune {
-		if unicode.IsSpace(r) {
-			return -1
-		}
-		return r
-	}, strings.TrimSpace(value)))
 }
 
 func zoneCatalogRender(resp ZoneCatalogResponse) ReadResult {
