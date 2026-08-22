@@ -149,6 +149,24 @@ func TestCreateCustomImage_MissingNameAsksBeforeMutatingCall(t *testing.T) {
 	assert.False(t, created)
 }
 
+func TestCreateCustomImage_InvalidNameStopsBeforeConfirmation(t *testing.T) {
+	executor := customImageMockExecutor()
+	eng := NewEngine(executor, func(string, map[string]any) bool {
+		t.Fatal("upstream-invalid image name must be rejected before confirmation")
+		return true
+	}, nil)
+
+	result, err := eng.Run(context.Background(), CreateCustomImageDef(), map[string]any{
+		"UHostId": "uhost-src", "Name": "snapshot with spaces",
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "只能包含")
+	_, created := findExecutorCall(executor.calls, "CreateCompShareCustomImage")
+	assert.False(t, created)
+}
+
 func TestCreateCustomImage_ConfirmDeniedStopsBeforeMutatingCall(t *testing.T) {
 	executor := customImageMockExecutor()
 	def := CreateCustomImageDef()

@@ -1,6 +1,9 @@
 package tools
 
-import openai "github.com/sashabaranov/go-openai"
+import (
+	"github.com/compshare-agent/internal/cfsbilling"
+	openai "github.com/sashabaranov/go-openai"
+)
 
 // Registry holds all registered tools for function calling.
 var Registry = []openai.Tool{
@@ -271,17 +274,60 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeModelRepositoryModels",
-			Description: "查询公共模型仓库中的模型列表，可按模型名称或标签筛选。用于回答模型仓库里有哪些模型、某个模型是否存在、某类标签下有哪些模型；不用于创建实例或部署模型。",
+			Description: "查询公共模型目录，可按关键词、来源、标签、分类和目录状态筛选。ZoneID 只筛选该区 Available 的模型；ReplicaStatus 筛选任一可用区存在对应副本状态，二者不是同一维度。目录记录不等于目标可用区已有健康副本；目标区判断优先使用 typed 模型仓库能力。不用于创建实例或部署模型。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"name": map[string]any{
+					"Keyword": map[string]any{
 						"type":        "string",
 						"description": "按模型名称模糊搜索，如 qwen / llama / deepseek。",
 					},
-					"tags": map[string]any{
+					"Source": map[string]any{
 						"type":        "string",
-						"description": "按模型仓库标签筛选，多个标签用逗号分隔，如 AI。标签需与模型仓库实际标签完全匹配（大小写敏感），不确定标签是否存在时优先用 name 模糊搜索。",
+						"enum":        []string{"HuggingFace", "ModelScope", "Internal"},
+						"description": "模型来源；省略时查询全部来源。",
+					},
+					"Tags": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "标签列表，标签需与目录实际值匹配。",
+					},
+					"Categories": map[string]any{
+						"type":        "array",
+						"items":       map[string]any{"type": "string"},
+						"description": "模型分类列表。",
+					},
+					"Status": map[string]any{
+						"type":        "string",
+						"enum":        []string{"Active", "Offline", "Draft"},
+						"description": "目录状态。",
+					},
+					"ReplicaStatus": map[string]any{
+						"type":        "string",
+						"enum":        []string{"Offline", "Incomplete", "Missing", "Healthy"},
+						"description": "副本状态筛选：匹配任一可用区存在该状态；不是相对于 ZoneID 的状态。",
+					},
+					"ZoneID": map[string]any{
+						"type":        "integer",
+						"description": "目标可用区内部编号；只筛选 AvailableZoneIDs 包含该区的模型。外层能力应从实时可用区目录解析，不应由模型猜测。",
+					},
+					"Offset": map[string]any{
+						"type":        "integer",
+						"description": "分页偏移量。",
+					},
+					"Limit": map[string]any{
+						"type":        "integer",
+						"description": "返回条数。",
+					},
+					"SortBy": map[string]any{
+						"type":        "string",
+						"enum":        []string{"UseCount", "SizeBytes", "CreateTime", "UpdateTime"},
+						"description": "排序字段。",
+					},
+					"SortOrder": map[string]any{
+						"type":        "string",
+						"enum":        []string{"asc", "desc"},
+						"description": "排序方向。",
 					},
 				},
 				"required": []string{},
@@ -543,7 +589,9 @@ var Registry = []openai.Tool{
 					},
 					"Name": map[string]any{
 						"type":        "string",
-						"description": "实例名称（可选）。只在用户明确指定名称时填写并保持原文；未指定则省略，由平台生成。",
+						"description": "实例名称（可选，最多 63 个字符）。只在用户明确指定名称时填写并保持原文；仅允许中文、英文字母、数字以及 _ , . : -。未指定则省略，由平台生成。",
+						"maxLength":   63,
+						"pattern":     `^[\u4E00-\u9FA5A-Za-z0-9_,.:-]+$`,
 					},
 					"ImageSource": map[string]any{
 						"type":        "string",
@@ -599,7 +647,7 @@ var Registry = []openai.Tool{
 			// The old wording was "用于普通开机或无卡开机", which presents a spec change
 			// as a second flavour of the same act. What the operation is gets said
 			// here; what the no-GPU parameter does is said on the parameter.
-			Description: "启动已有实例的候选请求。用于用户要求实际开机；开机方法或费用咨询不使用。",
+			Description: "启动已有实例的候选请求。用于用户要求实际开机；开机方法或费用咨询不使用。若实例当前已处于无卡模式且不填写 WithoutGpuSpec，平台会先恢复其存档的原带卡规格再开机。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -648,7 +696,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "RenameInstanceWorkflow",
-			Description: "修改已有实例名称的候选请求。仅用于用户要求实际改名；新名称最长 63 个字符。",
+			Description: "修改已有实例名称的候选请求。仅用于用户要求实际改名；新名称最多 63 个字符，仅允许中文、英文字母、数字以及 _ , . : -。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -658,7 +706,9 @@ var Registry = []openai.Tool{
 					},
 					"Name": map[string]any{
 						"type":        "string",
-						"description": "新的实例名称",
+						"description": "新的实例名称，最多 63 个字符，仅允许中文、英文字母、数字以及 _ , . : -。",
+						"maxLength":   63,
+						"pattern":     `^[\u4E00-\u9FA5A-Za-z0-9_,.:-]+$`,
 					},
 				},
 				"required": []string{"UHostId", "Name"},
@@ -669,7 +719,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "ResetPasswordWorkflow",
-			Description: "重置已有实例登录密码的候选请求。普通虚机需关机，容器实例可在线重置；密码规则由安全输入和服务端校验。",
+			Description: "重置已有实例登录密码的候选请求。Pod 必须处于 Running；UHost 容器可在 Running 或 Stopped 状态重置；普通 UHost 虚机需关机。密码规则由安全输入和服务端校验。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -782,7 +832,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCFS",
-			Description: "查询 CFS 共享文件存储列表或单个 CFS。CFS 是共享文件存储，可挂载到算力实例用于共享数据集/模型文件。可传 CfsId 精确查询。注意：Zone/Region 目前不能可靠按可用区筛选结果——仅传 Zone 可能直接报错，仅传 Region 或同时传 Zone+Region（即使值不匹配）都不会真正过滤，会返回同一批 CFS；不要依赖这两个参数缩小范围，也不要手填 zone_id/az_group。",
+			Description: "查询 CFS 共享文件存储列表或单个 CFS。CFS 可挂载到算力实例用于共享数据集/模型文件。可传 CfsId 精确查询；传 Zone 时，服务端会从实时可用区目录解析内部 zone_id 并按可用区过滤。不要手填 zone_id/az_group。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -807,7 +857,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "GetCompShareCFSPrice",
-			Description: "查询创建 CFS 共享文件存储的价格。Size 单位 GB，上游支持 50 到 2048；必须指定可用区，且 CFS 当前只支持 Pod/容器可用区，不支持普通 UCloud 区；CFS 不支持按量付费，ChargeType 使用 Month/Year/Day/Dynamic。只传 Zone/Region 字符串，内部会处理上游字段。",
+			Description: "查询创建 CFS 共享文件存储的价格。Size 单位 GB，上游支持 50 到 2048；必须指定可用区，且 CFS 当前只支持 Pod/容器可用区，不支持普通 UCloud 区。新购计费仅支持包月、包年和包日，不支持按量或后付费。只传 Zone/Region 字符串，内部会处理上游字段。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -817,8 +867,8 @@ var Registry = []openai.Tool{
 					},
 					"ChargeType": map[string]any{
 						"type":        "string",
-						"description": "计费方式：Month / Year / Day / Dynamic。CFS 不支持 Postpay。",
-						"enum":        []string{"Month", "Year", "Day", "Dynamic"},
+						"description": "计费方式：Month（包月）/ Year（包年）/ Day（包日）。",
+						"enum":        cfsbilling.NewPurchaseTypes(),
 					},
 					"Quantity": map[string]any{
 						"type":        "integer",
@@ -967,10 +1017,6 @@ var Registry = []openai.Tool{
 						"description": "镜像来源：platform/community/custom/sharing（兼容 shared）；不确定时可不传，服务端会用精确镜像 ID 实时判定来源",
 						"enum":        []string{"platform", "community", "custom", "sharing", "shared"},
 					},
-					"Password": map[string]any{
-						"type":        "string",
-						"description": "新的登录密码（可选，不传则保留原密码）",
-					},
 				},
 				"required": []string{"UHostId"},
 			},
@@ -1041,7 +1087,9 @@ var Registry = []openai.Tool{
 					},
 					"Name": map[string]any{
 						"type":        "string",
-						"description": "要创建的自制镜像名称。用户未提供时留空，不要编造。",
+						"description": "要创建的自制镜像名称，最多 50 个字符，仅允许中文、英文字母、数字以及 _ , . : -。用户未提供时留空，不要编造。",
+						"maxLength":   50,
+						"pattern":     `^[\u4E00-\u9FA5A-Za-z0-9_,.:-]+$`,
 					},
 					"Description": map[string]any{
 						"type":        "string",
@@ -1070,8 +1118,9 @@ var Registry = []openai.Tool{
 					},
 					"TargetImageName": map[string]any{
 						"type":        "string",
-						"description": "克隆后目标镜像的名称，最多 50 个字符。用户未提供时留空，不要编造。",
+						"description": "克隆后目标镜像的名称，最多 50 个字符，仅允许中文、英文字母、数字以及 _ , . : -。用户未提供时留空，不要编造。",
 						"maxLength":   50,
+						"pattern":     `^[\u4E00-\u9FA5A-Za-z0-9_,.:-]+$`,
 					},
 					"TargetImageDescription": map[string]any{
 						"type":        "string",
@@ -1107,7 +1156,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateCFSWorkflow",
-			Description: "创建 CFS 共享文件存储的候选请求。仅支持 Pod/容器可用区和 Month、Year、Day、Dynamic 计费；扩容已有 CFS 不使用。",
+			Description: "创建 CFS 共享文件存储的候选请求。仅支持 Pod/容器可用区；新购计费仅支持包月、包年和包日，不支持按量或后付费；扩容已有 CFS 不使用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1125,8 +1174,8 @@ var Registry = []openai.Tool{
 					},
 					"ChargeType": map[string]any{
 						"type":        "string",
-						"description": "计费方式：Month / Year / Day / Dynamic。默认 Month，CFS 不支持 Postpay。",
-						"enum":        []string{"Month", "Year", "Day", "Dynamic"},
+						"description": "计费方式：Month（包月）/ Year（包年）/ Day（包日），默认包月。",
+						"enum":        cfsbilling.NewPurchaseTypes(),
 					},
 					"Quantity": map[string]any{
 						"type":        "number",

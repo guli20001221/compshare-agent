@@ -18,9 +18,7 @@ const (
 )
 
 // NetworkAcceleratorStatusRequest is the capability's own request contract.
-type NetworkAcceleratorStatusRequest struct {
-	Targets []platform.TargetRef `json:"targets,omitempty"`
-}
+type NetworkAcceleratorStatusRequest struct{}
 
 // MissingFields: none — a network-accelerator status query is account-scoped.
 func (NetworkAcceleratorStatusRequest) MissingFields() []platform.MissingField { return nil }
@@ -34,7 +32,7 @@ func netAcceleratorReadSpec() ReadCapabilitySpec[NetworkAcceleratorStatusRequest
 	return ReadCapabilitySpec[NetworkAcceleratorStatusRequest, NetworkAcceleratorStatusResponse]{
 		Label:       netAcceleratorCapabilityLabel,
 		Description: "查询当前账号各地域或可用区的网络加速状态。只读，不开启或关闭网络加速。",
-		Params:      objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
+		Params:      objectParam(map[string]schemaNode{}),
 		Handle:      netAcceleratorHandle,
 		Render:      netAcceleratorRender,
 	}
@@ -73,10 +71,11 @@ func renderNetAcceleratorStatusReply(raw map[string]any) (string, bool) {
 			if row.optimized {
 				status = "已开通"
 			}
-			if row.region == "" {
+			location := strings.TrimSpace(strings.Join([]string{row.region, row.zone}, " "))
+			if location == "" {
 				parts = append(parts, status)
 			} else {
-				parts = append(parts, fmt.Sprintf("%s %s", row.region, status))
+				parts = append(parts, fmt.Sprintf("%s %s", location, status))
 			}
 		}
 		anyDisabled := false
@@ -108,6 +107,7 @@ func netAcceleratorBoundaryNote(anyDisabled bool) string {
 
 type netAcceleratorRow struct {
 	region    string
+	zone      string
 	optimized bool
 }
 
@@ -128,6 +128,7 @@ func netAcceleratorRows(raw map[string]any) []netAcceleratorRow {
 		}
 		rows = append(rows, netAcceleratorRow{
 			region:    stringField(entry, "Region"),
+			zone:      stringField(entry, "Zone"),
 			optimized: optimized,
 		})
 	}

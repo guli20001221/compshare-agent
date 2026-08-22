@@ -3,6 +3,8 @@ package workflow
 import (
 	"fmt"
 	"strings"
+
+	"github.com/compshare-agent/internal/cfsbilling"
 )
 
 // CFS create size bounds (GB). Upstream exposes no limits API, so these values
@@ -27,7 +29,7 @@ func CreateCFSDef() *Definition {
 				"Name":        wfCtx.Params["Name"],
 				"Size":        wfCtx.Params["Size"],
 				"Zone":        wfCtx.Params["Zone"],
-				"ChargeType":  cfsChargeType(wfCtx.Params),
+				"ChargeType":  cfsChargeTypeLabel(cfsChargeType(wfCtx.Params)),
 				"created_cfs": wfCtx.Result("创建 CFS"),
 			}
 			if cfsID := cfsIDFromCreateResult(wfCtx.Result("创建 CFS")); cfsID != "" {
@@ -127,9 +129,9 @@ func stepConfirmCreateCFS() Step {
 				"Size":       wfCtx.Params["Size"],
 				"Zone":       wfCtx.Params["Zone"],
 				"Region":     wfCtx.Params["Region"],
-				"ChargeType": cfsChargeType(wfCtx.Params),
+				"ChargeType": cfsChargeTypeLabel(cfsChargeType(wfCtx.Params)),
 				"Quantity":   wfCtx.Params["Quantity"],
-				"warning":    "将创建新的 CFS 共享文件存储并开始计费；CFS 暂不支持按量付费，删除能力不由 agent 暴露。",
+				"warning":    "将创建新的 CFS 共享文件存储并开始计费；删除能力不由 agent 暴露。",
 			}
 			priceText := cfsCreatePriceText(priceResult)
 			if priceText == "" {
@@ -319,8 +321,13 @@ func normalizeCreateCFSParams(wfCtx *Context) error {
 	// zone-string guess.
 	region := resolvedRegion
 	chargeType := cfsChargeType(wfCtx.Params)
-	if strings.EqualFold(chargeType, "Postpay") {
-		return fmt.Errorf("CFS 不支持按量付费，请选择 Month、Year、Day 或 Dynamic。")
+	if !cfsbilling.SupportsNewPurchase(chargeType) {
+		switch chargeType {
+		case cfsbilling.Dynamic, cfsbilling.Postpay:
+			return fmt.Errorf("CFS 当前新购仅支持包月、包年或包日，不支持按量或后付费。")
+		default:
+			return fmt.Errorf("CFS 计费方式无效，请选择包月、包年或包日。")
+		}
 	}
 	quantity := paramNum(wfCtx.Params, "Quantity", 1)
 	if quantity <= 0 {
@@ -389,6 +396,13 @@ func cfsChargeType(params map[string]any) string {
 	default:
 		return strings.TrimSpace(paramStr(params, "ChargeType", "Month"))
 	}
+}
+
+// cfsChargeTypeLabel is the single workflow presentation boundary. The create
+// path only reaches current purchase modes; the shared renderer also keeps old
+// response values intelligible without making them purchasable again.
+func cfsChargeTypeLabel(chargeType string) string {
+	return cfsbilling.DisplayLabel(strings.TrimSpace(chargeType))
 }
 
 func cfsIDFromCreateResult(result map[string]any) string {

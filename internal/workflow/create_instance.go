@@ -1998,6 +1998,14 @@ func validateSelectedImageCompatibility(wfCtx *Context, imageID string, placemen
 		// preflight validates that id, its status, and its adaptive UHost image.
 		return nil
 	}
+	zoneEntry, err := workflowZoneEntry(wfCtx, placement.Zone)
+	if err != nil {
+		return err
+	}
+	imageType := strings.TrimSpace(paramStr(image, "ImageType", ""))
+	if !zoneEntry.SupportsImageType(imageType) {
+		return fmt.Errorf("%s 当前不支持 %s 类型镜像，请更换镜像或可用区", zoneDisplayLabel(wfCtx, placement.Zone), imageType)
+	}
 	if status := strings.TrimSpace(paramStr(image, "Status", "")); status != "" && !strings.EqualFold(status, deployment.ImageStatusAvailable) {
 		return fmt.Errorf("%s 当前不可用，请更换镜像", name)
 	}
@@ -2322,6 +2330,13 @@ func materializeCreateDraft(wfCtx *Context) (map[string]any, error) {
 		return nil, createImageUnavailableError(wfCtx.Params)
 	}
 	gt, _ := wfCtx.Params["GpuType"].(string)
+	instanceName := paramStr(wfCtx.Params, "Name", "")
+	if instanceName != "" {
+		instanceName, err = validatedCompShareResourceName(instanceName, "实例名称", 63)
+		if err != nil {
+			return nil, err
+		}
+	}
 	placement, err := workflowZonePlacement(wfCtx, zone)
 	if err != nil {
 		return nil, err
@@ -2353,7 +2368,7 @@ func materializeCreateDraft(wfCtx *Context) (map[string]any, error) {
 			MinimalCPUPlatform: workflowMinimalCPUPlatform(wfCtx, gt, zone),
 			LoginMode:          deployment.LoginModeConsole,
 			Disks:              workflowSystemDisks(wfCtx, imageId, zone, gt),
-			Name:               paramStr(wfCtx.Params, "Name", ""),
+			Name:               instanceName,
 		},
 		Image:     image,
 		Placement: placement,

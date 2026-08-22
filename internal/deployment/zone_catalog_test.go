@@ -43,6 +43,24 @@ func TestZoneCatalogSnapshot_EntryProjectsPlacementAndLabelTogether(t *testing.T
 	assert.Equal(t, entry.DisplayName, cat.Label("cn-bj2-03"), "Label is the entry's display name")
 }
 
+func TestZoneCatalogSnapshot_PreservesRestrictionsAndCopiesSlices(t *testing.T) {
+	denied := []string{"Community", "Custom"}
+	cat := NewZoneCatalogSnapshot(true, []ZoneCatalogEntry{{
+		Placement: ZonePlacement{Zone: "cn-test-01", ZoneID: 42}, DisplayName: "测试区",
+		DisableImageSync: true, UnsupportedImageTypes: denied,
+	}})
+	denied[0] = "TAMPERED"
+	entry, ok := cat.Entry("cn-test-01")
+	require.True(t, ok)
+	assert.True(t, entry.DisableImageSync)
+	assert.Equal(t, []string{"Community", "Custom"}, entry.UnsupportedImageTypes)
+	assert.False(t, entry.SupportsImageType("community"))
+	assert.True(t, entry.SupportsImageType("System"))
+	entry.UnsupportedImageTypes[0] = "TAMPERED"
+	again, _ := cat.Entry("cn-test-01")
+	assert.Equal(t, "Community", again.UnsupportedImageTypes[0], "returned restriction list must not mutate the snapshot")
+}
+
 func TestZoneCatalogSnapshot_LabelFallsBackToZoneID(t *testing.T) {
 	cat := sampleZoneCatalog()
 

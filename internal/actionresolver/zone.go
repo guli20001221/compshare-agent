@@ -103,10 +103,14 @@ func (r *Resolver) WithZoneCatalog(catalog *deployment.ZoneCatalogSnapshot) *Res
 	return r
 }
 
-// SpecNeedsZoneCatalog reports whether resolving this operation requires a live
-// zone snapshot. The engine uses it to skip the upstream zone query for
-// operations that carry no zone field.
+// SpecNeedsZoneCatalog reports whether resolving or executing this operation
+// requires a live zone snapshot. A Zone field declares the ordinary resolver
+// dependency; NeedsZoneCatalog covers workflows that discover their zone from a
+// target resource and consume the same snapshot only during execution.
 func SpecNeedsZoneCatalog(spec OperationSpec) bool {
+	if spec.NeedsZoneCatalog {
+		return true
+	}
 	for _, field := range spec.Fields {
 		if field.Codec == CodecZone {
 			return true

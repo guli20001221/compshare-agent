@@ -103,6 +103,24 @@ func TestRenameInstance_MissingNameAsksBeforeConfirmOrMutatingCall(t *testing.T)
 	assert.Equal(t, "DescribeCompShareSupportZone", executor.calls[1].action)
 }
 
+func TestRenameInstance_InvalidNameStopsBeforeConfirmation(t *testing.T) {
+	executor := renameMockExecutor()
+	eng := NewEngine(executor, func(string, map[string]any) bool {
+		t.Fatal("upstream-invalid name must be rejected before confirmation")
+		return true
+	}, nil)
+
+	result, err := eng.Run(context.Background(), RenameInstanceDef(), map[string]any{
+		"UHostId": "uhost-xxx", "Name": "invalid name/with spaces",
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "只能包含")
+	_, mutated := findExecutorCall(executor.calls, "ModifyCompShareInstanceName")
+	assert.False(t, mutated)
+}
+
 func TestRenameInstance_InstanceNotFound(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{}},

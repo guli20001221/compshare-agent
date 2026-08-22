@@ -116,11 +116,7 @@ func TestResetPassword_VMStopped_HappyPath(t *testing.T) {
 	assert.True(t, result.Success)
 }
 
-// TestResetPassword_ContainerStopped_Rejected: live-verified 2026-07-10 —
-// resetting a Stopped Pod's password returns upstream RetCode 8433; only a
-// Running Pod succeeds (RetCode 0). The workflow must reject before ever
-// calling ResetCompShareInstancePassword.
-func TestResetPassword_ContainerStopped_Rejected(t *testing.T) {
+func TestResetPassword_UHostContainerStopped_HappyPath(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{
 			map[string]any{
@@ -135,7 +131,8 @@ func TestResetPassword_ContainerStopped_Rejected(t *testing.T) {
 				"ChargeType":   "Dynamic",
 			},
 		}},
-		"DescribeCompShareSupportZone": cfsSupportZone("cn-wlcb-01", "cn-wlcb", "华北二A", 9001, 3001, true),
+		"DescribeCompShareSupportZone":   cfsSupportZone("cn-wlcb-01", "cn-wlcb", "华北二A", 9001, 3001, false),
+		"ResetCompShareInstancePassword": {"UHostId": "uhost-xxx", "RetCode": float64(0)},
 	}}
 	confirmFn := func(action string, args map[string]any) bool { return true }
 	onStep, _ := collectEvents()
@@ -148,9 +145,32 @@ func TestResetPassword_ContainerStopped_Rejected(t *testing.T) {
 	})
 
 	assert.NoError(t, err)
+	assert.True(t, result.Success)
+	_, reset := findExecutorCall(executor.calls, "ResetCompShareInstancePassword")
+	assert.True(t, reset)
+}
+
+// Pod reset executes chpasswd inside the running guest. Unlike a UHost
+// container, a stopped Pod cannot merely persist the credential for next boot.
+func TestResetPassword_PodStopped_Rejected(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{
+			map[string]any{
+				"UHostId": "cpod-xxx", "State": "Stopped", "InstanceType": "Container",
+				"Region": "cn-wlcb", "Zone": "cn-wlcb-01", "ChargeType": "Postpay",
+			},
+		}},
+	}}
+	result, err := NewEngine(executor, func(string, map[string]any) bool {
+		t.Fatal("stopped Pod must be rejected before confirmation")
+		return true
+	}, nil).Run(context.Background(), ResetPasswordDef(), map[string]any{
+		"UHostId": "cpod-xxx", "Password": "NewPass123!",
+	})
+	require.NoError(t, err)
 	assert.False(t, result.Success)
-	assert.Contains(t, result.Message, "需要先开机")
-	assert.Len(t, executor.calls, 1, "must reject before calling ResetCompShareInstancePassword")
+	assert.Contains(t, result.Message, "Pod 实例需要处于 Running")
+	assert.Len(t, executor.calls, 1)
 }
 
 func TestResetPassword_VMRunning_Rejected(t *testing.T) {

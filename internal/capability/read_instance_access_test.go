@@ -227,6 +227,22 @@ func TestInstanceAccessCustomPortDistinguishesPodFromVM(t *testing.T) {
 		assert.Contains(t, result.Reply, "不返回实例内监听端口或系统防火墙状态")
 		require.Len(t, exec.calls, 1, "VM custom-port checks should not make an unrelated catalog call")
 	})
+
+	t.Run("pod udp declaration is not a public forward", func(t *testing.T) {
+		exec := &accessReadExec{results: map[string]map[string]any{
+			instanceAccessDescribeAction: describeFixture(accessHost("cpod-a", "Container", map[string]any{
+				"Ports": map[string]any{"UdpPorts": []any{float64(3478)}},
+			})),
+		}}
+		result := runInstanceAccess(t, exec, InstanceAccessRequest{
+			Targets: accessTarget("cpod-a"), AccessType: accessTypeCustomPort,
+			Protocol: accessProtocolUDP, Port: 3478,
+		})
+		require.Equal(t, platform.ReadStatusHandled, result.Status)
+		assert.Contains(t, result.Reply, "实例 Service 已声明，但公网入口未经证实")
+		assert.Contains(t, result.Reply, "没有返回可核验的公网 UDP 转发")
+		assert.NotContains(t, result.Reply, "云侧配置已登记")
+	})
 }
 
 func TestInstanceAccessRequiresSameIDInDescribeResponse(t *testing.T) {

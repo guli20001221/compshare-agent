@@ -129,9 +129,31 @@ func TestStopInstance_ConfirmHasFeeWarning(t *testing.T) {
 	warning, ok := capturedArgs["warning"].(string)
 	assert.True(t, ok)
 	assert.NotEmpty(t, warning)
-	assert.Contains(t, warning, "取决于盘型和区域")
+	assert.Contains(t, warning, "不会取消或退款已购买的计费周期")
+	assert.NotContains(t, warning, "实例和 GPU 停止计费")
 	assert.NotContains(t, warning, "100GB",
 		"the free allowance varies by disk type and region — promising a fixed 100GB is a billing claim we cannot make")
+}
+
+func TestStopBillingWarningMatchesChargeContract(t *testing.T) {
+	tests := []struct {
+		charge string
+		want   string
+		not    string
+	}{
+		{charge: "Postpay", want: "结束当前实例/GPU 的运行计费段", not: "不会取消或退款已购买的计费周期"},
+		{charge: "Spot", want: "结束当前实例/GPU 的运行计费段", not: "不会取消或退款已购买的计费周期"},
+		{charge: "Month", want: "不会取消或退款已购买的计费周期", not: "结束当前实例/GPU 的运行计费段"},
+		{charge: "Dynamic", want: "不会取消或退款已购买的计费周期", not: "结束当前实例/GPU 的运行计费段"},
+		{charge: "", want: "不能据此确认费用已经停止", not: "结束当前实例/GPU 的运行计费段"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.charge, func(t *testing.T) {
+			warning := stopBillingWarning(map[string]any{"ChargeType": tc.charge})
+			assert.Contains(t, warning, tc.want)
+			assert.NotContains(t, warning, tc.not)
+		})
+	}
 }
 
 func TestStopInstance_AlreadyStopped(t *testing.T) {
@@ -495,6 +517,33 @@ func TestStartInstance_NormalStartConfirmIsUnchanged(t *testing.T) {
 	assert.Equal(t, float64(1), capturedArgs["GPU"])
 	assert.NotContains(t, capturedArgs, "规格变更")
 	assert.NotContains(t, capturedArgs, "注意")
+}
+
+func TestStartInstance_CurrentNoGPUPlainStartDisclosesHiddenRestore(t *testing.T) {
+	executor := startMockExecutor()
+	executor.results["DescribeCompShareInstance"] = map[string]any{"UHostSet": []any{
+		map[string]any{
+			"UHostId": "cpod-yyy", "InstanceType": "Container", "Name": "no-gpu",
+			"State": "Stopped", "Zone": "cn-bj2-04", "Region": "cn-bj2",
+			"GpuType": "4090", "GPU": float64(0), "CPU": float64(2), "Memory": float64(4096),
+			"ChargeType":     "Postpay",
+			"WithoutGpuSpec": map[string]any{"Spec": "A", "Cpu": float64(2), "Memory": float64(4096), "Gpu": float64(0)},
+		},
+	}}
+	var captured map[string]any
+	result, err := NewEngine(executor, func(_ string, args map[string]any) bool {
+		captured = args
+		return false
+	}, nil).Run(context.Background(), StartInstanceDef(), map[string]any{"UHostId": "cpod-yyy"})
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	change := captured["规格变更"].(string)
+	assert.Contains(t, change, "无卡（0 GPU / 2核 / 4GB）")
+	assert.Contains(t, change, "GPU 型号 4090")
+	assert.Contains(t, captured["注意"], "恢复存档的原带卡规格")
+	assert.Contains(t, captured["注意"], "不能独立完成精确库存和报价预检")
+	assert.NotContains(t, captured, "GpuType")
+	assert.NotContains(t, captured, "GPU")
 }
 
 func TestStartInstance_WithoutGpuUsesDefaultSpecWhenPreviewMissing(t *testing.T) {

@@ -129,6 +129,35 @@ func TestCreateCFSWorkflowConfirmsBeforeCreate(t *testing.T) {
 	assert.Equal(t, float64(100), createCall.args["Size"])
 }
 
+func TestCreateCFSWorkflowRejectsNonOperationalHourlyModesBeforePrice(t *testing.T) {
+	for _, chargeType := range []string{"Dynamic", "Postpay"} {
+		t.Run(chargeType, func(t *testing.T) {
+			executor := &mockExecutor{results: map[string]map[string]any{
+				"DescribeCFS":          {"CFSSet": []any{}},
+				"GetCompShareCFSPrice": {"PriceDetails": []any{}},
+				"CreateCFS":            {"CfsId": "must-not-exist"},
+			}}
+			eng := NewEngine(executor, func(string, map[string]any) bool {
+				t.Fatal("unsupported CFS billing mode must be rejected before confirmation")
+				return true
+			}, nil)
+
+			result, err := eng.Run(context.Background(), CreateCFSDef(), map[string]any{
+				"Name": "shared-hourly", "Size": float64(100), "Zone": "cn-bj2-03", "ChargeType": chargeType,
+			}, withCFSZone("cn-bj2-03", "cn-bj2", "华北一C", 9103, 3103, true))
+
+			require.NoError(t, err)
+			assert.False(t, result.Success)
+			assert.Contains(t, result.Message, "仅支持包月、包年或包日")
+			assert.NotContains(t, result.Message, "Dynamic", "wire vocabulary must not be required from the user")
+			_, priced := findExecutorCall(executor.calls, "GetCompShareCFSPrice")
+			assert.False(t, priced)
+			_, created := findExecutorCall(executor.calls, "CreateCFS")
+			assert.False(t, created)
+		})
+	}
+}
+
 func TestCreateCFSWorkflowRejectsExistingSameZoneBeforePriceAndConfirmation(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCFS": cfsDescribeResult(),

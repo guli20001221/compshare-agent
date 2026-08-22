@@ -91,6 +91,23 @@ func TestCloneCustomImage_RejectsSameZoneBeforeConfirmation(t *testing.T) {
 	assert.Empty(t, executor.calls)
 }
 
+func TestCloneCustomImage_InvalidNameStopsBeforeConfirmation(t *testing.T) {
+	executor := cloneCustomImageExecutor()
+	eng := NewEngine(executor, func(string, map[string]any) bool {
+		t.Fatal("upstream-invalid target image name must be rejected before confirmation")
+		return true
+	}, nil)
+
+	result, err := eng.Run(context.Background(), CloneCustomImageDef(), map[string]any{
+		"CompShareImageId": "cimg-source", "Zone": "cn-sh2-02", "TargetImageName": "invalid target/name",
+	}, WithReferenceData(cloneCustomImageReferenceData(deployment.ImageStatusAvailable, "cn-wlcb-01", 10027)))
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "只能包含")
+	assert.Empty(t, executor.calls)
+}
+
 func TestCloneCustomImage_RejectsVMImageToPodZoneBeforeConfirmation(t *testing.T) {
 	executor := cloneCustomImageExecutor()
 	ref := cloneCustomImageReferenceData(deployment.ImageStatusAvailable, "cn-wlcb-01", 10027)
@@ -133,6 +150,32 @@ func TestCloneCustomImage_AllowsContainerImageToPodZone(t *testing.T) {
 	call, ok := findExecutorCall(executor.calls, "SyncCompShareCustomImage")
 	require.True(t, ok)
 	assert.Equal(t, []uint32{5001}, call.args["TargetZoneIds"])
+}
+
+func TestCloneCustomImage_ContainerSyncHonorsLiveZoneRestriction(t *testing.T) {
+	executor := cloneCustomImageExecutor()
+	ref := cloneCustomImageReferenceData(deployment.ImageStatusAvailable, "cn-wlcb-01", 10027)
+	ref.ImageCatalog = deployment.NewImageCatalogSnapshot(true, []deployment.ImageCatalogEntry{{
+		ID: "cimg-source", Name: "container-base", Source: "custom", ImageType: "Custom",
+		Status: deployment.ImageStatusAvailable, Zone: "cn-wlcb-01", ZoneID: 10027, Container: true,
+	}})
+	ref.ZoneCatalog = deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
+		{Placement: deployment.ZonePlacement{Zone: "cn-wlcb-01", Region: "cn-wlcb", ZoneID: 10027}, DisplayName: "华北二A"},
+		{Placement: deployment.ZonePlacement{Zone: "cn-bj2-03", Region: "cn-bj2", ZoneID: 5001, IsPod: true}, DisplayName: "华北一C", DisableImageSync: true},
+	})
+	eng := NewEngine(executor, func(string, map[string]any) bool {
+		t.Fatal("live DisableImageSync must reject before confirmation")
+		return true
+	}, nil)
+
+	result, err := eng.Run(context.Background(), CloneCustomImageDef(), map[string]any{
+		"CompShareImageId": "cimg-source", "Zone": "cn-bj2-03", "TargetImageName": "blocked-copy",
+	}, WithReferenceData(ref))
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "禁止容器自制镜像同步")
+	assert.Empty(t, executor.calls)
 }
 
 func TestCloneCustomImage_RejectsUnavailableSource(t *testing.T) {

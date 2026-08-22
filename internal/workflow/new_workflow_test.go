@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -939,7 +940,11 @@ func TestResize_CarriesInternalPlacement(t *testing.T) {
 		"ResizeCompShareInstance":          {"RetCode": 0},
 	}}
 	def := ResizeInstanceDef()
-	eng := NewEngine(executor, func(action string, args map[string]any) bool { return true }, nil)
+	var confirmed map[string]any
+	eng := NewEngine(executor, func(action string, args map[string]any) bool {
+		confirmed = args
+		return true
+	}, nil)
 
 	result, err := eng.Run(context.Background(), def, map[string]any{
 		"UHostId": "uhost-test",
@@ -952,10 +957,20 @@ func TestResize_CarriesInternalPlacement(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, uint32(9001), priceCall.args["zone_id"])
 	assert.Equal(t, uint32(3001), priceCall.args["az_group"])
+	assert.Equal(t, float64(16), priceCall.args["CPU"], "sparse GPU-only request must quote the complete target")
+	assert.Equal(t, float64(2), priceCall.args["GPU"])
+	assert.Equal(t, float64(65536), priceCall.args["Memory"])
+	require.NotNil(t, confirmed)
+	assert.Equal(t, float64(16), confirmed["target_cpu"])
+	assert.Equal(t, float64(2), confirmed["target_gpu"])
+	assert.Equal(t, float64(65536), confirmed["target_memory"])
 	resizeCall, ok := findExecutorCall(executor.calls, "ResizeCompShareInstance")
 	require.True(t, ok)
 	assert.Equal(t, uint32(9001), resizeCall.args["zone_id"])
 	assert.Equal(t, uint32(3001), resizeCall.args["az_group"])
+	assert.Equal(t, float64(16), resizeCall.args["Cpu"])
+	assert.Equal(t, float64(2), resizeCall.args["Gpu"])
+	assert.Equal(t, float64(65536), resizeCall.args["Memory"])
 }
 
 func TestResize_PassesParamsToAPI(t *testing.T) {
@@ -1025,7 +1040,7 @@ func TestReinstall_ShowsImageNameInConfirm(t *testing.T) {
 	assert.Contains(t, confirmArgs["warning"].(string), "系统盘")
 }
 
-func TestReinstall_PasswordBase64Encoded(t *testing.T) {
+func TestReinstall_DoesNotOfferIgnoredPasswordContract(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance":  stoppedInstanceResult(),
 		"DescribeCompShareImages":    {"ImageSet": []any{map[string]any{"CompShareImageId": "img-001", "Name": "Ubuntu"}}},
@@ -1053,9 +1068,9 @@ func TestReinstall_PasswordBase64Encoded(t *testing.T) {
 			reinstallCall = c
 		}
 	}
-	assert.Equal(t, "TXlQYXNzMTIzIQ==", reinstallCall.args["Password"], "password must be base64-encoded")
-	assert.Equal(t, "Password", reinstallCall.args["LoginMode"])
-	assert.Equal(t, true, confirmed["password_will_change"])
+	assert.NotContains(t, reinstallCall.args, "Password", "upstream reinstall ignores the request password")
+	assert.NotContains(t, reinstallCall.args, "LoginMode", "upstream reinstall owns credential handling")
+	assert.Contains(t, confirmed["credential_handling"], "本次重装不接受新密码")
 }
 
 func TestReinstall_CommunityImageLookupAccepted(t *testing.T) {
@@ -1242,17 +1257,20 @@ func TestReinstall_BlocksWhenImageRequiresLargerSystemDisk(t *testing.T) {
 	assert.False(t, reinstalled)
 }
 
-func TestReinstall_ContainerRejectsNonContainerImageBeforeConfirm(t *testing.T) {
+func TestReinstall_StoppedUHostContainerCanReplaceSystemDiskWithHostImage(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": containerStoppedInstanceResult(),
+		"DescribeCompShareInstance":    containerStoppedInstanceResult(),
+		"DescribeCompShareSupportZone": cfsSupportZone("cn-pod-01", "cn-pod", "容器一区", 9001, 3001, true),
 		"DescribeCompShareImages": {"ImageSet": []any{
 			map[string]any{"CompShareImageId": "img-001", "Name": "Ubuntu-nvidia 22.04", "Container": "False"},
 		}},
+		"ReinstallCompShareInstance": {"RetCode": 0},
 	}}
 
+	var confirmed map[string]any
 	def := ReinstallInstanceDef()
 	eng := NewEngine(executor, func(action string, args map[string]any) bool {
-		t.Fatal("Container 重装非容器镜像时不应进入确认")
+		confirmed = args
 		return true
 	}, nil)
 	result, err := eng.Run(context.Background(), def, map[string]any{
@@ -1261,16 +1279,23 @@ func TestReinstall_ContainerRejectsNonContainerImageBeforeConfirm(t *testing.T) 
 	})
 
 	require.NoError(t, err)
-	assert.False(t, result.Success)
-	assert.Contains(t, result.Message, "容器镜像")
+	assert.True(t, result.Success)
+	require.NotNil(t, confirmed)
+	assert.Contains(t, confirmed["warning"], "系统盘")
 	_, reinstalled := findExecutorCall(executor.calls, "ReinstallCompShareInstance")
-	assert.False(t, reinstalled)
+	assert.True(t, reinstalled)
 }
 
-func TestReinstall_RunningInstanceBlocked(t *testing.T) {
+func TestReinstall_RunningUHostSystemDiskPathBlocked(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{
-			map[string]any{"UHostId": "uhost-test", "State": "Running"},
+			map[string]any{
+				"UHostId": "uhost-test", "State": "Running", "Region": "cn-sh2", "Zone": "cn-sh2-02",
+				"InstanceType": "Normal", "GpuType": "4090", "GPU": float64(1),
+			},
+		}},
+		"DescribeCompShareImages": {"ImageSet": []any{
+			map[string]any{"CompShareImageId": "img-001", "Name": "Ubuntu", "Container": "False"},
 		}},
 	}}
 	onStep, _ := collectEvents()
@@ -1285,6 +1310,63 @@ func TestReinstall_RunningInstanceBlocked(t *testing.T) {
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
 	assert.Contains(t, result.Message, "关机")
+}
+
+func TestValidateReinstallStateForPath_MatchesUpstreamMatrix(t *testing.T) {
+	instance := func(id, kind, state string) map[string]any {
+		return map[string]any{"UHostSet": []any{map[string]any{
+			"UHostId": id, "InstanceType": kind, "State": state,
+		}}}
+	}
+	tests := []struct {
+		name      string
+		result    map[string]any
+		container bool
+		wantErr   bool
+	}{
+		{"pod running", instance("cpod-a", "Container", "Running"), true, false},
+		{"pod stopping", instance("cpod-a", "Container", "Stopping"), true, false},
+		{"pod stopped", instance("cpod-a", "Container", "Stopped"), true, false},
+		{"uhost container-to-container running", instance("uhost-a", "Container", "Running"), true, false},
+		{"uhost container-to-container stopped", instance("uhost-a", "Container", "Stopped"), true, true},
+		{"uhost host disk replacement stopped", instance("uhost-a", "Normal", "Stopped"), false, false},
+		{"uhost host disk replacement running", instance("uhost-a", "Normal", "Running"), false, true},
+		{"uhost container-to-host stopped", instance("uhost-a", "Container", "Stopped"), false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateReinstallStateForPath(tc.result, reinstallImageInfo{Container: tc.container})
+			if tc.wantErr {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestReinstall_ZoneImageRestrictionBlocksBeforeConfirmation(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": stoppedInstanceResult(),
+		"DescribeCompShareImages": {"ImageSet": []any{map[string]any{
+			"CompShareImageId": "img-community", "Name": "community image", "ImageType": "Community", "Container": "False",
+		}}},
+	}}
+	zones := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{{
+		Placement:   deployment.ZonePlacement{Zone: "cn-sh2-02", Region: "cn-sh2", ZoneID: 8200},
+		DisplayName: "上海二B", UnsupportedImageTypes: []string{"Community"},
+	}})
+	result, err := NewEngine(executor, func(string, map[string]any) bool {
+		t.Fatal("live zone restriction must reject before confirmation")
+		return true
+	}, nil).Run(context.Background(), ReinstallInstanceDef(), map[string]any{
+		"UHostId": "uhost-test", "CompShareImageId": "img-community",
+	}, WithReferenceData(ReferenceData{ZoneCatalog: zones}))
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "上海二B 当前不支持 Community 类型镜像")
+	_, called := findExecutorCall(executor.calls, "ReinstallCompShareInstance")
+	assert.False(t, called)
 }
 
 func TestReinstall_TargetImageMissingBlockedBeforeConfirm(t *testing.T) {

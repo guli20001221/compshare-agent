@@ -38,6 +38,7 @@ func BuildCatalog() (*Catalog, error) {
 		catalog.specs[operation] = OperationSpec{
 			Operation: operation, AgentDescription: tools.WorkflowAgentDescription(strings.TrimSpace(capability.AgentInstruction)), Fields: fields,
 			ImageCatalogSource: definition.ImageCatalogSource,
+			NeedsZoneCatalog:   definition.NeedsZoneCatalog,
 			NeedsConfirm:       capability.Policy.NeedsConfirm,
 			Risk:               capability.Policy.SecurityLevel,
 			Execution:          workflow.ExecutionContract(definition),

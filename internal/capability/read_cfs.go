@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/compshare-agent/internal/cfsbilling"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/platform"
-	"github.com/compshare-agent/internal/readprojection"
 	"github.com/compshare-agent/internal/zones"
 )
 
@@ -106,7 +106,7 @@ func cfsCreatePriceReadSpec() ReadCapabilitySpec[CFSCreatePriceRequest, CFSRespo
 		Params: objectParam(map[string]schemaNode{
 			"zone":           stringParam().described("精确可用区 ID。当前只有上游标记为 Pod 的区域支持该询价。"),
 			"target_size_gb": integerParam(1).described("目标容量 GB。"),
-			"charge_type":    enumParam("Day", "Month", "Year", "Dynamic").described("计费周期；省略时默认为 Month。"),
+			"charge_type":    enumParam(cfsbilling.NewPurchaseTypes()...).described("计费周期：包月、包年或包日。CFS 当前不支持新购按量/后付费；省略时默认为包月。"),
 		}, "zone", "target_size_gb"),
 		Handle: cfsCreatePriceHandle,
 		Render: cfsRender,
@@ -117,6 +117,12 @@ func cfsCreatePriceHandle(ctx context.Context, req CFSCreatePriceRequest, rt Rea
 	size := req.TargetSizeGB
 	if size <= 0 {
 		return CFSResponse{}, cfsClarify(cfsCreatePriceAction, "请补充要创建的 CFS 容量，单位 GB，例如 50GB。CFS 询价只读，不会创建资源。")
+	}
+	chargeType, supported := cfsCreateChargeTypeFromSlot(req.ChargeType)
+	if !supported {
+		r := ReadHandled("CFS 当前新购仅支持包月、包年或包日，不支持按量或后付费。询价不会创建资源。")
+		r.ToolAction = cfsCreatePriceAction
+		return CFSResponse{}, r
 	}
 	zone, ok := resolveCFSZoneFromSlot(ctx, rt, req.Zone)
 	if !ok || zone.Zone == "" || zone.ZoneID == 0 {
@@ -129,7 +135,7 @@ func cfsCreatePriceHandle(ctx context.Context, req CFSCreatePriceRequest, rt Rea
 	}
 	args := map[string]any{
 		"Size":       size,
-		"ChargeType": cfsChargeTypeFromSlot(req.ChargeType),
+		"ChargeType": chargeType,
 		"Quantity":   1,
 		"zone_id":    zone.ZoneID,
 		"az_group":   zone.RegionID,
@@ -309,12 +315,12 @@ func cfsZoneIDFromDescribe(raw map[string]any) uint32 {
 	return 0
 }
 
-func cfsChargeTypeFromSlot(value string) string {
+func cfsCreateChargeTypeFromSlot(value string) (string, bool) {
 	value = strings.TrimSpace(value)
 	if value == "" {
-		return "Month"
+		return cfsbilling.Month, true
 	}
-	return value
+	return value, cfsbilling.SupportsNewPurchase(value)
 }
 
 // cfsMountStatusLabel translates known wire values and preserves unknown ones.
@@ -366,8 +372,7 @@ func renderCFSInfoReply(raw map[string]any) string {
 		}
 		charge := stringField(row, "ChargeType")
 		if charge != "" {
-			// Use the same billing vocabulary as the instance list.
-			charge = "，计费 " + readprojection.ChargeTypeLabel(charge)
+			charge = "，计费 " + cfsbilling.DisplayLabel(charge)
 		}
 		mountStatus := stringField(row, "MountStatus")
 		if mountStatus != "" {
@@ -387,10 +392,7 @@ func renderCFSCreatePriceReply(raw map[string]any, size int, zone string) string
 	if price == "" {
 		return fmt.Sprintf("未获取到 %s 创建 %dGB CFS 的价格。CFS 询价是只读操作，不会创建资源。", zone, size)
 	}
-	period := map[string]string{"Day": "包日", "Month": "包月", "Year": "包年", "Dynamic": "按量"}[chargeType]
-	if period == "" {
-		period = chargeType
-	}
+	period := cfsbilling.DisplayLabel(chargeType)
 	// 「询价不会创建资源」 earns its place here — this is the one CFS reply a user
 	// could mistake for having placed an order. The 「真正创建需要走确认流程」 that
 	// followed it said the same thing a second time and is gone.

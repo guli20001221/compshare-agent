@@ -1,7 +1,6 @@
 package workflow
 
 import (
-	"encoding/base64"
 	"fmt"
 	"math"
 	"strings"
@@ -11,7 +10,8 @@ import (
 
 func ReinstallInstanceDef() *Definition {
 	return &Definition{
-		Name: "ReinstallInstanceWorkflow",
+		Name:             "ReinstallInstanceWorkflow",
+		NeedsZoneCatalog: true,
 		Steps: []Step{
 			stepQueryForReinstall(),
 			stepQuerySupportZones(),
@@ -38,16 +38,16 @@ func stepQueryForReinstall() Step {
 		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
 			state := extractInstanceState(result)
 			switch state {
-			case "Stopped":
+			case "Running", "Stopping", "Stopped":
+				// The effective state contract depends on both the instance kind and
+				// the resolved target image. Pod reinstall can converge Running or
+				// Stopping to Stopped itself, while UHost container->container requires
+				// Running. Validate that cross-product after image resolution.
 				return CheckPassed()
 			case "":
 				return CheckFailed("未找到该实例。")
-			case "Running":
-				return CheckFailed("实例当前正在运行，重装系统需要先关机。")
-			case "Stopping":
-				return CheckFailed("实例正在关机中，请稍后再试。")
 			default:
-				return CheckFailed(fmt.Sprintf("实例当前状态为「%s」，仅 Stopped 状态可以重装。", state))
+				return CheckFailed(fmt.Sprintf("实例当前状态为「%s」，暂不支持重装。", state))
 			}
 		},
 	}
@@ -143,8 +143,20 @@ func stepConfirmReinstall() Step {
 			}
 			wfCtx.Params["CompShareImageId"] = image.ID
 			queried := wfCtx.Result("查询实例")
-			if (isPodInstanceResult(queried) || isContainerInstanceResult(queried)) && !image.Container {
+			if isPodInstanceResult(queried) && !image.Container {
 				return nil, fmt.Errorf("Pod 实例重装必须选择容器镜像；当前镜像「%s」不是容器镜像。", image.Name)
+			}
+			if strings.TrimSpace(image.ImageType) != "" {
+				zoneEntry, err := workflowZoneEntry(wfCtx, firstInstanceField(queried, "Zone"))
+				if err != nil {
+					return nil, err
+				}
+				if !zoneEntry.SupportsImageType(image.ImageType) {
+					return nil, fmt.Errorf("目标可用区 %s 当前不支持 %s 类型镜像，无法重装。", zoneEntry.DisplayName, image.ImageType)
+				}
+			}
+			if err := validateReinstallStateForPath(queried, image); err != nil {
+				return nil, err
 			}
 			// In no-card UHost mode DescribeCompShareInstance exposes only the display
 			// GPU name and MachineType=O. The upstream reinstall gate validates the
@@ -173,14 +185,61 @@ func stepConfirmReinstall() Step {
 			summary["target_image_name"] = image.Name
 			summary["target_image_source"] = image.Source
 			summary["target_image_container"] = image.Container
-			password, _ := wfCtx.Params["Password"].(string)
-			passwordConfigured := strings.TrimSpace(password) != ""
-			wfCtx.Params["PasswordConfigured"] = passwordConfigured
-			summary["password_will_change"] = passwordConfigured
-			summary["warning"] = "⚠️ 重装系统会清除系统盘上的所有数据，数据盘不受影响。请确保重要数据已备份。"
+			// The public request type still contains Password/LoginMode for wire
+			// compatibility, but neither the Pod nor UHost reinstall implementation
+			// consumes those fields. UHost reuses its stored credential (or generates
+			// one internally when converting a host image to a container image); Pod
+			// likewise owns credential persistence. Do not offer a password change the
+			// operation cannot honour.
+			summary["credential_handling"] = "由平台沿用或按目标镜像类型在内部生成；本次重装不接受新密码"
+			summary["warning"] = reinstallImpactWarning(queried, image)
 			return summary, nil
 		},
 	}
+}
+
+func validateReinstallStateForPath(queried map[string]any, image reinstallImageInfo) error {
+	state := extractInstanceState(queried)
+	if isPodInstanceResult(queried) {
+		switch state {
+		case "Running", "Stopping", "Stopped":
+			return nil
+		default:
+			return fmt.Errorf("Pod 实例当前状态为「%s」，仅 Running、Stopping 或 Stopped 状态可以重装。", state)
+		}
+	}
+
+	// UHost container->container replaces only the managed container and the
+	// upstream implementation explicitly requires a Running domain. Every path
+	// that changes between host/container images, or replaces a host image,
+	// reinstalls the UHost system disk and therefore requires Stopped.
+	if isContainerInstanceResult(queried) && image.Container {
+		if state != "Running" {
+			return fmt.Errorf("UHost 容器实例原地重装容器镜像需要实例处于 Running 状态；当前状态为「%s」。", state)
+		}
+		return nil
+	}
+	if state != "Stopped" {
+		return fmt.Errorf("该重装路径会替换 UHost 系统盘，需要实例先关机；当前状态为「%s」。", state)
+	}
+	return nil
+}
+
+func reinstallImpactWarning(queried map[string]any, image reinstallImageInfo) string {
+	if isPodInstanceResult(queried) {
+		state := extractInstanceState(queried)
+		prefix := "Pod 将重建并重新启动"
+		if state == "Running" {
+			prefix = "Pod 会先自动停止，再重建并重新启动"
+		} else if state == "Stopping" {
+			prefix = "Pod 会等待关机完成，再重建并重新启动"
+		}
+		return "⚠️ " + prefix + "；系统盘内容会被目标镜像替换，数据盘不受影响。请确保重要数据已备份。"
+	}
+	if isContainerInstanceResult(queried) && image.Container {
+		return "⚠️ 将替换当前 UHost 内的托管容器及其容器文件系统，服务会中断；不会重装 UHost 系统盘，数据盘不受影响。请先备份容器内重要数据。"
+	}
+	return "⚠️ 重装会清除 UHost 系统盘上的所有数据，数据盘不受影响。请确保重要数据已备份。"
 }
 
 func stepReinstallInstance() Step {
@@ -197,12 +256,6 @@ func stepReinstallInstance() Step {
 			if _, err := addRequiredPodPlacementArgs(args, queried, wfCtx.Result("查询支持区")); err != nil {
 				return nil, err
 			}
-			if pw, ok := wfCtx.Params["Password"].(string); ok && pw != "" {
-				args["Password"] = base64.StdEncoding.EncodeToString([]byte(pw))
-				args["LoginMode"] = "Password"
-			} else if configured, _ := wfCtx.Params["PasswordConfigured"].(bool); configured {
-				return nil, fmt.Errorf("已确认设置新密码，但安全密码输入已丢失，拒绝执行重装。")
-			}
 			return args, nil
 		},
 	}
@@ -212,6 +265,7 @@ type reinstallImageInfo struct {
 	ID                string
 	Name              string
 	Source            string
+	ImageType         string
 	Container         bool
 	SupportedGPUTypes []string
 	SizeMB            float64
@@ -306,6 +360,7 @@ func targetReinstallImage(wfCtx *Context) (reinstallImageInfo, bool) {
 			ID:                sel.ID,
 			Name:              sel.Name,
 			Source:            item.source,
+			ImageType:         entry.ImageType,
 			Container:         sel.Container,
 			SupportedGPUTypes: append([]string(nil), entry.SupportedGPUTypes...),
 			SizeMB:            entry.SizeMB,

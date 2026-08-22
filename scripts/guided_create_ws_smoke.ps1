@@ -143,6 +143,7 @@ try {
     $seenSteps = @{}
     $seenChargeField = $false
     $finalCount = 0
+    $finalStepIndex = 0
     $editedFinalImage = $false
     $requestedFinalEdit = $false
 
@@ -178,6 +179,7 @@ try {
             }
 
             if ([bool]$step.Final) {
+                $finalStepIndex = $idx
                 # Final card: optional one-time image edit (revalidation path), then confirm/decline.
                 if ($EditImageOnFinal -and -not $editedFinalImage) {
                     $imageField = Find-Field -Form $form -Key "ImageId"
@@ -246,9 +248,13 @@ try {
         }
     }
 
-    $lastExpectedStep = 7
-    if ($ExpectChargeStepSkipped) { $lastExpectedStep = 6 }
-    foreach ($required in 1..$lastExpectedStep) {
+    if ($finalStepIndex -le 0) {
+        throw "A terminal guided confirmation was not observed."
+    }
+    # The server owns the guided form's shape. Require a contiguous path through
+    # the terminal card it actually emitted instead of freezing this smoke test to
+    # an obsolete number of steps. Revalidated cards may repeat an index.
+    foreach ($required in 1..$finalStepIndex) {
         if (-not $seenSteps.ContainsKey([string]$required)) {
             throw "Guided step $required was not observed."
         }

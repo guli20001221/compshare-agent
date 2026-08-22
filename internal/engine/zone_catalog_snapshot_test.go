@@ -6,8 +6,53 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/actionresolver"
 	"github.com/compshare-agent/internal/zones"
 )
+
+// TestZoneCatalogSnapshotForSpec_DeclarativeExecutionDependency pins the link
+// the live reinstall path previously lacked: an operation with no Zone proposal
+// field can declare that its workflow consumes zone facts, and the engine then
+// fetches the same turn snapshot it would fetch for a CodecZone field. Ordinary
+// lifecycle actions still skip the read.
+func TestZoneCatalogSnapshotForSpec_DeclarativeExecutionDependency(t *testing.T) {
+	calls := 0
+	exec := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		if action == "DescribeCompShareSupportZone" {
+			calls++
+			return zoneCatalogExec().Execute(context.Background(), action, nil)
+		}
+		return map[string]any{"RetCode": float64(0)}, nil
+	}}
+	eng := newZoneEngine(exec, "SHOULD-NOT-BE-USED")
+	catalog, err := actionresolver.BuildCatalog()
+	if err != nil {
+		t.Fatalf("build action catalog: %v", err)
+	}
+
+	reinstall, ok := catalog.Lookup("ReinstallInstanceWorkflow")
+	if !ok {
+		t.Fatal("reinstall operation missing from action catalog")
+	}
+	snapshot := eng.zoneCatalogSnapshotForSpec(zoneUserCtx(), reinstall)
+	if snapshot == nil || !snapshot.Available() {
+		t.Fatal("reinstall must receive an available live zone snapshot")
+	}
+	if calls != 1 {
+		t.Fatalf("reinstall should fetch the zone catalog once, got %d calls", calls)
+	}
+
+	stop, ok := catalog.Lookup("StopInstanceWorkflow")
+	if !ok {
+		t.Fatal("stop operation missing from action catalog")
+	}
+	if got := eng.zoneCatalogSnapshotForSpec(zoneUserCtx(), stop); got != nil {
+		t.Fatal("stop does not consume zone facts and must skip the catalog")
+	}
+	if calls != 1 {
+		t.Fatalf("non-zone lifecycle actions must not add a fetch, got %d calls", calls)
+	}
+}
 
 // zoneFailExecutor serves the create read steps but fails the support-zone query,
 // so the write-path snapshot is unavailable while the draft resolution still
