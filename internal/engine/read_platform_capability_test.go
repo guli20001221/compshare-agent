@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/compshare-agent/internal/capability"
@@ -10,6 +11,7 @@ import (
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/tools"
+	"github.com/compshare-agent/internal/zones"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -44,6 +46,91 @@ func TestOrdinaryReadReturnsObservationAndDoesNotEndTurn(t *testing.T) {
 	// intent-typed observation, so the model sees the same JSON.
 	assert.Contains(t, out, `"status":"handled"`)
 	assert.Contains(t, out, `"route_status":"dispatched"`)
+}
+
+func TestResourceInfoReceivesTheDeclaredLiveZoneCatalog(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareSupportZone": {"ZoneInfo": []any{
+			map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "ZoneId": float64(10027), "Describe": "华北二A"},
+			map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "ZoneId": float64(5001), "Describe": "华北一C", "IsPod": true},
+		}},
+		"DescribeCompShareInstance": {
+			"TotalCount": float64(1),
+			"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-zone", "Name": "zone-probe", "State": "Running",
+				"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "GPU": float64(0),
+				"CPU": float64(2), "Memory": float64(4096),
+			}},
+		},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.zoneCatalog = zones.NewCatalog(0)
+
+	out := eng.executeTool(context.Background(), toolCall("read",
+		capability.ReadToolName(intent.IntentResourceInfo), `{}`), noopStep)
+
+	var observation ReadCapabilityObservation
+	require.NoError(t, json.Unmarshal([]byte(out), &observation), out)
+	require.Equal(t, platform.ReadStatusHandled, observation.Status)
+	require.NotNil(t, observation.Envelope)
+	assert.Equal(t, []string{"DescribeCompShareInstance", "DescribeCompShareSupportZone"}, observation.Envelope.SourceActions)
+	assert.True(t, observation.Envelope.Constraints.DoNotInventZoneLabels)
+	require.Len(t, eng.platformReadEvidenceThisTurn, 1)
+	assert.Contains(t, eng.platformReadEvidenceThisTurn[0].Reply, "可用区 华北二A（cn-wlcb-01）")
+	assert.NotContains(t, eng.platformReadEvidenceThisTurn[0].Reply, "华北一C")
+
+	var zoneName any
+	for _, fact := range observation.Envelope.Facts {
+		if fact.SubjectID == "uhost-zone" && fact.Key == "zone_display_name" {
+			zoneName = fact.Value
+		}
+	}
+	assert.Equal(t, "华北二A", zoneName)
+	assert.Contains(t, executor.calls, "DescribeCompShareSupportZone")
+	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
+}
+
+func TestResourceInfoStillReturnsRawZoneWhenTheCatalogIsUnavailable(t *testing.T) {
+	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareSupportZone":
+			return nil, errors.New("zone catalog unavailable")
+		case "DescribeCompShareInstance":
+			return map[string]any{
+				"TotalCount": float64(1),
+				"UHostSet": []any{map[string]any{
+					"UHostId": "uhost-zone", "Name": "zone-probe", "State": "Running",
+					"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "GPU": float64(0),
+					"CPU": float64(2), "Memory": float64(4096),
+				}},
+			}, nil
+		default:
+			return nil, errors.New("unexpected action: " + action)
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.zoneCatalog = zones.NewCatalog(0)
+
+	out := eng.executeTool(context.Background(), toolCall("read",
+		capability.ReadToolName(intent.IntentResourceInfo), `{}`), noopStep)
+
+	var observation ReadCapabilityObservation
+	require.NoError(t, json.Unmarshal([]byte(out), &observation), out)
+	require.Equal(t, platform.ReadStatusHandled, observation.Status,
+		"a display-name dependency outage must not hide otherwise valid instance facts")
+	require.NotNil(t, observation.Envelope)
+	assert.Equal(t, []string{"DescribeCompShareInstance"}, observation.Envelope.SourceActions)
+	assert.True(t, observation.Envelope.Constraints.DoNotInventZoneLabels)
+
+	facts := map[string]any{}
+	for _, fact := range observation.Envelope.Facts {
+		facts[fact.Key] = fact.Value
+	}
+	assert.Equal(t, "cn-wlcb-01", facts["zone"])
+	assert.NotContains(t, facts, "zone_display_name")
+	require.Len(t, eng.platformReadEvidenceThisTurn, 1)
+	assert.Contains(t, eng.platformReadEvidenceThisTurn[0].Reply, "可用区 cn-wlcb-01")
+	assert.NotContains(t, eng.platformReadEvidenceThisTurn[0].Reply, "华北")
 }
 
 func TestInstanceAccessDiagnosisCanContinueToAgentAndKnowledge(t *testing.T) {

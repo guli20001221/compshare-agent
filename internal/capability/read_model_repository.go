@@ -53,6 +53,9 @@ func modelRepositoryReadSpec() ReadCapabilitySpec[ModelRepositoryRequest, ModelR
 			"zone":           stringParam().described("仅在用户明确指定目标可用区，或当前实例事实已给出可用区时填写实时目录中的 Zone；不要猜测。"),
 			"mode":           enumParam(platform.ListModeValues()...),
 		}),
+		NeedsZoneCatalog: func(req ModelRepositoryRequest) bool {
+			return strings.TrimSpace(req.Zone) != ""
+		},
 		Handle: modelRepositoryHandle,
 		Render: modelRepositoryRender,
 	}

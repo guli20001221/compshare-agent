@@ -9,7 +9,6 @@ import (
 	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/tools"
@@ -117,7 +116,7 @@ func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabil
 		Now:          now,
 		SyncRegistry: e.syncRegistryFromDescribe,
 	}
-	if capabilityLabel == string(intent.IntentZoneCatalog) {
+	if reg.RequiresZoneCatalog(request) {
 		rt.ZoneCatalog = e.zoneCatalogSnapshot(ctx)
 	}
 	if user, ok := tools.UserFrom(ctx); ok {

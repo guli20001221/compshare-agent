@@ -67,6 +67,7 @@ type Fact struct {
 type Constraints struct {
 	DoNotInventInstances   bool `json:"do_not_invent_instances"`
 	DoNotInventMetrics     bool `json:"do_not_invent_metrics"`
+	DoNotInventZoneLabels  bool `json:"do_not_invent_zone_labels,omitempty"`
 	DoNotAnswerAccountBill bool `json:"do_not_answer_account_bill"`
 }
 

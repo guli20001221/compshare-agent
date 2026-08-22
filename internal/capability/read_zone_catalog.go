@@ -40,11 +40,12 @@ type ZoneCatalogResponse struct {
 
 func zoneCatalogReadSpec() ReadCapabilitySpec[ZoneCatalogRequest, ZoneCatalogResponse] {
 	return ReadCapabilitySpec[ZoneCatalogRequest, ZoneCatalogResponse]{
-		Label:       zoneCatalogCapabilityLabel,
-		Description: "查询平台当轮完整可用区目录，返回展示名称、ZoneID、Region 以及容器区或虚机区属性。根据完整目录判断用户提到的区域；存在多个合理候选时不要自行选择。",
-		Params:      objectParam(nil),
-		Handle:      zoneCatalogHandle,
-		Render:      zoneCatalogRender,
+		Label:            zoneCatalogCapabilityLabel,
+		Description:      "查询平台当轮完整可用区目录，返回展示名称、ZoneID、Region 以及容器区或虚机区属性。根据完整目录判断用户提到的区域；存在多个合理候选时不要自行选择。",
+		Params:           objectParam(nil),
+		NeedsZoneCatalog: func(ZoneCatalogRequest) bool { return true },
+		Handle:           zoneCatalogHandle,
+		Render:           zoneCatalogRender,
 	}
 }
 
