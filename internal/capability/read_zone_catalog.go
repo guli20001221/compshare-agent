@@ -24,12 +24,14 @@ type ZoneCatalogRequest struct{}
 func (ZoneCatalogRequest) MissingFields() []platform.MissingField { return nil }
 
 type ZoneCatalogRecord struct {
-	DisplayName string
-	ZoneID      string
-	Region      string
-	NumericID   uint32
-	AzGroup     uint32
-	IsPod       bool
+	DisplayName           string
+	ZoneID                string
+	Region                string
+	NumericID             uint32
+	AzGroup               uint32
+	IsPod                 bool
+	DisableImageSync      bool
+	UnsupportedImageTypes []string
 }
 
 type ZoneCatalogResponse struct {
@@ -67,12 +69,14 @@ func zoneCatalogRecords(snapshot *deployment.ZoneCatalogSnapshot) []ZoneCatalogR
 			continue
 		}
 		out = append(out, ZoneCatalogRecord{
-			DisplayName: entry.DisplayName,
-			ZoneID:      entry.Placement.Zone,
-			Region:      entry.Placement.Region,
-			NumericID:   entry.Placement.ZoneID,
-			AzGroup:     entry.Placement.AzGroup,
-			IsPod:       entry.Placement.IsPod,
+			DisplayName:           entry.DisplayName,
+			ZoneID:                entry.Placement.Zone,
+			Region:                entry.Placement.Region,
+			NumericID:             entry.Placement.ZoneID,
+			AzGroup:               entry.Placement.AzGroup,
+			IsPod:                 entry.Placement.IsPod,
+			DisableImageSync:      entry.DisableImageSync,
+			UnsupportedImageTypes: append([]string(nil), entry.UnsupportedImageTypes...),
 		})
 	}
 	return out
@@ -91,12 +95,21 @@ func zoneCatalogRender(resp ZoneCatalogResponse) ReadResult {
 		if name == "" {
 			name = record.ZoneID
 		}
-		lines = append(lines, fmt.Sprintf("%s：ZoneID=%s，Region=%s，环境=%s", name, record.ZoneID, record.Region, environment))
+		restrictions := ""
+		if record.DisableImageSync {
+			restrictions += "，容器自制镜像同步=禁用"
+		}
+		if len(record.UnsupportedImageTypes) > 0 {
+			restrictions += "，不支持镜像类型=" + strings.Join(record.UnsupportedImageTypes, ",")
+		}
+		lines = append(lines, fmt.Sprintf("%s：ZoneID=%s，Region=%s，环境=%s%s", name, record.ZoneID, record.Region, environment, restrictions))
 		subjects = append(subjects, envelope.Subject{ID: record.ZoneID, Name: name, Type: envelope.SubjectZone})
 		facts = append(facts,
 			envelope.Fact{SubjectID: record.ZoneID, Key: "region", Label: "Region", Value: record.Region, Source: envelope.FactSourceAPI},
 			envelope.Fact{SubjectID: record.ZoneID, Key: "environment", Label: "环境", Value: environment, Source: envelope.FactSourceAPI},
 			envelope.Fact{SubjectID: record.ZoneID, Key: "zone_numeric_id", Label: "区域编号", Value: record.NumericID, Source: envelope.FactSourceAPI},
+			envelope.Fact{SubjectID: record.ZoneID, Key: "disable_image_sync", Label: "禁止镜像同步", Value: record.DisableImageSync, Source: envelope.FactSourceAPI},
+			envelope.Fact{SubjectID: record.ZoneID, Key: "unsupported_image_types", Label: "不支持镜像类型", Value: append([]string(nil), record.UnsupportedImageTypes...), Source: envelope.FactSourceAPI},
 		)
 	}
 	r := ReadHandled(strings.Join(lines, "\n"))

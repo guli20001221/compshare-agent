@@ -197,6 +197,8 @@ func instanceAccessRender(resp InstanceAccessResponse) ReadResult {
 	switch resp.Status {
 	case "configured":
 		verdict = "云侧配置已登记"
+	case "declared_unverified":
+		verdict = "实例 Service 已声明，但公网入口未经证实"
 	case "blocked":
 		verdict = "云侧存在明确阻断"
 	default:
@@ -327,6 +329,9 @@ func evaluateCustomPortAccess(host map[string]any, kind, protocol string, port i
 	}
 	if protocol == accessProtocolTCP && !podTCPForwardPresent(host, port) {
 		return "blocked", fmt.Sprintf("Pod 已登记 TCP %d，但没有找到对应的外部 TCP 转发。", port)
+	}
+	if protocol == accessProtocolUDP {
+		return "declared_unverified", fmt.Sprintf("Pod 的 Service 端口集合已声明 UDP %d，但实例详情没有返回可核验的公网 UDP 转发；不能据此判断外部 UDP 可达。", port)
 	}
 	return "configured", fmt.Sprintf("Pod 当前云侧端口配置已登记 %s %d。", strings.ToUpper(protocol), port)
 }

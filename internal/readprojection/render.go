@@ -172,9 +172,10 @@ func resourceChargeTypeLabel(chargeType string) string {
 	return cleanResourceText(chargeType)
 }
 
-// canonicalChargeType maps the wire spellings onto the deployment constants.
-// `Dynamic` is the deprecated spelling of Postpay that createChargeType already
-// normalises away, so the list must not surface it as a distinct mode.
+// canonicalChargeType maps resource-specific wire spellings onto one user-facing
+// vocabulary. New instance operations use Postpay, while CFS and historical
+// resource rows can still legitimately return Dynamic; both are presented as
+// 按量 without rewriting the wire value used for a new upstream request.
 func canonicalChargeType(chargeType string) string {
 	switch strings.ToLower(strings.TrimSpace(chargeType)) {
 	case "postpay", "dynamic":

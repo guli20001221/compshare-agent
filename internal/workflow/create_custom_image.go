@@ -107,6 +107,10 @@ func stepConfirmCreateCustomImage() Step {
 			if name == "" {
 				return nil, NewMissingSlotError("创建自制镜像需要指定名称。", "name")
 			}
+			name, err := validatedCompShareResourceName(name, "自制镜像名称", 50)
+			if err != nil {
+				return nil, err
+			}
 			summary := extractInstanceSummary(wfCtx.Result("查询源实例"))
 			summary["workflow"] = "CreateCustomImageWorkflow"
 			summary["UHostId"] = paramStr(wfCtx.Params, "UHostId", "")
@@ -142,6 +146,10 @@ func stepCreateCustomImage() Step {
 			name := paramStr(wfCtx.Params, "Name", "")
 			if name == "" {
 				return nil, NewMissingSlotError("创建自制镜像需要指定名称。", "name")
+			}
+			name, err := validatedCompShareResourceName(name, "自制镜像名称", 50)
+			if err != nil {
+				return nil, err
 			}
 			args := map[string]any{
 				"UHostId": uHostId,

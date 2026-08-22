@@ -8,8 +8,9 @@ import (
 
 // ResetPasswordDef returns the 4-step workflow definition for resetting
 // an instance password: query state, confirm, reset, verify.
-// Key constraint: non-container instances must be Stopped; containers
-// support online reset (Running or Stopped).
+// Key constraint: Pod password reset execs in the guest and therefore requires
+// Running. UHost containers persist the new credential while Stopped and apply it
+// at the next start, while UHost VMs still require Stopped.
 func ResetPasswordDef() *Definition {
 	return &Definition{
 		Name: "ResetPasswordWorkflow",
@@ -42,14 +43,19 @@ func stepQueryForReset() Step {
 			if state == "" {
 				return CheckFailed("未找到该实例。")
 			}
-			instanceType := extractInstanceType(result)
-
-			if instanceType == "Container" {
-				// Container password reset requires a running instance.
+			if isPodInstanceResult(result) {
 				if state == "Running" {
 					return CheckPassed()
 				}
-				return CheckFailed("容器实例需要先开机才能重置密码。请先执行开机操作。")
+				return CheckFailed("Pod 实例需要处于 Running 状态才能在实例内重置密码。请先开机后重试。")
+			}
+
+			instanceType := extractInstanceType(result)
+			if instanceType == "Container" {
+				if state == "Running" || state == "Stopped" {
+					return CheckPassed()
+				}
+				return CheckFailed("UHost 容器实例仅在 Running 或 Stopped 状态支持重置密码。")
 			}
 
 			// Non-container (VM): only Stopped

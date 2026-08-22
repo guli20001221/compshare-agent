@@ -27,7 +27,7 @@ func CreateCFSDef() *Definition {
 				"Name":        wfCtx.Params["Name"],
 				"Size":        wfCtx.Params["Size"],
 				"Zone":        wfCtx.Params["Zone"],
-				"ChargeType":  cfsChargeType(wfCtx.Params),
+				"ChargeType":  cfsChargeTypeLabel(cfsChargeType(wfCtx.Params)),
 				"created_cfs": wfCtx.Result("创建 CFS"),
 			}
 			if cfsID := cfsIDFromCreateResult(wfCtx.Result("创建 CFS")); cfsID != "" {
@@ -127,9 +127,9 @@ func stepConfirmCreateCFS() Step {
 				"Size":       wfCtx.Params["Size"],
 				"Zone":       wfCtx.Params["Zone"],
 				"Region":     wfCtx.Params["Region"],
-				"ChargeType": cfsChargeType(wfCtx.Params),
+				"ChargeType": cfsChargeTypeLabel(cfsChargeType(wfCtx.Params)),
 				"Quantity":   wfCtx.Params["Quantity"],
-				"warning":    "将创建新的 CFS 共享文件存储并开始计费；CFS 暂不支持按量付费，删除能力不由 agent 暴露。",
+				"warning":    "将创建新的 CFS 共享文件存储并开始计费；删除能力不由 agent 暴露。",
 			}
 			priceText := cfsCreatePriceText(priceResult)
 			if priceText == "" {
@@ -319,8 +319,15 @@ func normalizeCreateCFSParams(wfCtx *Context) error {
 	// zone-string guess.
 	region := resolvedRegion
 	chargeType := cfsChargeType(wfCtx.Params)
-	if strings.EqualFold(chargeType, "Postpay") {
-		return fmt.Errorf("CFS 不支持按量付费，请选择 Month、Year、Day 或 Dynamic。")
+	switch chargeType {
+	case "Month", "Year", "Day", "Dynamic":
+		// Dynamic is the upstream CFS wire value for its hourly/on-demand
+		// product. It remains an internal protocol value; all user-facing cards
+		// and resource renders call it 按量.
+	case "Postpay":
+		return fmt.Errorf("CFS 的按量计费需要使用当前产品支持的按量选项，请重新选择计费方式。")
+	default:
+		return fmt.Errorf("CFS 计费方式无效，请选择包月、包年、包日或按量。")
 	}
 	quantity := paramNum(wfCtx.Params, "Quantity", 1)
 	if quantity <= 0 {
@@ -388,6 +395,25 @@ func cfsChargeType(params map[string]any) string {
 		return "Month"
 	default:
 		return strings.TrimSpace(paramStr(params, "ChargeType", "Month"))
+	}
+}
+
+// cfsChargeTypeLabel is the single presentation boundary for the CFS-specific
+// billing protocol. Dynamic must remain on the wire until the upstream API
+// changes, but exposing that legacy enum to users would make one product appear
+// to have two different on-demand modes.
+func cfsChargeTypeLabel(chargeType string) string {
+	switch strings.ToLower(strings.TrimSpace(chargeType)) {
+	case "dynamic":
+		return "按量"
+	case "day":
+		return "包日"
+	case "month":
+		return "包月"
+	case "year":
+		return "包年"
+	default:
+		return strings.TrimSpace(chargeType)
 	}
 }
 

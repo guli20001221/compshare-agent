@@ -4,6 +4,12 @@ import "fmt"
 
 const resizeInstanceMissingSpecMessage = "变配请求必须至少指定 Cpu、Gpu、Memory 之一"
 
+const (
+	resizeResolvedCPUKey    = "ResolvedResizeCPU"
+	resizeResolvedGPUKey    = "ResolvedResizeGPU"
+	resizeResolvedMemoryKey = "ResolvedResizeMemory"
+)
+
 func ResizeInstanceDef() *Definition {
 	return &Definition{
 		Name: "ResizeInstanceWorkflow",
@@ -137,6 +143,14 @@ func validateResizeTargetSpec(wfCtx *Context, catalog map[string]any) CheckOutco
 	}
 	for _, candidate := range candidates {
 		if candidate.CPU == targetCPU && candidate.MemoryMB == targetMemory {
+			// Seal one complete target tuple after the live catalog accepted it.
+			// Pod resize requires Cpu and Memory even when the user changed only
+			// one dimension; price, confirmation and mutation must therefore all
+			// consume this exact materialized target rather than the sparse model
+			// proposal.
+			wfCtx.Params[resizeResolvedCPUKey] = targetCPU
+			wfCtx.Params[resizeResolvedGPUKey] = targetGPU
+			wfCtx.Params[resizeResolvedMemoryKey] = targetMemory
 			return CheckPassed()
 		}
 	}
@@ -161,6 +175,19 @@ func resizeCurrentGPUType(result map[string]any) string {
 	return value
 }
 
+func resolvedResizeTarget(wfCtx *Context) (cpu, gpu, memory any, err error) {
+	if wfCtx == nil || wfCtx.Params == nil {
+		return nil, nil, nil, fmt.Errorf("未解析出完整的目标变配规格。")
+	}
+	cpu, cpuOK := wfCtx.Params[resizeResolvedCPUKey]
+	gpu, gpuOK := wfCtx.Params[resizeResolvedGPUKey]
+	memory, memoryOK := wfCtx.Params[resizeResolvedMemoryKey]
+	if !cpuOK || !gpuOK || !memoryOK {
+		return nil, nil, nil, fmt.Errorf("未解析出完整的目标变配规格。")
+	}
+	return cpu, gpu, memory, nil
+}
+
 func stepQueryResizePrice() Step {
 	return Step{
 		Name: "查询变配价格",
@@ -168,20 +195,18 @@ func stepQueryResizePrice() Step {
 		Tool: "GetCompShareInstanceUpgradePrice",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			queried := wfCtx.Result("查询实例")
+			cpu, gpu, memory, err := resolvedResizeTarget(wfCtx)
+			if err != nil {
+				return nil, err
+			}
 			args := map[string]any{
 				"UHostId": wfCtx.Params["UHostId"],
+				"CPU":     cpu,
+				"GPU":     gpu,
+				"Memory":  memory,
 			}
 			if _, err := addRequiredPodPlacementArgs(args, queried, wfCtx.Result("查询支持区")); err != nil {
 				return nil, err
-			}
-			if cpu, ok := wfCtx.Params["Cpu"]; ok {
-				args["CPU"] = cpu
-			}
-			if gpu, ok := wfCtx.Params["Gpu"]; ok {
-				args["GPU"] = gpu
-			}
-			if mem, ok := wfCtx.Params["Memory"]; ok {
-				args["Memory"] = mem
 			}
 			return args, nil
 		},
@@ -193,16 +218,14 @@ func stepConfirmResize() Step {
 		Name: "确认变配",
 		Type: StepConfirm,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			cpu, gpu, memory, err := resolvedResizeTarget(wfCtx)
+			if err != nil {
+				return nil, err
+			}
 			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
-			if cpu, ok := wfCtx.Params["Cpu"]; ok {
-				summary["target_cpu"] = cpu
-			}
-			if gpu, ok := wfCtx.Params["Gpu"]; ok {
-				summary["target_gpu"] = gpu
-			}
-			if mem, ok := wfCtx.Params["Memory"]; ok {
-				summary["target_memory"] = mem
-			}
+			summary["target_cpu"] = cpu
+			summary["target_gpu"] = gpu
+			summary["target_memory"] = memory
 			priceResult := wfCtx.Result("查询变配价格")
 			price, err := requiredPriceField(priceResult, "Price")
 			if err != nil {
@@ -222,20 +245,18 @@ func stepResizeInstance() Step {
 		Tool: "ResizeCompShareInstance",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			queried := wfCtx.Result("查询实例")
+			cpu, gpu, memory, err := resolvedResizeTarget(wfCtx)
+			if err != nil {
+				return nil, err
+			}
 			args := map[string]any{
 				"UHostId": wfCtx.Params["UHostId"],
+				"Cpu":     cpu,
+				"Gpu":     gpu,
+				"Memory":  memory,
 			}
 			if _, err := addRequiredPodPlacementArgs(args, queried, wfCtx.Result("查询支持区")); err != nil {
 				return nil, err
-			}
-			if cpu, ok := wfCtx.Params["Cpu"]; ok {
-				args["Cpu"] = cpu
-			}
-			if gpu, ok := wfCtx.Params["Gpu"]; ok {
-				args["Gpu"] = gpu
-			}
-			if mem, ok := wfCtx.Params["Memory"]; ok {
-				args["Memory"] = mem
 			}
 			return args, nil
 		},

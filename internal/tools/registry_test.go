@@ -223,6 +223,71 @@ func TestFirstBatchCapabilityToolsAreRegisteredWithSafeBoundaries(t *testing.T) 
 	}
 }
 
+func TestAlignedToolSchemasMatchCurrentUpstreamContracts(t *testing.T) {
+	byName := make(map[string]map[string]any)
+	for _, tool := range Registry {
+		if tool.Function == nil {
+			continue
+		}
+		params, _ := tool.Function.Parameters.(map[string]any)
+		byName[tool.Function.Name] = params
+	}
+	properties := func(name string) map[string]any {
+		t.Helper()
+		params, ok := byName[name]
+		if !ok {
+			t.Fatalf("tool schema %s not found", name)
+		}
+		props, _ := params["properties"].(map[string]any)
+		return props
+	}
+
+	model := properties("DescribeModelRepositoryModels")
+	for _, key := range []string{"Keyword", "Source", "Tags", "Categories", "Status", "ReplicaStatus", "ZoneID", "Offset", "Limit", "SortBy", "SortOrder"} {
+		if _, ok := model[key]; !ok {
+			t.Errorf("current model repository contract must expose %s", key)
+		}
+	}
+	for _, stale := range []string{"Name", "Tag"} {
+		if _, ok := model[stale]; ok {
+			t.Errorf("stale model repository field %s must not be exposed", stale)
+		}
+	}
+
+	if _, ok := properties("ReinstallInstanceWorkflow")["Password"]; ok {
+		t.Fatal("reinstall must not promise a user-controlled password the upstream ignores")
+	}
+
+	cfs := properties("CreateCFSWorkflow")
+	charge, _ := cfs["ChargeType"].(map[string]any)
+	enums, _ := charge["enum"].([]string)
+	if !slices.Equal(enums, []string{"Month", "Year", "Day", "Dynamic"}) {
+		t.Fatalf("CFS must preserve the exact upstream wire values, got %v", enums)
+	}
+	desc, _ := charge["description"].(string)
+	if !strings.Contains(desc, "Dynamic（按量）") {
+		t.Fatalf("CFS wire enum must be explained as the user-facing on-demand mode, got %q", desc)
+	}
+
+	for _, tc := range []struct {
+		tool, field string
+		max         int
+	}{
+		{"CreateInstanceWorkflow", "Name", 63},
+		{"RenameInstanceWorkflow", "Name", 63},
+		{"CreateCustomImageWorkflow", "Name", 50},
+		{"CloneCustomImageWorkflow", "TargetImageName", 50},
+	} {
+		field, _ := properties(tc.tool)[tc.field].(map[string]any)
+		if got, _ := field["maxLength"].(int); got != tc.max {
+			t.Errorf("%s.%s maxLength=%v, want %d", tc.tool, tc.field, field["maxLength"], tc.max)
+		}
+		if pattern, _ := field["pattern"].(string); pattern == "" {
+			t.Errorf("%s.%s must expose the upstream name character contract", tc.tool, tc.field)
+		}
+	}
+}
+
 func TestCFSInternalZoneIDIsWorkflowOnly(t *testing.T) {
 	policies := DefaultToolExecutionPolicies()
 	for _, action := range []string{

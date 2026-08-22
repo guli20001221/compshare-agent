@@ -444,7 +444,9 @@ func stockZoneCatalogSnapshot(list []zones.ZoneInfo) *deployment.ZoneCatalogSnap
 				Zone: zone.Zone, Region: zone.Region, ZoneID: zone.ZoneID,
 				AzGroup: zone.RegionID, IsPod: zone.IsPod,
 			},
-			DisplayName: zone.Describe,
+			DisplayName:           zone.Describe,
+			DisableImageSync:      zone.DisableImageSync,
+			UnsupportedImageTypes: append([]string(nil), zone.UnsupportedImageTypes...),
 		})
 	}
 	return deployment.NewZoneCatalogSnapshot(true, entries)

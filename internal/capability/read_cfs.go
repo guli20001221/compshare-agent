@@ -106,7 +106,7 @@ func cfsCreatePriceReadSpec() ReadCapabilitySpec[CFSCreatePriceRequest, CFSRespo
 		Params: objectParam(map[string]schemaNode{
 			"zone":           stringParam().described("精确可用区 ID。当前只有上游标记为 Pod 的区域支持该询价。"),
 			"target_size_gb": integerParam(1).described("目标容量 GB。"),
-			"charge_type":    enumParam("Day", "Month", "Year", "Dynamic").described("计费周期；省略时默认为 Month。"),
+			"charge_type":    enumParam("Day", "Month", "Year", "Dynamic").described("计费周期：包日、包月、包年或按量；按量的上游兼容值为 Dynamic。省略时默认为包月。"),
 		}, "zone", "target_size_gb"),
 		Handle: cfsCreatePriceHandle,
 		Render: cfsRender,

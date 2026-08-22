@@ -50,7 +50,9 @@ func TestLiveCreateOpsCanary(t *testing.T) {
 				Zone: row.Zone, Region: row.Region, ZoneID: row.ZoneID,
 				AzGroup: row.RegionID, IsPod: row.IsPod,
 			},
-			DisplayName: row.Describe,
+			DisplayName:           row.Describe,
+			DisableImageSync:      row.DisableImageSync,
+			UnsupportedImageTypes: append([]string(nil), row.UnsupportedImageTypes...),
 		})
 	}
 	if len(zoneEntries) == 0 {

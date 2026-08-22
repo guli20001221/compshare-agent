@@ -102,10 +102,93 @@ func stepConfirmStart() Step {
 				summary["注意"] = "这不是普通开机：实例会先被改配为无卡规格再启动，原规格需要该可用区有可用 GPU 时才能恢复。"
 				delete(summary, "GpuType")
 				delete(summary, "GPU")
+			} else if instanceIsCurrentlyWithoutGPU(queried) {
+				// An omitted WithoutGpuSpec is not a plain start when the instance is
+				// already in no-GPU mode. Upstream first restores the archived GPU
+				// configuration through Resize and only then boots. Make that hidden
+				// resize the central statement of the confirmation card.
+				summary["规格变更"] = fmt.Sprintf("%s → %s",
+					currentWithoutGPUConfigLabel(queried), archivedGPUConfigLabel(queried))
+				summary["注意"] = "这不是普通开机：平台会先恢复存档的原带卡规格，再启动实例；恢复依赖当前可用区仍有对应 GPU，且恢复后会按带卡规格计费。当前实例详情不保证返回完整存档规格，因此本次确认前不能独立完成精确库存和报价预检。"
+				delete(summary, "GpuType")
+				delete(summary, "GPU")
 			}
 			return summary, nil
 		},
 	}
+}
+
+func instanceIsCurrentlyWithoutGPU(result map[string]any) bool {
+	host := firstUHost(result)
+	if host == nil {
+		return false
+	}
+	if raw, ok := host["WithoutGpuSpec"].(map[string]any); ok && len(raw) > 0 {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(stringFieldAny(host["MachineType"])), "O") {
+		return true
+	}
+	if firstNumberField(host, "GPU", "Gpu") == 0 {
+		if source, ok := sourceInstanceConfig(host); ok && firstNumberField(source, "Gpu", "GPU") > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func currentWithoutGPUConfigLabel(result map[string]any) string {
+	host := firstUHost(result)
+	if host == nil {
+		return "当前无卡规格（0 GPU）"
+	}
+	current := host
+	if spec, ok := host["WithoutGpuSpec"].(map[string]any); ok && len(spec) > 0 {
+		current = spec
+	}
+	parts := []string{"0 GPU"}
+	if cpu := firstNumberField(current, "Cpu", "CPU"); cpu > 0 {
+		parts = append(parts, fmt.Sprintf("%.0f核", cpu))
+	}
+	if memory := firstNumberField(current, "Memory", "Mem"); memory > 0 {
+		parts = append(parts, fmt.Sprintf("%.0fGB", memory/1024))
+	}
+	return "无卡（" + strings.Join(parts, " / ") + "）"
+}
+
+func archivedGPUConfigLabel(result map[string]any) string {
+	host := firstUHost(result)
+	if host == nil {
+		return "平台存档的原带卡规格"
+	}
+	source, ok := sourceInstanceConfig(host)
+	if !ok {
+		if gpuType := strings.TrimSpace(stringFieldAny(host["GpuType"])); gpuType != "" {
+			return fmt.Sprintf("平台存档的原带卡规格（GPU 型号 %s，完整规格未由当前接口返回）", gpuType)
+		}
+		return "平台存档的原带卡规格"
+	}
+	parts := make([]string, 0, 3)
+	gpuType := strings.TrimSpace(stringFieldAny(source["GpuType"]))
+	if gpuType == "" {
+		gpuType = strings.TrimSpace(stringFieldAny(host["GpuType"]))
+	}
+	gpu := firstNumberField(source, "Gpu", "GPU")
+	if gpuType != "" && gpu > 0 {
+		parts = append(parts, fmt.Sprintf("%s × %.0f", gpuType, gpu))
+	} else if gpu > 0 {
+		parts = append(parts, fmt.Sprintf("%.0f 卡", gpu))
+	}
+	if cpu := firstNumberField(source, "Cpu", "CPU"); cpu > 0 {
+		parts = append(parts, fmt.Sprintf("%.0f核", cpu))
+	}
+	if memory := firstNumberField(source, "Memory", "Mem"); memory > 0 {
+		parts = append(parts, fmt.Sprintf("%.0fGB", memory/1024))
+	}
+	if len(parts) == 0 {
+		return "平台存档的原带卡规格"
+	}
+	return strings.Join(parts, " / ")
 }
 
 func stepStartInstance() Step {

@@ -19,12 +19,14 @@ import (
 // ZoneInfo is one supported availability zone as reported by
 // DescribeCompShareSupportZone.
 type ZoneInfo struct {
-	Zone     string // zone id, e.g. "cn-bj2-03"
-	Region   string // region id, e.g. "cn-bj2"
-	RegionID uint32 // numeric region/az_group id used by selected upstream APIs.
-	ZoneID   uint32 // numeric zone id, e.g. 5001
-	Describe string // 可用区显示名称, e.g. "华北一C"
-	IsPod    bool   // true when the zone creates CPod/container instances.
+	Zone                  string // zone id, e.g. "cn-bj2-03"
+	Region                string // region id, e.g. "cn-bj2"
+	RegionID              uint32 // numeric region/az_group id used by selected upstream APIs.
+	ZoneID                uint32 // numeric zone id, e.g. 5001
+	Describe              string // 可用区显示名称, e.g. "华北一C"
+	IsPod                 bool   // true when the zone creates CPod/container instances.
+	DisableImageSync      bool
+	UnsupportedImageTypes []string
 }
 
 // Executor is the subset of the CompShare API executor this package needs.
@@ -66,12 +68,14 @@ func ParseSupportZones(res map[string]any) []ZoneInfo {
 			continue
 		}
 		zi := ZoneInfo{
-			Zone:     str(m["Zone"]),
-			Region:   str(m["Region"]),
-			RegionID: u32(m["RegionId"]),
-			Describe: str(m["Describe"]),
-			ZoneID:   u32(m["ZoneId"]),
-			IsPod:    boolVal(m["IsPod"]),
+			Zone:                  str(m["Zone"]),
+			Region:                str(m["Region"]),
+			RegionID:              u32(m["RegionId"]),
+			Describe:              str(m["Describe"]),
+			ZoneID:                u32(m["ZoneId"]),
+			IsPod:                 boolVal(m["IsPod"]),
+			DisableImageSync:      boolVal(m["DisableImageSync"]),
+			UnsupportedImageTypes: stringList(m["UnsupportedImageTypes"]),
 		}
 		if zi.Zone == "" {
 			continue
@@ -223,6 +227,33 @@ func boolVal(v any) bool {
 	default:
 		return false
 	}
+}
+
+func stringList(v any) []string {
+	var raw []any
+	switch values := v.(type) {
+	case []any:
+		raw = values
+	case []string:
+		out := make([]string, 0, len(values))
+		for _, value := range values {
+			if value = strings.TrimSpace(value); value != "" {
+				out = append(out, value)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+	out := make([]string, 0, len(raw))
+	for _, value := range raw {
+		if text, ok := value.(string); ok {
+			if text = strings.TrimSpace(text); text != "" {
+				out = append(out, text)
+			}
+		}
+	}
+	return out
 }
 
 func squashSpace(s string) string {

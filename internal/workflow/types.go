@@ -268,9 +268,9 @@ type Definition struct {
 	// both questions is what suppressed the create card outright.
 	//
 	// EXPLICIT, never derived. The obvious derivation (every optional non-target
-	// field) was measured against the registry and would newly silence a bad
-	// Password on reinstall and bad Cpu/Gpu/Memory on resize — a discarded value
-	// must be one no user can be harmed by losing. Only meaningful alongside
+	// field) was measured against the registry and would silently discard bad
+	// Cpu/Gpu/Memory on resize (and previously exposed ignored reinstall fields) —
+	// a discarded value must be one no user can be harmed by losing. Only meaningful alongside
 	// GuidedIntake, since the form is what re-collects. BuildCatalog enforces that
 	// each name is a real field of this workflow and is optional, non-target and
 	// non-secret.

@@ -33,12 +33,13 @@ func stepConfirmCloneCustomImage() Step {
 			if err != nil {
 				return nil, err
 			}
-			name := strings.TrimSpace(paramStr(wfCtx.Params, "TargetImageName", ""))
+			name := paramStr(wfCtx.Params, "TargetImageName", "")
 			if name == "" {
 				return nil, NewMissingSlotError("克隆自制镜像需要指定目标镜像名称。", "target_image_name")
 			}
-			if len([]rune(name)) > 50 {
-				return nil, fmt.Errorf("目标镜像名称不能超过 50 个字符")
+			name, err = validatedCompShareResourceName(name, "目标镜像名称", 50)
+			if err != nil {
+				return nil, err
 			}
 			summary := map[string]any{
 				"workflow":               "CloneCustomImageWorkflow",
@@ -67,9 +68,13 @@ func stepCloneCustomImage() Step {
 			if err != nil {
 				return nil, err
 			}
+			name, err := validatedCompShareResourceName(paramStr(wfCtx.Params, "TargetImageName", ""), "目标镜像名称", 50)
+			if err != nil {
+				return nil, err
+			}
 			args := map[string]any{
 				"SourceCompShareImageId": source.ID,
-				"TargetImageName":        strings.TrimSpace(paramStr(wfCtx.Params, "TargetImageName", "")),
+				"TargetImageName":        name,
 				"TargetZoneIds":          []uint32{target.Placement.ZoneID},
 			}
 			if description := strings.TrimSpace(paramStr(wfCtx.Params, "TargetImageDescription", "")); description != "" {
@@ -144,11 +149,37 @@ func cloneCustomImageSelection(wfCtx *Context) (deployment.ImageCatalogEntry, de
 	if !source.Container && target.Placement.IsPod {
 		return deployment.ImageCatalogEntry{}, deployment.ZoneCatalogEntry{}, fmt.Errorf("虚机自制镜像不能克隆到容器可用区 %s，请选择虚机可用区", target.DisplayName)
 	}
+	if source.Container {
+		if target.DisableImageSync {
+			return deployment.ImageCatalogEntry{}, deployment.ZoneCatalogEntry{}, fmt.Errorf("目标可用区 %s 当前禁止容器自制镜像同步", target.DisplayName)
+		}
+		sourceZone, ok := workflowZoneEntryByNumericID(wfCtx, source.ZoneID)
+		if ok && sourceZone.DisableImageSync {
+			return deployment.ImageCatalogEntry{}, deployment.ZoneCatalogEntry{}, fmt.Errorf("源可用区 %s 当前禁止容器自制镜像同步", sourceZone.DisplayName)
+		}
+	}
 	if (source.ZoneID != 0 && source.ZoneID == target.Placement.ZoneID) ||
 		(source.Zone != "" && strings.EqualFold(source.Zone, target.Placement.Zone)) {
 		return deployment.ImageCatalogEntry{}, deployment.ZoneCatalogEntry{}, fmt.Errorf("目标可用区不能与源镜像所在可用区相同")
 	}
 	return source, target, nil
+}
+
+func workflowZoneEntryByNumericID(wfCtx *Context, zoneID uint32) (deployment.ZoneCatalogEntry, bool) {
+	if wfCtx == nil || zoneID == 0 {
+		return deployment.ZoneCatalogEntry{}, false
+	}
+	catalog := wfCtx.ZoneCatalog()
+	if !catalog.Available() {
+		return deployment.ZoneCatalogEntry{}, false
+	}
+	for _, zone := range catalog.Zones() {
+		entry, ok := catalog.Entry(zone)
+		if ok && entry.Placement.ZoneID == zoneID {
+			return entry, true
+		}
+	}
+	return deployment.ZoneCatalogEntry{}, false
 }
 
 func clonedCustomImageResult(result map[string]any) (id string, ok bool, message string) {

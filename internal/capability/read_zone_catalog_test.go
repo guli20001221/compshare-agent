@@ -36,6 +36,21 @@ func TestZoneCatalogReadListsStructuredLiveFacts(t *testing.T) {
 	require.Equal(t, zoneCatalogAction, result.ToolAction)
 }
 
+func TestZoneCatalogReadSurfacesLiveImageRestrictions(t *testing.T) {
+	reg := NewReadCapability(zoneCatalogReadSpec())
+	req, err := reg.Decode(map[string]any{})
+	require.NoError(t, err)
+	result := reg.Run(context.Background(), req, ReadRuntime{ZoneCatalog: testZoneCatalog(
+		deployment.ZoneCatalogEntry{
+			Placement:   deployment.ZonePlacement{Zone: "cn-test-01", Region: "cn-test", ZoneID: 42},
+			DisplayName: "测试区", DisableImageSync: true, UnsupportedImageTypes: []string{"Community", "Custom"},
+		},
+	)})
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	require.Contains(t, result.Reply, "容器自制镜像同步=禁用")
+	require.Contains(t, result.Reply, "不支持镜像类型=Community,Custom")
+}
+
 func TestZoneCatalogReadRejectsFiltersAndAlwaysReturnsTheCompleteDirectory(t *testing.T) {
 	reg := NewReadCapability(zoneCatalogReadSpec())
 	_, err := reg.Decode(map[string]any{"query": "上海二"})

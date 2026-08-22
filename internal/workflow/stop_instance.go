@@ -1,5 +1,7 @@
 package workflow
 
+import "strings"
+
 // StopInstanceDef returns the 3-step workflow definition for stopping a
 // CompShare GPU instance: query state, confirm shutdown, then stop.
 func StopInstanceDef() *Definition {
@@ -50,9 +52,22 @@ func stepConfirmStop() Step {
 		Type: StepConfirm,
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
-			summary["warning"] = "关机后实例和 GPU 停止计费；磁盘（系统盘/数据盘）是否产生费用取决于盘型和区域（部分盘型或容量区间免费），具体请以控制台价格详情为准。如需彻底停止计费请到控制台释放实例。"
+			summary["warning"] = stopBillingWarning(summary)
 			return summary, nil
 		},
+	}
+}
+
+func stopBillingWarning(summary map[string]any) string {
+	chargeType := strings.TrimSpace(stringFieldAny(summary["ChargeType"]))
+	diskNote := "磁盘及其他保留资源可能继续计费，具体以控制台价格详情为准。"
+	switch strings.ToLower(chargeType) {
+	case "postpay", "spot", "preemptive":
+		return "关机会结束当前实例/GPU 的运行计费段；" + diskNote + "如需释放全部保留资源，请到控制台释放实例。"
+	case "month", "year", "day", "dynamic":
+		return "关机不会取消或退款已购买的计费周期，实例/GPU 契约仍会保留；" + diskNote + "如需停止后续费用，请按控制台规则退订或释放实例。"
+	default:
+		return "关机会中断实例内任务，但不能据此确认费用已经停止；" + diskNote + "如需停止后续费用，请到控制台核对计费方式并释放实例。"
 	}
 }
 

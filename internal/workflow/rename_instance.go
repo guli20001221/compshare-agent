@@ -49,6 +49,10 @@ func stepConfirmRename() Step {
 			if newName == "" {
 				return nil, NewMissingSlotError("改名需要指定新名称。", "name")
 			}
+			newName, err := validatedCompShareResourceName(newName, "实例名称", 63)
+			if err != nil {
+				return nil, err
+			}
 			summary := extractInstanceSummary(wfCtx.Result("查询实例"))
 			summary["NewName"] = newName
 			return summary, nil
@@ -65,6 +69,10 @@ func stepRenameInstance() Step {
 			newName := paramStr(wfCtx.Params, "Name", "")
 			if newName == "" {
 				return nil, fmt.Errorf("instance Name is required before renaming")
+			}
+			newName, err := validatedCompShareResourceName(newName, "实例名称", 63)
+			if err != nil {
+				return nil, err
 			}
 			queried := wfCtx.Result("查询实例")
 			return addRequiredPodPlacementArgs(map[string]any{

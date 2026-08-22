@@ -37,8 +37,10 @@ type ZoneCatalogSnapshot struct {
 // and DisplayName are ONE unit — a snapshot stores and replaces them together so
 // they cannot diverge.
 type ZoneCatalogEntry struct {
-	Placement   ZonePlacement
-	DisplayName string
+	Placement             ZonePlacement
+	DisplayName           string
+	DisableImageSync      bool
+	UnsupportedImageTypes []string
 }
 
 // NewZoneCatalogSnapshot freezes the entries into a read-only catalog.
@@ -66,6 +68,7 @@ func NewZoneCatalogSnapshot(available bool, entries []ZoneCatalogEntry) *ZoneCat
 		if _, seen := s.entries[key]; !seen {
 			s.order = append(s.order, zone)
 		}
+		e.UnsupportedImageTypes = append([]string(nil), e.UnsupportedImageTypes...)
 		s.entries[key] = e
 	}
 	return s
@@ -87,7 +90,24 @@ func (s *ZoneCatalogSnapshot) Entry(zone string) (ZoneCatalogEntry, bool) {
 		return ZoneCatalogEntry{}, false
 	}
 	e, ok := s.entries[strings.ToLower(strings.TrimSpace(zone))]
+	e.UnsupportedImageTypes = append([]string(nil), e.UnsupportedImageTypes...)
 	return e, ok
+}
+
+// SupportsImageType evaluates the current upstream zone restriction without a
+// local zone/image mapping. Blank types remain unverifiable and are not treated
+// as denied; callers that require a concrete image type must validate it first.
+func (e ZoneCatalogEntry) SupportsImageType(imageType string) bool {
+	imageType = strings.TrimSpace(imageType)
+	if imageType == "" {
+		return true
+	}
+	for _, denied := range e.UnsupportedImageTypes {
+		if strings.EqualFold(strings.TrimSpace(denied), imageType) {
+			return false
+		}
+	}
+	return true
 }
 
 // Placement returns the resolved placement for a zone id. The second return is

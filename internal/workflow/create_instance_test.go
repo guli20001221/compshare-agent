@@ -126,6 +126,51 @@ func TestCreateInstance_HappyPath(t *testing.T) {
 	}
 }
 
+func TestCreateInstance_InvalidNameStopsBeforeCapacityPriceAndConfirmation(t *testing.T) {
+	executor := createMockExecutor()
+	eng := NewEngine(executor, func(string, map[string]any) bool {
+		t.Fatal("upstream-invalid instance name must be rejected before confirmation")
+		return true
+	}, nil)
+
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
+		"GpuType": "4090", "Name": "invalid instance/name",
+	})
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "只能包含")
+	for _, action := range []string{"CheckCompShareResourceCapacity", "GetCompShareInstanceUserPrice", "CreateCompShareInstance"} {
+		_, called := findExecutorCall(executor.calls, action)
+		assert.False(t, called, "%s must not run after local name validation fails", action)
+	}
+}
+
+func TestCreateInstance_HonorsLiveUnsupportedImageTypesBeforeCapacity(t *testing.T) {
+	executor := createMockExecutor()
+	executor.results["DescribeCompShareImages"] = map[string]any{"ImageSet": []any{map[string]any{
+		"CompShareImageId": "img-001", "Name": "community image", "ImageType": "Community", "Size": float64(102400),
+	}}}
+	zones := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{{
+		Placement:   deployment.ZonePlacement{Zone: "cn-wlcb-01", Region: "cn-wlcb", ZoneID: 10027},
+		DisplayName: "华北二A", UnsupportedImageTypes: []string{"Community"},
+	}})
+	eng := NewEngine(executor, func(string, map[string]any) bool {
+		t.Fatal("live UnsupportedImageTypes must reject before confirmation")
+		return true
+	}, nil)
+
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{"GpuType": "4090"}, withZoneCatalog(zones))
+
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "华北二A 当前不支持 Community 类型镜像")
+	_, capacity := findExecutorCall(executor.calls, "CheckCompShareResourceCapacity")
+	assert.False(t, capacity)
+	_, created := findExecutorCall(executor.calls, "CreateCompShareInstance")
+	assert.False(t, created)
+}
+
 func TestCreateInstance_ExplicitNameIsConfirmedSealedAndExecuted(t *testing.T) {
 	executor := createMockExecutor()
 	var confirmed map[string]any

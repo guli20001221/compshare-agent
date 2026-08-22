@@ -32,16 +32,12 @@ func TestNetAcceleratorRequestHasNoRequiredFields(t *testing.T) {
 	require.Nil(t, NetworkAcceleratorStatusRequest{}.MissingFields())
 }
 
-// TestNetAcceleratorHandle_IgnoresTargets locks the parity fact that the
-// capability makes the same bare, account-scoped call the legacy handler made:
-// the resolved targets are decoded for schema symmetry but never forwarded, and
-// the tool action is the read-only optimizer status probe.
-func TestNetAcceleratorHandle_IgnoresTargets(t *testing.T) {
+// The capability is account-scoped. Its request deliberately has no target
+// field that could appear meaningful while being ignored by the upstream call.
+func TestNetAcceleratorHandle_UsesBareAccountScopedCall(t *testing.T) {
 	exec := &fakeReadExec{result: map[string]any{"Optimized": true}}
 
-	result := runNetAccelerator(t, exec, NetworkAcceleratorStatusRequest{
-		Targets: []platform.TargetRef{{Type: platform.TargetRefName, Value: "train-a", Source: platform.SourceUserText}},
-	})
+	result := runNetAccelerator(t, exec, NetworkAcceleratorStatusRequest{})
 
 	assert.Equal(t, platform.ReadStatusHandled, result.Status)
 	assert.Equal(t, "CheckCompShareNetOptimizer", result.ToolAction)
@@ -67,12 +63,12 @@ func TestNetAcceleratorHandle_MissingRegionDoesNotLeakNil(t *testing.T) {
 
 func TestNetAcceleratorHandle_RegionRowsRendered(t *testing.T) {
 	exec := &fakeReadExec{result: map[string]any{"Info": []any{
-		map[string]any{"Optimized": true, "Region": "cn-bj2"},
+		map[string]any{"Optimized": true, "Region": "cn-bj2", "Zone": "cn-bj2-03"},
 	}}}
 
 	result := runNetAccelerator(t, exec, NetworkAcceleratorStatusRequest{})
 
-	assert.Contains(t, result.Reply, "cn-bj2 已开通")
+	assert.Contains(t, result.Reply, "cn-bj2 cn-bj2-03 已开通")
 }
 
 func TestNetAcceleratorHandle_EmptyPayload(t *testing.T) {
