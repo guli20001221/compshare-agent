@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -45,6 +46,23 @@ func TestRenderResourceSummary_NoGPUDoesNotAdvertiseTheStoredGPUModel(t *testing
 
 	assert.Contains(t, got, "无 GPU")
 	assert.NotContains(t, got, "4090")
+}
+
+func TestRenderResourceSummaryUsesOnlyTheLiveZoneCatalogLabel(t *testing.T) {
+	instance := []entity.InstanceSnapshot{{
+		UHostId: "uhost-1", State: "Running", Zone: "cn-wlcb-01", CPU: 2, Memory: 4096,
+	}}
+	catalog := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{{
+		Placement: deployment.ZonePlacement{Zone: "cn-wlcb-01"}, DisplayName: "华北二A",
+	}})
+
+	withCatalog := RenderResourceSummaryWithZoneCatalog(instance, ResourceEnvelopeMeta{}, catalog)
+	assert.Contains(t, withCatalog, "可用区 华北二A（cn-wlcb-01）")
+	assert.NotContains(t, withCatalog, "华北一C")
+
+	withoutCatalog := RenderResourceSummaryWithZoneCatalog(instance, ResourceEnvelopeMeta{}, nil)
+	assert.Contains(t, withoutCatalog, "可用区 cn-wlcb-01")
+	assert.NotContains(t, withoutCatalog, "华北")
 }
 
 // TestRenderResourceSummaryTruncationNotice pins the deterministic truncation

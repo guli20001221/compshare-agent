@@ -3,6 +3,7 @@ package capability
 import (
 	"context"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/platform"
@@ -30,6 +31,10 @@ func (ResourceInfoRequest) MissingFields() []platform.MissingField { return nil 
 type ResourceInfoResponse struct {
 	Instances []entity.InstanceSnapshot
 	Meta      readprojection.ResourceEnvelopeMeta
+	// ZoneCatalog is immutable engine-owned reference data captured for this
+	// request. It lets the pure renderer project the raw Zone code and the live
+	// console display name from one catalog row.
+	ZoneCatalog *deployment.ZoneCatalogSnapshot
 	// VerifiedInstanceIDs are the exact ids the upstream DescribeCompShareInstance
 	// response echoed this turn — the same-id-verified existence evidence the write
 	// path may trust. Derived from the RESPONSE, never from the request.
@@ -38,12 +43,13 @@ type ResourceInfoResponse struct {
 
 func resourceReadSpec() ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResponse] {
 	return ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResponse]{
-		Label:       resourceCapabilityLabel,
-		Description: "查询当前账号已有实例的列表、状态和配置，也用于按 ID 或名称核实实例。只反映账号内资源，不用于查询平台 GPU 库存。",
-		Params:      objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
-		Handle:      resourceHandle,
-		Render:      resourceRender,
-		Observe:     resourceObserve,
+		Label:            resourceCapabilityLabel,
+		Description:      "查询当前账号已有实例的列表、状态和配置，也用于按 ID 或名称核实实例。可用区同时给出实例返回的代码和实时目录展示名；目录无法核验时只给代码，不推测名称。只反映账号内资源，不用于查询平台 GPU 库存。",
+		Params:           objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
+		NeedsZoneCatalog: func(ResourceInfoRequest) bool { return true },
+		Handle:           resourceHandle,
+		Render:           resourceRender,
+		Observe:          resourceObserve,
 	}
 }
 
@@ -125,13 +131,18 @@ func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime
 		// The Agent pairs this with CanAssertAbsence to state "you have none".
 		return ResourceInfoResponse{}, ReadEmpty(readprojection.RenderResourceSummary(nil, envMeta))
 	}
-	return ResourceInfoResponse{Instances: instances, Meta: envMeta, VerifiedInstanceIDs: verifiedIDs}, ReadResult{}
+	return ResourceInfoResponse{
+		Instances:           instances,
+		Meta:                envMeta,
+		ZoneCatalog:         rt.ZoneCatalog,
+		VerifiedInstanceIDs: verifiedIDs,
+	}, ReadResult{}
 }
 
 func resourceRender(resp ResourceInfoResponse) ReadResult {
-	r := ReadHandled(readprojection.RenderResourceSummary(resp.Instances, resp.Meta))
+	r := ReadHandled(readprojection.RenderResourceSummaryWithZoneCatalog(resp.Instances, resp.Meta, resp.ZoneCatalog))
 	r.ToolAction = resourceInfoAction
-	env := readprojection.BuildResourceEnvelopeWithMeta(resp.Instances, resp.Meta)
+	env := readprojection.BuildResourceEnvelopeWithMetaAndZoneCatalog(resp.Instances, resp.Meta, resp.ZoneCatalog)
 	r.Envelope = &env
 	return r
 }

@@ -30,6 +30,14 @@ const (
 )
 
 func RenderResourceSummary(instances []entity.InstanceSnapshot, meta ResourceEnvelopeMeta) string {
+	return RenderResourceSummaryWithZoneCatalog(instances, meta, nil)
+}
+
+// RenderResourceSummaryWithZoneCatalog renders the live console display name
+// beside the instance's raw zone code when an exact catalog row exists. If the
+// catalog is unavailable or does not contain the instance zone, it emits only
+// the raw code; it never substitutes a local alias or inferred location.
+func RenderResourceSummaryWithZoneCatalog(instances []entity.InstanceSnapshot, meta ResourceEnvelopeMeta, zoneCatalog *deployment.ZoneCatalogSnapshot) string {
 	if len(instances) == 0 {
 		return noInstancesReply
 	}
@@ -58,6 +66,9 @@ func RenderResourceSummary(instances []entity.InstanceSnapshot, meta ResourceEnv
 			parts = append(parts, fmt.Sprintf("%s × %d", gpuType, inst.GPU))
 		}
 		parts = append(parts, fmt.Sprintf("%d vCPU / %s", inst.CPU, resourceMemoryLabel(inst.Memory)))
+		if zone := resourceZoneLabel(zoneCatalog, inst.Zone); zone != "" {
+			parts = append(parts, "可用区 "+zone)
+		}
 		if inst.ImageType != "" {
 			parts = append(parts, "镜像 "+cleanResourceText(inst.ImageType))
 		}
@@ -85,6 +96,29 @@ func RenderResourceSummary(instances []entity.InstanceSnapshot, meta ResourceEnv
 		body += fmt.Sprintf("\n（已显示 %d/%d 台，完整列表请到控制台查看）", meta.Shown, displayTotal)
 	}
 	return body
+}
+
+func resourceZoneLabel(catalog *deployment.ZoneCatalogSnapshot, zone string) string {
+	zone = cleanResourceText(zone)
+	if zone == "" {
+		return ""
+	}
+	if displayName, ok := resourceZoneDisplayName(catalog, zone); ok {
+		return displayName + "（" + zone + "）"
+	}
+	return zone
+}
+
+func resourceZoneDisplayName(catalog *deployment.ZoneCatalogSnapshot, zone string) (string, bool) {
+	entry, ok := catalog.Entry(zone)
+	if !ok {
+		return "", false
+	}
+	displayName := cleanResourceText(entry.DisplayName)
+	if displayName == "" {
+		return "", false
+	}
+	return displayName, true
 }
 
 func cleanResourceText(value string) string {

@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/platform"
@@ -54,6 +55,18 @@ func computedFactValue(env *envelope.Envelope, key string) (string, bool) {
 	return "", false
 }
 
+func resourceFactValue(env *envelope.Envelope, subjectID, key string) (any, bool) {
+	if env == nil {
+		return nil, false
+	}
+	for _, fact := range env.Facts {
+		if fact.SubjectID == subjectID && fact.Key == key {
+			return fact.Value, true
+		}
+	}
+	return nil, false
+}
+
 func TestResourceInfoRequestHasNoRequiredFields(t *testing.T) {
 	require.Nil(t, ResourceInfoRequest{}.MissingFields())
 }
@@ -80,6 +93,32 @@ func TestResourceHandle_ListsAllInstances(t *testing.T) {
 	assert.Contains(t, result.Reply, "uhost-b")
 	require.NotNil(t, result.Envelope)
 	assert.Equal(t, envelope.KindResourceInfo, result.Envelope.Kind)
+}
+
+func TestResourceInfoCarriesTheLiveZoneNameIntoReplyAndEvidence(t *testing.T) {
+	row := instanceRowMap("uhost-a", "train-a", "Running")
+	row["Zone"] = "cn-wlcb-01"
+	row["Region"] = "cn-wlcb"
+	row["Memory"] = float64(4096)
+	catalog := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{{
+		Placement:   deployment.ZonePlacement{Zone: "cn-wlcb-01", Region: "cn-wlcb"},
+		DisplayName: "华北二A",
+	}})
+	reg := NewReadCapability(resourceReadSpec())
+	result := reg.Run(context.Background(), ResourceInfoRequest{}, ReadRuntime{
+		Executor:    &fakeReadExec{result: describeFixture(row)},
+		ZoneCatalog: catalog,
+	})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Contains(t, result.Reply, "可用区 华北二A（cn-wlcb-01）")
+	assert.NotContains(t, result.Reply, "华北一C")
+	require.NotNil(t, result.Envelope)
+	assert.Equal(t, []string{"DescribeCompShareInstance", "DescribeCompShareSupportZone"}, result.Envelope.SourceActions)
+	assert.True(t, result.Envelope.Constraints.DoNotInventZoneLabels)
+	zoneName, ok := resourceFactValue(result.Envelope, "uhost-a", "zone_display_name")
+	require.True(t, ok)
+	assert.Equal(t, "华北二A", zoneName)
 }
 
 func TestResourceHandle_FullListingSyncsTheSessionResolver(t *testing.T) {

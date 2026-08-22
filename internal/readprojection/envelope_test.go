@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/stretchr/testify/assert"
@@ -69,6 +70,45 @@ func TestBuildResourceEnvelopeIsStableAndCustomerSafe(t *testing.T) {
 	assertEnvelopeFact(t, env, "uhost-b", "name", "Authorization: Bearer [REDACTED]")
 	assertNoEnvelopeFact(t, env, "uhost-a", "expire_time")
 	assert.NotContains(t, hash, strings.Repeat("b", 25))
+}
+
+func TestBuildResourceEnvelopeProjectsLiveZoneNamesWithoutALocalMapping(t *testing.T) {
+	catalog := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
+		{Placement: deployment.ZonePlacement{Zone: "cn-wlcb-01"}, DisplayName: "华北二A"},
+		{Placement: deployment.ZonePlacement{Zone: "cn-bj2-03"}, DisplayName: "华北一C"},
+		{Placement: deployment.ZonePlacement{Zone: "cn-test-42"}, DisplayName: "实时目录测试区"},
+	})
+	env := BuildResourceEnvelopeWithMetaAndZoneCatalog([]entity.InstanceSnapshot{
+		{UHostId: "uhost-wlcb", Zone: "cn-wlcb-01"},
+		{UHostId: "cpod-bj", Zone: "cn-bj2-03"},
+		{UHostId: "uhost-dynamic", Zone: "cn-test-42"},
+	}, ResourceEnvelopeMeta{}, catalog)
+
+	assertEnvelopeFact(t, env, "uhost-wlcb", "zone", "cn-wlcb-01")
+	assertEnvelopeFact(t, env, "uhost-wlcb", "zone_display_name", "华北二A")
+	assertEnvelopeFact(t, env, "cpod-bj", "zone_display_name", "华北一C")
+	assertEnvelopeFact(t, env, "uhost-dynamic", "zone_display_name", "实时目录测试区")
+	assert.Equal(t, []string{"DescribeCompShareInstance", "DescribeCompShareSupportZone"}, env.SourceActions)
+	assert.True(t, env.Constraints.DoNotInventZoneLabels)
+}
+
+func TestBuildResourceEnvelopeOmitsUnverifiedZoneName(t *testing.T) {
+	for _, catalog := range []*deployment.ZoneCatalogSnapshot{
+		nil,
+		deployment.NewZoneCatalogSnapshot(false, nil),
+		deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{{
+			Placement: deployment.ZonePlacement{Zone: "cn-other-01"}, DisplayName: "其他区",
+		}}),
+	} {
+		env := BuildResourceEnvelopeWithMetaAndZoneCatalog([]entity.InstanceSnapshot{{
+			UHostId: "uhost-wlcb", Zone: "cn-wlcb-01",
+		}}, ResourceEnvelopeMeta{}, catalog)
+
+		assertEnvelopeFact(t, env, "uhost-wlcb", "zone", "cn-wlcb-01")
+		assertNoEnvelopeFact(t, env, "uhost-wlcb", "zone_display_name")
+		assert.Equal(t, []string{"DescribeCompShareInstance"}, env.SourceActions)
+		assert.True(t, env.Constraints.DoNotInventZoneLabels)
+	}
 }
 
 func TestBuildResourceEnvelope_NoGPUDoesNotExposeTheStoredGPUModel(t *testing.T) {

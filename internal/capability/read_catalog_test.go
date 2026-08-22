@@ -65,3 +65,23 @@ func TestReadDefinitionsExposeConcreteImageAndPriceTools(t *testing.T) {
 	require.Contains(t, names, ReadToolName(intent.IntentGPUSpecsQuery))
 	require.Contains(t, names, namedReadToolName(readCFSUpgradePrice))
 }
+
+func TestReadCapabilitiesDeclareZoneCatalogDependenciesOnTheirTypedSpecs(t *testing.T) {
+	resource, ok := RegisteredReadForTool(ReadToolName(intent.IntentResourceInfo))
+	require.True(t, ok)
+	require.True(t, resource.RequiresZoneCatalog(ResourceInfoRequest{}))
+
+	zones, ok := RegisteredReadForTool(ReadToolName(intent.IntentZoneCatalog))
+	require.True(t, ok)
+	require.True(t, zones.RequiresZoneCatalog(ZoneCatalogRequest{}))
+
+	models, ok := RegisteredReadForTool(ReadToolName(intent.IntentModelRepositoryBrowse))
+	require.True(t, ok)
+	require.False(t, models.RequiresZoneCatalog(ModelRepositoryRequest{}),
+		"an unscoped repository browse must not fetch an unused zone catalog")
+	require.True(t, models.RequiresZoneCatalog(ModelRepositoryRequest{Zone: "cn-wlcb-01"}))
+
+	monitor, ok := RegisteredReadForTool(ReadToolName(intent.IntentMonitorQuery))
+	require.True(t, ok)
+	require.False(t, monitor.RequiresZoneCatalog(MonitorCurrentRequest{}))
+}

@@ -213,6 +213,12 @@ type ReadCapabilitySpec[Request platform.ReadRequest, Response any] struct {
 	// must equal Request's JSON field set (enforced by the catalog consistency
 	// test).
 	Params schemaNode
+	// NeedsZoneCatalog declares whether this concrete request consumes the
+	// engine-owned live availability-zone snapshot. The dependency is evaluated
+	// after strict decoding, so capabilities with an optional zone field can avoid
+	// fetching the catalog when that field is absent. Keeping the declaration on
+	// the typed spec prevents the engine from growing a capability-name switch.
+	NeedsZoneCatalog func(Request) bool
 	// Handle runs the upstream calls and produces a typed Response. When it needs
 	// to short-circuit (missing data, clarification, fallback, failure) it returns
 	// a terminal ReadResult (non-empty Status); otherwise it returns the Response
@@ -231,14 +237,15 @@ type ReadCapabilitySpec[Request platform.ReadRequest, Response any] struct {
 // once, here at the registry edge; past decodeInto the flow stays fully typed
 // and never falls back to map[string]any or intent.Slots.
 type RegisteredRead struct {
-	Label       string
-	Description string
-	Tool        openai.Tool
-	schema      map[string]any
-	params      schemaNode
-	requestType reflect.Type
-	decode      func(map[string]any) (platform.ReadRequest, error)
-	run         func(ctx context.Context, req platform.ReadRequest, rt ReadRuntime) ReadResult
+	Label            string
+	Description      string
+	Tool             openai.Tool
+	schema           map[string]any
+	params           schemaNode
+	requestType      reflect.Type
+	needsZoneCatalog func(platform.ReadRequest) bool
+	decode           func(map[string]any) (platform.ReadRequest, error)
+	run              func(ctx context.Context, req platform.ReadRequest, rt ReadRuntime) ReadResult
 }
 
 // Decode parses tool arguments into this capability's concrete request type.
@@ -262,6 +269,16 @@ func (r RegisteredRead) Params() schemaNode { return r.params }
 // consistency test).
 func (r RegisteredRead) RequestType() reflect.Type { return r.requestType }
 
+// RequiresZoneCatalog evaluates the typed capability's declared reference-data
+// dependency for this already-decoded request. A nil declaration means the read
+// is independent of the zone catalog.
+func (r RegisteredRead) RequiresZoneCatalog(req platform.ReadRequest) bool {
+	if r.needsZoneCatalog == nil {
+		return false
+	}
+	return r.needsZoneCatalog(req)
+}
+
 // NewReadCapability erases a typed spec into a catalog entry. The Request type
 // ties the decoder, the MissingFields validator, the handler and the renderer
 // together: a mismatch is a compile error, not a runtime surprise.
@@ -277,6 +294,13 @@ func NewReadCapability[Request platform.ReadRequest, Response any](spec ReadCapa
 		schema:      schema,
 		params:      spec.Params,
 		requestType: reflect.TypeOf(*new(Request)),
+		needsZoneCatalog: func(req platform.ReadRequest) bool {
+			if spec.NeedsZoneCatalog == nil {
+				return false
+			}
+			typed, ok := req.(Request)
+			return ok && spec.NeedsZoneCatalog(typed)
+		},
 		decode: func(args map[string]any) (platform.ReadRequest, error) {
 			// Enforce enum membership and numeric bounds the strict JSON decoder cannot: an
 			// out-of-contract value is a validation fallback, not a silent

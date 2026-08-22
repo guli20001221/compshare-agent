@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
 )
@@ -22,10 +23,20 @@ type ResourceEnvelopeMeta struct {
 }
 
 func BuildResourceEnvelope(instances []entity.InstanceSnapshot) envelope.Envelope {
-	return BuildResourceEnvelopeWithMeta(instances, ResourceEnvelopeMeta{})
+	return BuildResourceEnvelopeWithMetaAndZoneCatalog(instances, ResourceEnvelopeMeta{}, nil)
 }
 
 func BuildResourceEnvelopeWithMeta(instances []entity.InstanceSnapshot, meta ResourceEnvelopeMeta) envelope.Envelope {
+	return BuildResourceEnvelopeWithMetaAndZoneCatalog(instances, meta, nil)
+}
+
+// BuildResourceEnvelopeWithMetaAndZoneCatalog projects the instance's raw zone
+// code and, when the live catalog carries it, the console display name as two
+// independently labelled facts. The code always comes from the instance
+// Describe response; the name only comes from the exact catalog row. No local
+// alias or code-to-name map is involved, and an unavailable or missing catalog
+// row simply omits the name rather than guessing.
+func BuildResourceEnvelopeWithMetaAndZoneCatalog(instances []entity.InstanceSnapshot, meta ResourceEnvelopeMeta, zoneCatalog *deployment.ZoneCatalogSnapshot) envelope.Envelope {
 	copied := append([]entity.InstanceSnapshot(nil), instances...)
 	env := envelope.Envelope{
 		Kind:          envelope.KindResourceInfo,
@@ -35,9 +46,11 @@ func BuildResourceEnvelopeWithMeta(instances []entity.InstanceSnapshot, meta Res
 		Computed:      []envelope.Fact{},
 		Constraints: envelope.Constraints{
 			DoNotInventInstances:   true,
+			DoNotInventZoneLabels:  true,
 			DoNotAnswerAccountBill: true,
 		},
 	}
+	usedZoneCatalog := false
 	for _, inst := range copied {
 		env.Subjects = append(env.Subjects, envelope.Subject{
 			ID:   safeValue(inst.UHostId),
@@ -67,7 +80,11 @@ func BuildResourceEnvelopeWithMeta(instances []entity.InstanceSnapshot, meta Res
 		addPositiveTimeFact(addInstanceFact, "start_time", resourceLabelStartTime, inst.StartTime)
 		addPositiveIntFact(addInstanceFact, "cpu", resourceLabelCPU, inst.CPU)
 		addPositiveIntFact(addInstanceFact, "memory", resourceLabelMemory, inst.Memory)
-		addStringFact(addInstanceFact, "zone", "Zone", inst.Zone)
+		addStringFact(addInstanceFact, "zone", "可用区代码", inst.Zone)
+		if displayName, ok := resourceZoneDisplayName(zoneCatalog, inst.Zone); ok {
+			addStringFact(addInstanceFact, "zone_display_name", "可用区名称", displayName)
+			usedZoneCatalog = true
+		}
 		addStringFact(addInstanceFact, "region", "Region", inst.Region)
 		addStringFact(addInstanceFact, "charge_type", "ChargeType", inst.ChargeType)
 		// Emit both values so positive and negative answers are equally grounded;
@@ -75,6 +92,9 @@ func BuildResourceEnvelopeWithMeta(instances []entity.InstanceSnapshot, meta Res
 		addInstanceFact("is_spot", "是否抢占式", spotFactValue(inst.IsSpot))
 		addPositiveTimeFact(addInstanceFact, "expire_time", resourceLabelExpireTime, inst.ExpireTime)
 		addStringFact(addInstanceFact, "auto_renew", "AutoRenew", inst.AutoRenew)
+	}
+	if usedZoneCatalog {
+		env.SourceActions = append(env.SourceActions, "DescribeCompShareSupportZone")
 	}
 	addComputedResourceMeta(&env, meta)
 	return env
