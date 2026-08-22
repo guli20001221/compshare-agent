@@ -18,9 +18,9 @@ func twoZoneCatalog() *deployment.ZoneCatalogSnapshot {
 
 // TestCodecZoneActivatedForZoneWorkflows pins S5c activation: the schema-derived
 // codec for a real "Zone" field is CodecZone (canonicalize against the live
-// catalog), not plain constrained text — and it is exactly the three
-// zone-carrying creates that need the catalog, no lifecycle op. This is the gate
-// that replaces the throwaway blast-radius probe.
+// catalog), not plain constrained text — and all three zone-carrying operations
+// need the catalog. Lifecycle operations are tested separately below because a
+// workflow may explicitly consume zone facts without accepting a Zone field.
 func TestCodecZoneActivatedForZoneWorkflows(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
@@ -37,6 +37,15 @@ func TestCodecZoneActivatedForZoneWorkflows(t *testing.T) {
 	require.True(t, ok)
 	assert.False(t, SpecNeedsZoneCatalog(stop),
 		"a workflow with no Zone field must not trigger the zone-catalog fetch")
+
+	reinstall, ok := catalog.Lookup("ReinstallInstanceWorkflow")
+	require.True(t, ok)
+	assert.NotContains(t, reinstall.Fields, "Zone",
+		"reinstall learns its placement from the selected instance, not the proposal")
+	assert.True(t, reinstall.NeedsZoneCatalog,
+		"the workflow must explicitly declare its execution-time zone dependency")
+	assert.True(t, SpecNeedsZoneCatalog(reinstall),
+		"reinstall must receive the same live snapshot used by zone-carrying operations")
 }
 
 // zoneOnlySpecResolver builds a resolver over a synthetic one-field spec whose
@@ -197,6 +206,13 @@ func TestSpecNeedsZoneCatalog(t *testing.T) {
 		"GpuType": {Codec: CodecMachineType},
 	}}
 	assert.True(t, SpecNeedsZoneCatalog(withZone))
+
+	explicitDependency := OperationSpec{
+		Fields:           map[string]FieldSpec{"UHostId": {Codec: CodecResourceRef}},
+		NeedsZoneCatalog: true,
+	}
+	assert.True(t, SpecNeedsZoneCatalog(explicitDependency),
+		"a workflow may consume zone facts after resolving its resource target")
 
 	withoutZone := OperationSpec{Fields: map[string]FieldSpec{"UHostId": {Codec: CodecResourceRef}}}
 	assert.False(t, SpecNeedsZoneCatalog(withoutZone),

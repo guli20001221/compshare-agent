@@ -112,11 +112,15 @@ type OperationSpec struct {
 	AgentDescription   string
 	Fields             map[string]FieldSpec
 	ImageCatalogSource string
-	NeedsConfirm       bool
-	Risk               security.Level
-	Execution          []workflow.ExecutionStepContract
-	ValidateResolved   func(map[string]any) error
-	Intake             IntakeSpec
+	// NeedsZoneCatalog carries an explicit workflow dependency for operations
+	// that consume zone facts without exposing a Zone proposal field. A CodecZone
+	// field remains the normal implicit dependency.
+	NeedsZoneCatalog bool
+	NeedsConfirm     bool
+	Risk             security.Level
+	Execution        []workflow.ExecutionStepContract
+	ValidateResolved func(map[string]any) error
+	Intake           IntakeSpec
 }
 
 type GateContract struct {

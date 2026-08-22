@@ -10,7 +10,8 @@ import (
 
 func ReinstallInstanceDef() *Definition {
 	return &Definition{
-		Name: "ReinstallInstanceWorkflow",
+		Name:             "ReinstallInstanceWorkflow",
+		NeedsZoneCatalog: true,
 		Steps: []Step{
 			stepQueryForReinstall(),
 			stepQuerySupportZones(),

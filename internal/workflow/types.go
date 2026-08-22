@@ -230,6 +230,15 @@ type Definition struct {
 	Name       string
 	Steps      []Step
 	ResultData func(wfCtx *Context) map[string]any
+	// NeedsZoneCatalog declares that this workflow consumes the turn's live zone
+	// snapshot even though its public proposal schema has no Zone field. Most
+	// workflows need the catalog because their Zone field uses CodecZone and are
+	// discovered automatically; lifecycle operations such as reinstall instead
+	// learn the target zone from DescribeCompShareInstance, then consult the same
+	// snapshot to validate image restrictions. Keeping that dependency here makes
+	// it a catalog property guarded by contract tests rather than an operation-name
+	// special case in the engine.
+	NeedsZoneCatalog bool
 	// ImageCatalogSource declares a fixed image source for workflows whose image
 	// id must be resolved against one specific catalog. Empty means the source is
 	// supplied by the proposal (for example reinstall). Keeping this metadata on
