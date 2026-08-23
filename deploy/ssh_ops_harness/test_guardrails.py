@@ -60,9 +60,16 @@ CLASSIFY_CASES = [
     ("if [ -x /usr/bin/supervisorctl ]; then supervisorctl -c /usr/supervisor/supervisord.conf status; else echo missing; fi", "read_only"),
     ("if [ -x /usr/bin/systemctl ]; then systemctl restart vllm; fi", "mutating"),
     ("while true; do ps -ef; done", "mutating"),
+    ("for p in /workspace /data /mnt /root /tmp; do stat -c '%F %A' \"$p\"; df -P \"$p\"; done", "read_only"),
+    ("for p in /workspace /data /mnt /root /tmp; do printf '== %s ==\\n' \"$p\"; if [ -e \"$p\" ]; then stat -c 'type=%F mode=%A' \"$p\"; df -P \"$p\"; df -Pi \"$p\"; if command -v findmnt >/dev/null 2>&1; then findmnt -T \"$p\" -o TARGET,SOURCE,FSTYPE,OPTIONS; else mount | grep -E \"(^| )$p( |$)\" || true; fi; else printf 'absent\\n'; fi; done", "read_only"),
+    ("for p in /tmp/a /tmp/b; do touch \"$p\"; done", "mutating"),
+    ("for p in /tmp/a /tmp/b; do rm -rf \"$p\"; done", "destructive"),
+    ("for p in $(printf /tmp/a); do stat \"$p\"; done", "mutating"),
     ("printenv CUDA_VISIBLE_DEVICES NVIDIA_VISIBLE_DEVICES PATH", "read_only"),
     ("printenv AWS_SECRET_ACCESS_KEY", "mutating"),
     ("env", "mutating"),
+    ("python3 -c 'import importlib.util; print(importlib.util.find_spec(\"vllm\"))'", "read_only"),
+    ("python3 -c 'import importlib; print(importlib.import_module(\"os\"))'", "mutating"),
     ("journalctl -u docker --no-pager -n 100", "read_only"),
     ("journalctl -xe", "read_only"),                  # r2 FP: -e is a bound
     ("journalctl -u vllm -n 100 -e", "read_only"),
@@ -279,17 +286,20 @@ CLASSIFY_CASES = [
     ("cat /root/.bashrc", "mutating"),                      # content read of /root stays refused
     ("cat /proc/net/dev", "mutating"),                      # allowlist is EXACT — only tcp/udp added
 
-    # === F6: balanced SINGLE quotes now allowed (shell-literal grep patterns flash reflexively writes) ===
-    # WHY: flash writes `... | grep '8188'`; single quotes are shell-LITERAL so the pattern reaches
-    # grep as inert text and can never execute. DOUBLE quotes stay banned (they still expand $()/$VAR).
+    # === F6: balanced quotes with no expansion are inert argv data ================================
+    # Single quotes never expand. Double quotes are also safe after the raw substitution/variable
+    # checks below; this is the ordinary spelling of patterns assembled by diagnostic agents.
     ("ss -tlnp | grep '8188'", "read_only"),
     ("netstat -tlnp | grep '8188'", "read_only"),
     ("nvidia-smi | grep 'MiB'", "read_only"),
     ("dmesg | grep -i 'nvidia'", "read_only"),
     ("cat /proc/net/tcp | grep '0A'", "read_only"),
 
+    ('nvidia-smi | grep "MiB"', "read_only"),
+
     # === F6 bypass attempts that MUST stay refused ===
-    ('nvidia-smi | grep "MiB"', "mutating"),                # DOUBLE quotes stay banned
+    ('nvidia-smi | grep "$SECRET_PATTERN"', "mutating"),    # dynamic double-quoted expansion
+    ('nvidia-smi | grep "$(whoami)"', "mutating"),          # command substitution
     ("cat /proc/meminfo | grep '$(whoami)'", "mutating"),   # $ banned even inside quotes (conservative)
     ("cat '/etc/shadow'", "mutating"),                      # quoted secret path still hits _safe_path
     ("grep 'x' /etc/shadow", "mutating"),                   # grep is a filter, not a read-only SOURCE
@@ -524,11 +534,11 @@ CLASSIFY_CASES = [
     ("poweroff -h", "destructive"),
 
     # The deleted help/version fast path must not return.
-    # It sat at classify() step 0, ahead of the destructive scan AND the multi-line refusal,
+    # It sat at classify() step 0, ahead of the destructive scan AND the multi-line confirmation tier,
     # so anything it accepted ran with no consent card in read-only mode as well as write
     # mode. These pin every shape that reopens if anyone adds one back.
     #
-    # (a) the separator: `\s` matches a newline, and the multi-line refusal lives inside the
+    # (a) the separator: `\s` matches a newline, and the multi-line confirmation tier lives inside the
     #     `mutating` branch, which a read_only verdict never reaches. `bash -c` then ran
     #     `reboot` as line 1.
     ("reboot\n--help", "destructive"),
@@ -540,9 +550,7 @@ CLASSIFY_CASES = [
     ("dd\n--version", "mutating"),                 # the shapes an allowlist would have
     ("curl\n--version", "mutating"),               # let through on a listed name
     ("usermod\n--help", "destructive"),
-    ("rm\n--help", "mutating"),                    # no target -> not destructive; the
-                                                    # multi-line shape gate refuses it
-                                                    # inside the mutating branch
+    ("rm\n--help", "mutating"),                    # no destructive target; whole script needs a card
     #
     # (b) the program: `--help` having no side effects is a property of the PROGRAM, and an
     #     unknown one cannot assert it. A bare name is not an identity either — the transport

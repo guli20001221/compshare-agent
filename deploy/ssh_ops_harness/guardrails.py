@@ -53,12 +53,12 @@ from urllib.parse import urlsplit
 # There is deliberately NO help/version fast-path. Do not add one back.
 #
 # There was one, `^[\w./-]+\s+(--help|--version|help|version)\s*$`, consulted at classify()
-# step 0 — ahead of BOTH the destructive scan and the multi-line refusal, so anything it
+# step 0 — ahead of BOTH the destructive scan and the multi-line confirmation tier, so anything it
 # accepted executed with no consent card in read-only mode as well as write mode. It was
 # wrong in four ways, and each one was a full bypass on its own:
 #
 #   - `\s` matches a NEWLINE. `reboot\n--help` classified read_only, and the multi-line
-#     refusal could not save it because that refusal lives inside the `mutating` branch,
+#     confirmation tier could not save it because it lives inside the `mutating` branch,
 #     which a read_only verdict never reaches. ssh_transport hands the whole string to
 #     `bash -c`, which runs `reboot` as line 1.
 #   - the name was unconstrained: `./unknown --help`, `/root/payload.sh --help`.
@@ -259,12 +259,12 @@ _SAFE_REDIR = re.compile(r"(?:\d*>&\d+|&>\s*/dev/null|\d*>\s*/dev/null)")
 # Hard-dangerous shell constructs. Deliberately EXCLUDES `|` (pipe), `*`/`?` (glob), and the
 # SINGLE quote — those are validated structurally below. Everything that enables command chaining
 # (`;` `&&`), substitution (`` ` `` `$()` `$VAR`), real-file redirection (`>`), brace/bracket/tilde
-# expansion, DOUBLE quotes, parent-dir traversal, or newlines is banned. Single quotes are allowed
-# (F6): they are shell-LITERAL, so a `grep '8188'` pattern reaches the filter as inert text and can
-# never be executed; DOUBLE quotes stay banned because inside them $()/`` ` ``/$VAR still expand.
-_HARD_META = re.compile(r"""[;&`$<>(){}\[\]~"]|\.\.|\n""")
+# expansion, parent-dir traversal, or newlines is banned. Balanced quotes are allowed after raw
+# command/variable expansion has been rejected; quoted grep patterns and paths are inert argv data.
+_HARD_META = re.compile(r"""[;&`$<>(){}\[\]~]|\.\.|\n""")
 # Command substitution — denied on the RAW command even inside single quotes (see F14).
 _SUBSTITUTION = re.compile(r"\$\(|`")
+_VARIABLE_EXPANSION = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]+\}|[0-9!#*@_-])")
 # Pure stdin->stdout text filters (no file writes, no exec, no file-arg reads).
 # Deliberately EXCLUDES awk/sed (system()/-i/w-file), xargs/tee (exec/write), dd.
 _SAFE_FILTERS = {"grep", "egrep", "fgrep", "head", "tail", "wc", "sort",
@@ -307,6 +307,7 @@ _STRUCTURED_DIAG = [re.compile(p) for p in [
     r"(pgrep|pidof)(\s+\S+)*",                         # process lookup only; pkill is separate
     r"lsof(\s+\S+)*",                                  # open-file/socket metadata; no write mode
     r"df(\s+\S+)*",
+    r"findmnt(\s+\S+)*",
     r"dmesg(\s+(-T|-x|-t|-H|-k|-r|-e|--ctime|--color=\w+|-l\s+\w+|-n\s+\d+|--level=\S+))*",
     r"(ss|netstat)(\s+\S+)*",
     r"ip\s+(-\w+\s+)*(addr|a|link|l|route|r|neigh|n)(\s+(show|list|s|l))?",
@@ -536,8 +537,8 @@ def _mask_quoted(s: str) -> str:
 
 
 def _unquote(p: str) -> str:
-    """Strip balanced surrounding single quotes so a quoted path is validated on its real value."""
-    return p[1:-1] if len(p) >= 2 and p[0] == "'" and p[-1] == "'" else p
+    """Strip balanced surrounding quotes so a quoted path is validated on its real value."""
+    return p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "'\"" else p
 
 
 # Metadata-only reads (ls/stat/file/readlink/wc/*sum; `du` is broader, see F5 below) reveal a
@@ -549,7 +550,7 @@ _META_SAFE_PREFIXES = ("/dev/", "/usr/", "/sys/", "/proc/", "/lib/", "/lib64/",
                        "/bin/", "/sbin/", "/opt/")
 # F11: non-home application/data dirs, where these GPU images put the served app (/workspace/ComfyUI,
 # /data/..., mounted volumes). Metadata-only, and deliberately NOT /root or /home — see _safe_meta_path.
-_META_APP_PREFIXES = ("/workspace", "/data", "/mnt", "/root", "/home")
+_META_APP_PREFIXES = ("/workspace", "/data", "/mnt", "/root", "/home", "/tmp", "/var/tmp")
 _META_STATE_PREFIXES = ("/var/lib/docker", "/var/lib/containerd")
 _META_DENY_SUBSTR = tuple(d for d in _DENY_PATH_SUBSTR if d != "/root")
 
@@ -1166,19 +1167,21 @@ def _is_safe_readonly_command(cmd: str) -> bool:
     shape `<read-only source> [ | <text filter> ]*`. Globs (`*`/`?`) are allowed because
     the source's path allowlist (_safe_path) still validates the literal string, so a glob
     cannot escape a safe prefix (`/proc/driver/nvidia/*` stays inside nvidia driver info,
-    while `/etc/*` or a `..` traversal is still denied). Balanced single quotes are permitted
-    (F6) — a quoted grep pattern is shell-literal; a `/`-bearing quoted token is still caught by
+    while `/etc/*` or a `..` traversal is still denied). Balanced quotes are permitted after raw
+    expansion checks; a `/`-bearing quoted token is still caught by
     the filter's path check, and a quoted secret path (`cat '/etc/shadow'`) still hits _safe_path."""
     stripped = _SAFE_REDIR.sub(" ", cmd)
-    if stripped.count("'") % 2 != 0:                      # unbalanced single quote -> refuse (fail closed)
+    try:
+        shlex.split(stripped)
+    except ValueError:                                    # malformed/unbalanced quoting -> fail closed
         return False
-    # F14: scan for hard metachars on a copy whose SINGLE-QUOTED spans are blanked out. Inside single
-    # quotes the shell expands nothing, so `grep 'comfy$'` / `grep 'a|b'` are inert text — yet the flat
+    # F14: scan for hard metachars on a copy whose quoted spans are blanked out. Expansion is
+    # rejected below, so `grep 'comfy$'` / `grep "a|b"` are inert text — yet the flat
     # scan would refuse them. Masking preserves offsets, so pipe boundaries are located outside
     # quotes too. Path safety
     # is UNAFFECTED: segments are taken from the ORIGINAL text and every path token is still validated,
     # so `cat '/etc/shadow'` remains refused.
-    masked = _mask_single_quoted(stripped)
+    masked = _mask_quoted(stripped)
     # Backslash-escaped parentheses are literal argv (not a subshell), most commonly find's grouped
     # predicates: `find ... \( -name a -o -name b \) | head`. Preserve string length for the pipe
     # offsets below while removing only those two proven-literal metacharacters from the hard scan.
@@ -1191,6 +1194,8 @@ def _is_safe_readonly_command(cmd: str) -> bool:
     # A bare `$` anchor (`grep 'comfy$'`) carries no such risk and stays allowed.
     if _SUBSTITUTION.search(stripped):
         return False
+    if _VARIABLE_EXPANSION.search(_mask_single_quoted(stripped)):
+        return False
     segs, prev = [], 0
     for i, ch in enumerate(masked):
         if ch == "|":
@@ -1201,7 +1206,8 @@ def _is_safe_readonly_command(cmd: str) -> bool:
     if any(not s for s in segs):                          # empty => `||` or dangling pipe
         return False
     first_tokens = segs[0].split()
-    if first_tokens and first_tokens[0] in _SHELL_KEYWORDS:
+    if (first_tokens and first_tokens[0] in _SHELL_KEYWORDS
+            and first_tokens[0] not in _READ_CONTROL_KEYWORDS):
         return False                                      # control-flow/loops require confirmation
     source = _strip_sudo(_strip_shell_keywords(segs[0]).strip())
     # `find` needs its own recursive -exec proof rather than the flat allowlist. Preserve that proof
@@ -1458,6 +1464,7 @@ _PY_SAFE_CALLS = {
     "json.load", "json.loads", "json.dumps",
     "yaml.safe_load", "yaml.safe_load_all",
     "glob.glob", "glob.iglob",
+    "importlib.util.find_spec",                          # package presence, no import/installation
     "pkg_resources.get_distribution",
     "shutil.which",                                      # PATH lookup only; no copy/move
     "socket.gethostname",                                # local name, opens nothing
@@ -1731,7 +1738,7 @@ def _env_is_read(tokens) -> bool:
 _SHELL_KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for",
                    "case", "esac", "in", "select", "function", "coproc", "time", "!",
                    "{", "}", "(", ")"}
-_READ_CONTROL_KEYWORDS = {"if", "then", "else", "elif", "fi"}
+_READ_CONTROL_KEYWORDS = {"if", "then", "else", "elif", "fi", "!"}
 _DIAGNOSTIC_ENV_NAMES = {
     "CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES", "NVIDIA_DRIVER_CAPABILITIES",
     "CUDA_HOME", "CONDA_DEFAULT_ENV", "VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH",
@@ -1918,8 +1925,8 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
 # them must be a read. This removes the single largest source of refusals seen live
 # (the model naturally writes `ls /a; ls /b`) without widening what any one command
 # may do — and it lets the refusal message stop lying about "this changes the box".
-_CHAIN_SPLIT = re.compile(r"\|\||&&|[;|]")
-_CONDITIONAL_SPLIT = re.compile(r"\|\||&&|;")
+_CHAIN_SPLIT = re.compile(r"\|\||&&|[;|\n]")
+_CONDITIONAL_SPLIT = re.compile(r"\|\||&&|[;\n]")
 
 
 def _split_at(cmd: str, pattern):
@@ -1959,6 +1966,74 @@ def _split_chain(cmd: str):
 def _split_conditionals(cmd: str):
     """Split control-flow boundaries while preserving a pipeline for structural validation."""
     return _split_at(cmd, _CONDITIONAL_SPLIT)
+
+
+_LITERAL_FOR_LOOP = re.compile(
+    r"(?P<prefix>^|[;\n])(?P<space>\s*)for\s+(?P<var>[A-Za-z_][A-Za-z0-9_]*)\s+in\s+"
+    r"(?P<values>[^;\n]+?)\s*;\s*do\s+(?P<body>.*?)\s*;\s*done\b", re.DOTALL)
+_LITERAL_LOOP_VALUE = re.compile(r"[A-Za-z0-9_./:@+\-]+")
+
+
+def _expand_loop_var(body: str, variable: str, value: str) -> str:
+    """Expand one shell loop variable outside single quotes; values are prevalidated literals."""
+    out, quote, i = [], "", 0
+    braced, plain = "${" + variable + "}", "$" + variable
+    while i < len(body):
+        ch = body[i]
+        if ch == "'":
+            quote = "" if quote == "'" else ("'" if not quote else quote)
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '"':
+            quote = "" if quote == '"' else ('"' if not quote else quote)
+            out.append(ch)
+            i += 1
+            continue
+        if quote != "'" and body.startswith(braced, i):
+            out.append(value)
+            i += len(braced)
+            continue
+        if (quote != "'" and body.startswith(plain, i)
+                and (i + len(plain) == len(body)
+                     or not (body[i + len(plain)].isalnum() or body[i + len(plain)] == "_"))):
+            out.append(value)
+            i += len(plain)
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _rewrite_proven_literal_for_loop(command: str):
+    """Validate one finite literal for-loop and replace it with ``true`` for outer classification.
+
+    Models naturally batch the same read across a short path/interpreter list. Each literal value is
+    substituted and the body is reclassified by this same gate; any write, nested loop, dynamic
+    variable or unknown command makes the entire loop require confirmation.
+    """
+    masked = _mask_quoted(command)
+    match = _LITERAL_FOR_LOOP.search(masked)
+    if match is None:
+        return False, False, command
+    values_text = command[match.start("values"):match.end("values")]
+    body = command[match.start("body"):match.end("body")]
+    try:
+        values = shlex.split(values_text)
+    except ValueError:
+        return True, False, command
+    if (not values or len(values) > 32
+            or any(_LITERAL_LOOP_VALUE.fullmatch(value) is None for value in values)
+            or re.search(r"\b(?:for|while|until|select|case)\b", _mask_quoted(body))):
+        return True, False, command
+    variable = match.group("var")
+    for value in values:
+        expanded = _expand_loop_var(body, variable, value)
+        if _VARIABLE_EXPANSION.search(expanded) or classify(expanded) != "read_only":
+            return True, False, command
+    prefix = command[match.start("prefix"):match.end("prefix")]
+    rewritten = command[:match.start()] + prefix + " true" + command[match.end():]
+    return True, True, rewritten
 
 
 def _effective_launch_tokens(seg: str):
@@ -2123,11 +2198,12 @@ def classify(command: str) -> str:
         return "mutating"
     if _scan_destructive(cmd):                            # 1) destructive precedes everything
         return "destructive"
-    if "\n" in cmd:                                       # 2) never accept a multi-line script
-        return "mutating"
-    if _is_safe_readonly_command(cmd):                    # 3) preserve reviewed read-only pipelines
+    loop_found, loop_safe, rewritten = _rewrite_proven_literal_for_loop(cmd)
+    if loop_found:
+        return "read_only" if loop_safe and classify(rewritten) == "read_only" else "mutating"
+    if _is_safe_readonly_command(cmd):                    # 2) preserve reviewed read-only pipelines
         return "read_only"
-    for conditional in _split_conditionals(cmd):          # 4) every control-flow branch is a read
+    for conditional in _split_conditionals(cmd):          # 3) every line/control-flow branch is a read
         # Keep a pipeline intact long enough for _is_safe_readonly_command to prove that its
         # downstream stages read stdin only. Splitting `read | grep || true` all the way down first
         # turns the stdin-only grep into an apparent bare file reader and creates a false write card.

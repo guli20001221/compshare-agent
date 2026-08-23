@@ -11,8 +11,8 @@ Spawned per consented ops-task by the Go server. Boundary contract:
   - Built-in tools (Bash/Read/Write/...) are stripped so only reviewed in-process operations tools
     exist, asserted by INV-9. Without this the harness's built-in Bash runs on the LOCAL host.
   - Commands proven read-only run immediately; every other reversible guest-local effect requires
-    approval of that exact command. Irrecoverable and tenant/control-plane boundary violations,
-    command substitution, and multi-line input are refused. Box output is capped and secret-scrubbed.
+    approval of that exact command. Irrecoverable and tenant/control-plane boundary violations and
+    command substitution are refused. Box output is capped and secret-scrubbed.
 
 The pure logic (handshake, classify-dispatch, scrub, INV-9 check) is SDK-independent and unit-tested
 offline; the SDK wiring (the reviewed MCP operations + the agent loop) is in main(), behind a guarded import.
@@ -137,12 +137,12 @@ without a post-change observation tied to the original success criterion."""
 SYSTEM_PROMPT = _SYSTEM_PROMPT_CORE + "\n\n" + _SYSTEM_PROMPT_REPAIR_MODE
 
 TOOL_DESC = """Run one command over SSH. Only positively proven read-only calls run immediately;
-others need exact approval. Returns exit status. For a state-changing repair, send the smallest concrete command
-backed by evidence; it runs only after the user approves that exact command. Stay within the diagnosed fault;
+others need exact approval. Returns exit status. For a state-changing repair, send the smallest concrete command;
+it runs only after the user approves that exact command. Stay within the diagnosed fault;
 re-downloading an application or disabling an unrelated service needs a separate decision unless the task
 requests it. Only irreversible data/boot/recovery loss, control-plane crossings, reboots, accounts/passwords,
-SSH/network disabling, substitution, and multi-line input are refused. Pipes/chains/globs/redirection and
-read-only probes through the application's actual interpreter are supported. Rewrite only command-form
+SSH/network disabling and substitution are refused. Pipes/chains/globs/redirection, multi-line scripts
+and proven probes through the application's actual interpreter are supported; unproven effects ask. Rewrite only command-form
 rejections; never bypass policy or approval. Each call is classified as one effect: keep independently useful
 probes in separate calls.
 
@@ -625,15 +625,15 @@ def run_command(command: str) -> dict:
             # firewall, and it survives write mode unchanged. `classify` scans the LITERAL command
             # for destructive verbs, so `$(printf '\\x72\\x6d') -rf /` reads as harmless text to it;
             # only refusing substitution outright keeps the destructive tier meaningful. Multi-line
-            # input is refused for the same reason: classify() only ever reasons about one line.
-            if guardrails.is_form_violation(command) or "\n" in command:
+            # scripts remain in this mutating branch, so the whole script is shown and confirmed.
+            if guardrails.is_form_violation(command):
                 entry["disposition"] = "refused_form"
                 # Tell the model WHICH rule it broke. A form violation answered with "this changes
                 # the box" is actively misleading — it retries another chained variant instead of
                 # splitting, and burns the turn budget.
                 return {"text": ("⛔ NOT EXECUTED — command FORM rejected, not a permissions problem. "
-                                 "Send exactly ONE command per call: no $(...) or backticks, no "
-                                 "multi-line scripts. Resend as separate plain commands:\n  "
+                                 "Command substitution ($(...) or backticks) cannot be confirmed "
+                                 "as a literal effect. Resend without substitution:\n  "
                                  f"{command}"),
                         "is_error": True, "tier": tier, "executed": False}
             # The lane-level card
@@ -1191,7 +1191,7 @@ async def main():
         elif guardrails.is_unmanaged_platform_service_launch(command):
             refusal, message = "refused_unmanaged_platform_service", (
                 "a standalone process cannot substitute for the platform-managed entry")
-        elif guardrails.is_form_violation(command) or "\n" in command:
+        elif guardrails.is_form_violation(command):
             refusal, message = "refused_form", "command form rejected"
         elif len(display) > _MAX_CONFIRMABLE_COMMAND:
             refusal, message = "refused_unconfirmable", "operation is too long for an exact approval card"

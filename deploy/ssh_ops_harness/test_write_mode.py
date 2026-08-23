@@ -81,15 +81,24 @@ for cmd in ["rm -rf /workspace", "mkfs.ext4 /dev/vdb", "dd if=/dev/zero of=/dev/
           res["executed"] is False and entry["disposition"] == "refused_destructive")
     check(f"destructive-tier-intact::{cmd}", guardrails.classify(cmd) == "destructive")
 
-# --- (3b) the shape gate stays refused WITH writes on --------------------------------------------
+# --- (3b) substitution stays refused; multi-line scripts use the ordinary exact card -------------
 # Command substitution hides the command text from classify(), so allowing it in write mode would
-# turn the destructive list into decoration. Multi-line input is refused for the same reason:
-# classify() only ever reasons about a single line.
-for cmd in ["cat $(which python3)", "echo `whoami`", "systemctl restart $(cat /tmp/svc)",
-            "echo one\nrm -rf /"]:
+# turn the destructive list into decoration. A literal multi-line script does not: destructive
+# scanning is per line, and an otherwise reversible script is shown in full on one approval card.
+for cmd in ["cat $(which python3)", "echo `whoami`", "systemctl restart $(cat /tmp/svc)"]:
     res, entry = dispatch(cmd)
     check(f"write-still-refuses-shape::{cmd[:28]!r}",
-          res["executed"] is False and entry["disposition"] in ("refused_form", "refused_destructive"))
+          res["executed"] is False and entry["disposition"] == "refused_form")
+
+res, entry = dispatch("printf one\nprintf two")
+check("multiline-proven-read-script-runs-without-card",
+      res["executed"] is True and entry["disposition"] == "ran_read_only")
+res, entry = dispatch("mkdir /tmp/multiline-canary\nprintf two")
+check("multiline-reversible-write-uses-exact-card",
+      res["executed"] is True and entry["disposition"] == "ran_mutating")
+res, entry = dispatch("echo one\nrm -rf /")
+check("multiline-destructive-script-still-refused",
+      res["executed"] is False and entry["disposition"] == "refused_destructive")
 
 # A refusal the model cannot act on wastes the turn. In write mode the read-only wording ("this
 # changes the box") is actively wrong: it sends the agent looking for a permission it already has.
