@@ -277,10 +277,28 @@ _STREAM_BLOCK = {
     "netstat": re.compile(r"(?:^|\s)(-[a-z]*c|--continuous)"),
 }
 
-# nvidia-smi: query/read flags ONLY. NOT -r/-pl/-pm/-e/-l (mutate/stream), NOT dmon/pmon.
+# nvidia-smi: query/read flags ONLY. NOT -r/-pl/-pm/-e/-l (mutate/stream).
 _NVIDIA = re.compile(
     r"nvidia-smi(\s+(-q|-L|-a|--help|-i\s+\d+|-d\s+\w+|--id=\d+|--query[\w.-]*=\S+|--format=\S+|--display=\S+|topo(\s+-m)?))*"
 )
+
+
+def _bounded_nvidia_monitor(tokens) -> bool:
+    """True for a dmon/pmon invocation with an explicit positive sample count.
+
+    Both subcommands stream forever by default, but ``-c N`` makes them ordinary bounded
+    diagnostics.  The command-shape gate has already rejected substitution and real-file
+    redirection; these monitor subcommands do not expose GPU mutation flags.
+    """
+    if len(tokens) < 3 or tokens[1] not in ("dmon", "pmon"):
+        return False
+    counts = []
+    for i, token in enumerate(tokens[2:]):
+        if token == "-c" and i + 3 < len(tokens):
+            counts.append(tokens[i + 3])
+        elif token.startswith("--count="):
+            counts.append(token.partition("=")[2])
+    return len(counts) == 1 and counts[0].isdigit() and int(counts[0]) > 0
 
 # Simple flag-only-safe diagnostics (no file CONTENT, no stream/mutate args). fullmatch.
 _STRUCTURED_DIAG = [re.compile(p) for p in [
@@ -480,11 +498,32 @@ def _app_log_path(p: str) -> bool:
     return bool(_APP_LOG_SHAPE.search(p)) and any(p.startswith(pre) for pre in _APP_LOG_PREFIXES)
 
 
+_APP_SOURCE_PREFIXES = ("/workspace/", "/data/", "/mnt/", "/opt/")
+
+
+def _app_source_path(p: str) -> bool:
+    """A caller-named Python/shell source file under an application tree.
+
+    Traceback diagnosis needs the few lines around a reported failure, but opening the whole app
+    data tree would send arbitrary user data to the model. Keep this to source shapes, reject glob
+    expansion and every existing secret-file tripwire, and leave configs/data behind confirmation.
+    """
+    if ".." in p or re.search(r"[*?\[\]{}]", p):
+        return False
+    low = p.lower()
+    if any(d in low for d in _DENY_PATH_SUBSTR):
+        return False
+    return (low.endswith((".py", ".sh")) and
+            any(p.startswith(prefix) for prefix in _APP_SOURCE_PREFIXES))
+
+
 def _safe_path(p: str) -> bool:
     p = _unquote(p)
     if ".." in p:
         return False
     if _app_log_path(p):                                 # F13: the service's own log
+        return True
+    if _app_source_path(p):                              # F15: caller-named operational source
         return True
     if _pkg_safe_path(p):                                # F7: venv package internals (minus secret files)
         return True
@@ -725,6 +764,44 @@ def _http_probe_ok(tokens) -> bool:
     return bool(urls) and all(_LOOPBACK_URL.match(u) for u in urls)
 
 
+def _sed_numeric_print_is_read(cmd: str, allow_stdin: bool) -> bool:
+    """Prove only ``sed -n 'N[,M]p' [SAFE_FILE...]``.
+
+    GNU sed has writing/execution commands even without ``-i``. A fixed numeric print program has
+    neither, so it is safe as a bounded stdin filter or against already-curated content paths.
+    """
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        return False
+    if not argv or _basename(argv[0]) != "sed":
+        return False
+    quiet, scripts, paths, i = False, [], [], 1
+    while i < len(argv):
+        token = argv[i]
+        if token == "-n":
+            quiet = True
+        elif token == "-e":
+            i += 1
+            if i >= len(argv):
+                return False
+            scripts.append(argv[i])
+        elif token.startswith("-"):
+            return False
+        elif not scripts:
+            scripts.append(token)
+        else:
+            paths.append(token)
+        i += 1
+    if not quiet or len(scripts) != 1:
+        return False
+    if re.fullmatch(r"(?:\d+|\$)(?:,(?:\d+|\$))?p", scripts[0]) is None:
+        return False
+    if not paths:
+        return allow_stdin
+    return all("/" in path and _safe_path(path) for path in paths)
+
+
 def _is_read_only(cmd: str) -> bool:
     tokens = cmd.split()
     if not tokens:
@@ -748,11 +825,22 @@ def _is_read_only(cmd: str) -> bool:
     if binary in ("vmstat", "iostat", "mpstat", "pidstat"):
         return _interval_ok(tokens)
     if binary == "nvidia-smi":
-        return _NVIDIA.fullmatch(cmd) is not None
+        return _NVIDIA.fullmatch(cmd) is not None or _bounded_nvidia_monitor(tokens)
+    # Pure shell output/status builtins are diagnostics, not guest mutations. Real-file
+    # redirection and substitution are rejected before this point, so these forms can only write
+    # to the command's captured stdout/stderr or return a status code.
+    if binary in ("printf", "echo", "true", "false"):
+        return True
     if binary == "fuser" and _KILL_FLAG_BINARIES["fuser"].search(cmd):
         return False
     if binary in ("grep", "egrep", "fgrep"):
-        return _safe_grep_file_read(tokens)
+        try:
+            grep_tokens = shlex.split(cmd)
+        except ValueError:
+            return False
+        return _safe_grep_file_read(grep_tokens)
+    if binary == "sed":
+        return _sed_numeric_print_is_read(cmd, allow_stdin=False)
     # Match the allowlist on the BASENAME-normalized command as well: a venv/conda interpreter is
     # invoked by absolute path (`/usr/local/miniconda3/envs/comfyui/bin/python --version`), which is
     # exactly as read-only as the bare form. This is the ONLY route by which a path-qualified
@@ -804,7 +892,11 @@ def _is_safe_filter(seg: str) -> bool:
     """A downstream pipe stage: an allowlisted text filter reading ONLY stdin. No
     file-path args (so `| grep root /etc/shadow` cannot read a file) and no -f stream."""
     toks = seg.split()
-    if not toks or _basename(toks[0]) not in _SAFE_FILTERS:
+    if not toks:
+        return False
+    if _basename(toks[0]) == "sed":
+        return _sed_numeric_print_is_read(seg, allow_stdin=True)
+    if _basename(toks[0]) not in _SAFE_FILTERS:
         return False
     if _FOLLOW.search(seg):
         return False
@@ -830,6 +922,10 @@ def _is_safe_readonly_command(cmd: str) -> bool:
     # is UNAFFECTED: segments are taken from the ORIGINAL text and every path token is still validated,
     # so `cat '/etc/shadow'` remains refused.
     masked = _mask_single_quoted(stripped)
+    # Backslash-escaped parentheses are literal argv (not a subshell), most commonly find's grouped
+    # predicates: `find ... \( -name a -o -name b \) | head`. Preserve string length for the pipe
+    # offsets below while removing only those two proven-literal metacharacters from the hard scan.
+    masked = re.sub(r"\\[()]", "xx", masked)
     if _HARD_META.search(masked):
         return False
     # Command substitution stays refused even when quoted. Inside single quotes `$(...)` is inert in a
@@ -847,8 +943,17 @@ def _is_safe_readonly_command(cmd: str) -> bool:
     segs = [s.strip() for s in segs]
     if any(not s for s in segs):                          # empty => `||` or dangling pipe
         return False
+    first_tokens = segs[0].split()
+    if first_tokens and first_tokens[0] in _SHELL_KEYWORDS:
+        return False                                      # control-flow/loops require confirmation
     source = _strip_sudo(_strip_shell_keywords(segs[0]).strip())
-    if not _is_read_only(source):
+    # `find` needs its own recursive -exec proof rather than the flat allowlist. Preserve that proof
+    # through stdin-only filters; splitting `find ... | head` first makes `head` look like a file
+    # reader. Do not call the general segment classifier here: its fallback intentionally calls this
+    # function and would recurse.
+    source_tokens = source.split()
+    source_is_find = bool(source_tokens) and _basename(source_tokens[0]) == "find"
+    if not _is_read_only(source) and not (source_is_find and not _find_is_mutating(source, 0)):
         return False
     return all(_is_safe_filter(s) for s in segs[1:])
 
@@ -1198,6 +1303,21 @@ def _py_open_is_read(call) -> bool:
     return not any(ch in mode.value for ch in "wax+")
 
 
+def _py_import_call_is_read(call) -> bool:
+    """Treat ``__import__('literal.module')`` like the already allowed import statement.
+
+    Models commonly use this spelling inline when printing ``sys.executable``.  Only the
+    one-argument literal form is accepted; computed names, fromlists and relative imports remain
+    behind confirmation. Calls on the returned module are still checked independently, so
+    ``__import__('os').system(...)`` remains mutating.
+    """
+    if len(call.args) != 1 or call.keywords:
+        return False
+    module = call.args[0]
+    return (isinstance(module, ast.Constant) and isinstance(module.value, str)
+            and re.fullmatch(r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*", module.value) is not None)
+
+
 def _py_urlopen_is_local_get(call) -> bool:
     """Allow only urllib's loopback GET equivalent of the existing curl read probe.
 
@@ -1246,6 +1366,10 @@ def _py_payload_is_readonly(payload: str) -> bool:
             dotted = _py_dotted(node.func, aliases)
             if dotted == "open" and not _py_open_is_read(node):
                 return False
+            if dotted == "__import__":
+                if not _py_import_call_is_read(node):
+                    return False
+                continue
             if dotted == "urllib.request.urlopen":
                 if not _py_urlopen_is_local_get(node):
                     return False
@@ -1393,6 +1517,9 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     # Strip everything that can merely PRECEDE the real command, to a fixed point: `then sudo rm ...`
     # needs both strippers, and either one alone leaves the other's prefix in token 0.
     seg, prev = seg.strip(), None
+    initial_tokens = seg.split()
+    if initial_tokens and initial_tokens[0] in _SHELL_KEYWORDS:
+        return True                                       # do not auto-run shell control-flow/loops
     while prev != seg:
         prev = seg
         seg = _strip_sudo(_strip_shell_keywords(seg).strip())
@@ -1462,7 +1589,7 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     if binary == "top":                                   # needs BOTH batch mode and an iteration cap
         return not (re.search(r"(?:^|\s)-\w*b", seg) and re.search(r"-\w*n\s*\d+", seg))
     if binary == "nvidia-smi" and re.search(r"(?:^|\s)(dmon|pmon|-l\b|--loop)", seg):
-        return True                                       # continuous monitors never return
+        return not _bounded_nvidia_monitor(tokens)         # bounded dmon/pmon return; loops do not
     # `-f` means FOLLOW only on log readers; on ps/lsblk/df it means full-format/filesystem,
     # and treating it as streaming wrongly refused plain `ps -f` (seen live).
     if binary in ("tail", "head", "journalctl", "logread", "dmesg") and _FOLLOW.search(seg):
@@ -1507,10 +1634,11 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
 # (the model naturally writes `ls /a; ls /b`) without widening what any one command
 # may do — and it lets the refusal message stop lying about "this changes the box".
 _CHAIN_SPLIT = re.compile(r"\|\||&&|[;|]")
+_CONDITIONAL_SPLIT = re.compile(r"\|\||&&|;")
 
 
-def _split_chain(cmd: str):
-    """Split a chain into its individual commands on `;` `|` `||` `&&`.
+def _split_at(cmd: str, pattern):
+    """Split on quote-aware shell boundaries selected by ``pattern``.
 
     Boundaries are located on a QUOTE-MASKED copy, then sliced out of the original, so a
     metachar inside quoted DATA is not a boundary. `grep -E 'nginx|caddy|socat|proxy' f` is ONE
@@ -1519,7 +1647,7 @@ def _split_chain(cmd: str):
     """
     masked = _mask_quoted(cmd)
     parts, last = [], 0
-    for m in _CHAIN_SPLIT.finditer(masked):
+    for m in pattern.finditer(masked):
         # A backslash-escaped metachar (`\;`, `\|`) is a literal argument, not a shell
         # separator: `find … -exec grep x {} \;` is ONE command, and the shell passes the
         # `;` to find. Count the backslashes immediately before the match — an ODD count
@@ -1536,6 +1664,16 @@ def _split_chain(cmd: str):
         last = m.end()
     parts.append(cmd[last:])
     return [s for s in (x.strip() for x in parts) if s]
+
+
+def _split_chain(cmd: str):
+    """Split into individual commands on `;` `|` `||` `&&`."""
+    return _split_at(cmd, _CHAIN_SPLIT)
+
+
+def _split_conditionals(cmd: str):
+    """Split control-flow boundaries while preserving a pipeline for structural validation."""
+    return _split_at(cmd, _CONDITIONAL_SPLIT)
 
 
 def _effective_launch_tokens(seg: str):
@@ -1702,9 +1840,15 @@ def classify(command: str) -> str:
         return "mutating"
     if _is_safe_readonly_command(cmd):                    # 3) preserve reviewed read-only pipelines
         return "read_only"
-    for seg in _split_chain(cmd):                         # 4) every chain segment must be a read
-        if _is_mutating_segment(seg):
-            return "mutating"
+    for conditional in _split_conditionals(cmd):          # 4) every control-flow branch is a read
+        # Keep a pipeline intact long enough for _is_safe_readonly_command to prove that its
+        # downstream stages read stdin only. Splitting `read | grep || true` all the way down first
+        # turns the stdin-only grep into an apparent bare file reader and creates a false write card.
+        if _is_safe_readonly_command(conditional):
+            continue
+        for seg in _split_chain(conditional):
+            if _is_mutating_segment(seg):
+                return "mutating"
     return "read_only"
 
 
