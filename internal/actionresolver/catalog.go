@@ -168,6 +168,8 @@ func operationValidator(operation string) func(map[string]any) error {
 			}
 			return fmt.Errorf("at least one target specification is required")
 		}
+	case "UpdateInstancePortsWorkflow":
+		return workflow.ValidatePortDeltaProposal
 	default:
 		return nil
 	}

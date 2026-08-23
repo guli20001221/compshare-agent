@@ -29,6 +29,7 @@ func TestWorkflowRequiresInstanceTarget(t *testing.T) {
 		"ResizeDiskWorkflow",
 		"CreateDiskWorkflow",
 		"CreateCustomImageWorkflow",
+		"UpdateInstancePortsWorkflow",
 	} {
 		assert.True(t, workflowRequiresInstanceTarget(action), action)
 	}

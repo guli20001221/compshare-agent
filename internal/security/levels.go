@@ -78,6 +78,7 @@ var ActionLevels = map[string]Level{
 	"RebootCompShareInstance":          L1,
 	"ResizeCompShareInstance":          L1,
 	"ModifyCompShareInstanceName":      L1,
+	"UpdateCompShareInstancePorts":     L1,
 	"ResetCompShareInstancePassword":   L1,
 	"CreateAndAttachCompshareDisk":     L1,
 	"ResizeCompShareDisk":              L1,

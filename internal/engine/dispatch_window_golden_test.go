@@ -65,6 +65,7 @@ var goldenWindowMutating = []string{
 	"RequestStartInstance",
 	"RequestRebootInstance",
 	"RequestRenameInstance",
+	"RequestUpdateInstancePorts",
 	"RequestSetStopScheduler",
 	"RequestCancelStopScheduler",
 	"RequestResizeInstance",
@@ -112,5 +113,5 @@ func TestCentralAgentToolWindowGolden(t *testing.T) {
 // slice diff buried in 37 lines.
 func TestCentralAgentToolWindowGoldenCounts(t *testing.T) {
 	require.Len(t, centralAgentToolNames(false, false), 21)
-	require.Len(t, centralAgentToolNames(true, false), 37)
+	require.Len(t, centralAgentToolNames(true, false), 38)
 }

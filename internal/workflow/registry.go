@@ -17,6 +17,7 @@ var workflowRegistrations = []registration{
 	{"StartInstanceWorkflow", "启动实例", "开机", StartInstanceDef},
 	{"RebootInstanceWorkflow", "重启实例", "重启", RebootInstanceDef},
 	{"RenameInstanceWorkflow", "重命名实例", "重命名", RenameInstanceDef},
+	{"UpdateInstancePortsWorkflow", "更新平台端口", "更新端口", UpdateInstancePortsDef},
 	{"ResetPasswordWorkflow", "重置密码", "重置密码", ResetPasswordDef},
 	{"SetStopSchedulerWorkflow", "设置定时关机", "设置定时关机", SetStopSchedulerDef},
 	{"CancelStopSchedulerWorkflow", "取消定时关机", "取消定时关机", CancelStopSchedulerDef},
