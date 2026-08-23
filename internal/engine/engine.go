@@ -287,7 +287,6 @@ type Engine struct {
 	turnModelCallsThisTurn              int
 	turnModelProviderThisTurn           string
 	turnModelIDsThisTurn                []string
-	turnProviderFinishReasonsThisTurn   []string
 	turnModelAttemptsThisTurn           []observability.ModelAttemptTrace
 	turnCompletionClassHint             string
 	turnCompletionReasonHint            string
@@ -383,6 +382,9 @@ type Engine struct {
 	// for a public Feishu Q&A turn. It is reset after every ChatWithOptions call
 	// so the console cannot inherit it from a pool.
 	feishuConsoleHandoffThisTurn bool
+	// feishuSupportRendererThisTurn is a delivery choice, independent of which
+	// authorization scope wins when a client advertises multiple read modes.
+	feishuSupportRendererThisTurn bool
 	// sessionState is the JSON-serializable per-session execution state loaded
 	// before each Chat turn and read back through SessionStateSnapshot afterward.
 	// See session_state.go.
@@ -933,7 +935,6 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 	}
 }
 
-// verbatimBillingModelHistoryContent returns the assistant text that belongs in
 // displayProjectedModelHistoryContent returns the channel-neutral assistant
 // completion for turns whose persisted row is a user-display projection. The
 // canonical transcript is the model-facing source of truth: billing cards keep
@@ -1126,6 +1127,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	defer func() { e.publicPlatformReadOnlyThisTurn = false }()
 	e.feishuConsoleHandoffThisTurn = opts.FeishuConsoleHandoff
 	defer func() { e.feishuConsoleHandoffThisTurn = false }()
+	e.feishuSupportRendererThisTurn = opts.PublicPlatformReadOnly || opts.FeishuConsoleHandoff
+	defer func() { e.feishuSupportRendererThisTurn = false }()
 	defer e.emitTurnCompletion()
 	if u, ok := tools.UserFrom(ctx); ok {
 		if subject, ok := governance.SubjectKeyFromOrganization(u.TopOrganizationID, u.OrganizationID); ok {
@@ -2661,10 +2664,10 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	if action == tools.CustomerSupportHandoffName {
 		onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct})
 		reply := refusal.HumanAgentTransfer
-		if e.publicPlatformReadOnlyThisTurn {
+		if e.feishuSupportRendererThisTurn {
 			reply = agentprotocol.FeishuCustomerSupportMarker
 		}
-		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "已转接人工客服"})
+		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "已提供人工客服转接说明"})
 		return finalReplyPrefix + reply
 	}
 

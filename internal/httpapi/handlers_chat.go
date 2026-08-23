@@ -577,9 +577,10 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 
 	// LLM error.
 	if chatErr != nil {
-		finishTrace(chatErr)
 		apiErr := classifyChatError(chatErr)
 		code := apiErr.Code
+		_ = writeVisibleEvent(sw, traceRecorder, "error", streamErrorEvent{Code: apiErr.Code, Message: apiErr.Message})
+		finishTrace(chatErr)
 		_ = h.persistAssistant(base.Owner, assistantMsgID,
 			store.AssistantPatch{
 				Status:    "error",
@@ -587,7 +588,6 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 				LatencyMs: &latencyMs,
 				TTFTMs:    &ttftMs,
 			})
-		_ = sw.WriteEvent("error", streamErrorEvent{Code: apiErr.Code, Message: apiErr.Message})
 		return
 	}
 

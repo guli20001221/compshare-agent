@@ -712,8 +712,8 @@ type OutcomeTrace struct {
 	ActionProposalDisposition string `json:"action_proposal_disposition,omitempty"`
 	TotalLatencyMS            int64  `json:"total_latency_ms,omitempty"`
 	// FirstVisibleEventMS is measured at the transport write boundary for the
-	// first successfully written token, step, or confirmation event. It is not
-	// the assistant-row TTFT and remains nil when no such event was delivered.
+	// first successfully written token, step, confirmation, or terminal error.
+	// It is not the assistant-row TTFT and remains nil when none was delivered.
 	FirstVisibleEventMS        *int64 `json:"first_visible_event_ms,omitempty"`
 	TotalTokens                int    `json:"total_tokens,omitempty"`
 	PromptTokens               int    `json:"prompt_tokens,omitempty"`

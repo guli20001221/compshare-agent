@@ -22,7 +22,6 @@ func (e *Engine) resetTurnCompletion() {
 	e.turnModelCallsThisTurn = 0
 	e.turnModelProviderThisTurn = ""
 	e.turnModelIDsThisTurn = nil
-	e.turnProviderFinishReasonsThisTurn = nil
 	e.turnModelAttemptsThisTurn = nil
 	e.turnCompletionClassHint = ""
 	e.turnCompletionReasonHint = ""
@@ -51,13 +50,20 @@ func (e *Engine) emitTurnCompletion() {
 	}
 	e.turnCompletionEmittedThisTurn = true
 
+	attempts := append([]observability.ModelAttemptTrace(nil), e.turnModelAttemptsThisTurn...)
+	finishReasons := make([]string, 0, len(attempts))
+	for _, attempt := range attempts {
+		if attempt.FinishReason != "" {
+			finishReasons = append(finishReasons, attempt.FinishReason)
+		}
+	}
 	trace := observability.TurnCompletionTrace{
 		RuntimeFinishReason:   string(e.runtimeFinishReasonThisTurn),
 		ModelCalls:            e.turnModelCallsThisTurn,
 		ModelProvider:         e.turnModelProviderThisTurn,
 		ModelIDs:              append([]string(nil), e.turnModelIDsThisTurn...),
-		ProviderFinishReasons: append([]string(nil), e.turnProviderFinishReasonsThisTurn...),
-		ModelAttempts:         append([]observability.ModelAttemptTrace(nil), e.turnModelAttemptsThisTurn...),
+		ProviderFinishReasons: finishReasons,
+		ModelAttempts:         attempts,
 		ToolNames:             centralAgentToolNames(e.mutatingToolsEnabled, e.instanceOps != nil),
 	}
 
@@ -98,11 +104,6 @@ func (e *Engine) recordTurnModel(call llm.OutboundCall) {
 func (e *Engine) recordTurnModelAttempt(result llm.OutboundCallResult) {
 	if e == nil {
 		return
-	}
-	if result.StopReason != "" {
-		// A finish reason exists only for a successful provider response. Its
-		// producer already applies llm.TraceFinishReason.
-		e.turnProviderFinishReasonsThisTurn = append(e.turnProviderFinishReasonsThisTurn, result.StopReason)
 	}
 	e.turnModelAttemptsThisTurn = append(e.turnModelAttemptsThisTurn, observability.ModelAttemptTrace{
 		AttemptInCall: result.AttemptInCall, LatencyMS: result.LatencyMS, Outcome: result.Outcome,

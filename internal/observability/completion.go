@@ -4,12 +4,14 @@ package observability
 // engine turn exits. It records bounded control-flow facts only: no prompt,
 // reply, tool arguments, identifiers, or model-generated error text.
 type TurnCompletionTrace struct {
-	Class                 string              `json:"class"`
-	Reason                string              `json:"reason"`
-	RuntimeFinishReason   string              `json:"runtime_finish_reason,omitempty"`
-	ModelCalls            int                 `json:"model_calls"`
-	ModelProvider         string              `json:"model_provider,omitempty"`
-	ModelIDs              []string            `json:"model_ids,omitempty"`
+	Class               string   `json:"class"`
+	Reason              string   `json:"reason"`
+	RuntimeFinishReason string   `json:"runtime_finish_reason,omitempty"`
+	ModelCalls          int      `json:"model_calls"`
+	ModelProvider       string   `json:"model_provider,omitempty"`
+	ModelIDs            []string `json:"model_ids,omitempty"`
+	// ProviderFinishReasons is the compatibility aggregate derived from the
+	// non-empty ModelAttempts finish reasons; it has no separate mutable source.
 	ProviderFinishReasons []string            `json:"provider_finish_reasons,omitempty"`
 	ModelAttempts         []ModelAttemptTrace `json:"model_attempts,omitempty"`
 	ToolNames             []string            `json:"tool_names,omitempty"`

@@ -156,8 +156,8 @@ func (r *chatTraceRecorder) SetEngineSnapshot(snapshot engine.TraceSnapshot) {
 	r.record.Outcome.PromptMessagesCapApplied = snapshot.PromptMessagesCapApplied
 }
 
-// ObserveFirstVisibleEvent records the first token/step/confirmation that the
-// transport actually accepted. Calling it before WriteEvent would turn a
+// ObserveFirstVisibleEvent records the first token/step/confirmation/error that
+// the transport actually accepted. Calling it before WriteEvent would turn a
 // failed write into a false user-visible latency sample.
 func (r *chatTraceRecorder) ObserveFirstVisibleEvent(at time.Time) {
 	if r == nil || !r.firstVisibleEventAt.IsZero() || at.Before(r.start) {

@@ -63,20 +63,26 @@ func TestChatCustomerSupportMentionsRemainWithTheCentralAgent(t *testing.T) {
 	}
 }
 
-func TestPublicFeishuChannelUsesItsSupportRendererWithoutConsoleHandoff(t *testing.T) {
-	model := &mockLLM{responses: []llm.ChatResponse{customerSupportToolCall()}}
-	eng := NewWithDeps(model, &mockExecutor{}, nil)
+func TestFeishuModesUseTheirSupportRenderer(t *testing.T) {
+	for name, opts := range map[string]ChatOptions{
+		"public platform without console handoff":    {PublicPlatformReadOnly: true},
+		"knowledge only with console handoff":        {KnowledgeOnly: true, FeishuConsoleHandoff: true},
+		"knowledge precedence keeps Feishu renderer": {KnowledgeOnly: true, PublicPlatformReadOnly: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			model := &mockLLM{responses: []llm.ChatResponse{customerSupportToolCall()}}
+			eng := NewWithDeps(model, &mockExecutor{}, nil)
 
-	reply, err := eng.ChatWithOptions(context.Background(), "我需要人工客服", noopStep, ChatOptions{
-		PublicPlatformReadOnly: true,
-	})
-	require.NoError(t, err)
-	require.Equal(t, agentprotocol.FeishuCustomerSupportMarker, reply)
-	require.Len(t, model.calls, 1)
-	require.Contains(t, toolNames(model.calls[0].Tools), tools.CustomerSupportHandoffName)
-	require.NotContains(t, model.calls[0].Messages[0].Content, agentprotocol.FeishuCustomerSupportMarker,
-		"the adapter marker is emitted only by the tool executor")
-	require.NotContains(t, strings.Join(messageContents(model.calls[0].Messages), "\n"), "qrcode.png")
+			reply, err := eng.ChatWithOptions(context.Background(), "我需要人工客服", noopStep, opts)
+			require.NoError(t, err)
+			require.Equal(t, agentprotocol.FeishuCustomerSupportMarker, reply)
+			require.Len(t, model.calls, 1)
+			require.Contains(t, toolNames(model.calls[0].Tools), tools.CustomerSupportHandoffName)
+			require.NotContains(t, model.calls[0].Messages[0].Content, agentprotocol.FeishuCustomerSupportMarker,
+				"the adapter marker is emitted only by the tool executor")
+			require.NotContains(t, strings.Join(messageContents(model.calls[0].Messages), "\n"), "qrcode.png")
+		})
+	}
 }
 
 func TestCustomerSupportDisplayProjectionDoesNotEnterColdModelHistory(t *testing.T) {
