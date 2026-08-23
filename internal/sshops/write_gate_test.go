@@ -27,6 +27,7 @@ conn = json.loads(sys.stdin.readline())
 context = conn.get("context") or {}
 facts = context.get("platform_facts") or []
 targets = conn.get("endpoint_targets") or []
+pending = conn.get("pending_background_job") or {}
 print("@@OUTCOME " + json.dumps({"outcome": "", "err_class": "", "context_applied": True}))
 print("<<<VERDICT>>>")
 print("CONTEXT_SCHEMA=%r" % context.get("schema_version"))
@@ -34,6 +35,8 @@ print("CONTEXT_FACTS=%r" % len(facts))
 print("CONTEXT_HAS_PRIVATE_TARGETS=%r" % ("endpoint_targets" in context,))
 print("ENDPOINT_TARGETS=%r" % len(targets))
 print("ENDPOINT_FIRST=%r" % ((targets[0].get("id") if targets else None),))
+print("CONTEXT_HAS_PENDING_JOB=%r" % ("pending_background_job" in context,))
+print("PENDING_JOB=%r" % pending.get("job_id"))
 print("<<<END>>>")
 `
 
@@ -56,6 +59,9 @@ func TestSupervisorSendsReferenceContextOnHandshake(t *testing.T) {
 			ID: "platform-http-1", Kind: "http", Label: "ComfyUI platform entry",
 			Source: "DescribeCompShareInstance.Softwares.URL", URL: "https://example.invalid/?token=private",
 		}},
+		PendingBackgroundJob: &opscontext.BackgroundJob{
+			JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", State: "running",
+		},
 	}
 	res, err := sup.RunWithContext(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 23, "S3cr3tPw"), "task", modelContext, nil, nil)
 	require.NoError(t, err)
@@ -66,6 +72,8 @@ func TestSupervisorSendsReferenceContextOnHandshake(t *testing.T) {
 	require.Contains(t, res.Output, "CONTEXT_HAS_PRIVATE_TARGETS=False")
 	require.Contains(t, res.Output, "ENDPOINT_TARGETS=1")
 	require.Contains(t, res.Output, "ENDPOINT_FIRST='platform-http-1'")
+	require.Contains(t, res.Output, "CONTEXT_HAS_PENDING_JOB=False")
+	require.Contains(t, res.Output, "PENDING_JOB='job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'")
 	require.NotContains(t, res.Output, "private")
 	require.True(t, res.ContextApplied)
 }

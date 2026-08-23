@@ -137,6 +137,9 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	var settled []instanceOpsSettledStep
 	onProgress := func(p InstanceOpsProgress) {
 		switch p.Kind {
+		case InstanceOpsProgressBackgroundJob:
+			// Side-band session continuity only: not a command, UI step, trace event or audit row.
+			e.observeInstanceOpsBackgroundJob(instanceID, p.JobID, p.JobState)
 		case InstanceOpsProgressConnected:
 			onStep(StepEvent{
 				Type:    StepToolCall,
@@ -145,6 +148,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 				Message: fmt.Sprintf("已连接到实例 %s，开始%s", instanceID, instanceOpsPhaseNoun()),
 			})
 		case InstanceOpsProgressCommand:
+			e.observeInstanceOpsBackgroundJob(instanceID, p.JobID, p.JobState)
 			settled = append(settled, instanceOpsSettledStep{
 				Command:     p.Command,
 				Tier:        p.Tier,
@@ -172,22 +176,25 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		}
 	}
 
+	modelContext := e.instanceOpsModelContext()
+	modelContext.PendingBackgroundJob = e.backgroundJobForInstance(instanceID)
 	verdict, err := e.instanceOps.Run(ctx, InstanceOpsRequest{
 		TurnID:       e.currentTurnID,
 		InstanceID:   instanceID,
 		Task:         task,
-		Context:      e.instanceOpsModelContext(),
+		Context:      modelContext,
 		ConfirmWrite: confirmWrite,
 	}, onProgress)
 	if err != nil {
 		// The run ended with no verdict. Whatever settled before it did is the only account the user
-		// will ever get of a box that may already have been changed — so stash it for
-		// the next turn. Guarded on settled being non-empty, which is what keeps every preflight
-		// branch below (no SSH target, not found, not running, address unavailable) silent: those
-		// entered no box and have nothing to report.
+		// will ever get of a box that may already have been changed — so stash it for the next turn.
+		// A run with neither a settled command nor a background-job handle stays silent, which keeps
+		// every preflight branch below (no SSH target, not found, not running, address unavailable)
+		// from implying the box was entered.
 		//
-		// Stashed BEFORE the branches rather than inside each, so a future branch cannot be added
-		// that returns without considering it.
+		// A pre-launch background-job handle also counts even when no command result made it back: the
+		// detached process may have survived the killed harness. Stashed BEFORE the branches rather
+		// than inside each, so a future branch cannot return without considering it.
 		e.recordInstanceOpsInterruption(instanceID, settled)
 		// No SSH entrypoint (empty SshLoginCommand — e.g. a Windows instance): the box
 		// can never be entered, so this is honest and NON-retryable. Never the generic

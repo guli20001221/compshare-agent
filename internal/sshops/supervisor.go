@@ -108,6 +108,16 @@ type Step struct {
 	Reason   string
 	ExitCode *int // nil for refused/failed commands that never produced an exit status
 	Bytes    int
+	// JobID/JobState are present only for the structured background-job tools. JobID is an opaque
+	// handle, not a path or command. Carrying it on the already-bounded step protocol lets the
+	// session continue with a read-only poll after an interrupted turn without retaining the
+	// command that started the job.
+	JobID    string
+	JobState string
+	// JobLifecycleOnly is an @@JOB side-band update emitted before a detached launcher can outlive
+	// the harness. It reaches the session-memory continuation tracker but is not a command, user
+	// activity step, tally, or persisted audit step.
+	JobLifecycleOnly bool
 }
 
 // envAllowlist: non-secret system vars the interpreter / claude CLI need to function. Deliberately
@@ -143,8 +153,9 @@ func (s Supervisor) childEnv() []string {
 // The harness runs in its OWN process group, so a timeout/cancel kills the WHOLE tree — the python
 // wrapper AND the claude CLI (+ node) the SDK spawns under it — not just the direct child. stdout is
 // consumed through the bounded line protocol; only the VERDICT body becomes Output. onStep, if
-// non-nil, fires once per command as its @@STEP line is parsed — the LIVE activity stream, metadata
-// only (INV-6). The same Steps are also returned in Result.Steps for the caller's tally/audit.
+// non-nil, fires for each command @@STEP and opaque @@JOB lifecycle update as parsed. Only command
+// Steps are returned in Result.Steps for the caller's tally/audit; the lifecycle update is live
+// session memory, not a persisted resume cursor.
 func (s Supervisor) Run(ctx context.Context, cred Credential, task string, onStep func(Step), onConfirm ConfirmFunc) (Result, error) {
 	return s.RunWithContext(ctx, cred, task, opscontext.Context{}, onStep, onConfirm)
 }
@@ -199,7 +210,8 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 		// Private destinations for the structured endpoint probe. Context itself omits these fields,
 		// so URLs carrying console tokens and raw hosts never enter the model prompt or audit record.
 		// The harness exposes only opaque IDs and resolves them against this stdin-only list.
-		"endpoint_targets": modelContext.EndpointTargets,
+		"endpoint_targets":       modelContext.EndpointTargets,
+		"pending_background_job": modelContext.PendingBackgroundJob,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("sshops: marshal handshake: %w", err)
@@ -293,15 +305,16 @@ const (
 )
 
 // parseHarnessStream consumes the harness stdout line protocol and returns the terminal VERDICT body
-// plus the ordered Steps. Two line shapes are trusted; everything else (the CLI's own chatter) is
+// plus the ordered command Steps. Three line shapes are trusted; everything else (the CLI's own chatter) is
 // ignored. Bounded on three axes — total bytes, per-line size, step count — so a misbehaving harness
 // cannot exhaust memory or flood the activity stream.
 //
 //	@@STEP {json}                one per command, metadata only
+//	@@JOB {json}                 opaque live-session handle, not a command/audit step
 //	<<<VERDICT>>> ... <<<END>>>  the single terminal conclusion block
 //
-// onStep, if non-nil, is invoked once per parsed @@STEP as it is read (bounded by the same step cap),
-// so a caller can surface a live activity stream instead of waiting for the whole run to finish.
+// onStep, if non-nil, is invoked for parsed @@STEP command rows and @@JOB live-session updates as
+// they are read; only @@STEP rows are bounded by the command-step cap and returned for audit.
 // outcomePreflightFailed is the only @@OUTCOME value the harness emits today. Unknown values are kept
 // verbatim in harnessOutcome.Outcome but map to "entered", so a newer harness inventing a value cannot
 // silently turn a successful diagnosis into a refusal on an older supervisor.
@@ -320,9 +333,11 @@ func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRe
 	sc.Buffer(make([]byte, 0, 64<<10), maxHarnessStepLine)
 	var total int
 	var inVerdict bool
+	var jobSeen bool
 	var vb strings.Builder
 	for sc.Scan() {
 		line := sc.Text()
+		jobPayload, isJobLine := strings.CutPrefix(line, "@@JOB ")
 		total += len(line) + 1
 		if total > maxHarnessStdoutBytes {
 			return strings.TrimSpace(vb.String()), steps, outcome,
@@ -359,6 +374,13 @@ func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRe
 					onStep(st) // live: fire as parsed, bounded by the same step cap above
 				}
 			}
+		case isJobLine:
+			if st, ok := parseJobUpdate(jobPayload); ok && !jobSeen {
+				jobSeen = true
+				if onStep != nil {
+					onStep(st)
+				}
+			}
 		case strings.HasPrefix(line, "@@OUTCOME "):
 			// Last one wins, and an unparseable payload leaves the zero value — i.e. "entered".
 			// Failing open here is deliberate: the disposition it feeds is an audit label, and
@@ -375,6 +397,17 @@ func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRe
 	return strings.TrimSpace(vb.String()), steps, outcome, nil
 }
 
+func parseJobUpdate(payload string) (Step, bool) {
+	var raw struct {
+		JobID    string `json:"job_id"`
+		JobState string `json:"job_state"`
+	}
+	if json.Unmarshal([]byte(payload), &raw) != nil {
+		return Step{}, false
+	}
+	return Step{JobID: raw.JobID, JobState: raw.JobState, JobLifecycleOnly: true}, true
+}
+
 func parseStep(payload string) (Step, bool) {
 	var raw struct {
 		Command     string `json:"command"`
@@ -383,12 +416,15 @@ func parseStep(payload string) (Step, bool) {
 		Reason      string `json:"reason"`
 		Exit        *int   `json:"exit"`
 		Bytes       int    `json:"bytes"`
+		JobID       string `json:"job_id"`
+		JobState    string `json:"job_state"`
 	}
 	if json.Unmarshal([]byte(payload), &raw) != nil {
 		return Step{}, false
 	}
 	return Step{Command: raw.Command, Tier: raw.Tier, Disposition: raw.Disposition,
-		Reason: raw.Reason, ExitCode: raw.Exit, Bytes: raw.Bytes}, true
+		Reason: raw.Reason, ExitCode: raw.Exit, Bytes: raw.Bytes,
+		JobID: raw.JobID, JobState: raw.JobState}, true
 }
 
 // tailString returns the last n bytes of s (rune-safe-ish: trims to a valid UTF-8 boundary).

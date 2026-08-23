@@ -428,6 +428,13 @@ type Engine struct {
 	// is deliberately NOT reset in the per-turn block — resetting it there would clear it on the
 	// very turn that is supposed to show it. See instance_ops_interruption.go.
 	pendingInstanceOpsInterruption *instanceOpsInterruption
+	// pendingInstanceOpsBackgroundJob is the one opaque guest-job handle that may be polled on a
+	// later turn in this same live session. One handle is an intentional minimum, not a general job
+	// registry: the harness refuses a second start within one diagnosis, while a later diagnosis that
+	// starts work on another instance replaces this slot. It is not persisted into conversation
+	// history and never contains the command that created the job. Process restart/LRU eviction
+	// therefore degrades to honest unknown state instead of pretending to resume a command.
+	pendingInstanceOpsBackgroundJob *instanceOpsBackgroundJob
 	// lastConfirmationTerminalReason is why the most recent authorization card in
 	// this turn ended, in observability's closed-set spelling. It exists because
 	// ConfirmFunc answers a bool, so every non-approval — the user declining, the
@@ -867,6 +874,8 @@ func (e *Engine) RegistrySnapshot() entity.RegistrySnapshot {
 
 // InitWithContext initializes an isolated Engine with test context.
 func (e *Engine) InitWithContext(userCtx string) {
+	e.pendingInstanceOpsInterruption = nil
+	e.pendingInstanceOpsBackgroundJob = nil
 	e.baseUserContext = userCtx
 	systemPrompt := prompt.BuildSystemWithOptions(userCtx, e.reactPromptBuildOptions())
 	e.messages = []openai.ChatCompletionMessage{
@@ -879,6 +888,12 @@ func (e *Engine) InitWithContext(userCtx string) {
 // prompt followed by the supplied user/assistant turns. Empty content and
 // non-user/non-assistant roles are silently skipped.
 func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
+	// RehydrateHistory is a whole-session replacement boundary. A live guest-job handle belongs to
+	// the Engine instance that observed it and must never survive if a caller repurposes that Engine
+	// for another hydrated session. The production pool already creates one Engine per session; this
+	// keeps the lower-level API just as strict.
+	e.pendingInstanceOpsInterruption = nil
+	e.pendingInstanceOpsBackgroundJob = nil
 	e.baseUserContext = ""
 	systemPrompt := prompt.BuildSystemWithOptions("", e.reactPromptBuildOptions())
 	e.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: systemPrompt}}

@@ -225,7 +225,8 @@ func TestSupervisorRequiresSecretAndPath(t *testing.T) {
 func TestParseHarnessStream(t *testing.T) {
 	in := strings.Join([]string{
 		"claude cli starting...", // chatter -> ignored
-		`@@STEP {"command":"nvidia-smi","tier":"read_only","disposition":"ran","exit":0,"bytes":42}`,
+		`@@JOB {"job_id":"job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","job_state":"unknown"}`,
+		`@@STEP {"command":"poll_background_job","tier":"read_only","disposition":"ran","exit":0,"bytes":42,"job_id":"job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","job_state":"running"}`,
 		`@@STEP {"command":"rm -rf /","tier":"destructive","disposition":"refused","exit":null,"bytes":0}`,
 		"more chatter",
 		"<<<VERDICT>>>",
@@ -245,13 +246,19 @@ func TestParseHarnessStream(t *testing.T) {
 	if len(steps) != 2 {
 		t.Fatalf("want 2 steps, got %d (%+v)", len(steps), steps)
 	}
-	// live stream: onStep fired once per @@STEP, in order, matching the returned Steps
-	if len(streamed) != 2 || streamed[0].Command != "nvidia-smi" || streamed[1].Disposition != "refused" {
+	// The opaque pre-launch handle is live-only: it reaches onStep first but is not returned as a
+	// command/audit step. Then each @@STEP streams in order and matches the returned Steps.
+	if len(streamed) != 3 || !streamed[0].JobLifecycleOnly ||
+		streamed[0].JobID != "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ||
+		streamed[1].Command != "poll_background_job" || streamed[2].Disposition != "refused" {
 		t.Fatalf("onStep did not stream steps live in order: %+v", streamed)
 	}
-	if steps[0].Command != "nvidia-smi" || steps[0].Disposition != "ran" ||
+	if steps[0].Command != "poll_background_job" || steps[0].Disposition != "ran" ||
 		steps[0].ExitCode == nil || *steps[0].ExitCode != 0 || steps[0].Bytes != 42 {
 		t.Fatalf("step[0] parsed wrong: %+v", steps[0])
+	}
+	if steps[0].JobID != "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || steps[0].JobState != "running" {
+		t.Fatalf("background-job continuation metadata was dropped: %+v", steps[0])
 	}
 	// refused command carried a null exit -> ExitCode must be nil, not 0 (0 would read as "ran clean")
 	if steps[1].Disposition != "refused" || steps[1].ExitCode != nil {

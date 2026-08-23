@@ -34,6 +34,16 @@ check("trusted-wrapper-records-exit-without-limiting-payload-files",
 check("trusted-wrapper-marks-process-identity",
       "COMPSHARE_OPS_JOB_ID=" + started["job_id"] in captured[0])
 check("result-never-returns-generated-shell", "pip install" not in json.dumps(started))
+fixed_job_id = "job-" + "b" * 32
+fixed_commands = []
+fixed = remote_job.start(
+    {}, "python3 -m pip install torch", "install torch",
+    runner=lambda _conn, command, secrets=():
+        fixed_commands.append(command) or {"exit_code": 0, "stdout": "", "stderr": ""},
+    job_id=fixed_job_id)
+check("caller-can-publish-the-opaque-id-before-launch",
+      fixed.get("job_id") == fixed_job_id and
+      "COMPSHARE_OPS_JOB_ID=" + fixed_job_id in fixed_commands[0])
 check("self-backgrounding-payload-is-refused",
       remote_job.start({}, "pip install vllm &", "bad detach", runner=_runner)["error_class"] ==
       "invalid_arguments")

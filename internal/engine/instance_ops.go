@@ -75,21 +75,23 @@ type InstanceOpsRequest struct {
 	ConfirmWrite func(command string) ConfirmationResult
 }
 
-// Progress kinds emitted by a runner. The engine translates each into exactly
-// one StepEvent (the live activity stream). The terminal summary line is emitted
-// by the engine itself from the verdict tallies, not by the runner.
+// Progress kinds emitted by a runner. Connected and command become live StepEvents; background_job
+// is internal live-session continuity and is never surfaced as a command. The terminal summary line
+// is emitted by the engine itself from the verdict tallies, not by the runner.
 const (
 	// InstanceOpsProgressConnected fires once when the SSH session is established.
 	InstanceOpsProgressConnected = "connected"
 	// InstanceOpsProgressCommand fires once per command the harness ran or refused.
 	InstanceOpsProgressCommand = "command"
+	// InstanceOpsProgressBackgroundJob publishes an opaque handle before a detached launcher can
+	// outlive the browser/harness. It is not a command step or an audit record.
+	InstanceOpsProgressBackgroundJob = "background_job"
 )
 
-// InstanceOpsProgress is one activity-stream event. It carries command METADATA
-// only — never command output (INV-6) — so it is safe to surface live to the user
-// and to persist as an audit row.
+// InstanceOpsProgress carries command metadata or an opaque job lifecycle update. It never carries
+// command output (INV-6).
 type InstanceOpsProgress struct {
-	Kind        string // InstanceOpsProgressConnected | InstanceOpsProgressCommand
+	Kind        string // connected | command | background_job
 	Command     string // the command (Kind==command only)
 	Disposition string // "ran" | "refused" | "failed" (Kind==command only)
 	// Tier is the guardrail class the command was executed under ("read_only" | "mutating" |
@@ -103,8 +105,10 @@ type InstanceOpsProgress struct {
 	// means unknown, and every consumer must degrade to the old generic wording rather than assume a
 	// value.
 	Reason   string
-	ExitCode *int // nil for refused/failed commands that never produced an exit status
-	Bytes    int  // output byte count (metadata only; the output itself never crosses here)
+	ExitCode *int   // nil for refused/failed commands that never produced an exit status
+	Bytes    int    // output byte count (metadata only; the output itself never crosses here)
+	JobID    string // opaque background-job handle; never the command that created it
+	JobState string // started | running | unknown | succeeded | failed | interrupted | not_found
 }
 
 // InstanceOpsVerdict is the terminal root-cause conclusion. Text is the harness's

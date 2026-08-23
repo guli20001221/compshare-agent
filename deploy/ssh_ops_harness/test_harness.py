@@ -176,6 +176,23 @@ check("context-future-schema-falls-back-to-task",
 check("context-boolean-schema-version-is-not-v1",
       harness.normalize_reference_context(dict(_reference_context, schema_version=True)) is None)
 
+# The background-job cursor is a separate live-session handshake value, not a reference fact. It is
+# deliberately tiny: an opaque ID plus lifecycle hint, with no command or output to replay.
+_JOB_ID = "job-" + "a" * 32
+_pending_job = harness.normalize_pending_background_job({"job_id": _JOB_ID, "state": "running"})
+check("pending-job-valid-handle-is-accepted", _pending_job == {"job_id": _JOB_ID, "state": "running"})
+check("pending-job-command-bearing-shape-is-reduced-to-the-safe-handle",
+      harness.normalize_pending_background_job({
+          "job_id": _JOB_ID, "state": "started", "command": "pip install package",
+      }) == {"job_id": _JOB_ID, "state": "started"})
+check("pending-job-invalid-or-terminal-handle-is-not-resumed",
+      harness.normalize_pending_background_job({"job_id": "job-not-opaque", "state": "running"}) is None and
+      harness.normalize_pending_background_job({"job_id": _JOB_ID, "state": "succeeded"}) is None)
+_continuation_prompt = harness.render_prepared_prompt("继续排查", None, _pending_job)
+check("pending-job-prompt-requires-the-exact-read-only-poll",
+      _JOB_ID in _continuation_prompt and "only that read-only poll" in _continuation_prompt and
+      "without reconstructing or rerunning" in _continuation_prompt)
+
 # A server rolled back below this harness still sends v1, and that must keep working — but against
 # the V1 allowlist, not the union. Two directions, because "accepts both" silently becoming "accepts
 # either key in either version" is a third schema nobody designed and nobody renders correctly.
@@ -610,6 +627,10 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
         check("inv9-real-build-options-passes", True)
         check("inv9-real-options-use-the-single-repair-surface",
               list(_real_opts.allowed_tools) == harness.ALLOWED_TOOLS)
+        _poll_only_opts = harness.build_options(
+            object(), "test-model", 5, {"job_id": _JOB_ID, "state": "running"})
+        check("pending-job-options-expose-only-the-read-only-poll",
+              list(_poll_only_opts.allowed_tools) == [harness._BACKGROUND_JOB_POLL_TOOL])
     except SystemExit as exc:
         print(f"XX  inv9-real-build-options-passes: {exc}")
         FAILS.append("inv9-real-build-options-passes")
@@ -926,6 +947,12 @@ try:
         "task": "修复配置", "context": _reference_context, "allow_writes": False,
     }) + "\n")
     _main_write_output = _capture(lambda: _asyncio.run(harness.main()))
+    sys.stdin = _io.StringIO(_json.dumps({
+        "host": "10.0.0.9", "user": "root", "port": 22, "password": "context-test-password",
+        "task": "继续上一轮", "context": _reference_context,
+        "pending_background_job": {"job_id": _JOB_ID, "state": "running"},
+    }) + "\n")
+    _main_pending_output = _capture(lambda: _asyncio.run(harness.main()))
 finally:
     sys.stdin = _saved_stdin
     harness._CONN = _saved_conn
@@ -937,13 +964,14 @@ finally:
         sys.modules["claude_agent_sdk"] = _saved_sdk
 
 check("context-main-passes-labelled-prompt-to-sdk",
-      len(_captured_sdk_prompts) == 2 and "<planner_task>" in _captured_sdk_prompts[0] and
+      len(_captured_sdk_prompts) == 3 and "<planner_task>" in _captured_sdk_prompts[0] and
       "<current_user_report>" in _captured_sdk_prompts[0] and "8188" in _captured_sdk_prompts[0])
 check("context-main-receipt-matches-sdk-prompt",
       '"context_applied": true' in _main_output.replace('"context_applied":true', '"context_applied": true'))
 check("context-main-verdict-still-emits", "mocked contextual diagnosis" in _main_output)
 _first_tools = _captured_sdk_servers[0]["tools"]
 _legacy_flag_tools = _captured_sdk_servers[1]["tools"]
+_pending_tools = _captured_sdk_servers[2]["tools"]
 check("mcp-surface-version-bumped-for-remote-glob-tool",
       _captured_sdk_servers[0]["version"] == "2.5.0")
 check("main-registers-exact-single-repair-tool-surface",
@@ -951,6 +979,64 @@ check("main-registers-exact-single-repair-tool-surface",
 check("removed-mode-flag-cannot-change-the-tool-surface",
       [tool._test_tool_name for tool in _legacy_flag_tools] ==
       [tool._test_tool_name for tool in _first_tools])
+check("pending-job-main-registers-only-the-poll-tool",
+      [tool._test_tool_name for tool in _pending_tools] == ["poll_background_job"])
+check("pending-job-main-prompt-carries-the-opaque-handle-not-a-command",
+      _JOB_ID in _captured_sdk_prompts[2] and "only that read-only poll" in _captured_sdk_prompts[2] and
+      "pip install package" not in _captured_sdk_prompts[2])
+_saved_poll, _poll_saved_conn = harness.remote_job.poll, harness._CONN
+try:
+    harness.remote_job.poll = lambda *_args, **_kwargs: {
+        "ok": True, "job_id": _JOB_ID, "state": "running", "stdout": "halfway",
+        "stderr": "", "stdout_bytes_total": 7, "stderr_bytes_total": 0,
+    }
+    harness.set_conn(conn)
+    harness.AUDIT.clear()
+    _poll_wire = _capture(lambda: _asyncio.run(
+        _pending_tools[0]({"job_id": _JOB_ID, "wait_seconds": 0})))
+finally:
+    harness.remote_job.poll = _saved_poll
+    harness._CONN = _poll_saved_conn
+_poll_step_line = next((line[len("@@STEP "):] for line in _poll_wire.splitlines()
+                        if line.startswith("@@STEP ")), "{}")
+_poll_step = _json.loads(_poll_step_line)
+check("pending-job-poll-emits-the-opaque-handle-and-lifecycle",
+      _poll_step.get("job_id") == _JOB_ID and _poll_step.get("job_state") == "running" and
+      "pip install package" not in _poll_step_line)
+_start_tool = next(tool for tool in _first_tools if tool._test_tool_name == "start_background_job")
+_saved_start, _saved_new_job_id, _saved_confirm = (
+    harness.remote_job.start, harness.remote_job.new_job_id, harness._request_confirm)
+try:
+    harness.remote_job.new_job_id = lambda: _JOB_ID
+    harness.remote_job.start = lambda *_args, **_kwargs: {
+        "ok": True, "job_id": _JOB_ID, "state": "started", "poll_with": "poll_background_job",
+    }
+    harness._request_confirm = lambda _display: (True, "")
+    harness.set_conn(conn)
+    harness.AUDIT.clear()
+    _start_wire = _capture(lambda: _asyncio.run(_start_tool({
+        "command": "python3 -m pip install package", "purpose": "install package",
+    })))
+finally:
+    harness.remote_job.start = _saved_start
+    harness.remote_job.new_job_id = _saved_new_job_id
+    harness._request_confirm = _saved_confirm
+    harness._CONN = _poll_saved_conn
+_start_step_line = next((line[len("@@STEP "):] for line in _start_wire.splitlines()
+                         if line.startswith("@@STEP ")), "{}")
+_start_step = _json.loads(_start_step_line)
+_start_job_line = next((line[len("@@JOB "):] for line in _start_wire.splitlines()
+                        if line.startswith("@@JOB ")), "{}")
+_start_job = _json.loads(_start_job_line)
+check("background-job-start-emits-the-resumable-handle-before-a-turn-can-disconnect",
+      _start_job == {"job_id": _JOB_ID, "job_state": "unknown"} and
+      _start_wire.index("@@JOB ") < _start_wire.index("@@STEP ") and
+      _start_step.get("job_id") == _JOB_ID and _start_step.get("job_state") == "started")
+_second_start_wire = _capture(lambda: _asyncio.run(_start_tool({
+    "command": "python3 -m pip install another", "purpose": "install another",
+})))
+check("one-diagnosis-cannot-replace-its-background-job-handle",
+      "@@JOB " not in _second_start_wire and "refused_precondition" in _second_start_wire)
 _endpoint_tool = next(tool for tool in _first_tools if tool._test_tool_name == "endpoint_probe")
 _remote_text_tool = next(tool for tool in _first_tools if tool._test_tool_name == "read_text_file")
 _find_paths_tool = next(tool for tool in _first_tools if tool._test_tool_name == "find_paths")
