@@ -46,7 +46,8 @@ func TestCustomerSupportMarkerRendersConciseSupportReply(t *testing.T) {
 	reply := customerSupportReply()
 	require.NotContains(t, reply, agentprotocol.FeishuCustomerSupportMarker)
 	require.NotContains(t, reply, agentprotocol.FeishuConsoleHandoffMarker)
-	require.Contains(t, reply, "建议直接联系优云智算客服处理")
+	require.Contains(t, reply, "需要优云智算客服协助处理")
+	require.NotContains(t, reply, "账号、认证、页面加载")
 	require.NotContains(t, reply, "控制台智能助手")
 	require.NotContains(t, reply, "桌面客户端")
 }

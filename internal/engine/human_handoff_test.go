@@ -63,13 +63,12 @@ func TestChatCustomerSupportMentionsRemainWithTheCentralAgent(t *testing.T) {
 	}
 }
 
-func TestCustomerSupportHandoffUsesTheExistingFeishuRendererProtocol(t *testing.T) {
+func TestPublicFeishuChannelUsesItsSupportRendererWithoutConsoleHandoff(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{customerSupportToolCall()}}
 	eng := NewWithDeps(model, &mockExecutor{}, nil)
 
 	reply, err := eng.ChatWithOptions(context.Background(), "我需要人工客服", noopStep, ChatOptions{
-		KnowledgeOnly:        true,
-		FeishuConsoleHandoff: true,
+		PublicPlatformReadOnly: true,
 	})
 	require.NoError(t, err)
 	require.Equal(t, agentprotocol.FeishuCustomerSupportMarker, reply)
@@ -78,6 +77,31 @@ func TestCustomerSupportHandoffUsesTheExistingFeishuRendererProtocol(t *testing.
 	require.NotContains(t, model.calls[0].Messages[0].Content, agentprotocol.FeishuCustomerSupportMarker,
 		"the adapter marker is emitted only by the tool executor")
 	require.NotContains(t, strings.Join(messageContents(model.calls[0].Messages), "\n"), "qrcode.png")
+}
+
+func TestCustomerSupportDisplayProjectionDoesNotEnterColdModelHistory(t *testing.T) {
+	hotModel := &mockLLM{responses: []llm.ChatResponse{customerSupportToolCall()}}
+	hot := NewWithDeps(hotModel, &mockExecutor{}, nil)
+	reply, err := hot.Chat(context.Background(), "请帮我转接人工客服", noopStep)
+	require.NoError(t, err)
+	require.Equal(t, refusal.HumanAgentTransfer, reply)
+	transcript, stats := hot.LastTurnTranscript()
+	require.True(t, stats.Attempted)
+	require.NotEmpty(t, transcript)
+
+	coldModel := &mockLLM{responses: []llm.ChatResponse{{Content: "我继续处理。"}}}
+	cold := NewWithDeps(coldModel, &mockExecutor{}, nil)
+	cold.RehydrateHistory([]HistoryMessage{
+		{Role: openai.ChatMessageRoleUser, Content: "请帮我转接人工客服"},
+		{Role: openai.ChatMessageRoleAssistant, Content: refusal.HumanAgentTransfer, Transcript: transcript},
+	})
+	_, err = cold.Chat(context.Background(), "继续", noopStep)
+	require.NoError(t, err)
+	require.Len(t, coldModel.calls, 1)
+	history := strings.Join(messageContents(coldModel.calls[0].Messages), "\n")
+	require.Contains(t, history, agentprotocol.CustomerSupportHistoryCompletion)
+	require.NotContains(t, history, "qrcode.png")
+	require.NotContains(t, history, agentprotocol.FeishuCustomerSupportMarker)
 }
 
 func messageContents(messages []openai.ChatCompletionMessage) []string {

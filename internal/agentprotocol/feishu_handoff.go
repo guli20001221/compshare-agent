@@ -26,4 +26,9 @@ const (
 	// shows it verbatim. It uses the same reserved control envelope as the
 	// console marker, outside the citation namespace.
 	FeishuCustomerSupportMarker = "<<COMPSHARE_CUSTOMER_SUPPORT_REQUIRED>>"
+
+	// CustomerSupportHistoryCompletion is the channel-neutral completion kept in
+	// model history when the user-facing channel rendered a support handoff.
+	// Adapter markers and Web QR markup are display projections, not model facts.
+	CustomerSupportHistoryCompletion = "已按用户请求提供人工客服转接说明。"
 )

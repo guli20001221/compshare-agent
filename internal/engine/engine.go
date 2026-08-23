@@ -177,10 +177,9 @@ type ChatOptions struct {
 	// window for untrusted chat transports. KnowledgeOnly takes precedence when
 	// both are set.
 	PublicPlatformReadOnly bool
-	// FeishuConsoleHandoff adds the response-only console-diagnosis contract and
-	// makes the customer-support handoff tool return an adapter-private marker.
+	// FeishuConsoleHandoff adds the response-only console-diagnosis contract.
 	// It never changes the tool window, authorization, or user identity; the
-	// adapter consumes private markers before rendering.
+	// adapter consumes its private marker before rendering.
 	FeishuConsoleHandoff bool
 }
 
@@ -379,10 +378,9 @@ type Engine struct {
 	// authorization boundary. It remains narrower than the console's ordinary
 	// read surface: only public catalog/inventory reads are allowed.
 	publicPlatformReadOnlyThisTurn bool
-	// feishuConsoleHandoffThisTurn changes only response delivery for a public
-	// Feishu Q&A turn: the prompt may request console diagnosis and the support
-	// tool emits an adapter marker instead of the web renderer. It is reset after
-	// every ChatWithOptions call so the console cannot inherit it from a pool.
+	// feishuConsoleHandoffThisTurn changes only the model's completion contract
+	// for a public Feishu Q&A turn. It is reset after every ChatWithOptions call
+	// so the console cannot inherit it from a pool.
 	feishuConsoleHandoffThisTurn bool
 	// sessionState is the JSON-serializable per-session execution state loaded
 	// before each Chat turn and read back through SessionStateSnapshot afterward.
@@ -897,15 +895,12 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 		case openai.ChatMessageRoleAssistant:
 			transcript := transcriptFromRow(msg.Transcript)
 			assistantContent := msg.Content
-			// A verbatim billing block is deliberately a USER-display projection:
-			// the persisted assistant row contains its exact amounts so the UI can
-			// reload the reply, while the live model saw only an amount-free tool
-			// observation. Replaying the display text here would make a restart or
-			// replica hand the model figures it never saw on the hot path. When the
-			// existing canonical transcript proves this was that shape, restore its
-			// model-facing terminal content instead. Ordinary assistant rows retain
-			// their persisted content unchanged.
-			if content, ok := verbatimBillingModelHistoryContent(transcript); ok {
+			// Some deterministic tool results have a channel-specific display form:
+			// billing cards contain exact amounts and support handoffs contain QR or
+			// adapter markup. The canonical transcript records what the live model
+			// actually saw; restore that terminal content on cold rebuild. Ordinary
+			// assistant rows retain their persisted content unchanged.
+			if content, ok := displayProjectedModelHistoryContent(transcript); ok {
 				assistantContent = content
 			}
 			e.messages = append(e.messages, openai.ChatCompletionMessage{Role: msg.Role, Content: assistantContent})
@@ -923,20 +918,20 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 }
 
 // verbatimBillingModelHistoryContent returns the assistant text that belongs in
-// the model's semantic history for a persisted billing-card turn.
-//
-// The messages.content column has two consumers: the conversation UI needs the
-// exact server-rendered card, while the model must not see figures it could
-// restate, extrapolate or treat as current. The canonical transcript already
-// records the latter view. Do not identify cards by their display text: that
-// would make a formatting change alter model semantics. The typed observation
-// is the persisted, narrow discriminator.
-//
-// Rows without a terminal assistant message use the same amount-free completion
-// rather than falling back to the persisted display card.
-func verbatimBillingModelHistoryContent(transcript *TranscriptV1) (string, bool) {
+// displayProjectedModelHistoryContent returns the channel-neutral assistant
+// completion for turns whose persisted row is a user-display projection. The
+// canonical transcript is the model-facing source of truth: billing cards keep
+// amounts out of model history, while support handoffs keep QR/adapter markup
+// out. Typed tool observations/calls identify these turns; display text is
+// never parsed. Ordinary turns retain their persisted assistant row.
+func displayProjectedModelHistoryContent(transcript *TranscriptV1) (string, bool) {
 	projected := ProjectTranscript(transcript)
-	if len(projected) == 0 || !containsVerbatimBillingObservation(projected) {
+	if len(projected) == 0 {
+		return "", false
+	}
+	billing := containsVerbatimBillingObservation(projected)
+	support := containsCustomerSupportHandoff(projected)
+	if !billing && !support {
 		return "", false
 	}
 	for i := len(projected) - 1; i >= 0; i-- {
@@ -945,7 +940,24 @@ func verbatimBillingModelHistoryContent(transcript *TranscriptV1) (string, bool)
 			return message.Content, true
 		}
 	}
-	return verbatimBillingHistoryCompletion, true
+	if billing {
+		return verbatimBillingHistoryCompletion, true
+	}
+	return agentprotocol.CustomerSupportHistoryCompletion, true
+}
+
+func containsCustomerSupportHandoff(messages []openai.ChatCompletionMessage) bool {
+	for _, message := range messages {
+		if message.Role != openai.ChatMessageRoleAssistant {
+			continue
+		}
+		for _, call := range message.ToolCalls {
+			if call.Function.Name == tools.CustomerSupportHandoffName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func containsVerbatimBillingObservation(messages []openai.ChatCompletionMessage) bool {
@@ -1601,10 +1613,17 @@ func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, 
 		// Deterministic final reply — return directly without LLM narration
 		if finalMsg, ok := isFinalReply(toolResult); ok {
 			finalMsg = security.RedactOperationalTokensInText(finalMsg)
+			historyFinalMsg := finalMsg
+			if tc.Function.Name == tools.CustomerSupportHandoffName {
+				// The active channel receives a QR or private adapter marker. Model
+				// history retains only the semantic outcome, so neither renderer can
+				// be copied into a later answer without another tool call.
+				historyFinalMsg = agentprotocol.CustomerSupportHistoryCompletion
+			}
 			// Append matching tool response for this tool call
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:       openai.ChatMessageRoleTool,
-				Content:    finalMsg,
+				Content:    historyFinalMsg,
 				ToolCallID: tc.ID,
 			})
 			// Pad remaining unprocessed tool calls with synthetic responses
@@ -1619,7 +1638,7 @@ func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, 
 			// Append the final assistant message
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
-				Content: finalMsg,
+				Content: historyFinalMsg,
 			})
 			return agentruntime.Final(finalMsg, agentruntime.FinishDeterministicReply), nil
 		}
@@ -2617,7 +2636,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	if action == tools.CustomerSupportHandoffName {
 		onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct})
 		reply := refusal.HumanAgentTransfer
-		if e.feishuConsoleHandoffThisTurn {
+		if e.publicPlatformReadOnlyThisTurn {
 			reply = agentprotocol.FeishuCustomerSupportMarker
 		}
 		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "已转接人工客服"})

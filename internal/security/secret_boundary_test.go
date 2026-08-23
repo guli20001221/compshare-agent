@@ -3,6 +3,7 @@ package security
 import (
 	"testing"
 
+	"github.com/compshare-agent/internal/agentprotocol"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -111,6 +112,12 @@ func TestRedactAssistantConversationTextMarksRedactedCommandsAsNonReusable(t *te
 		"a persisted redacted command must say that it cannot be copied after reload")
 	assert.Equal(t, persisted, RedactAssistantConversationText(persisted),
 		"the persisted notice must be idempotent across hot/cold replay boundaries")
+}
+
+func TestAssistantPersistenceRemovesThePrivateCustomerSupportMarker(t *testing.T) {
+	persisted := RedactAssistantConversationText(agentprotocol.FeishuCustomerSupportMarker)
+	assert.Equal(t, agentprotocol.CustomerSupportHistoryCompletion, persisted)
+	assert.NotContains(t, persisted, agentprotocol.FeishuCustomerSupportMarker)
 }
 
 func TestRestoreUserProvidedCredentialURLsOnlyRestoresAnExactCurrentTurnEcho(t *testing.T) {
