@@ -27,6 +27,7 @@ import tempfile
 import atomic_file
 import endpoint_probe
 import guardrails
+import process_env
 import remote_job
 import remote_text
 import ssh_transport
@@ -52,6 +53,7 @@ _MAX_CONFIRMABLE_COMMAND = 2000
 # tool. endpoint_probe resolves opaque IDs against server-selected targets; it cannot accept a URL.
 ALLOWED_TOOLS = [
     "mcp__ssh_ops__ssh_exec", "mcp__ssh_ops__read_text_file",
+    "mcp__ssh_ops__read_process_environment",
     "mcp__ssh_ops__endpoint_probe",
     "mcp__ssh_ops__poll_background_job",
     "mcp__ssh_ops__atomic_text_replace", "mcp__ssh_ops__start_background_job",
@@ -136,18 +138,19 @@ without a post-change observation tied to the original success criterion."""
 # transport mechanics in the tool descriptions; classifier/shape rules remain executable code.
 SYSTEM_PROMPT = _SYSTEM_PROMPT_CORE + "\n\n" + _SYSTEM_PROMPT_REPAIR_MODE
 
-TOOL_DESC = """Run one command over SSH. Only positively proven read-only calls run immediately;
-others need exact approval. Returns exit status. For a state-changing repair, send the smallest concrete command;
-it runs only after the user approves that exact command. Stay within the diagnosed fault;
-re-downloading an application or disabling an unrelated service needs a separate decision unless the task
-requests it. Only irreversible data/boot/recovery loss, control-plane crossings, reboots, accounts/passwords,
-SSH/network disabling and substitution are refused. Pipes/chains/globs/redirection, multi-line scripts
-and proven probes through the application's actual interpreter are supported; unproven effects ask. Rewrite only command-form
-rejections; never bypass policy or approval. Each call is classified as one effect: keep independently useful
-probes in separate calls.
+TOOL_DESC = """Run one command over SSH. Only positively proven reads run immediately; other reversible
+effects need exact approval. Returns exit status. For a state-changing repair, send the smallest concrete
+command; it runs when the user approves that exact command. Stay within the diagnosed fault: re-downloading
+an application or disabling an unrelated service needs a separate decision unless the task requests it.
+Only irreversible data/boot/recovery loss, control-plane crossings, reboots, accounts/passwords,
+SSH/network disabling and substitution are refused. Pipes/chains/globs/redirection and multi-line scripts are
+supported. Use the application's actual interpreter. Rewrite only
+command-form rejections; never bypass policy or approval. Each call is classified as one effect: keep
+independently useful probes in separate calls.
 
-Each call is a fresh, non-interactive SSH session capped at 25 seconds. Use structured background-job tools for
-long work; do not hand-roll detachment or resend a timed-out foreground command.
+Use read_process_environment for selected process variables; never dump all variables. Each call is a
+fresh, non-interactive SSH session capped at 25 seconds. Use structured
+background-job tools for long work; do not hand-roll detachment or resend a timed-out foreground command.
 
 For a managed service, use its existing supervisor/launcher rather than starting an inner binary. Manager
 presence does not authorize creating a new unit; if the image supplies only a launcher, use it and report the
@@ -155,9 +158,9 @@ durability gap. Never invent a platform-facing port or substitute service. A tra
 not intended semantics: edit logic only with a local test or version contract; otherwise prefer reversible
 rollback/disable within scope. Before starting, reconcile any surviving child outside that ownership;
 bounded-poll transitional manager states to a terminal result. Verify the full service contract owned by the
-launcher; guest-local success does not prove an external route. Restarting the instance is unavailable. A process
-or service restart is not an instance reboot. If guest-local restart cannot recover, ask whether the user
-wants the instance restarted; do not seek a guest-shell workaround."""
+launcher. Restarting the instance is unavailable. A process
+or service restart is not an instance reboot. If guest-local restart cannot recover, ask whether the user wants
+the instance restarted; do not seek a guest-shell workaround."""
 
 
 def read_handshake(line: str) -> dict:
@@ -1113,6 +1116,18 @@ async def main():
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
                 **({"is_error": True} if not result.get("ok") else {})}
 
+    @tool("read_process_environment", process_env.TOOL_DESCRIPTION, process_env.input_schema(),
+          annotations=ToolAnnotations(title="Read selected process environment", readOnlyHint=True,
+                                      destructiveHint=False, idempotentHint=True, openWorldHint=True))
+    async def read_process_environment(args):
+        result = await asyncio.to_thread(process_env.read, _CONN, args, _secrets())
+        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        disposition = "ran_read_only" if result.get("ok") else "refused_precondition"
+        display = "read_process_environment pid=" + str(result.get("pid") or "invalid")[:16]
+        _record_structured_step(display, "read_only", disposition, len(rendered.encode("utf-8")))
+        return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
+                **({"is_error": True} if not result.get("ok") else {})}
+
     @tool("endpoint_probe", endpoint_probe.tool_description(_ENDPOINT_TARGETS),
           endpoint_probe.input_schema(_ENDPOINT_TARGETS),
           annotations=ToolAnnotations(title="Probe a platform endpoint", readOnlyHint=True,
@@ -1140,7 +1155,8 @@ async def main():
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
                 **({"is_error": True} if not result.get("ok") else {})}
 
-    sdk_tools = [ssh_exec, read_text_file, probe_endpoint, poll_background_job]
+    sdk_tools = [ssh_exec, read_text_file, read_process_environment,
+                 probe_endpoint, poll_background_job]
 
     @tool("atomic_text_replace", atomic_file.TOOL_DESCRIPTION, atomic_file.input_schema(),
           annotations=ToolAnnotations(title="Atomically edit one text file", readOnlyHint=False,
@@ -1216,7 +1232,7 @@ async def main():
     sdk_tools.append(start_background_job)
 
     server = create_sdk_mcp_server(
-        name="ssh-ops", version="2.1.0", tools=sdk_tools)
+        name="ssh-ops", version="2.2.0", tools=sdk_tools)
     try:
         turns = int(_CONN.get("max_turns") or DEFAULT_MAX_TURNS)
     except (TypeError, ValueError):

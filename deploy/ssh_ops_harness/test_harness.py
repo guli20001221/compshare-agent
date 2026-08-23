@@ -907,8 +907,8 @@ check("context-main-receipt-matches-sdk-prompt",
 check("context-main-verdict-still-emits", "mocked contextual diagnosis" in _main_output)
 _first_tools = _captured_sdk_servers[0]["tools"]
 _legacy_flag_tools = _captured_sdk_servers[1]["tools"]
-check("mcp-surface-version-bumped-for-remote-read-tool",
-      _captured_sdk_servers[0]["version"] == "2.1.0")
+check("mcp-surface-version-bumped-for-process-environment-tool",
+      _captured_sdk_servers[0]["version"] == "2.2.0")
 check("main-registers-exact-single-repair-tool-surface",
       [tool._test_tool_name for tool in _first_tools] == [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
 check("removed-mode-flag-cannot-change-the-tool-surface",
@@ -916,6 +916,8 @@ check("removed-mode-flag-cannot-change-the-tool-surface",
       [tool._test_tool_name for tool in _first_tools])
 _endpoint_tool = next(tool for tool in _first_tools if tool._test_tool_name == "endpoint_probe")
 _remote_text_tool = next(tool for tool in _first_tools if tool._test_tool_name == "read_text_file")
+_process_env_tool = next(tool for tool in _first_tools
+                         if tool._test_tool_name == "read_process_environment")
 _remote_text_annotations = _remote_text_tool._test_tool_annotations
 check("remote-text-tool-schema-carries-only-a-remote-path-and-bounds",
       _remote_text_tool._test_tool_schema["required"] == ["path"] and
@@ -926,6 +928,14 @@ check("remote-text-tool-schema-carries-only-a-remote-path-and-bounds",
 check("remote-text-tool-is-declared-read-only-to-the-sdk",
       getattr(_remote_text_annotations, "readOnlyHint", None) is True and
       getattr(_remote_text_annotations, "destructiveHint", None) is False)
+check("process-environment-tool-schema-has-no-arbitrary-key-or-credential-input",
+      _process_env_tool._test_tool_schema["required"] == ["pid", "names"] and
+      set(_process_env_tool._test_tool_schema["properties"]) == {"pid", "names"} and
+      "AWS_SECRET_ACCESS_KEY" not in
+      _process_env_tool._test_tool_schema["properties"]["names"]["items"]["enum"])
+check("process-environment-tool-is-declared-read-only-to-the-sdk",
+      getattr(_process_env_tool._test_tool_annotations, "readOnlyHint", None) is True and
+      getattr(_process_env_tool._test_tool_annotations, "destructiveHint", None) is False)
 _endpoint_contract = _json.dumps({"description": _endpoint_tool._test_tool_description,
                                   "schema": _endpoint_tool._test_tool_schema})
 check("endpoint-tool-exposes-only-opaque-target-id",

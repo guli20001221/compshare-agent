@@ -244,6 +244,8 @@ check("atomic-file-tool-exists-in-single-repair-surface",
       "mcp__ssh_ops__atomic_text_replace" in harness.ALLOWED_TOOLS)
 check("remote-text-tool-exists-in-single-repair-surface",
       "mcp__ssh_ops__read_text_file" in harness.ALLOWED_TOOLS)
+check("process-environment-tool-exists-in-single-repair-surface",
+      "mcp__ssh_ops__read_process_environment" in harness.ALLOWED_TOOLS)
 check("endpoint-probe-exists-in-single-repair-surface",
       "mcp__ssh_ops__endpoint_probe" in harness.ALLOWED_TOOLS)
 check("atomic-file-tool-is-hash-bound-and-backed-up",
@@ -254,6 +256,9 @@ check("remote-text-tool-is-bounded-read-only-and-hash-bearing",
           for term in ("read-only", "32 KiB", "whole-file SHA-256", "follows no symlink")))
 check("remote-text-tool-routes-known-files-away-from-shell-readers",
       "instead of cat/head/sed" in harness.remote_text.TOOL_DESCRIPTION)
+check("process-environment-tool-is-selected-and-secret-bounded",
+      all(term in harness.process_env.TOOL_DESCRIPTION
+          for term in ("caller-selected", "schema allowlist", "credentials")))
 
 # The lane repairs only the assigned fault; broader application replacement or shutdown requires a
 # separate user decision.

@@ -305,6 +305,7 @@ _STRUCTURED_DIAG = [re.compile(p) for p in [
     r"systemctl\s+(status|is-active|is-enabled|is-failed|list-units|list-unit-files|list-dependencies)(\s+\S+)*",
     r"(free|uptime|uname|hostname|whoami|id|pwd|date|lscpu|lsblk|lsmod|lspci|nproc|arch|sensors)(\s+\S+)*",
     r"(pgrep|pidof)(\s+\S+)*",                         # process lookup only; pkill is separate
+    r"pstree(\s+\S+)*",                                # process ancestry only
     r"lsof(\s+\S+)*",                                  # open-file/socket metadata; no write mode
     r"df(\s+\S+)*",
     r"findmnt(\s+\S+)*",
@@ -1744,6 +1745,64 @@ _DIAGNOSTIC_ENV_NAMES = {
     "CUDA_HOME", "CONDA_DEFAULT_ENV", "VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH",
     "LD_LIBRARY_PATH", "PATH",
 }
+_CHILD_DIAGNOSTIC_ENV_NAMES = {
+    "CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES", "NVIDIA_DRIVER_CAPABILITIES",
+    "OMP_NUM_THREADS", "LOCAL_RANK", "RANK", "WORLD_SIZE",
+}
+_ENV_ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", re.DOTALL)
+
+
+def _diagnostic_child_env_inner(seg: str):
+    """Return an inner command after a proven child-only diagnostic environment prefix.
+
+    CUDA visibility/rank variables alter only the launched process and cannot load code. PATH,
+    PYTHONPATH and LD_LIBRARY_PATH are intentionally absent because they can select an executable,
+    Python module or shared object. The returned command still passes through this same classifier.
+    """
+    try:
+        tokens = shlex.split(seg)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    i, found = 0, False
+    if _basename(tokens[0]).lower() == "env":
+        i = 1
+        while i < len(tokens):
+            token = tokens[i]
+            if token == "--":
+                i += 1
+                break
+            if token in ("-u", "--unset"):
+                if i + 1 >= len(tokens) or tokens[i + 1] not in _CHILD_DIAGNOSTIC_ENV_NAMES:
+                    return None
+                found, i = True, i + 2
+                continue
+            if token.startswith("--unset="):
+                if token.split("=", 1)[1] not in _CHILD_DIAGNOSTIC_ENV_NAMES:
+                    return None
+                found, i = True, i + 1
+                continue
+            match = _ENV_ASSIGNMENT.fullmatch(token)
+            if match:
+                if match.group(1) not in _CHILD_DIAGNOSTIC_ENV_NAMES:
+                    return None
+                found, i = True, i + 1
+                continue
+            if token.startswith("-"):
+                return None
+            break
+    else:
+        while i < len(tokens):
+            match = _ENV_ASSIGNMENT.fullmatch(tokens[i])
+            if not match:
+                break
+            if match.group(1) not in _CHILD_DIAGNOSTIC_ENV_NAMES:
+                return None
+            found, i = True, i + 1
+    if not found or i >= len(tokens):
+        return None
+    return shlex.join(tokens[i:])
 
 
 def _strip_shell_keywords(seg: str) -> str:
@@ -1821,6 +1880,10 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     # tokenizer: `env 2>/dev/null` read as the executing form `env <cmd>` and was refused live.
     # Drop them before any token-position rule looks at the segment.
     seg = _SAFE_REDIR.sub(" ", seg).strip()
+    child_env_inner = _diagnostic_child_env_inner(seg)
+    if child_env_inner is not None:
+        return (_depth > 3 or
+                _is_mutating_segment(child_env_inner, _depth + 1))
     tokens = seg.split()
     if not tokens:
         return False

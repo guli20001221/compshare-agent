@@ -78,3 +78,4 @@ jobs:
           python3 test_remote_text.py
           python3 test_atomic_file.py
           python3 test_remote_job.py
+          python3 test_process_env.py

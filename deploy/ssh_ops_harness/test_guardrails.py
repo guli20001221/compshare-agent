@@ -38,6 +38,13 @@ CLASSIFY_CASES = [
     ("lsblk", "read_only"),
     ("lsblk -f", "read_only"),                        # r2 FP: -f = --fs, not follow
     ("hostname", "read_only"),
+    ("pstree -aps 63", "read_only"),
+    ("env -u CUDA_VISIBLE_DEVICES /root/miniconda3/bin/python3.10 -c 'import torch; print(torch.cuda.is_available()); print(torch.cuda.device_count())'", "read_only"),
+    ("CUDA_VISIBLE_DEVICES=-1 /root/miniconda3/bin/python3.10 -c 'import torch; print(torch.cuda.is_available()); print(torch.cuda.device_count())'", "read_only"),
+    ("CUDA_VISIBLE_DEVICES=0 touch /tmp/x", "mutating"),
+    ("LD_LIBRARY_PATH=/tmp /root/miniconda3/bin/python3.10 -c 'print(1)'", "mutating"),
+    ("PYTHONPATH=/tmp /root/miniconda3/bin/python3.10 -c 'print(1)'", "mutating"),
+    ("CUDA_VISIBLE_DEVICES=0 python3 -c 'import os; os.system(\"touch /tmp/x\")'", "mutating"),
     ("ip addr show", "read_only"),
     ("top -bn1", "read_only"),
     ("vmstat", "read_only"),
