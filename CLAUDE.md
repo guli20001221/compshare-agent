@@ -121,10 +121,11 @@ calls) is never persisted or executed as a normal answer.
 
 The lane fails closed when audit storage is unavailable. A missing audit schema
 disables only this lane and logs the missing migration; it does not take chat
-down. Destructive commands, multiline/opaque command shapes and guest-shell
-reboot remain refused. The definitive command policy and deployment contract
-live in `deploy/ssh_ops_harness/README.md` and its tests—do not duplicate their
-full history in config comments.
+down. Destructive effects, command substitution and guest-shell reboot remain
+refused. Multiline commands, pipes and chains are classified by effect, and
+guest changes still require exact confirmation. The definitive command policy
+and deployment contract live in `deploy/ssh_ops_harness/README.md` and its
+tests—do not duplicate their full history in config comments.
 
 Production address routing is configured in `config.prod.yaml`: UHost internal
 mapping first, the translated public-IPv4 candidate second. The advertised public

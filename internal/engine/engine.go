@@ -382,7 +382,7 @@ type Engine struct {
 	// for a public Feishu Q&A turn. It is reset after every ChatWithOptions call
 	// so the regular console agent cannot inherit it from a pooled engine.
 	feishuConsoleHandoffThisTurn bool
-	// sessionState is the JSON-serializable per-session execution state injected
+	// sessionState is the JSON-serializable per-session execution state loaded
 	// before each Chat turn and read back through SessionStateSnapshot afterward.
 	// See session_state.go.
 	sessionState         SessionState
@@ -1009,14 +1009,9 @@ func (e *Engine) SessionStateSnapshot() (state SessionState, version int, hydrat
 	return state, e.sessionStateVersion, e.sessionStateHydrated
 }
 
-// refreshSystemPrompt rebuilds e.messages[0] with the current SessionState
-// injected into the user context section. Called per-turn at the start of
-// ChatWithOptions, AFTER SetSessionState has been called (HTTP handler
-// serializes: ClearSessionState → SetSessionState → ChatWithOptions).
-// This solves the HTTP timing issue: RehydrateHistory builds the initial
-// system prompt with empty userContext because SessionState isn't
-// available yet; refreshSystemPrompt patches it once state is hydrated.
-// An unhydrated test Engine rebuilds from baseUserContext only.
+// refreshSystemPrompt rebuilds the static prompt and records how the carried
+// instance target was resolved. SessionState is not injected here; the
+// per-turn context card is assembled separately by ContextCompiler.
 func (e *Engine) refreshSystemPrompt() {
 	if len(e.messages) == 0 || e.messages[0].Role != openai.ChatMessageRoleSystem {
 		return
@@ -1310,13 +1305,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// (disciplined cited synthesis) instead of discarding the turn for
 			// a bare "请简化问题". Only fall back to the budget refusal when
 			// nothing groundable was retrieved (the "no evidence → refuse,
-			// never fabricate" guard). Round 0 normally reaches this with an
-			// empty ledger (no tool has run yet) and so still refuses — EXCEPT
-			// under the forced-hop arm, where the engine has already retrieved
-			// before the loop, so a round-0 budget trip can now synthesize from
-			// evidence the Agent never got to vet. Reaching that state requires
-			// one planner call alone to exhaust max_tokens_per_turn (400000 in
-			// the deploy config), so it is documented rather than special-cased.
+			// never fabricate" guard). Round 0 has no tool evidence and therefore
+			// takes the refusal path.
 			if synth, ok := e.synthesizeOnBudgetExceeded(ctx, userMsg); ok {
 				e.messages = append(e.messages, openai.ChatCompletionMessage{
 					Role:    openai.ChatMessageRoleAssistant,
