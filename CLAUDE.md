@@ -134,8 +134,12 @@ mapping first, the translated public-IPv4 candidate second. The advertised publi
 EIP is diagnostic-only and is never selected as a dial target.
 
 If a browser disconnects during a diagnosis, the current process may show a
-bounded deterministic notice on the next turn. It does not resume or replay
-commands, does not enter model history, and does not survive process/LRU loss.
+bounded deterministic notice on the next turn. Ordinary commands are never
+replayed. When one approved managed background job already emitted its opaque
+handle, the same live session can give the next diagnosis on that instance a
+poll-only tool surface; neither its command nor output is retained. This
+continuity does not enter conversation/audit storage and does not survive
+process or LRU loss.
 
 ## Configuration
 
@@ -186,10 +190,12 @@ prefix. Tool/confirmation activity uses separate step frames.
 
 `internal/httpapi/trace_recorder.go` writes one content-free trace per completed
 turn through `internal/observability`. Trace may contain model/provider IDs,
-finish reasons, token counts, tool actions/error classes/latencies, prompt
-section IDs, request-size peaks, selected-instance provenance and workflow
-outcomes. It must not become a second conversation database: no raw prompt,
-reply, tool payload, credential or canonical transcript.
+finish reasons, token counts, per-attempt provider outcomes and latency, first
+successfully delivered event time, tool actions/error codes/latencies, generic
+result truncation sizes, prompt section IDs, request-size peaks,
+selected-instance provenance and workflow outcomes. It must not become a second
+conversation database: no raw prompt, reply, tool payload, credential or
+canonical transcript.
 
 When adding a tool failure, use the existing closed error-code/error-class
 contracts rather than parsing error messages. Preserve three-state metrics where

@@ -490,7 +490,7 @@ func providerOverloadStatus(err error) (int, bool) {
 // providerOverloadBackoff is the pause before re-sending a request the provider
 // refused for capacity. An immediate retry mostly re-hits the same exhausted
 // pool; a short wait is what makes the second attempt worth making at all. Kept
-// well under the confirmation timeout (60s) so a retried turn still lands
+// well under the human confirmation window so a retried turn still lands
 // inside the card the user is looking at.
 const providerOverloadBackoff = 900 * time.Millisecond
 
