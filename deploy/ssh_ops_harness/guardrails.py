@@ -695,6 +695,44 @@ def _interval_ok(tokens) -> bool:
     return False
 
 
+def _literal_cd_ok(cmd: str) -> bool:
+    """A literal ``cd`` changes only this short-lived SSH shell's working directory.
+
+    Each tool call gets a fresh session, so the effect cannot persist on the guest.  Accept an
+    optional ``--`` and one literal path (or no path for the remote user's home); substitutions are
+    rejected by the outer shape gate before this helper is reached.
+    """
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        return False
+    if not argv or _basename(argv[0]) != "cd":
+        return False
+    rest = argv[1:]
+    if rest[:1] == ["--"]:
+        rest = rest[1:]
+    if len(rest) > 1:
+        return False
+    return not rest or ("\x00" not in rest[0] and not rest[0].startswith("-")) or rest[0] == "-"
+
+
+def _bounded_sleep_ok(cmd: str) -> bool:
+    """Permit a short observation delay without mislabelling it as a guest mutation."""
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        return False
+    if not argv or _basename(argv[0]) != "sleep":
+        return False
+    rest = argv[1:]
+    if rest[:1] == ["--"]:
+        rest = rest[1:]
+    if len(rest) != 1 or re.fullmatch(r"(?:\d+(?:\.\d*)?|\.\d+)s?", rest[0]) is None:
+        return False
+    value = rest[0][:-1] if rest[0].endswith("s") else rest[0]
+    return float(value) <= 5.0
+
+
 # --- F10: loopback-only HTTP probe -------------------------------------------
 # A loopback HTTP request distinguishes a dead service from one listening only locally.
 #
@@ -807,6 +845,10 @@ def _is_read_only(cmd: str) -> bool:
     if not tokens:
         return False
     binary = _basename(tokens[0])
+    if binary == "cd":                                  # transient cwd inside this one SSH session
+        return _literal_cd_ok(cmd)
+    if binary == "sleep":                               # bounded wait before a verification probe
+        return _bounded_sleep_ok(cmd)
     if binary in ("curl", "wget"):                       # F10: loopback-only service probe
         return _http_probe_ok(tokens)
     blk = _STREAM_BLOCK.get(binary)
@@ -833,12 +875,19 @@ def _is_read_only(cmd: str) -> bool:
         return True
     if binary == "fuser" and _KILL_FLAG_BINARIES["fuser"].search(cmd):
         return False
+    if binary == "git":
+        try:
+            if _git_local_config_read(shlex.split(cmd)):
+                return True
+        except ValueError:
+            pass
     if binary in ("grep", "egrep", "fgrep"):
         try:
             grep_tokens = shlex.split(cmd)
         except ValueError:
             return False
-        return _safe_grep_file_read(grep_tokens)
+        return (_safe_grep_file_read(grep_tokens)
+                or _recursive_grep_names_only(grep_tokens))
     if binary == "sed":
         return _sed_numeric_print_is_read(cmd, allow_stdin=False)
     # Match the allowlist on the BASENAME-normalized command as well: a venv/conda interpreter is
@@ -888,6 +937,95 @@ def _safe_grep_file_read(tokens, allow_find_placeholder=False) -> bool:
                ("/" in path and _safe_path(path)) for path in files)
 
 
+def _grep_stdin_only(tokens) -> bool:
+    """Prove that grep consumes its pattern plus stdin, never a second file operand.
+
+    The old ``no token contains '/'`` shortcut confused a slash inside the PATTERN with a file and,
+    worse, accepted a relative file operand that contained no slash. Parse the small option subset
+    models actually use; one positional is the pattern, while ``-e`` supplies that pattern as an
+    option value. Any additional positional is a file and therefore not an stdin-only filter.
+    """
+    no_value_options = {
+        "-a", "--text", "-c", "--count", "-E", "--extended-regexp", "-F", "--fixed-strings",
+        "-H", "--with-filename", "-h", "--no-filename", "-i", "--ignore-case", "-I",
+        "-l", "--files-with-matches", "-L", "--files-without-match", "-n", "--line-number",
+        "-q", "--quiet", "--silent", "-s", "--no-messages", "-v", "--invert-match", "-w",
+        "--word-regexp", "-x", "--line-regexp",
+    }
+    positional, explicit_patterns, i = [], 0, 1
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "--":
+            positional.extend(tokens[i + 1:])
+            break
+        if token in ("-e", "--regexp"):
+            i += 1
+            if i >= len(tokens):
+                return False
+            explicit_patterns += 1
+        elif token.startswith("--regexp=") or (token.startswith("-e") and token != "-e"):
+            explicit_patterns += 1
+        elif token.startswith("-"):
+            if token not in no_value_options and not re.fullmatch(r"-[acEFHIhilLnoqsvwx]+", token):
+                return False
+        else:
+            positional.append(token)
+        i += 1
+    if explicit_patterns:
+        return not positional
+    return len(positional) == 1
+
+
+def _recursive_grep_names_only(tokens) -> bool:
+    """Allow a recursive application-tree search only when grep emits file names, not content."""
+    recursive, names_only, positional = False, False, []
+    allowed_long = {
+        "--recursive", "--dereference-recursive", "--binary-files=without-match", "--text",
+        "--files-with-matches", "--files-without-match", "--extended-regexp", "--fixed-strings",
+        "--ignore-case", "--no-messages", "--silent", "--word-regexp", "--line-regexp",
+    }
+    allowed_cluster = set("rRIlLEFainsvwxHh")
+    for token in tokens[1:]:
+        if token == "--":
+            continue
+        if token.startswith("--"):
+            if token not in allowed_long:
+                return False
+            recursive = recursive or token in ("--recursive", "--dereference-recursive")
+            names_only = names_only or token in ("--files-with-matches", "--files-without-match")
+            continue
+        if token.startswith("-"):
+            if len(token) < 2 or any(ch not in allowed_cluster for ch in token[1:]):
+                return False
+            recursive = recursive or "r" in token or "R" in token
+            names_only = names_only or "l" in token or "L" in token
+            continue
+        positional.append(token)
+    if not recursive or not names_only or len(positional) < 2:
+        return False
+    roots = positional[1:]
+    return all(path.startswith("/") and _safe_meta_path(path) for path in roots)
+
+
+def _git_local_config_read(tokens) -> bool:
+    """Prove the read form used to inspect one repository-local Git config value."""
+    i = 1
+    if i < len(tokens) and tokens[i] == "-C":
+        if i + 1 >= len(tokens) or not tokens[i + 1].startswith("/"):
+            return False
+        if not _safe_meta_path(tokens[i + 1]):
+            return False
+        i += 2
+    if i >= len(tokens) or tokens[i] != "config":
+        return False
+    rest = tokens[i + 1:]
+    if rest[:1] in (["--local"], ["--worktree"]):
+        rest = rest[1:]
+    if len(rest) != 2 or rest[0] not in ("--get", "--get-all", "--get-regexp"):
+        return False
+    return re.fullmatch(r"[A-Za-z0-9_.^$*+?()|\\-]+", rest[1]) is not None
+
+
 def _is_safe_filter(seg: str) -> bool:
     """A downstream pipe stage: an allowlisted text filter reading ONLY stdin. No
     file-path args (so `| grep root /etc/shadow` cannot read a file) and no -f stream."""
@@ -896,6 +1034,11 @@ def _is_safe_filter(seg: str) -> bool:
         return False
     if _basename(toks[0]) == "sed":
         return _sed_numeric_print_is_read(seg, allow_stdin=True)
+    if _basename(toks[0]) in ("grep", "egrep", "fgrep"):
+        try:
+            return _grep_stdin_only(shlex.split(seg))
+        except ValueError:
+            return False
     if _basename(toks[0]) not in _SAFE_FILTERS:
         return False
     if _FOLLOW.search(seg):

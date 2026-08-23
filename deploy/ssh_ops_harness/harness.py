@@ -5,8 +5,9 @@ Spawned per consented ops-task by the Go server. Boundary contract:
   - The SSH credential arrives ONCE over a stdin handshake (a single JSON line) into a module
     variable. It is NEVER placed in os.environ (the SDK passes the wrapper's full environment into
     the spawned `claude` CLI), never in argv, never logged, never returned to the model.
-  - The model sees the task plus a labelled, non-secret reference context; it calls ssh_exec(command)
-    and never names a credential.
+  - The model sees the task plus a labelled, non-secret reference context; it calls reviewed remote
+    operations (SSH command, SFTP text read, endpoint probe and confirmation-gated repair) and never
+    names a credential.
   - Built-in tools (Bash/Read/Write/...) are stripped so only reviewed in-process operations tools
     exist, asserted by INV-9. Without this the harness's built-in Bash runs on the LOCAL host.
   - Commands proven read-only run immediately; every other reversible guest-local effect requires
@@ -14,7 +15,7 @@ Spawned per consented ops-task by the Go server. Boundary contract:
     command substitution, and multi-line input are refused. Box output is capped and secret-scrubbed.
 
 The pure logic (handshake, classify-dispatch, scrub, INV-9 check) is SDK-independent and unit-tested
-offline; the SDK wiring (the ssh_exec MCP tool + the agent loop) is in main(), behind a guarded import.
+offline; the SDK wiring (the reviewed MCP operations + the agent loop) is in main(), behind a guarded import.
 """
 import base64
 import json
@@ -27,6 +28,7 @@ import atomic_file
 import endpoint_probe
 import guardrails
 import remote_job
+import remote_text
 import ssh_transport
 
 # --- the consented connection, delivered via stdin handshake. Module memory only. ---
@@ -49,7 +51,8 @@ _MAX_CONFIRMABLE_COMMAND = 2000
 # INV-9: the harness may expose only these in-process operations tools and no built-in/local-exec
 # tool. endpoint_probe resolves opaque IDs against server-selected targets; it cannot accept a URL.
 ALLOWED_TOOLS = [
-    "mcp__ssh_ops__ssh_exec", "mcp__ssh_ops__endpoint_probe",
+    "mcp__ssh_ops__ssh_exec", "mcp__ssh_ops__read_text_file",
+    "mcp__ssh_ops__endpoint_probe",
     "mcp__ssh_ops__poll_background_job",
     "mcp__ssh_ops__atomic_text_replace", "mcp__ssh_ops__start_background_job",
 ]
@@ -446,6 +449,22 @@ def _wire_disposition(raw: str) -> str:
     # auth_failed / connect_failed / any other ssh_transport error class, and the never-updated ""
     # from an exception path, all mean the command did not run.
     return _DISPOSITION_MAP.get(raw, "failed")
+
+
+_REMOTE_TEXT_PRECONDITION_ERRORS = frozenset({
+    "invalid_arguments", "path_not_allowed", "invalid_line_start", "invalid_line_count",
+    "line_start_out_of_range", "symlink_refused", "not_regular_file", "file_too_large", "not_utf8",
+})
+
+
+def _remote_text_disposition(result: dict) -> str:
+    """Keep a policy/precondition refusal distinct from an SSH/SFTP execution failure."""
+    if result.get("ok"):
+        return "ran_read_only"
+    error_class = str(result.get("error_class") or "remote_text_failed")
+    if error_class in _REMOTE_TEXT_PRECONDITION_ERRORS:
+        return "refused_precondition"
+    return error_class
 
 
 def _emit_step(entry: dict) -> None:
@@ -993,9 +1012,15 @@ def _native_windows_cli(cli: str, platform_name=None) -> str:
     platform_name = os.name if platform_name is None else platform_name
     if platform_name != "nt" or os.path.splitext(cli)[1].lower() not in (".cmd", ".bat", ".ps1"):
         return cli
-    candidate = os.path.join(
-        os.path.dirname(cli), "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe")
-    return candidate if os.path.isfile(candidate) else cli
+    wrapper_dir = os.path.dirname(cli)
+    # Global npm prefixes place `node_modules` beside claude.cmd; project/local prefixes put the
+    # shim in `node_modules/.bin` and the package beside that `.bin` directory.  Both are ordinary
+    # npm layouts, and both carry the same reviewed native executable.
+    candidates = (
+        os.path.join(wrapper_dir, "node_modules", "@anthropic-ai", "claude-code", "bin", "claude.exe"),
+        os.path.join(os.path.dirname(wrapper_dir), "@anthropic-ai", "claude-code", "bin", "claude.exe"),
+    )
+    return next((candidate for candidate in candidates if os.path.isfile(candidate)), cli)
 
 
 def resolve_claude_cli() -> str:
@@ -1076,6 +1101,18 @@ async def main():
         return {"content": [{"type": "text", "text": r["text"]}],
                 **({"is_error": True} if r["is_error"] else {})}
 
+    @tool("read_text_file", remote_text.TOOL_DESCRIPTION, remote_text.input_schema(),
+          annotations=ToolAnnotations(title="Read one remote text file", readOnlyHint=True,
+                                      destructiveHint=False, idempotentHint=True, openWorldHint=True))
+    async def read_text_file(args):
+        result = await asyncio.to_thread(remote_text.read, _CONN, args, _secrets())
+        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        disposition = _remote_text_disposition(result)
+        display = "read_text_file path=" + str(result.get("path") or "invalid")[:512]
+        _record_structured_step(display, "read_only", disposition, len(rendered.encode("utf-8")))
+        return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
+                **({"is_error": True} if not result.get("ok") else {})}
+
     @tool("endpoint_probe", endpoint_probe.tool_description(_ENDPOINT_TARGETS),
           endpoint_probe.input_schema(_ENDPOINT_TARGETS),
           annotations=ToolAnnotations(title="Probe a platform endpoint", readOnlyHint=True,
@@ -1103,7 +1140,7 @@ async def main():
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
                 **({"is_error": True} if not result.get("ok") else {})}
 
-    sdk_tools = [ssh_exec, probe_endpoint, poll_background_job]
+    sdk_tools = [ssh_exec, read_text_file, probe_endpoint, poll_background_job]
 
     @tool("atomic_text_replace", atomic_file.TOOL_DESCRIPTION, atomic_file.input_schema(),
           annotations=ToolAnnotations(title="Atomically edit one text file", readOnlyHint=False,
@@ -1179,7 +1216,7 @@ async def main():
     sdk_tools.append(start_background_job)
 
     server = create_sdk_mcp_server(
-        name="ssh-ops", version="2.0.0", tools=sdk_tools)
+        name="ssh-ops", version="2.1.0", tools=sdk_tools)
     try:
         turns = int(_CONN.get("max_turns") or DEFAULT_MAX_TURNS)
     except (TypeError, ValueError):

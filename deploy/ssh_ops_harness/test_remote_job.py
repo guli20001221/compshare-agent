@@ -41,6 +41,10 @@ check("nested-self-backgrounding-payload-is-refused",
       remote_job.command_is_self_backgrounding("bash -c 'sleep 2 &'") is True)
 check("foreground-chain-remains-supported",
       remote_job.command_is_self_backgrounding("apt-get update && apt-get install -y jq") is False)
+check("description-routes-nonterminating-service-start-to-the-job-tool",
+      "foreground service process" in remote_job.START_DESCRIPTION and
+      "stop/wait and foreground replacement start" in remote_job.START_DESCRIPTION and
+      "instead of first sending it through ssh_exec" in remote_job.START_DESCRIPTION)
 
 
 class _File:

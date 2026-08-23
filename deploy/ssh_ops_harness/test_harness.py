@@ -3,7 +3,7 @@
 Run:  python test_harness.py   ->  exits non-zero on ANY failure.
 
 Asserts the boundary contract: stdin handshake (never env), Phase-1 read-only enforcement, the
-credential never reaching the audit/output, and INV-9 (only ssh_exec exposed). The transport is
+credential never reaching the audit/output, and INV-9 (only reviewed remote MCP operations exposed). The transport is
 monkeypatched so nothing actually connects.
 """
 import os
@@ -206,6 +206,15 @@ harness.os.path.isfile = lambda path: path.replace("\\", "/").endswith(
 check("windows-cli-bypasses-cmd-shim-for-multiline-system-prompt",
       harness._native_windows_cli("C:/npm/claude.CMD", "nt").replace("\\", "/") ==
       "C:/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe")
+harness.os.path.isfile = lambda path: path.replace("\\", "/") == (
+    "C:/prefix/node_modules/@anthropic-ai/claude-code/bin/claude.exe")
+check("windows-local-prefix-also-bypasses-node-modules-bin-shim",
+      harness._native_windows_cli(
+          "C:/prefix/node_modules/.bin/claude.cmd", "nt").replace("\\", "/") ==
+      "C:/prefix/node_modules/@anthropic-ai/claude-code/bin/claude.exe")
+harness.os.path.isfile = lambda _path: False
+check("windows-cli-falls-back-to-selected-wrapper-when-package-layout-is-unknown",
+      harness._native_windows_cli("C:/unknown/claude.cmd", "nt") == "C:/unknown/claude.cmd")
 check("non-windows-cli-path-is-unchanged",
       harness._native_windows_cli("/usr/local/bin/claude", "posix") == "/usr/local/bin/claude")
 harness.os.path.isfile = _real_isfile
@@ -794,6 +803,12 @@ check("wire-auth-failed", harness._wire_disposition("auth_failed") == "failed")
 check("wire-connect-failed", harness._wire_disposition("connect_failed") == "failed")
 check("wire-empty-is-failed", harness._wire_disposition("") == "failed")
 check("wire-unknown-is-failed", harness._wire_disposition("something_new") == "failed")
+check("remote-text-policy-refusal-is-a-precondition",
+      harness._remote_text_disposition({"ok": False, "error_class": "path_not_allowed"}) ==
+      "refused_precondition")
+check("remote-text-transport-failure-is-not-misreported-as-a-refusal",
+      harness._remote_text_disposition({"ok": False, "error_class": "connect_failed"}) ==
+      "connect_failed" and harness._wire_disposition("connect_failed") == "failed")
 
 import io as _io  # noqa: E402
 import json as _json  # noqa: E402
@@ -892,12 +907,25 @@ check("context-main-receipt-matches-sdk-prompt",
 check("context-main-verdict-still-emits", "mocked contextual diagnosis" in _main_output)
 _first_tools = _captured_sdk_servers[0]["tools"]
 _legacy_flag_tools = _captured_sdk_servers[1]["tools"]
+check("mcp-surface-version-bumped-for-remote-read-tool",
+      _captured_sdk_servers[0]["version"] == "2.1.0")
 check("main-registers-exact-single-repair-tool-surface",
       [tool._test_tool_name for tool in _first_tools] == [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
 check("removed-mode-flag-cannot-change-the-tool-surface",
       [tool._test_tool_name for tool in _legacy_flag_tools] ==
       [tool._test_tool_name for tool in _first_tools])
 _endpoint_tool = next(tool for tool in _first_tools if tool._test_tool_name == "endpoint_probe")
+_remote_text_tool = next(tool for tool in _first_tools if tool._test_tool_name == "read_text_file")
+_remote_text_annotations = _remote_text_tool._test_tool_annotations
+check("remote-text-tool-schema-carries-only-a-remote-path-and-bounds",
+      _remote_text_tool._test_tool_schema["required"] == ["path"] and
+      set(_remote_text_tool._test_tool_schema["properties"]) ==
+      {"path", "line_start", "line_count"} and
+      all(field not in _remote_text_tool._test_tool_schema["properties"]
+          for field in ("host", "user", "password", "key", "command")))
+check("remote-text-tool-is-declared-read-only-to-the-sdk",
+      getattr(_remote_text_annotations, "readOnlyHint", None) is True and
+      getattr(_remote_text_annotations, "destructiveHint", None) is False)
 _endpoint_contract = _json.dumps({"description": _endpoint_tool._test_tool_description,
                                   "schema": _endpoint_tool._test_tool_schema})
 check("endpoint-tool-exposes-only-opaque-target-id",

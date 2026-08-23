@@ -10,6 +10,10 @@ sudoers.d drop-in 都是可确认操作。只有不可恢复的数据/启动/登
 当前工具面没有开放 Claude Code 的本地 Bash/Read/Write/Web：
 
 - `ssh_exec`：在目标实例执行一条有界命令；读操作直接运行，写操作逐项确认。
+- `read_text_file`：通过同一条 SSH/SFTP 凭据边界读取一个明确指定的 UTF-8 普通文件，按行和
+  32 KiB 输出上限返回，并给出整文件 SHA-256；不跟随软链，凭据目录、私钥和内核/设备伪文件
+  不可读。它承接 Claude Code 本地 `Read` 在远端实例里的等价职责，也为原子修改提供前置 hash，
+  不会在控制面本机读取同名路径。
 - `endpoint_probe`：只接受服务端从 `Softwares[].URL` / `TcpForwards` 派生的 opaque ID。
   HTTP 只发一次有界 GET、TCP 只 connect 不发数据；模型不能传 URL、主机、端口、header 或 body，
   返回值也不带真实地址或 URL 中的 token。结果只证明 ssh-ops runner 这一网络视角。
@@ -17,7 +21,8 @@ sudoers.d drop-in 都是可确认操作。只有不可恢复的数据/启动/登
   放入私有 job 目录；stdin/stdout/stderr 全部脱离 SSH 会话，PID 带 job marker，完成码原子落盘。
   轮询只返回有界日志尾部并只接受 `job-...` ID，不能借它读取任意路径。任务文件不继承日志大小限制，
   因而安装大 wheel、下载模型或编译大产物不会被当成“日志过大”截断；启动大型任务前应先检查磁盘余量。
-- `atomic_text_replace`：写模式下对一个既有 UTF-8 普通文件做一次 SHA-256 绑定的精确替换；批准后
+- `atomic_text_replace`：写模式下对一个已由 `read_text_file` 读取的既有 UTF-8 普通文件做一次
+  SHA-256 绑定的精确替换；批准后
   再检查 hash/metadata，保留同目录备份并使用 OpenSSH `posix-rename` 原子替换。确认卡和审计只显示
   路径、用途和前后 hash，不显示文件内容。
 

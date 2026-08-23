@@ -14,7 +14,10 @@ _SHELLS = {"sh", "bash", "dash", "zsh", "ksh"}
 START_DESCRIPTION = (
     "Start one previously diagnosed, user-approved remote command as a durable background job when "
     "it cannot finish inside the 25-second SSH command bound (for example package installation, a "
-    "model download, or compilation). The tool creates a private job directory, detaches stdin and "
+    "model download, compilation, or a foreground service process that must remain running). When "
+    "no service manager exists, put the narrow stop/wait and foreground replacement start in this "
+    "one confirmed payload instead of first sending it through ssh_exec. The tool creates a private "
+    "job directory, detaches stdin and "
     "both output streams, records the exit code, and returns a job_id. Check available disk space "
     "before starting large work; poll returns bounded log tails even though the on-instance logs "
     "remain complete. The "

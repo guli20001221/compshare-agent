@@ -233,11 +233,18 @@ check("prompt-does-not-claim-skill-load", "skill" not in _WRITE_PROMPT.lower())
 check("skill-tool-no-longer-exists", harness.TOOLS_BASE == [])
 check("atomic-file-tool-exists-in-single-repair-surface",
       "mcp__ssh_ops__atomic_text_replace" in harness.ALLOWED_TOOLS)
+check("remote-text-tool-exists-in-single-repair-surface",
+      "mcp__ssh_ops__read_text_file" in harness.ALLOWED_TOOLS)
 check("endpoint-probe-exists-in-single-repair-surface",
       "mcp__ssh_ops__endpoint_probe" in harness.ALLOWED_TOOLS)
 check("atomic-file-tool-is-hash-bound-and-backed-up",
       all(term in harness.atomic_file.TOOL_DESCRIPTION
           for term in ("SHA-256", "same-directory backup", "atomically renames")))
+check("remote-text-tool-is-bounded-read-only-and-hash-bearing",
+      all(term in harness.remote_text.TOOL_DESCRIPTION
+          for term in ("read-only", "32 KiB", "whole-file SHA-256", "follows no symlink")))
+check("remote-text-tool-routes-known-files-away-from-shell-readers",
+      "instead of cat/head/sed" in harness.remote_text.TOOL_DESCRIPTION)
 
 # The lane repairs only the assigned fault; broader application replacement or shutdown requires a
 # separate user decision.
