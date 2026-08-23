@@ -45,6 +45,9 @@ check("description-routes-nonterminating-service-start-to-the-job-tool",
       "foreground service process" in remote_job.START_DESCRIPTION and
       "stop/wait and foreground replacement start" in remote_job.START_DESCRIPTION and
       "instead of first sending it through ssh_exec" in remote_job.START_DESCRIPTION)
+check("poll-schema-supports-bounded-wait",
+      remote_job.poll_schema()["properties"]["wait_seconds"]["maximum"] == 30 and
+      "tight loop" in remote_job.POLL_DESCRIPTION)
 
 
 class _File:
@@ -124,6 +127,26 @@ running_files = {base + "/pid": b"123\n", base + "/stdout.log": b"working\n",
 running = remote_job.poll({}, started["job_id"],
                           opener=lambda _c: (_Client(_SFTP(running_files)), None))
 check("poll-verifies-running-process-marker", running["ok"] and running["state"] == "running")
+waited = []
+remote_job.poll({}, started["job_id"], wait_seconds=7,
+                opener=lambda _c: (_Client(_SFTP(running_files)), None), sleeper=waited.append)
+check("poll-enforces-requested-bounded-wait", waited == [7])
+appended_files = dict(running_files)
+appended_files[base + "/stdout.log"] = b"working\nmore\n"
+delta = remote_job.poll(
+    {}, started["job_id"], offsets={"stdout": len(b"working\n"), "stderr": 0},
+    opener=lambda _c: (_Client(_SFTP(appended_files)), None))
+check("repeated-poll-returns-only-new-log-bytes",
+      delta["stdout"] == "more\n" and delta["log_progress"] is True and
+      delta["stdout_bytes_total"] == len(b"working\nmore\n"))
+unchanged = remote_job.poll(
+    {}, started["job_id"], offsets={"stdout": len(b"working\nmore\n"), "stderr": 0},
+    opener=lambda _c: (_Client(_SFTP(appended_files)), None))
+check("repeated-poll-marks-unchanged-log",
+      unchanged["stdout"] == "" and unchanged["log_progress"] is False)
+check("poll-rejects-out-of-range-wait",
+      remote_job.poll({}, started["job_id"], wait_seconds=31,
+                      opener=lambda _c: (None, {}))["error_class"] == "invalid_wait_seconds")
 reused_files = dict(running_files)
 reused_files["/proc/123/environ"] = b"PATH=/usr/bin\0"
 reused = remote_job.poll({}, started["job_id"],

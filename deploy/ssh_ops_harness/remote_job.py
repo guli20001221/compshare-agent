@@ -1,6 +1,7 @@
 """Structured start/poll protocol for remote work that exceeds one SSH call's time bound."""
 import re
 import shlex
+import time
 import uuid
 
 import guardrails
@@ -28,9 +29,12 @@ START_DESCRIPTION = (
 POLL_DESCRIPTION = (
     "Read the state and bounded stdout/stderr tail of a background job previously returned by "
     "start_background_job. This is read-only. It accepts only the opaque job-NNN ID and cannot read "
-    "an arbitrary path. `running` means the recorded PID still exists; `succeeded` means exit code "
-    "zero; `failed` includes the non-zero exit code; `interrupted` means no completion record and no "
-    "process (for example after a restart).")
+    "an arbitrary path. Set wait_seconds (normally 15-30) so the tool waits before checking instead "
+    "of burning model turns in a tight loop. After six running polls, stop and report partial repair, "
+    "the job_id, progress and pending verification; a later turn resumes rather than restarts it. "
+    "Repeated calls return only new log bytes plus total byte counts and log_progress. `running` means the recorded PID still exists; `succeeded` means exit "
+    "code zero; `failed` includes the non-zero exit code; `interrupted` means no completion record "
+    "and no process (for example after a restart).")
 
 
 def start_schema():
@@ -52,6 +56,9 @@ def poll_schema():
         "type": "object",
         "properties": {
             "job_id": {"type": "string", "pattern": "^job-[0-9a-f]{32}$"},
+            "wait_seconds": {"type": "integer", "minimum": 0, "maximum": 30,
+                             "default": 15,
+                             "description": "Bounded wait before checking; use 15-30 for ongoing work."},
         },
         "required": ["job_id"],
         "additionalProperties": False,
@@ -154,14 +161,38 @@ def _read_optional(sftp, path, limit, tail=False):
         return b"", False
 
 
+def _read_optional_since(sftp, path, limit, offset):
+    """Read a bounded tail on first observation, then only bytes appended after ``offset``."""
+    try:
+        size = int(sftp.lstat(path).st_size)
+        if offset is None or not isinstance(offset, int) or offset < 0 or offset > size:
+            data, cut = _read(sftp, path, limit, tail=True)
+            return data, cut, size
+        start = offset
+        cut = size - start > limit
+        if cut:
+            start = size - limit
+        with sftp.file(path, "rb") as handle:
+            handle.seek(start)
+            return handle.read(limit), cut, size
+    except Exception:  # noqa: BLE001 — absent/unreadable is represented without remote detail
+        return b"", False, 0
+
+
 def _bounded_text(data, secrets):
     text = data.decode("utf-8", "replace")
     return guardrails.scrub_output(text, secrets)
 
 
-def poll(conn, job_id, secrets=(), opener=ssh_transport.open_client):
+def poll(conn, job_id, secrets=(), wait_seconds=0, offsets=None,
+         opener=ssh_transport.open_client, sleeper=time.sleep):
     if not isinstance(job_id, str) or not _JOB_ID.fullmatch(job_id):
         return {"ok": False, "error_class": "invalid_job_id"}
+    if (not isinstance(wait_seconds, int) or isinstance(wait_seconds, bool)
+            or wait_seconds < 0 or wait_seconds > 30):
+        return {"ok": False, "job_id": job_id, "error_class": "invalid_wait_seconds"}
+    if wait_seconds:
+        sleeper(wait_seconds)
     client, connect_error = opener(conn)
     if connect_error:
         return {"ok": False, "job_id": job_id, "error_class": connect_error.get("error", "connect_failed"),
@@ -197,14 +228,19 @@ def poll(conn, job_id, secrets=(), opener=ssh_transport.open_client):
             state = "interrupted"
 
         # Split the bounded response evenly between both streams; logs themselves remain on-box.
-        stdout_b, stdout_cut = _read_optional(
-            sftp, directory + "/stdout.log", _RETURN_LOG_BYTES // 2, tail=True)
-        stderr_b, stderr_cut = _read_optional(
-            sftp, directory + "/stderr.log", _RETURN_LOG_BYTES // 2, tail=True)
+        offsets = offsets if isinstance(offsets, dict) else {}
+        stdout_b, stdout_cut, stdout_total = _read_optional_since(
+            sftp, directory + "/stdout.log", _RETURN_LOG_BYTES // 2, offsets.get("stdout"))
+        stderr_b, stderr_cut, stderr_total = _read_optional_since(
+            sftp, directory + "/stderr.log", _RETURN_LOG_BYTES // 2, offsets.get("stderr"))
+        log_progress = (stdout_total != offsets.get("stdout") or
+                        stderr_total != offsets.get("stderr"))
         result = {"ok": True, "job_id": job_id, "state": state,
                   "stdout": _bounded_text(stdout_b, secrets),
                   "stderr": _bounded_text(stderr_b, secrets),
-                  "stdout_truncated": stdout_cut, "stderr_truncated": stderr_cut}
+                  "stdout_truncated": stdout_cut, "stderr_truncated": stderr_cut,
+                  "stdout_bytes_total": stdout_total, "stderr_bytes_total": stderr_total,
+                  "log_progress": log_progress}
         if exit_code is not None:
             result["exit_code"] = exit_code
         return result

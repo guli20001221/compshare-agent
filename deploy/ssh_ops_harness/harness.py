@@ -26,6 +26,7 @@ import tempfile
 
 import atomic_file
 import endpoint_probe
+import guest_endpoint_probe
 import guardrails
 import process_env
 import remote_job
@@ -36,6 +37,7 @@ import ssh_transport
 _CONN = None          # {"host","user","port","password"|"key"}  (+ optional "instance_id","model")
 _ENDPOINT_TARGETS = {}  # opaque id -> private server-selected HTTP/TCP target; never rendered
 AUDIT = []            # per-command: {command, tier, executed, exit_code, disposition}
+_JOB_POLL_OFFSETS = {}  # job_id -> bounded stdout/stderr cursors for this one model run
 # Monotonic id for confirm requests. The reply must carry the SAME id: a decision that arrived
 # for an earlier command must never approve the one currently pending, so the match is explicit
 # rather than "whatever line showed up next".
@@ -54,7 +56,7 @@ _MAX_CONFIRMABLE_COMMAND = 2000
 ALLOWED_TOOLS = [
     "mcp__ssh_ops__ssh_exec", "mcp__ssh_ops__read_text_file",
     "mcp__ssh_ops__read_process_environment",
-    "mcp__ssh_ops__endpoint_probe",
+    "mcp__ssh_ops__endpoint_probe", "mcp__ssh_ops__guest_endpoint_probe",
     "mcp__ssh_ops__poll_background_job",
     "mcp__ssh_ops__atomic_text_replace", "mcp__ssh_ops__start_background_job",
 ]
@@ -1142,12 +1144,36 @@ async def main():
             "read_only", "ran_read_only", len(rendered.encode("utf-8")))
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result}
 
+    @tool("guest_endpoint_probe", guest_endpoint_probe.TOOL_DESCRIPTION,
+          guest_endpoint_probe.input_schema(),
+          annotations=ToolAnnotations(title="Probe guest loopback", readOnlyHint=True,
+                                      destructiveHint=False, idempotentHint=True, openWorldHint=False))
+    async def probe_guest_endpoint(args):
+        result = await asyncio.to_thread(
+            guest_endpoint_probe.probe, _CONN, args, _secrets())
+        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        protocol = str(result.get("protocol") or "invalid")[:8]
+        port = str(result.get("port") or "invalid")[:8]
+        disposition = "ran_read_only" if result.get("ok") else "refused_precondition"
+        _record_structured_step("guest_endpoint_probe protocol=%s port=%s" % (protocol, port),
+                                "read_only", disposition, len(rendered.encode("utf-8")))
+        return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
+                **({"is_error": True} if not result.get("ok") else {})}
+
     @tool("poll_background_job", remote_job.POLL_DESCRIPTION, remote_job.poll_schema(),
           annotations=ToolAnnotations(title="Poll a remote background job", readOnlyHint=True,
                                       destructiveHint=False, idempotentHint=True, openWorldHint=True))
     async def poll_background_job(args):
         job_id = args.get("job_id") or ""
-        result = await asyncio.to_thread(remote_job.poll, _CONN, job_id, _secrets())
+        wait_seconds = args.get("wait_seconds", 15)
+        result = await asyncio.to_thread(
+            remote_job.poll, _CONN, job_id, _secrets(), wait_seconds,
+            _JOB_POLL_OFFSETS.get(job_id))
+        if result.get("ok"):
+            _JOB_POLL_OFFSETS[job_id] = {
+                "stdout": result.get("stdout_bytes_total", 0),
+                "stderr": result.get("stderr_bytes_total", 0),
+            }
         rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         disposition = "ran_read_only" if result.get("ok") else "refused_precondition"
         _record_structured_step("poll_background_job job=" + str(job_id)[:64], "read_only",
@@ -1156,7 +1182,7 @@ async def main():
                 **({"is_error": True} if not result.get("ok") else {})}
 
     sdk_tools = [ssh_exec, read_text_file, read_process_environment,
-                 probe_endpoint, poll_background_job]
+                 probe_endpoint, probe_guest_endpoint, poll_background_job]
 
     @tool("atomic_text_replace", atomic_file.TOOL_DESCRIPTION, atomic_file.input_schema(),
           annotations=ToolAnnotations(title="Atomically edit one text file", readOnlyHint=False,
@@ -1232,7 +1258,7 @@ async def main():
     sdk_tools.append(start_background_job)
 
     server = create_sdk_mcp_server(
-        name="ssh-ops", version="2.2.0", tools=sdk_tools)
+        name="ssh-ops", version="2.3.0", tools=sdk_tools)
     try:
         turns = int(_CONN.get("max_turns") or DEFAULT_MAX_TURNS)
     except (TypeError, ValueError):

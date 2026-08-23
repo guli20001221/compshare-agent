@@ -907,8 +907,8 @@ check("context-main-receipt-matches-sdk-prompt",
 check("context-main-verdict-still-emits", "mocked contextual diagnosis" in _main_output)
 _first_tools = _captured_sdk_servers[0]["tools"]
 _legacy_flag_tools = _captured_sdk_servers[1]["tools"]
-check("mcp-surface-version-bumped-for-process-environment-tool",
-      _captured_sdk_servers[0]["version"] == "2.2.0")
+check("mcp-surface-version-bumped-for-guest-endpoint-tool",
+      _captured_sdk_servers[0]["version"] == "2.3.0")
 check("main-registers-exact-single-repair-tool-surface",
       [tool._test_tool_name for tool in _first_tools] == [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
 check("removed-mode-flag-cannot-change-the-tool-surface",

@@ -248,6 +248,8 @@ check("process-environment-tool-exists-in-single-repair-surface",
       "mcp__ssh_ops__read_process_environment" in harness.ALLOWED_TOOLS)
 check("endpoint-probe-exists-in-single-repair-surface",
       "mcp__ssh_ops__endpoint_probe" in harness.ALLOWED_TOOLS)
+check("guest-endpoint-probe-exists-in-single-repair-surface",
+      "mcp__ssh_ops__guest_endpoint_probe" in harness.ALLOWED_TOOLS)
 check("atomic-file-tool-is-hash-bound-and-backed-up",
       all(term in harness.atomic_file.TOOL_DESCRIPTION
           for term in ("SHA-256", "same-directory backup", "atomically renames")))
