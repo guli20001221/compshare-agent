@@ -76,9 +76,11 @@ Production knowledge retrieval always uses the remote MCP configured at
 evaluation only.
 
 There is no keyword topic router or lexical jailbreak/off-topic pre-block in
-front of the Agent. Scope belongs in the system prompt. Deterministic early exits
-are reserved for explicit product protocols such as a user asking to transfer to
-human support.
+front of the Agent. Scope belongs in the system prompt. Natural-language support
+requests also reach the central Agent, which may call `HandoffToCustomerSupport`;
+the active channel renders the actual support entry, so the model never authors
+QR codes or adapter markers. Only an explicit structured transport event may
+bypass semantic interpretation.
 
 Model-visible read capabilities live in `internal/capability/`. Each capability
 owns its typed request, schema contract, handler and renderer. Do not recreate a

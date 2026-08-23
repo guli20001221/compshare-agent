@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/compshare-agent/internal/agentprotocol"
 	"github.com/compshare-agent/internal/agentruntime"
 	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/config"
@@ -27,7 +28,6 @@ import (
 	"github.com/compshare-agent/internal/readprojection"
 	"github.com/compshare-agent/internal/refusal"
 	"github.com/compshare-agent/internal/security"
-	"github.com/compshare-agent/internal/textutil"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
 	"github.com/compshare-agent/internal/zones"
@@ -177,9 +177,10 @@ type ChatOptions struct {
 	// window for untrusted chat transports. KnowledgeOnly takes precedence when
 	// both are set.
 	PublicPlatformReadOnly bool
-	// FeishuConsoleHandoff adds a response-only prompt contract used by the
-	// Feishu adapter. It never changes the tool window, authorization, or user
-	// identity; the adapter consumes its private marker before rendering.
+	// FeishuConsoleHandoff adds the response-only console-diagnosis contract and
+	// makes the customer-support handoff tool return an adapter-private marker.
+	// It never changes the tool window, authorization, or user identity; the
+	// adapter consumes private markers before rendering.
 	FeishuConsoleHandoff bool
 }
 
@@ -378,9 +379,10 @@ type Engine struct {
 	// authorization boundary. It remains narrower than the console's ordinary
 	// read surface: only public catalog/inventory reads are allowed.
 	publicPlatformReadOnlyThisTurn bool
-	// feishuConsoleHandoffThisTurn changes only the model's completion contract
-	// for a public Feishu Q&A turn. It is reset after every ChatWithOptions call
-	// so the regular console agent cannot inherit it from a pooled engine.
+	// feishuConsoleHandoffThisTurn changes only response delivery for a public
+	// Feishu Q&A turn: the prompt may request console diagnosis and the support
+	// tool emits an adapter marker instead of the web renderer. It is reset after
+	// every ChatWithOptions call so the console cannot inherit it from a pool.
 	feishuConsoleHandoffThisTurn bool
 	// sessionState is the JSON-serializable per-session execution state loaded
 	// before each Chat turn and read back through SessionStateSnapshot afterward.
@@ -1241,25 +1243,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 
 	// Trim before appending to guarantee the new user message is never dropped.
 	e.trimHistory()
-
-	// An explicit support handoff is a product protocol, not a semantic route.
-	// All other input reaches the central Agent.
-	if isHumanAgentTransferRequest(userMsg) {
-		e.emitKnowledgeHardBlock(observability.EngineHardBlockTrace{
-			Hit:         true,
-			Category:    refusal.CategoryHumanAgent,
-			TriggeredBy: observability.HardBlockTriggerKeyword,
-		})
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleUser,
-			Content: userMsg,
-		})
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: refusal.HumanAgentTransfer,
-		})
-		return refusal.HumanAgentTransfer, nil
-	}
 
 	// Build the LLM-facing message from the user's text and optional image context.
 	// userMsg remains the authoritative text for deterministic target binding;
@@ -2540,7 +2523,7 @@ func searchKnowledgeResultJSON(ledger knowledge.EvidenceLedger, followUp string,
 func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep func(StepEvent)) string {
 	action := tc.Function.Name
 	if e.knowledgeOnlyThisTurn && !knowledgeOnlyToolAllowed(action) {
-		const message = "当前公共问答入口仅允许查询知识库，不能查询账号资源、执行诊断或发起操作"
+		const message = "当前公共问答入口仅允许查询知识库或转接人工客服，不能查询账号资源、执行诊断或发起操作"
 		onStep(StepEvent{
 			Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct,
 			Message: message,
@@ -2584,7 +2567,8 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 
 func knowledgeOnlyToolAllowed(action string) bool {
 	capability, ok := tools.DefaultCapabilityRegistry().Lookup(action)
-	return ok && capability.Policy.Route == tools.ActionRouteKnowledge
+	return ok && (capability.Policy.Route == tools.ActionRouteKnowledge ||
+		capability.Policy.Route == tools.ActionRouteHandoff)
 }
 
 func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep func(StepEvent)) string {
@@ -2626,6 +2610,18 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	if action == "ReadChunk" {
 		args = e.safeExecutor.FilterArgs(action, args)
 		return e.executeReadChunk(args, onStep)
+	}
+
+	// The model owns the semantic handoff decision. The engine owns delivery, so
+	// neither the support QR nor the Feishu control marker is model-authored.
+	if action == tools.CustomerSupportHandoffName {
+		onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct})
+		reply := refusal.HumanAgentTransfer
+		if e.feishuConsoleHandoffThisTurn {
+			reply = agentprotocol.FeishuCustomerSupportMarker
+		}
+		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "已转接人工客服"})
+		return finalReplyPrefix + reply
 	}
 
 	if _, ok := capability.ReadIntentForTool(action); ok {
@@ -4356,31 +4352,4 @@ func withEphemeralSystemBeforeLastUser(messages []openai.ChatCompletionMessage, 
 	out = append(out, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleSystem, Content: content})
 	out = append(out, messages[insertAt:]...)
 	return out
-}
-
-// humanAgentTransferPhrases keeps explicit human-support requests separate
-// from unrelated phrases such as 人工智能 and 人工成本.
-var humanAgentTransferPhrases = []string{
-	"转人工",  // 转人工
-	"转接人工", // 转接人工（"转人工" 的子串不含 "接"，需单列）
-	"人工客服", // 人工客服
-	"联系人工", // 联系人工
-	"找人工",  // 找人工
-	"叫人工",  // 叫人工
-}
-
-func isHumanAgentTransferRequest(userMsg string) bool {
-	normalized := textutil.Normalize(userMsg)
-	return containsAnyKeyword(normalized, humanAgentTransferPhrases)
-}
-
-// containsAnyKeyword is used only for explicit product-protocol phrases, not
-// for semantic routing or topic classification.
-func containsAnyKeyword(normalized string, keywords []string) bool {
-	for _, keyword := range keywords {
-		if strings.Contains(normalized, keyword) {
-			return true
-		}
-	}
-	return false
 }

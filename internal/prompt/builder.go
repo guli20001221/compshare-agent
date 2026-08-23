@@ -98,8 +98,7 @@ func BuildSystemWithOptionsAndTrace(userContext string, opts BuildOptions) (stri
 			segment = segmentFeishuPublicPlatformConsoleHandoff
 		}
 		sections = append(sections, PromptSection{ID: "feishu_console_handoff", Text: strings.ReplaceAll(
-			strings.ReplaceAll(segment, "{{handoff_marker}}", agentprotocol.FeishuConsoleHandoffMarker),
-			"{{support_marker}}", agentprotocol.FeishuCustomerSupportMarker,
+			segment, "{{handoff_marker}}", agentprotocol.FeishuConsoleHandoffMarker,
 		)})
 	}
 

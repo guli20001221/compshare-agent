@@ -14,8 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestChatEmitsExactlyOneCompletionForPreLLMBlock(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+func TestChatEmitsExactlyOneCompletionForAgentChosenHandoff(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{customerSupportToolCall()}}, &mockExecutor{}, nil)
 	var completions []observability.TurnCompletionTrace
 	eng.SetTurnCompletionObserver(func(trace observability.TurnCompletionTrace) {
 		completions = append(completions, trace)
@@ -25,9 +25,10 @@ func TestChatEmitsExactlyOneCompletionForPreLLMBlock(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, completions, 1, "every return path must pass the one top-level completion defer")
 	got := completions[0]
-	assert.Equal(t, observability.CompletionClassSafetyBlock, got.Class)
-	assert.Equal(t, observability.CompletionReasonPolicyBlock, got.Reason)
-	assert.Zero(t, got.ModelCalls)
+	assert.Equal(t, observability.CompletionClassAgent, got.Class)
+	assert.Equal(t, observability.CompletionReasonAgentLoop, got.Reason)
+	assert.Equal(t, "deterministic_reply", got.RuntimeFinishReason)
+	assert.Zero(t, got.ModelCalls, "the in-process mock does not emit outbound-call telemetry")
 	assert.Equal(t, centralAgentToolNames(true, false), got.ToolNames)
 }
 

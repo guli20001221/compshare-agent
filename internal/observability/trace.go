@@ -210,7 +210,6 @@ func (r TraceRecord) DeriveActualExecutionTier() string {
 // EngineHardBlock TriggeredBy enum values. Single-source attribution
 // (no "both") — see EngineHardBlockTrace.TriggeredBy doc.
 const (
-	HardBlockTriggerKeyword     = "keyword"
 	HardBlockTriggerTokenBudget = "token_budget"
 )
 

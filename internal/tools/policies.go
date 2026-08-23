@@ -66,6 +66,7 @@ const (
 	ActionRouteKnowledge   ActionRoute = "knowledge"
 	ActionRouteWorkflow    ActionRoute = "workflow"
 	ActionRouteDiagnosis   ActionRoute = "diagnosis"
+	ActionRouteHandoff     ActionRoute = "handoff"
 )
 
 func DefaultToolExecutionPolicies() map[string]ToolExecutionPolicy {
@@ -341,6 +342,8 @@ func actionAllowsBackendIdentity(action string) bool {
 
 func routeForAction(action string) ActionRoute {
 	switch {
+	case action == CustomerSupportHandoffName:
+		return ActionRouteHandoff
 	case action == "SearchKnowledge", action == "ReadChunk":
 		// Knowledge reads are local engine tools, not external API calls.
 		return ActionRouteKnowledge

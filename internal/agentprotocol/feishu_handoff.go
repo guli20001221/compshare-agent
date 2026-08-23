@@ -20,10 +20,10 @@ const (
 	// citation cleanup before the Feishu adapter consumes it.
 	FeishuConsoleHandoffMarker = "<<COMPSHARE_CONSOLE_DIAGNOSIS_REQUIRED>>"
 
-	// FeishuCustomerSupportMarker is an adapter-private completion marker for
-	// account, verification, page-loading, and platform-service issues. It is
-	// rendered as a concise customer-support recommendation by the Feishu
-	// adapter, never shown verbatim to a user. It uses the same reserved control
-	// envelope as the console marker, outside the citation namespace.
+	// FeishuCustomerSupportMarker is an adapter-private result emitted by the
+	// customer-support handoff tool. The model never authors or sees it. The
+	// Feishu adapter renders it as a concise support recommendation and never
+	// shows it verbatim. It uses the same reserved control envelope as the
+	// console marker, outside the citation namespace.
 	FeishuCustomerSupportMarker = "<<COMPSHARE_CUSTOMER_SUPPORT_REQUIRED>>"
 )

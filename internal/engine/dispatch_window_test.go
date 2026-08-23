@@ -232,10 +232,11 @@ func TestOnlyImageSourceOperationsAdvertiseSourceUserQuotes(t *testing.T) {
 	}
 }
 
-func TestKnowledgeOnlyWindowExcludesPlatformAndActionCapabilities(t *testing.T) {
+func TestKnowledgeOnlyWindowExposesKnowledgeAndSupportHandoffOnly(t *testing.T) {
 	names := toolNameSet(centralAgentKnowledgeToolWindow())
 	require.Contains(t, names, "SearchKnowledge")
 	require.Contains(t, names, "ReadChunk")
+	require.Contains(t, names, tools.CustomerSupportHandoffName)
 
 	for name := range names {
 		require.NotContains(t, name, "Request", "public Q&A must not expose action proposals")
@@ -247,6 +248,7 @@ func TestKnowledgeOnlyWindowExcludesPlatformAndActionCapabilities(t *testing.T) 
 func TestKnowledgeOnlyExecutionAllowlistIsFailClosed(t *testing.T) {
 	require.True(t, knowledgeOnlyToolAllowed("SearchKnowledge"))
 	require.True(t, knowledgeOnlyToolAllowed("ReadChunk"))
+	require.True(t, knowledgeOnlyToolAllowed(tools.CustomerSupportHandoffName))
 	require.False(t, knowledgeOnlyToolAllowed("DescribeCompShareInstance"))
 	require.False(t, knowledgeOnlyToolAllowed("DiagnoseInstanceInternals"))
 	require.False(t, knowledgeOnlyToolAllowed("RequestStopInstance"))
@@ -265,15 +267,16 @@ func TestKnowledgeOnlyExecutionBlocksUnadvertisedToolCall(t *testing.T) {
 		step = event
 	})
 	require.Equal(t, StepBlocked, step.Type)
-	require.Contains(t, result, "仅允许查询知识库")
+	require.Contains(t, result, "仅允许查询知识库或转接人工客服")
 }
 
 func TestPublicPlatformReadOnlyWindowExposesEveryPublicQueryAndNothingElse(t *testing.T) {
 	names := toolNameSet(centralAgentPublicPlatformReadOnlyToolWindow())
-	require.Len(t, names, len(feishuPublicPlatformReadTools)+2,
-		"the public Feishu window is exactly knowledge plus the reviewed public read set")
+	require.Len(t, names, len(feishuPublicPlatformReadTools)+3,
+		"the public Feishu window is exactly knowledge, support handoff, and the reviewed public read set")
 	require.Contains(t, names, "SearchKnowledge")
 	require.Contains(t, names, "ReadChunk")
+	require.Contains(t, names, tools.CustomerSupportHandoffName)
 	for name := range feishuPublicPlatformReadTools {
 		require.Contains(t, names, name)
 	}
@@ -316,6 +319,7 @@ func TestPublicPlatformReadOnlyExecutionBoundaryIsFailClosed(t *testing.T) {
 	}
 	require.True(t, publicPlatformReadOnlyToolAllowed("SearchKnowledge"))
 	require.True(t, publicPlatformReadOnlyToolAllowed("ReadChunk"))
+	require.True(t, publicPlatformReadOnlyToolAllowed(tools.CustomerSupportHandoffName))
 	require.False(t, publicPlatformReadOnlyToolAllowed(capability.ReadToolName(intent.IntentResourceInfo)))
 	require.False(t, publicPlatformReadOnlyToolAllowed(capability.ReadToolName(intent.IntentImageTagCatalog)))
 	require.False(t, publicPlatformReadOnlyToolAllowed(capability.ReadToolName(intent.IntentNetAcceleratorStatus)))
