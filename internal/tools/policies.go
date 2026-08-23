@@ -230,6 +230,8 @@ func internalOnlyAllowedParams(action string) []string {
 		return []string{"CompShareImageId"}
 	case "StopCompShareInstance":
 		return []string{"UHostId", "Zone", "Region"}
+	case "UpdateCompShareInstancePorts":
+		return []string{"UHostId", "HttpPorts", "TcpPorts", "UdpPorts", "Zone", "Region"}
 	case "DescribeCompShareJupyterToken":
 		return []string{"UHostIds"}
 	default:
@@ -259,6 +261,7 @@ func actionAllowsBackendZoneID(action string) bool {
 		"CreateCompShareCustomImage",
 		"GetCompShareImageCreateProgress",
 		"DescribeCompShareCustomImageSyncDetail",
+		"UpdateCompShareInstancePorts",
 		// DescribeCompShareJupyterToken: Pod (cpod-*) instances need the
 		// internal zone_id or the call fails outright. SafeToolExecutor resolves
 		// and attaches zone_id itself (resolveJupyterTokenZoneID) for raw

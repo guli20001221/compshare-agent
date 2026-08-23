@@ -403,7 +403,7 @@ func instanceOpsRefusalReason(reason string) string {
 	case "refused_destructive":
 		return "属于高危操作，已硬性拒绝"
 	case "refused_form":
-		return "命令形式不被接受（含命令替换或多行），需拆成单条命令重发"
+		return "命令形式不被接受（含命令替换）；请移除命令替换后重发"
 	case "refused_user_declined":
 		return "你未批准这条命令，命令未执行"
 	case "refused_confirmation_timeout":
@@ -420,8 +420,6 @@ func instanceOpsRefusalReason(reason string) string {
 		return "未收到对这条命令的确认，命令未执行"
 	case "refused_unconfirmable":
 		return "命令过长，无法完整展示在确认卡上"
-	case "refused_unmanaged_platform_service":
-		return "未核实平台入口契约，不能直接启动 FileBrowser；需先确认镜像服务管理方式和平台映射"
 	case "refused_precondition":
 		return "前置条件未满足，操作未执行；请按工具返回的具体原因检查参数或重新读取目标状态后重试"
 	case "refused_mutating_phase1":

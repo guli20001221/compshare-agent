@@ -11,6 +11,7 @@ func TestWorkflowAgentDescriptionsContainOnlyOperationBoundaries(t *testing.T) {
 	for _, operation := range []string{
 		"CreateInstanceWorkflow", "StopInstanceWorkflow", "StartInstanceWorkflow", "RebootInstanceWorkflow",
 		"RenameInstanceWorkflow", "ResetPasswordWorkflow", "SetStopSchedulerWorkflow", "CancelStopSchedulerWorkflow",
+		"UpdateInstancePortsWorkflow",
 		"ResizeInstanceWorkflow", "ResizeDiskWorkflow", "ReinstallInstanceWorkflow", "CreateDiskWorkflow",
 		"CreateCustomImageWorkflow", "CloneCustomImageWorkflow", "EnableNetOptimizerWorkflow", "CreateCFSWorkflow", "ResizeCFSWorkflow",
 	} {

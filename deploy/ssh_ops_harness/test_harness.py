@@ -3,7 +3,7 @@
 Run:  python test_harness.py   ->  exits non-zero on ANY failure.
 
 Asserts the boundary contract: stdin handshake (never env), Phase-1 read-only enforcement, the
-credential never reaching the audit/output, and INV-9 (only ssh_exec exposed). The transport is
+credential never reaching the audit/output, and INV-9 (only reviewed remote MCP operations exposed). The transport is
 monkeypatched so nothing actually connects.
 """
 import os
@@ -31,7 +31,7 @@ def check(name, cond):
 def _sdk_importable():
     """True when the real claude_agent_sdk is installed. The suite is otherwise SDK-free by design."""
     try:
-        import claude_agent_sdk  # noqa: F401
+        __import__("claude_agent_sdk")
         return True
     except Exception:                                    # noqa: BLE001 — absent or broken install
         return False
@@ -53,6 +53,31 @@ for bad in ['{"user":"u","port":22,"password":"x"}',     # missing host
 harness.set_conn(conn)
 check("cred-not-in-environ", "Pl4inPwd77x" not in "".join(os.environ.values()))
 check("secrets-has-pw-and-b64", harness._secrets()[0] == "Pl4inPwd77x" and len(harness._secrets()) == 2)
+_prompt_flat = " ".join(harness.SYSTEM_PROMPT.split())
+check("prompt-does-not-infer-events-from-absence-or-time-order",
+      "Current absence, timestamp ordering" in _prompt_flat and
+      "Do not claim a restart, rebuild, crash, eviction, or actor" in _prompt_flat)
+check("prompt-stops-discovery-after-repair-path-is-proven",
+      "Once the fault and narrowest repair path are supported, stop" in _prompt_flat and
+      "do not inspect shell history, backups, or broad unrelated trees" in _prompt_flat)
+check("prompt-prefers-direct-environment-interpreter",
+      "Invoke that executable directly" in _prompt_flat and
+      "instead of sourcing an activation script" in _prompt_flat)
+check("prompt-does-not-call-reproduction-a-repair",
+      "reproduction, compatibility probe, or fault injection is not a repair" in _prompt_flat and
+      "corrected the user's original fault" in _prompt_flat and
+      "post-change" in _prompt_flat and
+      "success criterion remains untested" in _prompt_flat and
+      "one confirmed failure path is removed" in _prompt_flat)
+check("prompt-does-not-call-a-failed-probe-no-repair-needed",
+      "positive observation proves the original user success criterion" in _prompt_flat and
+      "inspection-only run or absence of a state change does not justify" in _prompt_flat and
+      "failed or inconclusive diagnostic/reproduction/repair" in _prompt_flat and
+      "is `未修复`, not `无需修复`" in _prompt_flat)
+check("prompt-requires-runtime-reload-after-on-disk-change",
+      "not applied to an already-running process" in _prompt_flat and
+      "File/path verification alone is not runtime verification" in _prompt_flat and
+      "intentionally split across approvals" in _prompt_flat)
 
 
 # --- versioned reference context: data only, bounded, and backwards-compatible -----------------
@@ -206,6 +231,15 @@ harness.os.path.isfile = lambda path: path.replace("\\", "/").endswith(
 check("windows-cli-bypasses-cmd-shim-for-multiline-system-prompt",
       harness._native_windows_cli("C:/npm/claude.CMD", "nt").replace("\\", "/") ==
       "C:/npm/node_modules/@anthropic-ai/claude-code/bin/claude.exe")
+harness.os.path.isfile = lambda path: path.replace("\\", "/") == (
+    "C:/prefix/node_modules/@anthropic-ai/claude-code/bin/claude.exe")
+check("windows-local-prefix-also-bypasses-node-modules-bin-shim",
+      harness._native_windows_cli(
+          "C:/prefix/node_modules/.bin/claude.cmd", "nt").replace("\\", "/") ==
+      "C:/prefix/node_modules/@anthropic-ai/claude-code/bin/claude.exe")
+harness.os.path.isfile = lambda _path: False
+check("windows-cli-falls-back-to-selected-wrapper-when-package-layout-is-unknown",
+      harness._native_windows_cli("C:/unknown/claude.cmd", "nt") == "C:/unknown/claude.cmd")
 check("non-windows-cli-path-is-unchanged",
       harness._native_windows_cli("/usr/local/bin/claude", "posix") == "/usr/local/bin/claude")
 harness.os.path.isfile = _real_isfile
@@ -794,6 +828,24 @@ check("wire-auth-failed", harness._wire_disposition("auth_failed") == "failed")
 check("wire-connect-failed", harness._wire_disposition("connect_failed") == "failed")
 check("wire-empty-is-failed", harness._wire_disposition("") == "failed")
 check("wire-unknown-is-failed", harness._wire_disposition("something_new") == "failed")
+check("structured-read-policy-refusal-is-a-precondition",
+      harness._structured_read_disposition({"ok": False, "error_class": "path_not_allowed"}) ==
+      "refused_precondition")
+check("structured-read-transport-failure-is-not-misreported-as-a-refusal",
+      harness._structured_read_disposition({"ok": False, "error_class": "connect_failed"}) ==
+      "connect_failed" and harness._wire_disposition("connect_failed") == "failed")
+check("structured-read-sftp-failure-is-not-misreported-as-a-refusal",
+      harness._structured_read_disposition({"ok": False, "error_class": "sftp_search_failed"}) ==
+      "sftp_search_failed" and harness._wire_disposition("sftp_search_failed") == "failed")
+check("structured-read-permission-failure-is-not-misreported-as-a-refusal",
+      harness._structured_read_disposition({"ok": False, "error_class": "permission_denied"}) ==
+      "permission_denied" and harness._wire_disposition("permission_denied") == "failed")
+check("structured-read-remote-absence-is-a-completed-observation",
+      harness._structured_read_disposition({"ok": False, "error_class": "process_not_found"}) ==
+      "ran_read_only")
+check("structured-read-completed-negative-probe-ran",
+      harness._structured_read_disposition(
+          {"ok": False, "error_class": "ChannelException"}, completed=True) == "ran_read_only")
 
 import io as _io  # noqa: E402
 import json as _json  # noqa: E402
@@ -892,12 +944,59 @@ check("context-main-receipt-matches-sdk-prompt",
 check("context-main-verdict-still-emits", "mocked contextual diagnosis" in _main_output)
 _first_tools = _captured_sdk_servers[0]["tools"]
 _legacy_flag_tools = _captured_sdk_servers[1]["tools"]
+check("mcp-surface-version-bumped-for-remote-glob-tool",
+      _captured_sdk_servers[0]["version"] == "2.5.0")
 check("main-registers-exact-single-repair-tool-surface",
       [tool._test_tool_name for tool in _first_tools] == [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
 check("removed-mode-flag-cannot-change-the-tool-surface",
       [tool._test_tool_name for tool in _legacy_flag_tools] ==
       [tool._test_tool_name for tool in _first_tools])
 _endpoint_tool = next(tool for tool in _first_tools if tool._test_tool_name == "endpoint_probe")
+_remote_text_tool = next(tool for tool in _first_tools if tool._test_tool_name == "read_text_file")
+_find_paths_tool = next(tool for tool in _first_tools if tool._test_tool_name == "find_paths")
+_remote_search_tool = next(tool for tool in _first_tools if tool._test_tool_name == "search_text_tree")
+_process_env_tool = next(tool for tool in _first_tools
+                         if tool._test_tool_name == "read_process_environment")
+_guest_endpoint_tool = next(tool for tool in _first_tools
+                            if tool._test_tool_name == "guest_endpoint_probe")
+_remote_text_annotations = _remote_text_tool._test_tool_annotations
+check("remote-text-tool-schema-carries-only-a-remote-path-and-bounds",
+      _remote_text_tool._test_tool_schema["required"] == ["path"] and
+      set(_remote_text_tool._test_tool_schema["properties"]) ==
+      {"path", "line_start", "line_count"} and
+      all(field not in _remote_text_tool._test_tool_schema["properties"]
+          for field in ("host", "user", "password", "key", "command")))
+check("remote-text-tool-is-declared-read-only-to-the-sdk",
+      getattr(_remote_text_annotations, "readOnlyHint", None) is True and
+      getattr(_remote_text_annotations, "destructiveHint", None) is False)
+check("remote-search-schema-is-bounded-and-has-no-shell-or-credential-input",
+      _remote_search_tool._test_tool_schema["required"] == ["root", "query"] and
+      set(_remote_search_tool._test_tool_schema["properties"]) ==
+      {"root", "query", "file_glob", "ignore_case", "max_matches"} and
+      all(field not in _remote_search_tool._test_tool_schema["properties"]
+          for field in ("host", "user", "password", "key", "command", "url")) and
+      _remote_search_tool._test_tool_schema["properties"]["max_matches"]["maximum"] == 100)
+check("remote-search-tool-is-declared-read-only-to-the-sdk",
+      getattr(_remote_search_tool._test_tool_annotations, "readOnlyHint", None) is True and
+      getattr(_remote_search_tool._test_tool_annotations, "destructiveHint", None) is False)
+check("remote-glob-schema-is-bounded-and-has-no-shell-or-credential-input",
+      _find_paths_tool._test_tool_schema["required"] == ["root", "name_glob"] and
+      set(_find_paths_tool._test_tool_schema["properties"]) ==
+      {"root", "name_glob", "ignore_case", "max_depth", "max_results"} and
+      all(field not in _find_paths_tool._test_tool_schema["properties"]
+          for field in ("host", "user", "password", "key", "command", "url")) and
+      _find_paths_tool._test_tool_schema["properties"]["max_depth"]["maximum"] == 12)
+check("remote-glob-tool-is-declared-read-only-to-the-sdk",
+      getattr(_find_paths_tool._test_tool_annotations, "readOnlyHint", None) is True and
+      getattr(_find_paths_tool._test_tool_annotations, "destructiveHint", None) is False)
+check("process-environment-tool-schema-has-no-arbitrary-key-or-credential-input",
+      _process_env_tool._test_tool_schema["required"] == ["pid", "names"] and
+      set(_process_env_tool._test_tool_schema["properties"]) == {"pid", "names"} and
+      "AWS_SECRET_ACCESS_KEY" not in
+      _process_env_tool._test_tool_schema["properties"]["names"]["items"]["enum"])
+check("process-environment-tool-is-declared-read-only-to-the-sdk",
+      getattr(_process_env_tool._test_tool_annotations, "readOnlyHint", None) is True and
+      getattr(_process_env_tool._test_tool_annotations, "destructiveHint", None) is False)
 _endpoint_contract = _json.dumps({"description": _endpoint_tool._test_tool_description,
                                   "schema": _endpoint_tool._test_tool_schema})
 check("endpoint-tool-exposes-only-opaque-target-id",
@@ -906,6 +1005,37 @@ check("endpoint-tool-exposes-only-opaque-target-id",
 check("endpoint-private-url-never-enters-prompt-or-tool-contract",
       all(secret not in (_captured_sdk_prompts[0] + _endpoint_contract)
           for secret in ("private.example.invalid", "never-render", "token=")))
+
+# Exercise the registered handlers, not only the classifier helper: this is the exact activity/audit
+# path that used to turn every structured-tool failure into refused_precondition.
+_saved_find_impl = harness.remote_search.find_paths
+_saved_guest_probe_impl = harness.guest_endpoint_probe.probe
+try:
+    harness.remote_search.find_paths = lambda *_args, **_kwargs: {
+        "ok": False, "error_class": "connect_failed", "detail": "TimeoutError"}
+    del harness.AUDIT[:]
+    _find_responses = []
+    _find_step = _capture(lambda: _find_responses.append(
+        _asyncio.run(_find_paths_tool({"root": "/workspace", "name_glob": "*.py"}))))
+    check("registered-structured-read-preserves-transport-failure",
+          harness.AUDIT[-1]["disposition"] == "connect_failed"
+          and '"disposition": "failed"' in _find_step
+          and _find_responses[0].get("is_error") is True)
+
+    harness.guest_endpoint_probe.probe = lambda *_args, **_kwargs: {
+        "ok": False, "protocol": "tcp", "port": 8188, "probe_completed": True,
+        "connected": False, "error_class": "ChannelException"}
+    del harness.AUDIT[:]
+    _guest_responses = []
+    _guest_step = _capture(lambda: _guest_responses.append(
+        _asyncio.run(_guest_endpoint_tool({"protocol": "tcp", "port": 8188}))))
+    check("registered-negative-guest-probe-is-a-completed-read",
+          harness.AUDIT[-1]["disposition"] == "ran_read_only"
+          and '"disposition": "ran"' in _guest_step
+          and "is_error" not in _guest_responses[0])
+finally:
+    harness.remote_search.find_paths = _saved_find_impl
+    harness.guest_endpoint_probe.probe = _saved_guest_probe_impl
 
 
 # The receipt is an ATTESTATION the audit stores, so it must not fire on a run the model never saw.

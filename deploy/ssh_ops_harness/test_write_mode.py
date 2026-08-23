@@ -81,55 +81,30 @@ for cmd in ["rm -rf /workspace", "mkfs.ext4 /dev/vdb", "dd if=/dev/zero of=/dev/
           res["executed"] is False and entry["disposition"] == "refused_destructive")
     check(f"destructive-tier-intact::{cmd}", guardrails.classify(cmd) == "destructive")
 
-# --- (3b) the shape gate stays refused WITH writes on --------------------------------------------
+# --- (3b) substitution stays refused; multi-line scripts use the ordinary exact card -------------
 # Command substitution hides the command text from classify(), so allowing it in write mode would
-# turn the destructive list into decoration. Multi-line input is refused for the same reason:
-# classify() only ever reasons about a single line.
-for cmd in ["cat $(which python3)", "echo `whoami`", "systemctl restart $(cat /tmp/svc)",
-            "echo one\nrm -rf /"]:
+# turn the destructive list into decoration. A literal multi-line script does not: destructive
+# scanning is per line, and an otherwise reversible script is shown in full on one approval card.
+for cmd in ["cat $(which python3)", "echo `whoami`", "systemctl restart $(cat /tmp/svc)"]:
     res, entry = dispatch(cmd)
     check(f"write-still-refuses-shape::{cmd[:28]!r}",
-          res["executed"] is False and entry["disposition"] in ("refused_form", "refused_destructive"))
+          res["executed"] is False and entry["disposition"] == "refused_form")
+
+res, entry = dispatch("printf one\nprintf two")
+check("multiline-proven-read-script-runs-without-card",
+      res["executed"] is True and entry["disposition"] == "ran_read_only")
+res, entry = dispatch("mkdir /tmp/multiline-canary\nprintf two")
+check("multiline-reversible-write-uses-exact-card",
+      res["executed"] is True and entry["disposition"] == "ran_mutating")
+res, entry = dispatch("echo one\nrm -rf /")
+check("multiline-destructive-script-still-refused",
+      res["executed"] is False and entry["disposition"] == "refused_destructive")
 
 # A refusal the model cannot act on wastes the turn. In write mode the read-only wording ("this
 # changes the box") is actively wrong: it sends the agent looking for a permission it already has.
 res, _ = dispatch("cat $(which python3)")
 check("write-shape-refusal-explains-form", "FORM rejected" in res["text"])
 check("write-shape-refusal-not-readonly-wording", "read-only" not in res["text"])
-
-# --- platform-facing FileBrowser is not a guest-binary repair -----------------------------------
-# The production failure found a standalone binary, guessed 8080 + /workspace + --noauth, and used
-# loopback HTTP 200 as proof that the CONSOLE File Browser was fixed. It was not: the platform route,
-# authenticated entrypoint and real root had never been established. Direct launch must be refused
-# even after the user approves it, while an image-owned supervisor remains repairable.
-unsafe_filebrowser = (
-    "nohup /model/other/filebrowser/filebrowser --address 0.0.0.0 --port 8080 "
-    "--root /workspace --noauth --database /tmp/filebrowser.db > /tmp/filebrowser.log 2>&1 &"
-)
-res, entry = dispatch(unsafe_filebrowser)
-check("filebrowser-direct-launch-is-refused",
-      res["executed"] is False and entry["disposition"] == "refused_unmanaged_platform_service")
-check("filebrowser-refusal-explains-platform-contract",
-      "platform-managed entry" in res["text"] and "external route" in res["text"])
-check("filebrowser-refusal-keeps-wire-shape",
-      harness._wire_disposition(entry["disposition"]) == "refused")
-check("filebrowser-guard-recognizes-nohup-wrapper",
-      guardrails.is_unmanaged_platform_service_launch(unsafe_filebrowser) is True)
-check("filebrowser-guard-recognizes-shell-c-wrapper",
-      guardrails.is_unmanaged_platform_service_launch(
-          "bash -c 'nohup /model/other/filebrowser/filebrowser --port 8080 --noauth &'") is True)
-check("filebrowser-guard-recognizes-quoted-executable",
-      guardrails.is_unmanaged_platform_service_launch(
-          "exec '/model/other/filebrowser/filebrowser' --port 8080") is True)
-check("filebrowser-help-remains-diagnostic",
-      guardrails.is_unmanaged_platform_service_launch("/model/other/filebrowser/filebrowser --help") is False)
-check("filebrowser-command-v-remains-diagnostic",
-      guardrails.is_unmanaged_platform_service_launch("command -v filebrowser") is False)
-check("filebrowser-image-supervisor-through-shell-remains-repairable",
-      guardrails.is_unmanaged_platform_service_launch("bash -c 'supervisorctl start filebrowser'") is False)
-res, entry = dispatch("supervisorctl start filebrowser")
-check("filebrowser-image-supervisor-remains-repairable",
-      res["executed"] is True and entry["disposition"] == "ran_mutating")
 
 # --- proven reads still run immediately -----------------------------------------------------------
 res, entry = dispatch("nvidia-smi")
@@ -138,10 +113,11 @@ check("proven-read-runs-without-a-write-tier", res["executed"] is True and
 
 # --- one prompt and one tool contract: diagnose, confirm exact repairs, then verify --------------
 _WRITE_PROMPT = harness.SYSTEM_PROMPT
+_WRITE_PROMPT_FLAT = flat(_WRITE_PROMPT)
 _WRITE_DESC = flat(harness.TOOL_DESC)
 check("prompt-authorizes-confirmation-gated-repair",
-      "authorized the repair workflow" in _WRITE_PROMPT and
-      "requires approval of that exact effect" in _WRITE_PROMPT)
+      "authorized the repair workflow" in _WRITE_PROMPT_FLAT and
+      "requires approval of that exact effect" in _WRITE_PROMPT_FLAT)
 check("prompt-names-hard-limits",
       "Hard refusal is only" in _WRITE_PROMPT and
       "tenant/control-plane boundary" in _WRITE_PROMPT)
@@ -173,19 +149,19 @@ check("prompt-names-no-skill", "skill" not in _WRITE_PROMPT.lower())
 
 check("tool-desc-does-not-forbid-writes", "Read-only commands only" not in _WRITE_DESC)
 check("tool-desc-says-changes-run",
-      "state-changing repair" in _WRITE_DESC and "approves that exact command" in _WRITE_DESC)
+      "For repair" in _WRITE_DESC and "approves that exact command" in _WRITE_DESC)
 # The contract tells the model to submit an evidence-backed action rather than stopping at prose.
 check("tool-desc-says-send-not-describe", "send the smallest concrete command" in _WRITE_DESC)
 # Hard limits stay stated so the agent does not plan around commands the executor will reject.
 check("tool-desc-keeps-hard-limits",
-      "irreversible" in _WRITE_DESC and "control-plane crossings" in _WRITE_DESC and
+      "irreversible" in _WRITE_DESC.lower() and "control-plane crossings" in _WRITE_DESC and
       "are refused" in _WRITE_DESC)
 check("tool-desc-forbids-invented-platform-entrypoints",
       "platform-facing port" in _WRITE_DESC and "substitute service" in _WRITE_DESC)
 # Tool descriptions are behavioral contracts, not a growing list of executable-path exceptions.
 check("tool-desc-states-execution-semantics",
-      all(needle in _WRITE_DESC for needle in
-          ("fresh, non-interactive SSH session", "25 seconds", "positively proven",
+      all(needle in _WRITE_DESC.lower() for needle in
+          ("fresh, non-interactive ssh session", "25 seconds", "positively proven",
            "exit status")))
 check("tool-description-prefers-the-actual-runtime",
       "application's actual interpreter" in _WRITE_DESC)
@@ -233,19 +209,45 @@ check("prompt-does-not-claim-skill-load", "skill" not in _WRITE_PROMPT.lower())
 check("skill-tool-no-longer-exists", harness.TOOLS_BASE == [])
 check("atomic-file-tool-exists-in-single-repair-surface",
       "mcp__ssh_ops__atomic_text_replace" in harness.ALLOWED_TOOLS)
+check("remote-text-tool-exists-in-single-repair-surface",
+      "mcp__ssh_ops__read_text_file" in harness.ALLOWED_TOOLS)
+check("remote-search-tool-exists-in-single-repair-surface",
+      "mcp__ssh_ops__search_text_tree" in harness.ALLOWED_TOOLS)
+check("remote-glob-tool-exists-in-single-repair-surface",
+      "mcp__ssh_ops__find_paths" in harness.ALLOWED_TOOLS)
+check("process-environment-tool-exists-in-single-repair-surface",
+      "mcp__ssh_ops__read_process_environment" in harness.ALLOWED_TOOLS)
 check("endpoint-probe-exists-in-single-repair-surface",
       "mcp__ssh_ops__endpoint_probe" in harness.ALLOWED_TOOLS)
+check("guest-endpoint-probe-exists-in-single-repair-surface",
+      "mcp__ssh_ops__guest_endpoint_probe" in harness.ALLOWED_TOOLS)
 check("atomic-file-tool-is-hash-bound-and-backed-up",
       all(term in harness.atomic_file.TOOL_DESCRIPTION
           for term in ("SHA-256", "same-directory backup", "atomically renames")))
+check("remote-text-tool-is-bounded-read-only-and-hash-bearing",
+      all(term in harness.remote_text.TOOL_DESCRIPTION
+          for term in ("read-only", "32 KiB", "whole-file SHA-256", "follows no symlink")))
+check("remote-text-tool-routes-known-files-away-from-shell-readers",
+      "instead of cat/head/sed" in harness.remote_text.TOOL_DESCRIPTION)
+check("remote-search-tool-is-bounded-and-routes-to-exact-read",
+      all(term in harness.remote_search.TOOL_DESCRIPTION
+          for term in ("literal text fragment", "never follows symlinks", "8 MiB",
+                       "read_text_file")))
+check("remote-glob-tool-is-bounded-and-does-not-run-a-shell",
+      all(term in harness.remote_search.FIND_DESCRIPTION
+          for term in ("basename glob", "invokes no remote shell", "never follows symlinks",
+                       "100 paths")))
+check("process-environment-tool-is-selected-and-secret-bounded",
+      all(term in harness.process_env.TOOL_DESCRIPTION
+          for term in ("caller-selected", "schema allowlist", "credentials")))
 
 # The lane repairs only the assigned fault; broader application replacement or shutdown requires a
 # separate user decision.
 for _name, _needle in [
-    ("states the scope", "within the diagnosed fault"),
+    ("states the scope", "Repair the diagnosed fault only"),
     ("names redeploying an app", "re-downloading an application"),
     ("names taking a service down", "disabling an unrelated service"),
-    ("routes it to the user rather than forbidding it", "unless the task requests it"),
+    ("routes it to the user rather than forbidding it", "separate user intent unless the task requests it"),
 ]:
     check(f"tool-desc-bounds-scope::{_name}", _needle in _WRITE_DESC)
 
@@ -253,7 +255,7 @@ for _name, _needle in [
 # confirmation. The model must receive that distinction directly from its two
 # authoritative prompt surfaces, and neither should call the user an "operator".
 check("write-tool-desc::reformats-form-refusals",
-      "Rewrite only command-form rejections" in _WRITE_DESC)
+      "Rewrite only a rejected form" in _WRITE_DESC)
 check("write-system-prompt::reformats-form-refusals",
       "rejects only the command form" in _WRITE_PROMPT and "rewrite it into a supported plain command" in _WRITE_PROMPT)
 check("write-system-prompt::does-not-manualize-unapproved-writes",
@@ -291,9 +293,9 @@ check("write-system-prompt-platform-boundary::names-and-hands-off-restart",
       "ask whether the user wants the instance restarted" in flat(_WRITE_PROMPT) and
       "Do not bypass those limits" in _WRITE_PROMPT)
 check("write-prompts::distinguish-service-restart-from-instance-reboot",
-      "A process or service restart is not an instance reboot" in _WRITE_PROMPT and
+      "A process or service restart is not an instance reboot" in _WRITE_PROMPT_FLAT and
       "A process or service restart is not an instance reboot" in _WRITE_DESC and
-      "guest-local restart cannot recover" in _WRITE_PROMPT and
+      "guest-local restart cannot recover" in _WRITE_PROMPT_FLAT and
       "guest-local restart cannot recover" in _WRITE_DESC)
 check("write-tool-desc::separates-independent-probes",
       "Each call is classified as one effect" in _WRITE_DESC and
@@ -322,13 +324,13 @@ _td = _WRITE_DESC
 # the only channel with evidence of landing (detach protocol adopted verbatim 2/2, system prompt
 # rules 0/3). Asserted in BOTH directions so it cannot quietly drift back to the dead channel.
 check("tooldesc-rule-prefer-image-launcher",
-      "use its existing supervisor" in _td and "rather than starting an inner binary" in _td)
+      "use its existing supervisor/launcher" in _td and "not an inner binary" in _td)
 check("tooldesc-rule-does-not-invent-manager-ownership",
-      "presence does not authorize creating a new unit" in _td and
-      "image supplies only a launcher" in _td and "report the durability gap" in _td)
+      "Do not create a new unit merely because a manager exists" in _td and
+      "only a launcher exists" in _td and "report the durability gap" in _td)
 check("prompt-and-tool-do-not-invent-traceback-semantics",
       "A traceback proves a failure site, not intended" in _wp and
-      "A traceback proves the failure site, not intended semantics" in _td and
+      "A traceback proves failure site, not intended semantics" in _td and
       "local test" in _wp and "version contract" in _wp and
       "reversible rollback/disable within scope" in _wp and
       "reversible rollback/disable within scope" in _td)
@@ -343,7 +345,8 @@ check("tooldesc-rule-verify-every-launcher-port",
       "Verify the full service contract owned by the launcher" in _td)
 check("prompt-no-longer-carries-port-diff", "list the listening ports" not in _wp)
 check("prompt-rule-verdict-starts-with-status",
-      all(token in _wp for token in ("`已修复`", "`部分修复`", "`未修复`")))
+      all(token in _wp for token in ("`已修复`", "`部分修复`", "`未修复`", "`无需修复`")) and
+      "never describe a read-only check itself as a repair" in _wp)
 check("prompt-rule-verdict-stays-compact",
       "Then include `已完成` and, only when needed, `下一步`" in _wp and
       "结论 / 证据 / 确证vs推测" not in _wp)

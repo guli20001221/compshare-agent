@@ -31,14 +31,15 @@ func TestEveryWorkflowActionIsClassifiedForInvalidation(t *testing.T) {
 	// Writes that change nothing this registry caches. Each needs a reason, not
 	// just an entry — "it is a write" is not why it belongs here.
 	deliberatelyNotInvalidating := map[string]string{
-		"ResetPasswordWorkflow":      "changes the login password; no InstanceSnapshot field holds it",
-		"CreateCustomImageWorkflow":  "creates a new image from the instance; the instance itself is unchanged",
-		"CloneCustomImageWorkflow":   "creates a custom image in another zone; the instance registry is unchanged",
-		"CreateDiskWorkflow":         "attaches a data disk; InstanceSnapshot carries no disk fields",
-		"ResizeDiskWorkflow":         "resizes a data disk; InstanceSnapshot carries no disk fields",
-		"EnableNetOptimizerWorkflow": "network accelerator state is not part of InstanceSnapshot",
-		"CreateCFSWorkflow":          "CFS is a separate resource; no InstanceSnapshot field changes",
-		"ResizeCFSWorkflow":          "CFS is a separate resource; no InstanceSnapshot field changes",
+		"ResetPasswordWorkflow":       "changes the login password; no InstanceSnapshot field holds it",
+		"CreateCustomImageWorkflow":   "creates a new image from the instance; the instance itself is unchanged",
+		"CloneCustomImageWorkflow":    "creates a custom image in another zone; the instance registry is unchanged",
+		"CreateDiskWorkflow":          "attaches a data disk; InstanceSnapshot carries no disk fields",
+		"ResizeDiskWorkflow":          "resizes a data disk; InstanceSnapshot carries no disk fields",
+		"EnableNetOptimizerWorkflow":  "network accelerator state is not part of InstanceSnapshot",
+		"CreateCFSWorkflow":           "CFS is a separate resource; no InstanceSnapshot field changes",
+		"ResizeCFSWorkflow":           "CFS is a separate resource; no InstanceSnapshot field changes",
+		"UpdateInstancePortsWorkflow": "port mappings are not part of InstanceSnapshot",
 	}
 
 	for _, action := range workflow.RegisteredWorkflowActions() {

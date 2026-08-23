@@ -37,6 +37,7 @@ func TestCheck_L1_NeedConfirmation(t *testing.T) {
 		"ReinstallCompShareInstance",
 		"UpdateCompShareStopScheduler",
 		"DeleteCompShareStopScheduler",
+		"UpdateCompShareInstancePorts",
 	}
 	for _, action := range l1Actions {
 		level, err := Check(action)

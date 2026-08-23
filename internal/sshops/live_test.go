@@ -187,6 +187,9 @@ func TestLiveKeystone(t *testing.T) {
 	if res.Output == "" {
 		t.Fatalf("empty harness output")
 	}
+	if len(res.Steps) == 0 {
+		t.Fatalf("model produced no remote operation, so this did not prove SDK->MCP->SSH: %s", res.Output)
+	}
 	// the plaintext password must never appear in the harness output
 	if containsSecret(res.Output, pass) {
 		t.Fatalf("SECURITY: password leaked into harness output")

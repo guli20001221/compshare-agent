@@ -5,6 +5,20 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
+func portDeltaSchema(description string) map[string]any {
+	return map[string]any{
+		"type":        "array",
+		"description": description,
+		"items": map[string]any{
+			"type":    "integer",
+			"minimum": 1,
+			"maximum": 65535,
+		},
+		"maxItems":    10,
+		"uniqueItems": true,
+	}
+}
+
 // Registry holds all registered tools for function calling.
 var Registry = []openai.Tool{
 	// --- Knowledge Tools (local, no API call) ---
@@ -712,6 +726,27 @@ var Registry = []openai.Tool{
 					},
 				},
 				"required": []string{"UHostId", "Name"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "UpdateInstancePortsWorkflow",
+			Description: "修改 Pod 平台端口配置的候选请求。用于用户明确要求添加或移除 HTTP/TCP 平台入口；工作流会读取并保留当前完整端口集合、展示精确前后差异、确认后复核并发变更，再执行一次全量替换。虚机不使用。UDP 端口不在此操作中修改，因为上游结果不提供可验证的公网 UDP 转发，不能用它承诺 WebRTC 等公网 UDP 可达。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要修改端口配置的 Pod 实例 ID。",
+					},
+					"AddHttpPorts":    portDeltaSchema("要新增的 HTTP 平台入口端口。"),
+					"RemoveHttpPorts": portDeltaSchema("要移除的 HTTP 平台入口端口。"),
+					"AddTcpPorts":     portDeltaSchema("要新增的 TCP 平台转发端口。"),
+					"RemoveTcpPorts":  portDeltaSchema("要移除的 TCP 平台转发端口。"),
+				},
+				"required": []string{"UHostId"},
 			},
 		},
 	},

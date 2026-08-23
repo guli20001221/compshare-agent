@@ -53,12 +53,12 @@ from urllib.parse import urlsplit
 # There is deliberately NO help/version fast-path. Do not add one back.
 #
 # There was one, `^[\w./-]+\s+(--help|--version|help|version)\s*$`, consulted at classify()
-# step 0 — ahead of BOTH the destructive scan and the multi-line refusal, so anything it
+# step 0 — ahead of BOTH the destructive scan and the multi-line confirmation tier, so anything it
 # accepted executed with no consent card in read-only mode as well as write mode. It was
 # wrong in four ways, and each one was a full bypass on its own:
 #
 #   - `\s` matches a NEWLINE. `reboot\n--help` classified read_only, and the multi-line
-#     refusal could not save it because that refusal lives inside the `mutating` branch,
+#     confirmation tier could not save it because it lives inside the `mutating` branch,
 #     which a read_only verdict never reaches. ssh_transport hands the whole string to
 #     `bash -c`, which runs `reboot` as line 1.
 #   - the name was unconstrained: `./unknown --help`, `/root/payload.sh --help`.
@@ -126,7 +126,11 @@ _DESTRUCTIVE_SRC = [
     r"\bfdisk\b(?!\s+(?:-l|--list)\b)", r"\bparted\b(?!\s+(?:-l|--list)\b)",
     r"\bwipefs\b", r"\bblkdiscard\b", r"\bsgdisk\b\s+(-Z|--zap)",
     r"\bfind\b[^\n]*\s-delete\b",
-    r"\bfind\b[^\n]*-exec\s+\S*\b(rm|mv|cp|tee|dd|chmod|chown|truncate|shred|chattr|mkfs|sh|bash|unlink|kill)\b",
+    # A shell used by find is not itself irreversible. The literal payload is still scanned by
+    # every destructive rule, and any shell shape we cannot prove read-only reaches the exact
+    # confirmation card. Keeping `sh|bash` here made harmless inspection scripts a hard refusal,
+    # contrary to the lane's recoverability boundary.
+    r"\bfind\b[^\n]*-exec\s+\S*\b(rm|mv|cp|tee|dd|chmod|chown|truncate|shred|chattr|mkfs|unlink|kill)\b",
     r"\b(lvremove|vgremove|pvremove|lvreduce|vgreduce)\b",
     r"\bzpool\b\s+destroy\b", r"\bzfs\b\s+destroy\b", r"\bbtrfs\b[^\n]*\bdelete\b",
     # power / boot
@@ -259,12 +263,12 @@ _SAFE_REDIR = re.compile(r"(?:\d*>&\d+|&>\s*/dev/null|\d*>\s*/dev/null)")
 # Hard-dangerous shell constructs. Deliberately EXCLUDES `|` (pipe), `*`/`?` (glob), and the
 # SINGLE quote — those are validated structurally below. Everything that enables command chaining
 # (`;` `&&`), substitution (`` ` `` `$()` `$VAR`), real-file redirection (`>`), brace/bracket/tilde
-# expansion, DOUBLE quotes, parent-dir traversal, or newlines is banned. Single quotes are allowed
-# (F6): they are shell-LITERAL, so a `grep '8188'` pattern reaches the filter as inert text and can
-# never be executed; DOUBLE quotes stay banned because inside them $()/`` ` ``/$VAR still expand.
-_HARD_META = re.compile(r"""[;&`$<>(){}\[\]~"]|\.\.|\n""")
+# expansion, parent-dir traversal, or newlines is banned. Balanced quotes are allowed after raw
+# command/variable expansion has been rejected; quoted grep patterns and paths are inert argv data.
+_HARD_META = re.compile(r"""[;&`$<>(){}\[\]~]|\.\.|\n""")
 # Command substitution — denied on the RAW command even inside single quotes (see F14).
 _SUBSTITUTION = re.compile(r"\$\(|`")
+_VARIABLE_EXPANSION = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]+\}|[0-9!#*@_-])")
 # Pure stdin->stdout text filters (no file writes, no exec, no file-arg reads).
 # Deliberately EXCLUDES awk/sed (system()/-i/w-file), xargs/tee (exec/write), dd.
 _SAFE_FILTERS = {"grep", "egrep", "fgrep", "head", "tail", "wc", "sort",
@@ -304,7 +308,12 @@ def _bounded_nvidia_monitor(tokens) -> bool:
 _STRUCTURED_DIAG = [re.compile(p) for p in [
     r"systemctl\s+(status|is-active|is-enabled|is-failed|list-units|list-unit-files|list-dependencies)(\s+\S+)*",
     r"(free|uptime|uname|hostname|whoami|id|pwd|date|lscpu|lsblk|lsmod|lspci|nproc|arch|sensors)(\s+\S+)*",
+    r"(pgrep|pidof)(\s+\S+)*",                         # process lookup only; pkill is separate
+    r"pwdx\s+\d+",                                     # one process cwd; no write form
+    r"pstree(\s+\S+)*",                                # process ancestry only
+    r"lsof(\s+\S+)*",                                  # open-file/socket metadata; no write mode
     r"df(\s+\S+)*",
+    r"findmnt(\s+\S+)*",
     r"dmesg(\s+(-T|-x|-t|-H|-k|-r|-e|--ctime|--color=\w+|-l\s+\w+|-n\s+\d+|--level=\S+))*",
     r"(ss|netstat)(\s+\S+)*",
     r"ip\s+(-\w+\s+)*(addr|a|link|l|route|r|neigh|n)(\s+(show|list|s|l))?",
@@ -317,6 +326,7 @@ _STRUCTURED_DIAG = [re.compile(p) for p in [
     r"swapon(\s+(-s|--summary|--show(=\S+)?|--noheadings|--raw|--bytes))+",
     r"mount(\s+(-l|--list))*",
     r"(nvcc|python3?|pip3?|conda|docker|podman|nerdctl|git|gcc|g\+\+|cmake|go|java|node|npm|ruff|jupyter)\s+(--version|-V|version)",
+    r"npx\s+(--version|-v)",
     r"pip3?\s+(list|show|freeze)(\s+\S+)*",
     r"pip3?\s+cache\s+dir",
     r"conda\s+(list|info|env\s+list)(\s+\S+)*",
@@ -352,6 +362,136 @@ _STRUCTURED_DIAG = [re.compile(p) for p in [
     r"sshd\s+-t",                                       # validate daemon config without applying it
     r"fuser(\s+\S+)*",                                  # kill forms are rejected before this proof
 ]]
+
+_SYSTEMCTL_READ_VERBS = {
+    "status", "is-active", "is-enabled", "is-failed", "is-system-running",
+    "list-units", "list-unit-files", "list-dependencies", "list-jobs",
+    "list-sockets", "list-timers",
+}
+_SYSTEMCTL_SAFE_PROPERTIES = {
+    "ActiveEnterTimestamp", "ActiveState", "Description", "ExecMainCode", "ExecMainStatus",
+    "FragmentPath", "Id", "InactiveEnterTimestamp", "LoadState", "MainPID", "Names",
+    "NRestarts", "Restart", "SourcePath", "SubState", "UnitFileState", "Version",
+}
+_SYSTEMCTL_READ_FLAGS = {
+    "--all", "-a", "--failed", "--full", "-l", "--no-ask-password",
+    "--no-legend", "--no-pager", "--plain", "--quiet", "-q", "--reverse",
+    "--show-types", "--system", "--user", "--value",
+}
+_SYSTEMCTL_READ_VALUE_FLAGS = {
+    "--lines", "-n", "--output", "-o", "--property", "-p", "--state", "--type", "-t",
+}
+_SYSTEMCTL_READ_VALUE_PREFIXES = (
+    "--lines=", "--output=", "--property=", "--state=", "--type=",
+)
+
+
+def _systemctl_is_readonly(tokens) -> bool:
+    """Prove reporting-only systemctl forms, including options before the verb.
+
+    `systemctl --no-pager --type=service --state=running` is the ordinary spelling of
+    the implicit `list-units` read. The old regex required a verb in argv[1], so this
+    live command and `is-system-running` both produced spurious confirmation cards.
+    Unknown options and every non-reporting verb still fail closed.
+    """
+    i, verb, properties = 1, None, []
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "--":
+            i += 1
+            if i < len(tokens):
+                verb = tokens[i]
+            break
+        if token in _SYSTEMCTL_READ_FLAGS:
+            i += 1
+            continue
+        if token.startswith(_SYSTEMCTL_READ_VALUE_PREFIXES):
+            if token.startswith("--property="):
+                properties.extend(part for part in token.split("=", 1)[1].split(",") if part)
+            i += 1
+            continue
+        if token in _SYSTEMCTL_READ_VALUE_FLAGS:
+            if i + 1 >= len(tokens) or tokens[i + 1].startswith("-"):
+                return False
+            if token in ("--property", "-p"):
+                properties.extend(part for part in tokens[i + 1].split(",") if part)
+            i += 2
+            continue
+        if token.startswith("-"):
+            return False
+        verb = token
+        i += 1
+        break
+    # No verb means systemctl's default list-units report. Unit operands are accepted only
+    # after an explicit reviewed reporting verb; option parsing above has already rejected
+    # mutating flags such as --now and --force.
+    if verb == "show":
+        # An unrestricted `systemctl show` includes Environment= and may expose credentials.
+        # A caller-selected set of non-secret lifecycle properties is a bounded observation.
+        while i < len(tokens):
+            token = tokens[i]
+            if token.startswith("--property="):
+                properties.extend(part for part in token.split("=", 1)[1].split(",") if part)
+                i += 1
+                continue
+            if token in ("--property", "-p"):
+                if i + 1 >= len(tokens) or tokens[i + 1].startswith("-"):
+                    return False
+                properties.extend(part for part in tokens[i + 1].split(",") if part)
+                i += 2
+                continue
+            if token in _SYSTEMCTL_READ_FLAGS:
+                i += 1
+                continue
+            if token == "--":
+                i += 1
+                continue
+            if token.startswith("-"):
+                return False
+            i += 1                                      # literal unit name
+        return bool(properties) and all(prop in _SYSTEMCTL_SAFE_PROPERTIES for prop in properties)
+    return verb is None or verb in _SYSTEMCTL_READ_VERBS
+
+
+_AWK_BINARIES = {"awk", "gawk", "mawk", "nawk"}
+_AWK_UNSAFE_PROGRAM = re.compile(
+    r"(?:\bsystem\s*\(|\bgetline\b|\b(?:ARGV|ARGC|ENVIRON)\b|@[a-zA-Z_]"
+    r"|\b(?:print|printf)\b[^{};\n]*(?:>{1,2}|(?<!\|)\|(?!\|))|\b(?:while|for|do)\b)",
+    re.IGNORECASE,
+)
+
+
+def _awk_is_readonly(tokens, allow_stdin: bool) -> bool:
+    """Prove the small awk form used to filter safe diagnostic text.
+
+    Awk is otherwise an execution/write primitive. This accepts one inline program and
+    either stdin or explicitly allowlisted files, while rejecting system/getline, dynamic
+    ARGV/ENVIRON access, redirection/pipes, program files, assignments and loops. It is a
+    structural proof, not an awk-name allowlist.
+    """
+    i = 1
+    while i < len(tokens) and tokens[i].startswith("-"):
+        token = tokens[i]
+        if token == "-F":
+            if i + 1 >= len(tokens):
+                return False
+            i += 2
+            continue
+        if token.startswith("-F") and len(token) > 2:
+            i += 1
+            continue
+        return False
+    if i >= len(tokens):
+        return False
+    program = tokens[i]
+    if _AWK_UNSAFE_PROGRAM.search(program):
+        return False
+    paths = tokens[i + 1:]
+    if not paths:
+        return allow_stdin
+    if any("=" in path or path.startswith("-") for path in paths):
+        return False
+    return all(path.startswith("/") and _safe_path(path) for path in paths)
 
 # Readers that emit raw file CONTENT — strict: every target must be a curated-safe absolute path.
 _CONTENT_READERS = {"cat", "nl", "tac", "strings", "od", "xxd", "hexdump",
@@ -393,11 +533,12 @@ _SAFE_READ_EXACT = {
     "/proc/net/tcp", "/proc/net/tcp6", "/proc/net/udp", "/proc/net/udp6",
     "/usr/local/cuda/version.txt", "/usr/local/cuda/version.json",
 }
-# Per-process files that carry NO secret — for container/cgroup detection. environ and cmdline are
-# deliberately EXCLUDED (they leak the environment and another process's argv, which can inline a
-# password); both are also caught by _DENY_PATH_SUBSTR / not listed here.
+# Per-process diagnostic files. `environ` remains excluded and is available only through the
+# name-allowlisted structured tool. `cmdline` is admitted because process launch arguments are a
+# first-class service/GPU diagnostic and are already visible through the reviewed `ps ... args`
+# surface. Output still passes through the same value scrubber before reaching the model.
 _PROC_PID_SAFE = re.compile(
-    r"^/proc/(?:\d+|self|thread-self)/(?:cgroup|status|mountinfo|limits|comm|maps)$")
+    r"^/proc/(?:\d+|self|thread-self)/(?:cgroup|status|mountinfo|limits|comm|maps|cmdline)$")
 _DENY_PATH_SUBSTR = (
     "environ", "id_rsa", "id_ed25519", "id_dsa", "id_ecdsa", "authorized_keys",
     ".ssh", ".aws", ".gnupg", ".kube", ".docker", "shadow", "sudoers",
@@ -442,8 +583,8 @@ def _mask_quoted(s: str) -> str:
 
 
 def _unquote(p: str) -> str:
-    """Strip balanced surrounding single quotes so a quoted path is validated on its real value."""
-    return p[1:-1] if len(p) >= 2 and p[0] == "'" and p[-1] == "'" else p
+    """Strip balanced surrounding quotes so a quoted path is validated on its real value."""
+    return p[1:-1] if len(p) >= 2 and p[0] == p[-1] and p[0] in "'\"" else p
 
 
 # Metadata-only reads (ls/stat/file/readlink/wc/*sum; `du` is broader, see F5 below) reveal a
@@ -455,8 +596,9 @@ _META_SAFE_PREFIXES = ("/dev/", "/usr/", "/sys/", "/proc/", "/lib/", "/lib64/",
                        "/bin/", "/sbin/", "/opt/")
 # F11: non-home application/data dirs, where these GPU images put the served app (/workspace/ComfyUI,
 # /data/..., mounted volumes). Metadata-only, and deliberately NOT /root or /home — see _safe_meta_path.
-_META_APP_PREFIXES = ("/workspace", "/data", "/mnt")
+_META_APP_PREFIXES = ("/workspace", "/data", "/mnt", "/model", "/root", "/home", "/tmp", "/var/tmp")
 _META_STATE_PREFIXES = ("/var/lib/docker", "/var/lib/containerd")
+_META_DENY_SUBSTR = tuple(d for d in _DENY_PATH_SUBSTR if d != "/root")
 
 # --- F7: venv / Python-package introspection (content + metadata) ------------------------------
 # Python-env diagnosis ("torch.cuda.is_available() 是 False / import 报没这个模块") fundamentally
@@ -486,7 +628,8 @@ def _pkg_safe_path(p: str) -> bool:
 
 # Application logs are content-safe only under application directories, never /var/log. Output is
 # still secret-scrubbed and secret-file tripwires still apply.
-_APP_LOG_PREFIXES = ("/workspace/", "/data/", "/mnt/", "/opt/", "/start.d/", "/usr/local/")
+_APP_LOG_PREFIXES = ("/workspace/", "/data/", "/mnt/", "/model/", "/opt/", "/start.d/", "/usr/local/",
+                     "/root/", "/home/")
 _APP_LOG_SHAPE = re.compile(r"(?:\.(?:log|out|err)|(?:^|/)nohup\.out)$", re.I)
 
 
@@ -498,7 +641,7 @@ def _app_log_path(p: str) -> bool:
     return bool(_APP_LOG_SHAPE.search(p)) and any(p.startswith(pre) for pre in _APP_LOG_PREFIXES)
 
 
-_APP_SOURCE_PREFIXES = ("/workspace/", "/data/", "/mnt/", "/opt/")
+_APP_SOURCE_PREFIXES = ("/workspace/", "/data/", "/mnt/", "/model/", "/opt/")
 
 
 def _app_source_path(p: str) -> bool:
@@ -542,18 +685,16 @@ def _safe_meta_path(p: str) -> bool:
     that, allow the introspection tree AND the user/app data dirs (still minus any secret-FILE
     location).
 
-    Non-home application directories are included because metadata is needed to locate installed
-    software; these reads return names, sizes and permissions, never file content.
-
-    /root and /home stay excluded because filenames there may be sensitive.
-    Where the app lives under /root, its existence is still provable with the size-only `du`
-    allowance (F5) — so the agent is never forced to guess."""
+    Application trees frequently live below /root or a login user's home on these images. Metadata
+    readers reveal names, modes and sizes rather than file content, so those trees are included
+    while credential/private-key component tripwires remain in force. Content still uses the
+    narrower _safe_path policy apart from explicitly shaped source and log files."""
     p = _unquote(p)
     if _safe_path(p):
         return True
     if ".." in p:
         return False
-    if any(d in p.lower() for d in _DENY_PATH_SUBSTR):
+    if any(d in p.lower() for d in _META_DENY_SUBSTR):
         return False
     if any(p == pre or p.startswith(pre + "/") for pre in _META_APP_PREFIXES):
         return True
@@ -695,23 +836,69 @@ def _interval_ok(tokens) -> bool:
     return False
 
 
+def _literal_cd_ok(cmd: str) -> bool:
+    """A literal ``cd`` changes only this short-lived SSH shell's working directory.
+
+    Each tool call gets a fresh session, so the effect cannot persist on the guest.  Accept an
+    optional ``--`` and one literal path (or no path for the remote user's home); substitutions are
+    rejected by the outer shape gate before this helper is reached.
+    """
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        return False
+    if not argv or _basename(argv[0]) != "cd":
+        return False
+    rest = argv[1:]
+    if rest[:1] == ["--"]:
+        rest = rest[1:]
+    if len(rest) > 1:
+        return False
+    return not rest or ("\x00" not in rest[0] and not rest[0].startswith("-")) or rest[0] == "-"
+
+
+def _bounded_sleep_ok(cmd: str) -> bool:
+    """Permit a bounded observation delay without mislabelling it as a guest mutation.
+
+    The SSH call itself is capped at 25 seconds. Service warm-up probes commonly wait 6-15 seconds;
+    asking for approval to spend time (while changing no guest state) is both misleading and noisy.
+    Keep a margin for the actual verification command in the same call.
+    """
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        return False
+    if not argv or _basename(argv[0]) != "sleep":
+        return False
+    rest = argv[1:]
+    if rest[:1] == ["--"]:
+        rest = rest[1:]
+    if len(rest) != 1 or re.fullmatch(r"(?:\d+(?:\.\d*)?|\.\d+)s?", rest[0]) is None:
+        return False
+    value = rest[0][:-1] if rest[0].endswith("s") else rest[0]
+    return float(value) <= 20.0
+
+
 # --- F10: loopback-only HTTP probe -------------------------------------------
 # A loopback HTTP request distinguishes a dead service from one listening only locally.
 #
 # Scope is deliberately airtight so this can never exfiltrate or mutate:
 #   - every non-flag argument MUST be a loopback URL (127.0.0.1 / localhost / ::1 / 0.0.0.0),
 #   - flags are a closed allowlist; anything unknown DENIES (deny-by-default preserved),
-#   - every flag that sends a body, uploads, overrides the HTTP method, attaches auth/headers, or
-#     writes a real file is banned (`-o` is permitted ONLY to /dev/null).
+#   - every flag that sends a body, uploads, overrides the HTTP method, attaches auth/data headers,
+#     or writes a real file is banned; one literal Host header is allowed for reverse-proxy/Vite
+#     virtual-host diagnosis (`-o` is permitted ONLY to /dev/null).
 # So the worst case is a GET against a service already running on this box, whose response is then
 # capped + secret-scrubbed like any other command output.
 _LOOPBACK_URL = re.compile(
     r"^https?://(?:127(?:\.\d{1,3}){3}|localhost|\[::1\]|0\.0\.0\.0)(?::\d+)?(?:/[^\s]*)?$", re.I)
 _PROBE_VALUE_FLAGS = {"-m", "--max-time", "--connect-timeout", "--max-redirs", "-o", "--output",
-                      "-D", "--dump-header", "--timeout", "--tries", "-t", "-w", "--write-out"}
+                      "-D", "--dump-header", "-H", "--header", "--timeout", "--tries", "-t",
+                      "-w", "--write-out"}
 _PROBE_BOOL_FLAGS = {"-s", "--silent", "-S", "--show-error", "-I", "--head", "-i", "--include",
                      "-L", "--location", "-f", "--fail", "-k", "--insecure", "-4", "-6",
-                     "-q", "--quiet", "--spider", "-nv", "--no-verbose", "-O-", "--server-response"}
+                     "-q", "--quiet", "--spider", "-nv", "--no-verbose", "-O-", "-qO-",
+                     "--server-response"}
 # Short-flag letters that are boolean (take no value) — used to accept clusters like `-sS`.
 _PROBE_BOOL_SHORT = set("sSIiLfk46q")
 # Anything that can send data, upload, re-method, authenticate, or name an output file.
@@ -719,7 +906,7 @@ _PROBE_BOOL_SHORT = set("sSIiLfk46q")
 # permitted `-o /dev/null`. `-T` is banned outright — it is --upload-file in curl even though it is
 # --timeout in wget, and the safe wget form (`--timeout=N`) is still available.
 _PROBE_BANNED = re.compile(
-    r"(?:^|\s)(?:-d|--data\S*|-F|--form\S*|-T|--upload-file|-X|--request|-u|--user|-H|--header|"
+    r"(?:^|\s)(?:-d|--data\S*|-F|--form\S*|-T|--upload-file|-X|--request|-u|--user|"
     r"-b|--cookie|-c|--cookie-jar|-K|--config|-e|--referer|-A|--user-agent|-O|--remote-name|"
     r"--output-document\S*|-P|--directory-prefix)(?:[=\s]|$)")
 
@@ -745,6 +932,9 @@ def _http_probe_ok(tokens) -> bool:
                 return False                             # never write a real file
             if base in ("-D", "--dump-header") and val != "-":
                 return False                             # response headers may go only to stdout
+            if (base in ("-H", "--header") and
+                    re.fullmatch(r"Host:\s*[A-Za-z0-9.-]+(?::\d+)?", val, re.I) is None):
+                return False                             # only virtual-host selection, never auth/data
             if base in ("-w", "--write-out") and "%output{" in val.lower():
                 return False                             # curl >=7.87: %output{f} WRITES a file
             i += 1 if inline else 2
@@ -807,6 +997,14 @@ def _is_read_only(cmd: str) -> bool:
     if not tokens:
         return False
     binary = _basename(tokens[0])
+    if binary == "cd":                                  # transient cwd inside this one SSH session
+        return _literal_cd_ok(cmd)
+    if binary == "sleep":                               # bounded wait before a verification probe
+        return _bounded_sleep_ok(cmd)
+    if binary == "[":                                   # shell test builtin spelling
+        return len(tokens) >= 2 and tokens[-1] == "]"
+    if binary == "printenv":                            # runtime-selection facts, not full secret env
+        return len(tokens) > 1 and all(t in _DIAGNOSTIC_ENV_NAMES for t in tokens[1:])
     if binary in ("curl", "wget"):                       # F10: loopback-only service probe
         return _http_probe_ok(tokens)
     blk = _STREAM_BLOCK.get(binary)
@@ -816,6 +1014,16 @@ def _is_read_only(cmd: str) -> bool:
         return _ps_ok(tokens)
     if binary == "journalctl":
         return _journalctl_ok(cmd)
+    if binary == "systemctl":
+        try:
+            return _systemctl_is_readonly(shlex.split(cmd))
+        except ValueError:
+            return False
+    if binary in _AWK_BINARIES:
+        try:
+            return _awk_is_readonly(shlex.split(cmd), allow_stdin=False)
+        except ValueError:
+            return False
     if binary in ("tail", "head"):                 # content readers that can stream via -f
         if _FOLLOW.search(cmd):
             return False
@@ -833,12 +1041,20 @@ def _is_read_only(cmd: str) -> bool:
         return True
     if binary == "fuser" and _KILL_FLAG_BINARIES["fuser"].search(cmd):
         return False
+    if binary == "git":
+        try:
+            git_tokens = shlex.split(cmd)
+            if _git_local_config_read(git_tokens) or _git_repository_read(git_tokens):
+                return True
+        except ValueError:
+            pass
     if binary in ("grep", "egrep", "fgrep"):
         try:
             grep_tokens = shlex.split(cmd)
         except ValueError:
             return False
-        return _safe_grep_file_read(grep_tokens)
+        return (_safe_grep_file_read(grep_tokens)
+                or _recursive_grep_names_only(grep_tokens))
     if binary == "sed":
         return _sed_numeric_print_is_read(cmd, allow_stdin=False)
     # Match the allowlist on the BASENAME-normalized command as well: a venv/conda interpreter is
@@ -888,6 +1104,139 @@ def _safe_grep_file_read(tokens, allow_find_placeholder=False) -> bool:
                ("/" in path and _safe_path(path)) for path in files)
 
 
+def _grep_stdin_only(tokens) -> bool:
+    """Prove that grep consumes its pattern plus stdin, never a second file operand.
+
+    The old ``no token contains '/'`` shortcut confused a slash inside the PATTERN with a file and,
+    worse, accepted a relative file operand that contained no slash. Parse the small option subset
+    models actually use; one positional is the pattern, while ``-e`` supplies that pattern as an
+    option value. Any additional positional is a file and therefore not an stdin-only filter.
+    """
+    no_value_options = {
+        "-a", "--text", "-c", "--count", "-E", "--extended-regexp", "-F", "--fixed-strings",
+        "-H", "--with-filename", "-h", "--no-filename", "-i", "--ignore-case", "-I",
+        "-l", "--files-with-matches", "-L", "--files-without-match", "-n", "--line-number",
+        "-q", "--quiet", "--silent", "-s", "--no-messages", "-v", "--invert-match", "-w",
+        "--word-regexp", "-x", "--line-regexp",
+    }
+    positional, explicit_patterns, i = [], 0, 1
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "--":
+            positional.extend(tokens[i + 1:])
+            break
+        if token in ("-e", "--regexp"):
+            i += 1
+            if i >= len(tokens):
+                return False
+            explicit_patterns += 1
+        elif token.startswith("--regexp=") or (token.startswith("-e") and token != "-e"):
+            explicit_patterns += 1
+        elif token.startswith("-"):
+            if token not in no_value_options and not re.fullmatch(r"-[acEFHIhilLnoqsvwx]+", token):
+                return False
+        else:
+            positional.append(token)
+        i += 1
+    if explicit_patterns:
+        return not positional
+    return len(positional) == 1
+
+
+def _recursive_grep_names_only(tokens) -> bool:
+    """Allow a recursive application-tree search only when grep emits file names, not content."""
+    recursive, names_only, positional = False, False, []
+    allowed_long = {
+        "--recursive", "--dereference-recursive", "--binary-files=without-match", "--text",
+        "--files-with-matches", "--files-without-match", "--extended-regexp", "--fixed-strings",
+        "--ignore-case", "--no-messages", "--silent", "--word-regexp", "--line-regexp",
+    }
+    allowed_cluster = set("rRIlLEFainsvwxHh")
+    for token in tokens[1:]:
+        if token == "--":
+            continue
+        if token.startswith("--"):
+            if token not in allowed_long:
+                return False
+            recursive = recursive or token in ("--recursive", "--dereference-recursive")
+            names_only = names_only or token in ("--files-with-matches", "--files-without-match")
+            continue
+        if token.startswith("-"):
+            if len(token) < 2 or any(ch not in allowed_cluster for ch in token[1:]):
+                return False
+            recursive = recursive or "r" in token or "R" in token
+            names_only = names_only or "l" in token or "L" in token
+            continue
+        positional.append(token)
+    if not recursive or not names_only or len(positional) < 2:
+        return False
+    roots = positional[1:]
+    return all(path.startswith("/") and _safe_meta_path(path) for path in roots)
+
+
+def _git_local_config_read(tokens) -> bool:
+    """Prove the read form used to inspect one repository-local Git config value."""
+    i = 1
+    if i < len(tokens) and tokens[i] == "-C":
+        if i + 1 >= len(tokens) or not tokens[i + 1].startswith("/"):
+            return False
+        if not _safe_meta_path(tokens[i + 1]):
+            return False
+        i += 2
+    if i >= len(tokens) or tokens[i] != "config":
+        return False
+    rest = tokens[i + 1:]
+    if rest[:1] in (["--local"], ["--worktree"]):
+        rest = rest[1:]
+    if len(rest) != 2 or rest[0] not in ("--get", "--get-all", "--get-regexp"):
+        return False
+    return re.fullmatch(r"[A-Za-z0-9_.^$*+?()|\\-]+", rest[1]) is not None
+
+
+def _git_repository_read(tokens) -> bool:
+    """Prove a small metadata-only Git inspection inside an explicit application repository.
+
+    Requiring ``-C /absolute/path`` keeps the target observable to the classifier. Remote URL
+    queries, diffs/file content and every worktree-changing verb stay behind confirmation.
+    """
+    if len(tokens) < 4 or tokens[1] != "-C":
+        return False
+    repo = tokens[2]
+    if not repo.startswith("/") or not _safe_meta_path(repo):
+        return False
+    verb, rest = tokens[3], tokens[4:]
+    if verb == "status":
+        allowed = {"-s", "--short", "-b", "--branch", "--porcelain", "--no-renames"}
+        return all(token in allowed or token.startswith(("--porcelain=", "--untracked-files="))
+                   for token in rest)
+    if verb == "rev-parse":
+        if not rest:
+            return False
+        allowed_flags = {"--show-toplevel", "--git-dir", "--is-inside-work-tree", "--is-bare-repository"}
+        return all(token in allowed_flags or token == "HEAD" or
+                   re.fullmatch(r"--short(?:=\d+)?", token) is not None for token in rest)
+    if verb == "log":
+        # Commit identity/subject only, bounded to one entry; no -p/--stat/name/content forms.
+        bounded = any(token == "-1" or token == "--max-count=1" for token in rest)
+        if not bounded:
+            return False
+        for token in rest:
+            if token in {"-1", "--max-count=1", "--oneline", "--no-decorate",
+                         "--no-show-signature", "HEAD"}:
+                continue
+            if token.startswith(("--format=", "--pretty=")):
+                value = token.split("=", 1)[1]
+                # Permit identity/subject/time placeholders and literal separators only. %b/%B
+                # (commit body), %N (notes), signature payloads and unknown future placeholders
+                # stay behind confirmation instead of contradicting the metadata-only contract.
+                if "%" in re.sub(r"%(?:%|H|h|s|f|ct|cI|an)", "", value):
+                    return False
+                continue
+            return False
+        return True
+    return False
+
+
 def _is_safe_filter(seg: str) -> bool:
     """A downstream pipe stage: an allowlisted text filter reading ONLY stdin. No
     file-path args (so `| grep root /etc/shadow` cannot read a file) and no -f stream."""
@@ -896,11 +1245,110 @@ def _is_safe_filter(seg: str) -> bool:
         return False
     if _basename(toks[0]) == "sed":
         return _sed_numeric_print_is_read(seg, allow_stdin=True)
+    if _basename(toks[0]) in ("grep", "egrep", "fgrep"):
+        try:
+            return _grep_stdin_only(shlex.split(seg))
+        except ValueError:
+            return False
+    if _basename(toks[0]) in _AWK_BINARIES:
+        try:
+            return _awk_is_readonly(shlex.split(seg), allow_stdin=True)
+        except ValueError:
+            return False
     if _basename(toks[0]) not in _SAFE_FILTERS:
         return False
     if _FOLLOW.search(seg):
         return False
     return not any("/" in t for t in toks[1:])
+
+
+def _strip_safe_input_redirect(cmd: str):
+    """Return a command with one proven read-only ``< ABS_PATH`` source removed.
+
+    Input redirection does not change the guest, but treating every ``<`` as a write made common
+    `/proc/<pid>/cmdline` inspection ask for a write confirmation. Keep the accepted shape small:
+    one whitespace-delimited redirect on the first pipeline stage, at the end of that stage, from
+    the same content-safe path surface used by ordinary file readers. The command consuming it must
+    independently be a stdin-only text filter. Here-docs, fd duplication, relative/dynamic paths,
+    later-stage redirects and additional redirects all fail closed.
+    """
+    masked = _mask_quoted(cmd)
+    pipe_at = masked.find("|")
+    source_end = len(cmd) if pipe_at < 0 else pipe_at
+    source, suffix = cmd[:source_end], cmd[source_end:]
+    try:
+        tokens = shlex.split(source)
+    except ValueError:
+        return None
+    # POSIX shells accept both `< /proc/PID/cmdline` and the equally common compact spelling
+    # `</proc/PID/cmdline`.  shlex keeps the latter as one token, so split that token only when the
+    # raw unquoted command proves there is exactly one compact absolute-path redirect.  A quoted
+    # literal such as `printf '</tmp/x'` is blanked by _mask_quoted and cannot enter this branch.
+    compact_redirects = re.findall(r"(?<!\S)<(?=/)", _mask_quoted(source))
+    if "<" not in tokens and len(compact_redirects) == 1:
+        compact_tokens = [i for i, token in enumerate(tokens) if token.startswith("</")]
+        if len(compact_tokens) != 1:
+            return None
+        i = compact_tokens[0]
+        tokens = tokens[:i] + ["<", tokens[i][1:]] + tokens[i + 1:]
+    if "<" not in tokens:
+        return (cmd, False) if "<" not in masked else None
+    if tokens.count("<") != 1:
+        return None
+    at = tokens.index("<")
+    if at == 0 or at + 2 != len(tokens):
+        return None
+    path = tokens[at + 1]
+    if not path.startswith("/") or not _safe_path(path):
+        return None
+    source_without_redirect = shlex.join(tokens[:at])
+    if not _is_safe_filter(source_without_redirect):
+        return None
+    if "<" in _mask_quoted(suffix):
+        return None
+    return source_without_redirect + suffix, True
+
+
+def _outer_group_inner(source: str):
+    """Return the body when one balanced ``(...)`` group wraps the entire source stage."""
+    value = source.strip()
+    masked = _mask_quoted(value)
+    if len(masked) < 2 or masked[0] != "(" or masked[-1] != ")":
+        return None
+    depth = 0
+    for i, ch in enumerate(masked):
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+            if depth < 0 or (depth == 0 and i != len(masked) - 1):
+                return None
+    return value[1:-1].strip() if depth == 0 else None
+
+
+def _split_top_level_pipes(cmd: str):
+    """Split real pipelines while keeping ``||`` fallbacks inside one outer group together."""
+    masked = _mask_quoted(cmd)
+    parts, start, depth, i = [], 0, 0, 0
+    while i < len(masked):
+        ch = masked[i]
+        escaped = i > 0 and masked[i - 1] == "\\"
+        if ch == "(" and not escaped:
+            depth += 1
+        elif ch == ")" and not escaped:
+            depth -= 1
+            if depth < 0:
+                return None
+        elif ch == "|" and depth == 0:
+            if (i + 1 < len(masked) and masked[i + 1] == "|") or (i > 0 and masked[i - 1] == "|"):
+                return None
+            parts.append(cmd[start:i].strip())
+            start = i + 1
+        i += 1
+    if depth != 0:
+        return None
+    parts.append(cmd[start:].strip())
+    return parts
 
 
 def _is_safe_readonly_command(cmd: str) -> bool:
@@ -909,19 +1357,37 @@ def _is_safe_readonly_command(cmd: str) -> bool:
     shape `<read-only source> [ | <text filter> ]*`. Globs (`*`/`?`) are allowed because
     the source's path allowlist (_safe_path) still validates the literal string, so a glob
     cannot escape a safe prefix (`/proc/driver/nvidia/*` stays inside nvidia driver info,
-    while `/etc/*` or a `..` traversal is still denied). Balanced single quotes are permitted
-    (F6) — a quoted grep pattern is shell-literal; a `/`-bearing quoted token is still caught by
+    while `/etc/*` or a `..` traversal is still denied). Balanced quotes are permitted after raw
+    expansion checks; a `/`-bearing quoted token is still caught by
     the filter's path check, and a quoted secret path (`cat '/etc/shadow'`) still hits _safe_path."""
     stripped = _SAFE_REDIR.sub(" ", cmd)
-    if stripped.count("'") % 2 != 0:                      # unbalanced single quote -> refuse (fail closed)
+    input_redirect = _strip_safe_input_redirect(stripped)
+    if input_redirect is None:
         return False
-    # F14: scan for hard metachars on a copy whose SINGLE-QUOTED spans are blanked out. Inside single
-    # quotes the shell expands nothing, so `grep 'comfy$'` / `grep 'a|b'` are inert text — yet the flat
+    stripped, had_input_redirect = input_redirect
+    try:
+        shlex.split(stripped)
+    except ValueError:                                    # malformed/unbalanced quoting -> fail closed
+        return False
+    # F14: scan for hard metachars on a copy whose quoted spans are blanked out. Expansion is
+    # rejected below, so `grep 'comfy$'` / `grep "a|b"` are inert text — yet the flat
     # scan would refuse them. Masking preserves offsets, so pipe boundaries are located outside
     # quotes too. Path safety
     # is UNAFFECTED: segments are taken from the ORIGINAL text and every path token is still validated,
     # so `cat '/etc/shadow'` remains refused.
-    masked = _mask_single_quoted(stripped)
+    masked = _mask_quoted(stripped)
+    segs = _split_top_level_pipes(stripped)
+    if segs is None or any(not s for s in segs):
+        return False
+    grouped_inner_for_scan = _outer_group_inner(segs[0])
+    if grouped_inner_for_scan is not None:
+        # The balanced outer pair is grouping syntax already proven by _outer_group_inner, not a
+        # subshell hidden inside an argv. Blank only those two positions for the metachar scan.
+        left = len(segs[0]) - len(segs[0].lstrip())
+        right = len(segs[0].rstrip()) - 1
+        chars = list(masked)
+        chars[left], chars[right] = "x", "x"
+        masked = "".join(chars)
     # Backslash-escaped parentheses are literal argv (not a subshell), most commonly find's grouped
     # predicates: `find ... \( -name a -o -name b \) | head`. Preserve string length for the pipe
     # offsets below while removing only those two proven-literal metacharacters from the hard scan.
@@ -934,17 +1400,11 @@ def _is_safe_readonly_command(cmd: str) -> bool:
     # A bare `$` anchor (`grep 'comfy$'`) carries no such risk and stays allowed.
     if _SUBSTITUTION.search(stripped):
         return False
-    segs, prev = [], 0
-    for i, ch in enumerate(masked):
-        if ch == "|":
-            segs.append(stripped[prev:i])
-            prev = i + 1
-    segs.append(stripped[prev:])
-    segs = [s.strip() for s in segs]
-    if any(not s for s in segs):                          # empty => `||` or dangling pipe
+    if _VARIABLE_EXPANSION.search(_mask_single_quoted(stripped)):
         return False
     first_tokens = segs[0].split()
-    if first_tokens and first_tokens[0] in _SHELL_KEYWORDS:
+    if (first_tokens and first_tokens[0] in _SHELL_KEYWORDS
+            and first_tokens[0] not in _READ_CONTROL_KEYWORDS):
         return False                                      # control-flow/loops require confirmation
     source = _strip_sudo(_strip_shell_keywords(segs[0]).strip())
     # `find` needs its own recursive -exec proof rather than the flat allowlist. Preserve that proof
@@ -953,7 +1413,11 @@ def _is_safe_readonly_command(cmd: str) -> bool:
     # function and would recurse.
     source_tokens = source.split()
     source_is_find = bool(source_tokens) and _basename(source_tokens[0]) == "find"
-    if not _is_read_only(source) and not (source_is_find and not _find_is_mutating(source, 0)):
+    grouped_inner = _outer_group_inner(source)
+    source_is_read_group = grouped_inner is not None and classify(grouped_inner) == "read_only"
+    source_is_stdin_filter = had_input_redirect and _is_safe_filter(source)
+    if (not source_is_stdin_filter and not source_is_read_group and not _is_read_only(source)
+            and not (source_is_find and not _find_is_mutating(source, 0))):
         return False
     return all(_is_safe_filter(s) for s in segs[1:])
 
@@ -1201,6 +1665,7 @@ _PY_SAFE_CALLS = {
     "json.load", "json.loads", "json.dumps",
     "yaml.safe_load", "yaml.safe_load_all",
     "glob.glob", "glob.iglob",
+    "importlib.util.find_spec",                          # package presence, no import/installation
     "pkg_resources.get_distribution",
     "shutil.which",                                      # PATH lookup only; no copy/move
     "socket.gethostname",                                # local name, opens nothing
@@ -1473,7 +1938,75 @@ def _env_is_read(tokens) -> bool:
 # segments that change nothing, so an empty remainder is a READ here, not a fail-closed refusal.
 _SHELL_KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for",
                    "case", "esac", "in", "select", "function", "coproc", "time", "!",
-                   "{", "}", "(", ")"}
+                   "{", "}", "(", ")", "continue", "break"}
+# These tokens only direct the current short-lived shell after every adjacent command has passed
+# the same classifier. Treating brace groups and finite-loop flow as mutations made ordinary
+# batched version/process checks ask for write approval without protecting any guest state.
+_READ_CONTROL_KEYWORDS = {"if", "then", "else", "elif", "fi", "!", "{", "}",
+                          "continue", "break"}
+_DIAGNOSTIC_ENV_NAMES = {
+    "CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES", "NVIDIA_DRIVER_CAPABILITIES",
+    "CUDA_HOME", "CONDA_DEFAULT_ENV", "VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH",
+    "LD_LIBRARY_PATH", "PATH",
+}
+_CHILD_DIAGNOSTIC_ENV_NAMES = {
+    "CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES", "NVIDIA_DRIVER_CAPABILITIES",
+    "OMP_NUM_THREADS", "LOCAL_RANK", "RANK", "WORLD_SIZE",
+}
+_ENV_ASSIGNMENT = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(.*)", re.DOTALL)
+
+
+def _diagnostic_child_env_inner(seg: str):
+    """Return an inner command after a proven child-only diagnostic environment prefix.
+
+    CUDA visibility/rank variables alter only the launched process and cannot load code. PATH,
+    PYTHONPATH and LD_LIBRARY_PATH are intentionally absent because they can select an executable,
+    Python module or shared object. The returned command still passes through this same classifier.
+    """
+    try:
+        tokens = shlex.split(seg)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+    i, found = 0, False
+    if _basename(tokens[0]).lower() == "env":
+        i = 1
+        while i < len(tokens):
+            token = tokens[i]
+            if token == "--":
+                i += 1
+                break
+            if token in ("-u", "--unset"):
+                if i + 1 >= len(tokens) or tokens[i + 1] not in _CHILD_DIAGNOSTIC_ENV_NAMES:
+                    return None
+                found, i = True, i + 2
+                continue
+            if token.startswith("--unset="):
+                if token.split("=", 1)[1] not in _CHILD_DIAGNOSTIC_ENV_NAMES:
+                    return None
+                found, i = True, i + 1
+                continue
+            match = _ENV_ASSIGNMENT.fullmatch(token)
+            if match:
+                if match.group(1) not in _CHILD_DIAGNOSTIC_ENV_NAMES:
+                    return None
+                found, i = True, i + 1
+                continue
+            if token.startswith("-"):
+                return None
+            break
+    else:
+        while i < len(tokens):
+            match = _ENV_ASSIGNMENT.fullmatch(tokens[i])
+            if not match:
+                break
+            if match.group(1) not in _CHILD_DIAGNOSTIC_ENV_NAMES:
+                return None
+            found, i = True, i + 1
+    if not found or i >= len(tokens):
+        return None
+    return shlex.join(tokens[i:])
 
 
 def _strip_shell_keywords(seg: str) -> str:
@@ -1482,6 +2015,22 @@ def _strip_shell_keywords(seg: str) -> str:
     while i < len(toks) and toks[i] in _SHELL_KEYWORDS:
         i += 1
     return " ".join(toks[i:])
+
+
+def _strip_subshell_edges(seg: str) -> str:
+    """Peel grouping punctuation left on segments after quote-aware &&/||/; splitting.
+
+    A grouped fallback such as ``(netstat ... || lsof ... || true)`` is read-only exactly when
+    every command inside it is read-only. classify() already checks every resulting segment;
+    unmatched group edges should not turn those commands into fake executable names. Command
+    substitution is rejected before this helper is reached.
+    """
+    value = seg.strip()
+    while value.startswith("("):
+        value = value[1:].lstrip()
+    while value.endswith(")"):
+        value = value[:-1].rstrip()
+    return value
 
 
 def _strip_wrapper(binary: str, tokens) -> str:
@@ -1517,27 +2066,37 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     # Strip everything that can merely PRECEDE the real command, to a fixed point: `then sudo rm ...`
     # needs both strippers, and either one alone leaves the other's prefix in token 0.
     seg, prev = seg.strip(), None
+    if _SUBSTITUTION.search(seg):                         # reject before peeling grouping parens
+        return True
+    seg = _strip_subshell_edges(seg)
     initial_tokens = seg.split()
-    if initial_tokens and initial_tokens[0] in _SHELL_KEYWORDS:
+    if (initial_tokens and initial_tokens[0] in _SHELL_KEYWORDS
+            and initial_tokens[0] not in _READ_CONTROL_KEYWORDS):
         return True                                       # do not auto-run shell control-flow/loops
     while prev != seg:
         prev = seg
         seg = _strip_sudo(_strip_shell_keywords(seg).strip())
     if not seg:
-        return True                                      # syntax fragment, not a proven read
+        return not (initial_tokens and initial_tokens[0] in _READ_CONTROL_KEYWORDS)
     if ">" in _SAFE_REDIR.sub(" ", seg):                  # real-file redirection writes
         return True
     # `2>/dev/null` / `2>&1` / `>/dev/null` change nothing, but they are bare WORDS to a naive
     # tokenizer: `env 2>/dev/null` read as the executing form `env <cmd>` and was refused live.
     # Drop them before any token-position rule looks at the segment.
     seg = _SAFE_REDIR.sub(" ", seg).strip()
+    child_env_inner = _diagnostic_child_env_inner(seg)
+    if child_env_inner is not None:
+        return (_depth > 3 or
+                _is_mutating_segment(child_env_inner, _depth + 1))
     tokens = seg.split()
     if not tokens:
         return False
     raw0 = _unquote(tokens[0])
     binary = _basename(raw0).lower()
-    if _SUBSTITUTION.search(seg):                         # substitution executes, even quoted
-        return True
+    if binary == "[":
+        return not (len(tokens) >= 2 and tokens[-1] == "]")  # shell test; no state change
+    if binary in ("printf", "echo", "true", "false"):
+        return False                                      # captured output/status, no real-file redirect
     # running a file on the box: a script by name, or anything by relative path
     if _SCRIPT_SHAPE.search(binary) or raw0.startswith("./") or raw0.startswith("../"):
         return True
@@ -1618,7 +2177,10 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     # fifth spelling — two matching mechanisms in one file, and only the position-dependent one is
     # fragile. Re-spelling token 0 as its basename keeps the anchor's protection and drops its
     # dependence on the invocation. ORed, never substituted, so this can only ADD matches.
-    respelled = " ".join([binary] + tokens[1:]) if binary != raw0 else seg
+    # Normalize path-qualified AND quoted executable spellings. Comparing against `raw0` missed
+    # `"npm" --version`: raw0 had already been unquoted, so the code incorrectly kept the quoted
+    # segment and failed the reviewed version-only form inside an otherwise proven literal loop.
+    respelled = " ".join([binary] + tokens[1:]) if tokens[0] != binary else seg
     if any(p.search(seg) or p.search(respelled) for p in _MUTATING_FORMS):
         return True
     # Auto-run is allowlisted, not inferred from the absence of a known writer.
@@ -1633,8 +2195,8 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
 # them must be a read. This removes the single largest source of refusals seen live
 # (the model naturally writes `ls /a; ls /b`) without widening what any one command
 # may do — and it lets the refusal message stop lying about "this changes the box".
-_CHAIN_SPLIT = re.compile(r"\|\||&&|[;|]")
-_CONDITIONAL_SPLIT = re.compile(r"\|\||&&|;")
+_CHAIN_SPLIT = re.compile(r"\|\||&&|[;|\n]")
+_CONDITIONAL_SPLIT = re.compile(r"\|\||&&|[;\n]")
 
 
 def _split_at(cmd: str, pattern):
@@ -1672,104 +2234,96 @@ def _split_chain(cmd: str):
 
 
 def _split_conditionals(cmd: str):
-    """Split control-flow boundaries while preserving a pipeline for structural validation."""
-    return _split_at(cmd, _CONDITIONAL_SPLIT)
+    """Split top-level control flow while preserving pipelines and grouped fallbacks."""
+    masked = _mask_quoted(cmd)
+    parts, last, depth, i = [], 0, 0, 0
+    while i < len(masked):
+        ch = masked[i]
+        bs, j = 0, i - 1
+        while j >= 0 and masked[j] == "\\":
+            bs, j = bs + 1, j - 1
+        escaped = bs % 2 == 1
+        if ch == "(" and not escaped:
+            depth += 1
+        elif ch == ")" and not escaped:
+            depth = max(0, depth - 1)
+        if depth == 0 and not escaped:
+            width = 2 if masked.startswith(("||", "&&"), i) else (1 if ch in ";\n" else 0)
+            if width:
+                parts.append(cmd[last:i])
+                last, i = i + width, i + width
+                continue
+        i += 1
+    parts.append(cmd[last:])
+    return [s for s in (part.strip() for part in parts) if s]
 
 
-def _effective_launch_tokens(seg: str):
-    """Return the executable argv after benign launch wrappers.
+_LITERAL_FOR_LOOP = re.compile(
+    r"(?P<prefix>^|[;\n])(?P<space>\s*)for\s+(?P<var>[A-Za-z_][A-Za-z0-9_]*)\s+in\s+"
+    r"(?P<values>[^;\n]+?)\s*;\s*do\s+(?P<body>.*?)\s*;\s*done\b", re.DOTALL)
+_LITERAL_LOOP_VALUE = re.compile(r"[A-Za-z0-9_./:@+\-]+")
 
-    This is intentionally a tiny, purpose-specific parser, not a second shell policy. It only
-    peels the same wrappers classify() already understands so the FileBrowser boundary cannot be
-    bypassed by quoting its path, `env`, `nohup`, or `bash -c`. Image-owned managers remain ordinary
-    commands and are not treated as direct binary launches.
+
+def _expand_loop_var(body: str, variable: str, value: str) -> str:
+    """Expand one shell loop variable outside single quotes; values are prevalidated literals."""
+    out, quote, i = [], "", 0
+    braced, plain = "${" + variable + "}", "$" + variable
+    while i < len(body):
+        ch = body[i]
+        if ch == "'":
+            quote = "" if quote == "'" else ("'" if not quote else quote)
+            out.append(ch)
+            i += 1
+            continue
+        if ch == '"':
+            quote = "" if quote == '"' else ('"' if not quote else quote)
+            out.append(ch)
+            i += 1
+            continue
+        if quote != "'" and body.startswith(braced, i):
+            out.append(value)
+            i += len(braced)
+            continue
+        if (quote != "'" and body.startswith(plain, i)
+                and (i + len(plain) == len(body)
+                     or not (body[i + len(plain)].isalnum() or body[i + len(plain)] == "_"))):
+            out.append(value)
+            i += len(plain)
+            continue
+        out.append(ch)
+        i += 1
+    return "".join(out)
+
+
+def _rewrite_proven_literal_for_loop(command: str):
+    """Validate one finite literal for-loop and replace it with ``true`` for outer classification.
+
+    Models naturally batch the same read across a short path/interpreter list. Each literal value is
+    substituted and the body is reclassified by this same gate; any write, nested loop, dynamic
+    variable or unknown command makes the entire loop require confirmation.
     """
-    seg = _strip_shell_keywords((seg or "").strip()).strip()
+    masked = _mask_quoted(command)
+    match = _LITERAL_FOR_LOOP.search(masked)
+    if match is None:
+        return False, False, command
+    values_text = command[match.start("values"):match.end("values")]
+    body = command[match.start("body"):match.end("body")]
     try:
-        tokens = shlex.split(seg)
+        values = shlex.split(values_text)
     except ValueError:
-        return []                                      # malformed shell does not get a guessed parse
-    for _ in range(8):                                 # bounded even for pathological nested wrappers
-        if not tokens:
-            return []
-        binary = _basename(tokens[0]).lower()
-        if binary == "sudo":
-            i = 1
-            while i < len(tokens):
-                tok = tokens[i]
-                if tok in ("-u", "-g", "-U"):
-                    i += 2
-                    continue
-                if tok in ("-i", "-s", "-e"):
-                    return tokens                       # a sudo shell is not a transparent wrapper
-                if tok.startswith("-"):
-                    i += 1
-                    continue
-                break
-            tokens = tokens[i:]
-            continue
-        # `command -v filebrowser` only asks the shell to resolve a pathname. It must remain a
-        # diagnostic, not be mistaken for the launch whose executable happens to be its operand.
-        if binary == "command" and _COMMAND_LOOKUP.search(" ".join(tokens)):
-            return tokens
-        if binary in _WRAPPER_BINARIES:
-            i = 1
-            while i < len(tokens) and tokens[i].startswith("-"):
-                i += 2 if tokens[i] in _WRAPPER_VALUE_FLAGS else 1
-            tokens = tokens[i + _WRAPPER_BINARIES[binary]:]
-            continue
-        if binary == "env":
-            i = 1
-            while i < len(tokens) and (tokens[i].startswith("-") or "=" in tokens[i]):
-                i += 1
-            tokens = tokens[i:]
-            continue
-        # `exec filebrowser …` changes only process replacement, not the service contract. Treat it
-        # as another transparent spelling of the direct launch rather than allowing a confirm-card
-        # bypass of this narrow platform boundary.
-        if binary == "exec":
-            tokens = tokens[1:]
-            continue
-        return tokens
-    return []
-
-
-# A standalone process does not establish that a managed platform entry works.
-# Keep this list evidence-driven because the catalog does not describe each
-# application's launcher, authentication and root contract.
-_UNMANAGED_PLATFORM_ENTRY_EXECUTABLES = {"filebrowser"}
-
-
-def is_unmanaged_platform_service_launch(command: str, _depth: int = 0) -> bool:
-    """Whether a command launches a standalone substitute for a managed platform entry.
-
-    A platform entry's external route, authentication and root are not proven by
-    launching an arbitrary guest binary or seeing a loopback HTTP 200.
-
-    Mentions in ps/find/log reads and existing supervisorctl operations remain diagnostics or
-    image-owned repairs. Only a direct executable invocation is refused.
-    """
-    for seg in _split_chain((command or "").strip()):
-        tokens = _effective_launch_tokens(seg)
-        if not tokens:
-            continue
-        binary = _basename(tokens[0]).lower()
-        # Shell `-c` is a direct launch spelling, not a service manager. Re-enter the same narrow
-        # check on its payload; depth is bounded so deliberately pathological nesting cannot loop.
-        if binary in {"sh", "bash", "zsh", "ksh", "dash", "fish", "csh", "tcsh"}:
-            if _depth < 3:
-                for i, token in enumerate(tokens[:-1]):
-                    if token == "-c" and is_unmanaged_platform_service_launch(tokens[i + 1], _depth + 1):
-                        return True
-            continue
-        if binary not in _UNMANAGED_PLATFORM_ENTRY_EXECUTABLES:
-            continue
-        # Introspection is harmless. Any other direct invocation can create a listener whose
-        # console route, root and auth policy have not been proven.
-        if len(tokens) > 1 and all(t in ("--help", "-h", "--version", "-v") for t in tokens[1:]):
-            continue
-        return True
-    return False
+        return True, False, command
+    if (not values or len(values) > 32
+            or any(_LITERAL_LOOP_VALUE.fullmatch(value) is None for value in values)
+            or re.search(r"\b(?:for|while|until|select|case)\b", _mask_quoted(body))):
+        return True, False, command
+    variable = match.group("var")
+    for value in values:
+        expanded = _expand_loop_var(body, variable, value)
+        if _VARIABLE_EXPANSION.search(expanded) or classify(expanded) != "read_only":
+            return True, False, command
+    prefix = command[match.start("prefix"):match.end("prefix")]
+    rewritten = command[:match.start()] + prefix + " true" + command[match.end():]
+    return True, True, rewritten
 
 
 def is_form_violation(command: str) -> bool:
@@ -1834,13 +2388,16 @@ def classify(command: str) -> str:
     cmd = (command or "").strip()
     if not cmd:
         return "mutating"
+    if cmd in _SHELL_KEYWORDS:                            # bare syntax is not a useful remote probe
+        return "mutating"
     if _scan_destructive(cmd):                            # 1) destructive precedes everything
         return "destructive"
-    if "\n" in cmd:                                       # 2) never accept a multi-line script
-        return "mutating"
-    if _is_safe_readonly_command(cmd):                    # 3) preserve reviewed read-only pipelines
+    loop_found, loop_safe, rewritten = _rewrite_proven_literal_for_loop(cmd)
+    if loop_found:
+        return "read_only" if loop_safe and classify(rewritten) == "read_only" else "mutating"
+    if _is_safe_readonly_command(cmd):                    # 2) preserve reviewed read-only pipelines
         return "read_only"
-    for conditional in _split_conditionals(cmd):          # 4) every control-flow branch is a read
+    for conditional in _split_conditionals(cmd):          # 3) every line/control-flow branch is a read
         # Keep a pipeline intact long enough for _is_safe_readonly_command to prove that its
         # downstream stages read stdin only. Splitting `read | grep || true` all the way down first
         # turns the stdin-only grep into an apparent bare file reader and creates a false write card.

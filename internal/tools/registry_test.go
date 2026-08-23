@@ -4,6 +4,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/compshare-agent/internal/security"
 )
 
 func TestCreatePathToolsAllowRegion(t *testing.T) {
@@ -221,6 +223,55 @@ func TestFirstBatchCapabilityToolsAreRegisteredWithSafeBoundaries(t *testing.T) 
 	if _, ok := descriptions["DetachCFS"]; ok {
 		t.Fatal("DetachCFS must not be exposed as a user-facing tool")
 	}
+}
+
+func TestUpdateInstancePortsWorkflowExposesDeltasNotFullReplacement(t *testing.T) {
+	props := registryToolProperties(t, "UpdateInstancePortsWorkflow")
+	for _, field := range []string{"UHostId", "AddHttpPorts", "RemoveHttpPorts", "AddTcpPorts", "RemoveTcpPorts"} {
+		if _, ok := props[field]; !ok {
+			t.Fatalf("UpdateInstancePortsWorkflow must expose %s", field)
+		}
+	}
+	for _, forbidden := range []string{"HttpPorts", "TcpPorts", "UdpPorts", "AddUdpPorts", "RemoveUdpPorts", "zone_id", "Zone", "Region"} {
+		if _, ok := props[forbidden]; ok {
+			t.Fatalf("UpdateInstancePortsWorkflow must not expose raw/internal field %s", forbidden)
+		}
+	}
+	description := registryDescriptions()["UpdateInstancePortsWorkflow"]
+	for _, want := range []string{"全量替换", "保留", "UDP", "不能用它承诺"} {
+		mustContain(t, description, want)
+	}
+
+	policies := DefaultToolExecutionPolicies()
+	raw, ok := policies["UpdateCompShareInstancePorts"]
+	if !ok {
+		t.Fatal("raw UpdateCompShareInstancePorts requires an internal execution policy")
+	}
+	if raw.SecurityLevel != security.L1 || !raw.NeedsConfirm {
+		t.Fatalf("raw port update must stay L1, got %+v", raw)
+	}
+	for _, forbidden := range []string{"zone_id", "az_group"} {
+		if containsString(raw.AllowedParams, forbidden) {
+			t.Fatalf("model-origin arguments must not contain %s", forbidden)
+		}
+	}
+	if !containsString(raw.InternalAllowedParams, "zone_id") {
+		t.Fatal("workflow-derived zone_id must reach the raw port API")
+	}
+}
+
+func registryToolProperties(t *testing.T, name string) map[string]any {
+	t.Helper()
+	for _, tool := range Registry {
+		if tool.Function == nil || tool.Function.Name != name {
+			continue
+		}
+		params, _ := tool.Function.Parameters.(map[string]any)
+		props, _ := params["properties"].(map[string]any)
+		return props
+	}
+	t.Fatalf("tool schema %s not found", name)
+	return nil
 }
 
 func TestAlignedToolSchemasMatchCurrentUpstreamContracts(t *testing.T) {
