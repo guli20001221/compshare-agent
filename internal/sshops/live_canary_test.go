@@ -78,9 +78,13 @@ func TestLiveCreateOpsCanary(t *testing.T) {
 		},
 	)
 	imageSource := envOr("SSHH_CREATE_IMAGE_SOURCE", "platform")
+	gpuCount, err := strconv.Atoi(envOr("SSHH_CREATE_GPU_COUNT", "1"))
+	if err != nil || gpuCount < 1 {
+		t.Fatalf("SSHH_CREATE_GPU_COUNT must be a positive integer, got %q", os.Getenv("SSHH_CREATE_GPU_COUNT"))
+	}
 	params := map[string]any{
 		"GpuType":             envOr("SSHH_CREATE_GPU", "4090"),
-		"Gpu":                 float64(1),
+		"Gpu":                 float64(gpuCount),
 		"ChargeType":          envOr("SSHH_CREATE_CHARGE", "Postpay"),
 		"ImageSource":         imageSource,
 		"ImageName":           envOr("SSHH_CREATE_IMAGE", "ComfyUI"),
