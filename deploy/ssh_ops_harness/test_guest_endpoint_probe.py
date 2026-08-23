@@ -78,8 +78,47 @@ check("http-probe-closes-channel-and-client", channel.closed and client.closed)
 tcp_client, tcp_channel, tcp_transport = _open()
 tcp = guest_endpoint_probe.probe(
     {}, {"protocol": "tcp", "port": 8888}, opener=lambda _c: (tcp_client, None))
-check("tcp-probe-connects-without-sending", tcp["ok"] and tcp["connected"] and not tcp_channel.sent)
+check("tcp-probe-connects-without-sending",
+      tcp["ok"] and tcp["probe_completed"] and tcp["connected"] and not tcp_channel.sent)
 check("tcp-probe-still-fixed-to-loopback", tcp_transport.opened[1] == ("127.0.0.1", 8888))
+
+
+class _RefusingTransport:
+    def is_active(self):
+        return True
+
+    def open_channel(self, _kind, _dest, _source, timeout=None):
+        raise ConnectionRefusedError("fixture listener is closed")
+
+
+refused_client = _Client(_RefusingTransport())
+refused = guest_endpoint_probe.probe(
+    {}, {"protocol": "tcp", "port": 8188}, opener=lambda _c: (refused_client, None))
+check("closed-listener-is-a-completed-negative-probe",
+      refused["ok"] is False and refused["probe_completed"] is True
+      and refused["connected"] is False and refused["error_class"] == "ConnectionRefusedError")
+check("closed-listener-still-closes-ssh-client", refused_client.closed)
+
+
+class _BrokenTransport:
+    def __init__(self):
+        self.active = True
+
+    def is_active(self):
+        return self.active
+
+    def open_channel(self, _kind, _dest, _source, timeout=None):
+        self.active = False
+        raise RuntimeError("fixture SSH transport died")
+
+
+broken_client = _Client(_BrokenTransport())
+broken = guest_endpoint_probe.probe(
+    {}, {"protocol": "tcp", "port": 8188}, opener=lambda _c: (broken_client, None))
+check("ssh-channel-failure-is-not-a-completed-guest-observation",
+      broken["ok"] is False and "probe_completed" not in broken
+      and broken["error_class"] == "RuntimeError")
+check("ssh-channel-failure-still-closes-client", broken_client.closed)
 
 opened = []
 for name, args in [

@@ -87,11 +87,25 @@ def probe(conn, args, secrets=(), opener=ssh_transport.open_client):
         if transport is None or not transport.is_active():
             return {"ok": False, "protocol": protocol, "port": port,
                     "error_class": "ssh_transport_inactive"}
-        channel = transport.open_channel(
-            "direct-tcpip", ("127.0.0.1", port), ("127.0.0.1", 0), timeout=timeout)
+        try:
+            channel = transport.open_channel(
+                "direct-tcpip", ("127.0.0.1", port), ("127.0.0.1", 0), timeout=timeout)
+        except Exception as exc:  # noqa: BLE001 — class only; no Paramiko/private detail
+            # A direct-tcpip rejection while the SSH transport stays active is the actual negative
+            # guest observation (typically a closed listener). If the transport died, the probe
+            # itself failed and must remain a wire failure rather than a completed read.
+            try:
+                transport_active = bool(transport.is_active())
+            except Exception:  # noqa: BLE001
+                transport_active = False
+            return {"ok": False, "protocol": protocol, "port": port,
+                    **({"probe_completed": True, "connected": False}
+                       if transport_active else {}),
+                    "error_class": type(exc).__name__}
         channel.settimeout(timeout)
         if protocol == "tcp":
-            return {"ok": True, "protocol": "tcp", "port": port, "connected": True}
+            return {"ok": True, "protocol": "tcp", "port": port, "probe_completed": True,
+                    "connected": True}
 
         virtual_host = host_header or "127.0.0.1:%d" % port
         request = ("%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n"
@@ -106,13 +120,15 @@ def probe(conn, args, secrets=(), opener=ssh_transport.open_client):
         body_cut = capped or len(body) > _MAX_BODY_BYTES
         body_text = guardrails.scrub_output(
             body[:_MAX_BODY_BYTES].decode("utf-8", "replace"), secrets)
-        return {"ok": bool(match), "protocol": "http", "port": port, "connected": True,
+        return {"ok": bool(match), "protocol": "http", "port": port, "probe_completed": True,
+                "connected": True,
                 "method": method, "path": path, "host_header": virtual_host,
                 "status_code": status_code, "status_line": status_line,
                 "body": body_text, "truncated": body_cut,
                 **({"error_class": "invalid_http_response"} if not match else {})}
     except Exception as exc:  # noqa: BLE001 — return only the stable class, never remote text
-        return {"ok": False, "protocol": protocol, "port": port,
+        return {"ok": False, "protocol": protocol, "port": port, "probe_completed": True,
+                "connected": channel is not None,
                 "error_class": type(exc).__name__}
     finally:
         if channel is not None:

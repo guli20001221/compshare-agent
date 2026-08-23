@@ -431,7 +431,6 @@ _DISPOSITION_MAP = {
     "refused_confirmation_broker_cancelled": "refused",
     "refused_not_approved": "refused",
     "refused_unconfirmable": "refused",
-    "refused_unmanaged_platform_service": "refused",
     "refused_precondition": "refused",
     "no_connection": "failed",
 }
@@ -455,18 +454,35 @@ def _wire_disposition(raw: str) -> str:
     return _DISPOSITION_MAP.get(raw, "failed")
 
 
-_REMOTE_TEXT_PRECONDITION_ERRORS = frozenset({
+_STRUCTURED_READ_PRECONDITION_ERRORS = frozenset({
     "invalid_arguments", "path_not_allowed", "invalid_line_start", "invalid_line_count",
     "line_start_out_of_range", "symlink_refused", "not_regular_file", "file_too_large", "not_utf8",
+    "root_not_allowed", "invalid_query", "invalid_file_glob", "invalid_ignore_case",
+    "invalid_max_matches", "invalid_name_glob", "invalid_max_depth", "invalid_max_results",
+    "root_symlink_refused", "invalid_pid", "invalid_names", "environment_too_large",
+    "invalid_job_id", "invalid_wait_seconds", "job_not_found",
+})
+
+_STRUCTURED_READ_OBSERVED_NEGATIVES = frozenset({
+    # These calls successfully observed remote state. Absence or the wrong remote object type is
+    # diagnostic evidence, not a policy refusal and not an SSH/SFTP execution failure.
+    "root_not_found", "root_not_directory", "process_not_found",
 })
 
 
-def _remote_text_disposition(result: dict) -> str:
-    """Keep a policy/precondition refusal distinct from an SSH/SFTP execution failure."""
-    if result.get("ok"):
+def _structured_read_disposition(result: dict, completed: bool = False) -> str:
+    """Classify one structured read without turning every negative result into a refusal.
+
+    Validation and bounded-policy failures are preconditions. SSH/SFTP/permission failures retain
+    their concrete error class and therefore map to wire ``failed``. A completed negative probe or
+    state observation is still a read that ran; its structured fields carry the negative finding.
+    """
+    if result.get("ok") or completed:
         return "ran_read_only"
-    error_class = str(result.get("error_class") or "remote_text_failed")
-    if error_class in _REMOTE_TEXT_PRECONDITION_ERRORS:
+    error_class = str(result.get("error_class") or "structured_read_failed")
+    if error_class in _STRUCTURED_READ_OBSERVED_NEGATIVES:
+        return "ran_read_only"
+    if error_class in _STRUCTURED_READ_PRECONDITION_ERRORS:
         return "refused_precondition"
     return error_class
 
@@ -612,17 +628,6 @@ def run_command(command: str) -> dict:
         if tier == "destructive":
             entry["disposition"] = "refused_destructive"
             return {"text": f"⛔ REFUSED — destructive command, never executed: {command}",
-                    "is_error": True, "tier": tier, "executed": False}
-        # A standalone substitute is not proof of the platform entry's service contract. The
-        # evidence-backed executable registry remains deliberately narrow; existing manager/launcher
-        # operations continue through the normal confirmation path.
-        if guardrails.is_unmanaged_platform_service_launch(command):
-            entry["disposition"] = "refused_unmanaged_platform_service"
-            return {"text": ("⛔ NOT EXECUTED — a standalone guest process cannot substitute for this "
-                             "platform-managed entry. A local listener or HTTP response does not establish "
-                             "its external route, port, root or authentication. Inspect and use the image's "
-                             "existing manager/launcher; if none establishes the contract, report that "
-                             "boundary instead of inventing a replacement."),
                     "is_error": True, "tier": tier, "executed": False}
         if tier == "mutating":
             # The SHAPE gate is NOT part of the read-only policy — it is the prompt-injection
@@ -1111,11 +1116,11 @@ async def main():
     async def read_text_file(args):
         result = await asyncio.to_thread(remote_text.read, _CONN, args, _secrets())
         rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-        disposition = _remote_text_disposition(result)
+        disposition = _structured_read_disposition(result)
         display = "read_text_file path=" + str(result.get("path") or "invalid")[:512]
         _record_structured_step(display, "read_only", disposition, len(rendered.encode("utf-8")))
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
-                **({"is_error": True} if not result.get("ok") else {})}
+                **({"is_error": True} if disposition != "ran_read_only" else {})}
 
     @tool("find_paths", remote_search.FIND_DESCRIPTION, remote_search.find_schema(),
           annotations=ToolAnnotations(title="Find paths in one remote application tree",
@@ -1124,12 +1129,12 @@ async def main():
     async def find_paths(args):
         result = await asyncio.to_thread(remote_search.find_paths, _CONN, args)
         rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-        disposition = "ran_read_only" if result.get("ok") else "refused_precondition"
+        disposition = _structured_read_disposition(result)
         display = "find_paths root=" + str(result.get("root") or "invalid")[:512]
         _record_structured_step(display, "read_only", disposition,
                                 len(rendered.encode("utf-8")))
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
-                **({"is_error": True} if not result.get("ok") else {})}
+                **({"is_error": True} if disposition != "ran_read_only" else {})}
 
     @tool("search_text_tree", remote_search.TOOL_DESCRIPTION, remote_search.input_schema(),
           annotations=ToolAnnotations(title="Search one remote application tree", readOnlyHint=True,
@@ -1137,12 +1142,12 @@ async def main():
     async def search_text_tree(args):
         result = await asyncio.to_thread(remote_search.search, _CONN, args, _secrets())
         rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-        disposition = "ran_read_only" if result.get("ok") else "refused_precondition"
+        disposition = _structured_read_disposition(result)
         display = "search_text_tree root=" + str(result.get("root") or "invalid")[:512]
         _record_structured_step(display, "read_only", disposition,
                                 len(rendered.encode("utf-8")))
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
-                **({"is_error": True} if not result.get("ok") else {})}
+                **({"is_error": True} if disposition != "ran_read_only" else {})}
 
     @tool("read_process_environment", process_env.TOOL_DESCRIPTION, process_env.input_schema(),
           annotations=ToolAnnotations(title="Read selected process environment", readOnlyHint=True,
@@ -1150,11 +1155,11 @@ async def main():
     async def read_process_environment(args):
         result = await asyncio.to_thread(process_env.read, _CONN, args, _secrets())
         rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-        disposition = "ran_read_only" if result.get("ok") else "refused_precondition"
+        disposition = _structured_read_disposition(result)
         display = "read_process_environment pid=" + str(result.get("pid") or "invalid")[:16]
         _record_structured_step(display, "read_only", disposition, len(rendered.encode("utf-8")))
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
-                **({"is_error": True} if not result.get("ok") else {})}
+                **({"is_error": True} if disposition != "ran_read_only" else {})}
 
     @tool("endpoint_probe", endpoint_probe.tool_description(_ENDPOINT_TARGETS),
           endpoint_probe.input_schema(_ENDPOINT_TARGETS),
@@ -1180,11 +1185,12 @@ async def main():
         rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         protocol = str(result.get("protocol") or "invalid")[:8]
         port = str(result.get("port") or "invalid")[:8]
-        disposition = "ran_read_only" if result.get("ok") else "refused_precondition"
+        disposition = _structured_read_disposition(
+            result, completed=bool(result.get("probe_completed")))
         _record_structured_step("guest_endpoint_probe protocol=%s port=%s" % (protocol, port),
                                 "read_only", disposition, len(rendered.encode("utf-8")))
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
-                **({"is_error": True} if not result.get("ok") else {})}
+                **({"is_error": True} if disposition != "ran_read_only" else {})}
 
     @tool("poll_background_job", remote_job.POLL_DESCRIPTION, remote_job.poll_schema(),
           annotations=ToolAnnotations(title="Poll a remote background job", readOnlyHint=True,
@@ -1201,11 +1207,11 @@ async def main():
                 "stderr": result.get("stderr_bytes_total", 0),
             }
         rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-        disposition = "ran_read_only" if result.get("ok") else "refused_precondition"
+        disposition = _structured_read_disposition(result)
         _record_structured_step("poll_background_job job=" + str(job_id)[:64], "read_only",
                                 disposition, len(rendered.encode("utf-8")))
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
-                **({"is_error": True} if not result.get("ok") else {})}
+                **({"is_error": True} if disposition != "ran_read_only" else {})}
 
     sdk_tools = [ssh_exec, read_text_file, find_paths, search_text_tree, read_process_environment,
                  probe_endpoint, probe_guest_endpoint, poll_background_job]
@@ -1256,9 +1262,6 @@ async def main():
                 "the job payload must stay in the foreground; the job tool owns detachment")
         elif tier == "destructive":
             refusal, message = "refused_destructive", "destructive commands are unavailable"
-        elif guardrails.is_unmanaged_platform_service_launch(command):
-            refusal, message = "refused_unmanaged_platform_service", (
-                "a standalone process cannot substitute for the platform-managed entry")
         elif guardrails.is_form_violation(command):
             refusal, message = "refused_form", "command form rejected"
         elif len(display) > _MAX_CONFIRMABLE_COMMAND:

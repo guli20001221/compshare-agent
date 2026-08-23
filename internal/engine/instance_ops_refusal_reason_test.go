@@ -23,7 +23,6 @@ func TestEachRefusalReasonIsDistinguishable(t *testing.T) {
 		"refused_confirmation_broker_cancelled",
 		"refused_not_approved",
 		"refused_unconfirmable",
-		"refused_unmanaged_platform_service",
 		"refused_precondition",
 		"refused_mutating_phase1",
 	}
@@ -40,13 +39,15 @@ func TestEachRefusalReasonIsDistinguishable(t *testing.T) {
 	}
 }
 
-// The two that most need to differ, named explicitly: a shape refusal is retryable after splitting,
-// a destructive one never is. Collapsing them is what made a live run delete half its probe chain
-// and retry instead of splitting (the #516 class).
+// The two that most need to differ, named explicitly: a command-substitution shape refusal can be
+// rewritten without substitution, while a destructive one never becomes executable by respelling it.
 func TestShapeRefusalIsNotWordedAsAPolicyRefusal(t *testing.T) {
 	form := instanceOpsRefusalReason("refused_form")
-	if !strings.Contains(form, "命令形式") || !strings.Contains(form, "拆") {
-		t.Fatalf("a form refusal must say it is about SHAPE and that splitting fixes it, got %q", form)
+	if !strings.Contains(form, "命令形式") || !strings.Contains(form, "命令替换") {
+		t.Fatalf("a form refusal must identify command substitution as the unsupported shape, got %q", form)
+	}
+	if strings.Contains(form, "多行") || strings.Contains(form, "拆成单条") {
+		t.Fatalf("a form refusal must not reject supported multiline commands, got %q", form)
 	}
 	if strings.Contains(form, "高危") {
 		t.Fatalf("a form refusal must not be worded as a danger refusal, got %q", form)
@@ -58,10 +59,6 @@ func TestShapeRefusalIsNotWordedAsAPolicyRefusal(t *testing.T) {
 	timeout := instanceOpsRefusalReason("refused_confirmation_timeout")
 	if !strings.Contains(timeout, "等待你的确认") || strings.Contains(timeout, "未批准") {
 		t.Fatalf("a timed-out card must not be reported as a user decline, got %q", timeout)
-	}
-	platform := instanceOpsRefusalReason("refused_unmanaged_platform_service")
-	if !strings.Contains(platform, "平台入口") || !strings.Contains(platform, "FileBrowser") {
-		t.Fatalf("an unverified platform-service refusal must explain the actual boundary, got %q", platform)
 	}
 	precondition := instanceOpsRefusalReason("refused_precondition")
 	if !strings.Contains(precondition, "前置条件") || !strings.Contains(precondition, "重新读取") ||
