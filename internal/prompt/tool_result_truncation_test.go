@@ -213,3 +213,58 @@ func TestFormatToolResult_UnderCapIsByteIdentical(t *testing.T) {
 		t.Errorf("a result under the cap must be returned untouched\nwant %s\ngot  %s", direct, got)
 	}
 }
+
+func TestFormatToolResultTraceMeasuresTheGenericFormattingLayer(t *testing.T) {
+	t.Run("under cap", func(t *testing.T) {
+		input := map[string]any{"answer": "可用"}
+		out, trace := FormatToolResultWithTrace(input)
+		requireRawRunes(t, trace, utf8.RuneCountInString(out))
+		if trace.VisibleRunes != utf8.RuneCountInString(out) {
+			t.Fatalf("visible runes = %d, actual = %d", trace.VisibleRunes, utf8.RuneCountInString(out))
+		}
+		if trace.Truncated {
+			t.Fatal("an under-cap result must not be marked truncated")
+		}
+	})
+
+	t.Run("CJK truncation counts runes not bytes", func(t *testing.T) {
+		input := map[string]any{"rows": []any{strings.Repeat("数", maxToolResultRunes+100)}}
+		out, trace := FormatToolResultWithTrace(input)
+		if trace.RawRunes == nil || *trace.RawRunes <= maxToolResultRunes {
+			t.Fatalf("raw runes = %v, want a measured over-cap input", trace.RawRunes)
+		}
+		if !trace.Truncated {
+			t.Fatal("an over-cap result must be marked truncated")
+		}
+		actualVisible := utf8.RuneCountInString(out)
+		if trace.VisibleRunes != actualVisible || actualVisible > maxToolResultRunes {
+			t.Fatalf("visible runes = %d, actual = %d, cap = %d", trace.VisibleRunes, actualVisible, maxToolResultRunes)
+		}
+		if len(out) == actualVisible {
+			t.Fatal("precondition: CJK fixture must distinguish byte count from rune count")
+		}
+	})
+
+	t.Run("unserializable raw size stays absent", func(t *testing.T) {
+		out, trace := FormatToolResultWithTrace(map[string]any{"bad": make(chan int)})
+		if trace.RawRunes != nil {
+			t.Fatalf("raw runes = %v, want absent because serialization failed", *trace.RawRunes)
+		}
+		if trace.VisibleRunes != utf8.RuneCountInString(out) {
+			t.Fatalf("visible runes = %d, actual = %d", trace.VisibleRunes, utf8.RuneCountInString(out))
+		}
+		if trace.Truncated {
+			t.Fatal("serialization failure is not generic size truncation")
+		}
+	})
+}
+
+func requireRawRunes(t *testing.T, trace ToolResultFormatTrace, want int) {
+	t.Helper()
+	if trace.RawRunes == nil {
+		t.Fatal("raw runes unexpectedly absent")
+	}
+	if *trace.RawRunes != want {
+		t.Fatalf("raw runes = %d, want %d", *trace.RawRunes, want)
+	}
+}

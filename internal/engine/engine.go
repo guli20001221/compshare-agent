@@ -288,6 +288,7 @@ type Engine struct {
 	turnModelProviderThisTurn           string
 	turnModelIDsThisTurn                []string
 	turnProviderFinishReasonsThisTurn   []string
+	turnModelAttemptsThisTurn           []observability.ModelAttemptTrace
 	turnCompletionClassHint             string
 	turnCompletionReasonHint            string
 	runtimeFinishReasonThisTurn         agentruntime.FinishReason
@@ -1115,7 +1116,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		e.recordTurnModel(call)
 	})
 	ctx = llm.WithOutboundCallResultObserver(ctx, func(result llm.OutboundCallResult) {
-		e.recordTurnProviderFinishReason(result.StopReason)
+		e.recordTurnModelAttempt(result)
 	})
 	e.currentCtx = ctx
 	defer func() { e.currentCtx = nil }()
@@ -2189,6 +2190,10 @@ func cappedTraceForFriendlyError(err error, message string) (string, string) {
 
 func blockedStepEvent(action, source string, args map[string]any, message string, err error) StepEvent {
 	capped, reason := cappedTraceForFriendlyError(err, message)
+	errorCode := ""
+	if err != nil {
+		errorCode = tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{}).Error.Code
+	}
 	return StepEvent{
 		Type:      StepBlocked,
 		Action:    action,
@@ -2197,6 +2202,7 @@ func blockedStepEvent(action, source string, args map[string]any, message string
 		Message:   message,
 		Capped:    capped,
 		CapReason: reason,
+		ErrorCode: errorCode,
 	}
 }
 
@@ -2558,19 +2564,21 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 	action := tc.Function.Name
 	if e.knowledgeOnlyThisTurn && !knowledgeOnlyToolAllowed(action) {
 		const message = "当前公共问答入口仅允许查询知识库或转接人工客服，不能查询账号资源、执行诊断或发起操作"
+		agentResult := tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{})
 		onStep(StepEvent{
 			Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct,
-			Message: message,
+			Message: message, ErrorCode: agentResult.Error.Code,
 		})
-		return tools.MarshalAgentToolResult(tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{}))
+		return tools.MarshalAgentToolResult(agentResult)
 	}
 	if e.publicPlatformReadOnlyThisTurn && !publicPlatformReadOnlyToolAllowed(action) {
 		const message = "当前外部群仅允许查询公开平台目录，不能查询账号或实例数据、执行诊断或发起操作"
+		agentResult := tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{})
 		onStep(StepEvent{
 			Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct,
-			Message: message,
+			Message: message, ErrorCode: agentResult.Error.Code,
 		})
-		return tools.MarshalAgentToolResult(tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{}))
+		return tools.MarshalAgentToolResult(agentResult)
 	}
 	if repeatableAgentTool(action) {
 		if e.toolResultsByCallThisTurn == nil {
@@ -2614,18 +2622,20 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		// Reject malformed arguments and give the model one precise correction;
 		// never coerce a non-object into a tool call.
 		errClass := fmt.Sprintf("parameter parse error: %v", err)
-		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errClass})
-		return tools.MarshalAgentToolResult(tools.AgentToolInvalidToolCall(
+		agentResult := tools.AgentToolInvalidToolCall(
 			action,
 			"INVALID_TOOL_ARGUMENTS",
 			"工具参数必须是合法的 JSON 对象，请按该工具的参数结构重新调用。",
 			tools.AgentToolMeta{SourceStatus: "argument_parse_error"},
-		))
+		)
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errClass, ErrorCode: agentResult.Error.Code})
+		return tools.MarshalAgentToolResult(agentResult)
 	}
 	if e.publicPlatformReadOnlyThisTurn && !publicPlatformReadOnlyArgsAllowed(action, args) {
 		const message = "当前外部群只能查询公开平台目录：镜像仅限平台/社区目录，价格仅限目录价"
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: message})
-		return tools.MarshalAgentToolResult(tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{}))
+		agentResult := tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{})
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: message, ErrorCode: agentResult.Error.Code})
+		return tools.MarshalAgentToolResult(agentResult)
 	}
 
 	// SearchKnowledge executes through the engine's configured retriever (remote
@@ -2693,8 +2703,9 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	// Invariant: BuildArgs functions must only reference specific named keys from wfCtx.Params.
 	if workflow.IsWorkflowTool(action) {
 		msg := "write workflows are unavailable until a verified ActionProposal is accepted"
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
-		return tools.MarshalAgentToolResult(tools.AgentToolFailure(action, nil, "WORKFLOW_DIRECT_CALL_REFUSED", msg, tools.AgentToolMeta{}))
+		agentResult := tools.AgentToolFailure(action, nil, "WORKFLOW_DIRECT_CALL_REFUSED", msg, tools.AgentToolMeta{})
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg, ErrorCode: agentResult.Error.Code})
+		return tools.MarshalAgentToolResult(agentResult)
 	}
 
 	// In-instance SSH diagnosis lane → its own dispatch, BEFORE the diagnosis-chain
@@ -2747,14 +2758,16 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		}
 		if errors.Is(err, tools.ErrDestructiveAction) {
 			msg := fmt.Sprintf("安全限制：%s 是破坏性操作（L2），已拒绝执行。请到控制台手动操作。", action)
-			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+			agentResult := tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{})
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg, ErrorCode: agentResult.Error.Code})
 			return finalReplyPrefix + msg
 		}
 		if errors.Is(err, tools.ErrUserDeclined) {
 			// ErrUserDeclined also covers unresolved confirmations, so do not claim
 			// that the user explicitly cancelled.
 			msg := fmt.Sprintf("好的，%s操作未执行。如需继续，请重新发送指令并确认。", friendlyActionName(action))
-			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+			agentResult := tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{})
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg, ErrorCode: agentResult.Error.Code})
 			return finalReplyPrefix + msg
 		}
 		errMsg := fmt.Sprintf("API 调用失败: %v", err)
@@ -2767,8 +2780,9 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		if apiErr, ok := tools.UpstreamAPIErrorFrom(err); ok && apiErr.Hint != "" {
 			errMsg += "\n建议：" + apiErr.Hint
 		}
-		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errMsg})
-		return tools.MarshalAgentToolResult(tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{}))
+		agentResult := tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{})
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errMsg, ErrorCode: agentResult.Error.Code})
+		return tools.MarshalAgentToolResult(agentResult)
 	}
 
 	// Bound full-account list dumps before they enter model context.
@@ -2778,8 +2792,13 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	}
 	projected := projectToolResultForReAct(action, result.LLMResult)
 
-	formatted := prompt.FormatToolResult(result.LLMResult)
-	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "调用成功", TraceResult: result.TraceResult, Attempts: result.Attempts, Projected: projected})
+	formatted, formatTrace := prompt.FormatToolResultWithTrace(result.LLMResult)
+	visibleRunes, truncated := formatTrace.VisibleRunes, formatTrace.Truncated
+	onStep(StepEvent{
+		Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct,
+		Message: "调用成功", TraceResult: result.TraceResult, Attempts: result.Attempts, Projected: projected,
+		ToolResultRawRunes: formatTrace.RawRunes, ToolResultVisibleRunes: &visibleRunes, ToolResultTruncated: &truncated,
+	})
 	return formatted
 }
 
@@ -4124,6 +4143,10 @@ type StepEvent struct {
 	ExecutedTargets            int
 	WindowSeconds              int
 	Projected                  bool // ReAct result projection shrank this result (observability only)
+	ErrorCode                  string
+	ToolResultRawRunes         *int
+	ToolResultVisibleRunes     *int
+	ToolResultTruncated        *bool
 }
 
 // trimHistory keeps the message list under maxRawHistoryRunes by dropping the

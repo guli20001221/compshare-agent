@@ -133,13 +133,34 @@ func TestSparseTraceRecordMissingOptionalBlocksStillReadable(t *testing.T) {
 	}
 }
 
-func TestSchemaVersionIsV012(t *testing.T) {
+func TestSchemaVersionIsV013(t *testing.T) {
 	// v0.10 distinguishes unobserved tool latency from a measured 0ms duration
 	// and preserves an absent native provider finish reason as "unspecified";
 	// v0.11 adds bounded instance-selection provenance; v0.12 removes retired
-	// planner/runtime-form fields and records internal capability calls directly.
-	if SchemaVersion != "trace.v0.12" {
-		t.Fatalf("SchemaVersion = %q, want trace.v0.12", SchemaVersion)
+	// planner/runtime-form fields and records internal capability calls directly;
+	// v0.13 adds content-free error, truncation, attempt, and first-visible timing.
+	if SchemaVersion != "trace.v0.13" {
+		t.Fatalf("SchemaVersion = %q, want trace.v0.13", SchemaVersion)
+	}
+}
+
+func TestOutcomePreservesARealZeroMillisecondFirstVisibleSample(t *testing.T) {
+	zero := int64(0)
+	data, err := json.Marshal(TraceRecord{
+		SchemaVersion: SchemaVersion,
+		Outcome:       OutcomeTrace{FirstVisibleEventMS: &zero},
+	})
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var decoded struct {
+		Outcome *OutcomeTrace `json:"outcome"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("Unmarshal: %v", err)
+	}
+	if decoded.Outcome == nil || decoded.Outcome.FirstVisibleEventMS == nil || *decoded.Outcome.FirstVisibleEventMS != 0 {
+		t.Fatalf("pointer-to-zero first visible sample was omitted: %s", data)
 	}
 }
 

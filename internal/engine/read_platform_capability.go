@@ -44,27 +44,29 @@ type platformReadEvidence struct {
 func (e *Engine) executeConcreteReadCapability(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
 	readIntent, request, err := capability.DecodeReadRequest(action, args)
 	if err != nil {
-		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: err.Error()})
 		// The user did not supply an invalid value here: this is the model's
 		// just-emitted tool JSON failing the typed schema. Preserve the closed
 		// AgentTool contract and tell the model to repair its own call instead of
 		// converting a local serialization mistake into a user clarification.
-		return marshalModelOwnedReadArgumentError(
+		agentResult := modelOwnedReadArgumentError(
 			action,
 			"read_argument_validation",
 			"工具参数未通过该能力的参数契约。请依据工具 schema 和用户已明确表达的条件修正参数后，重发同一次调用；不要向用户重复提问。",
 		)
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: err.Error(), ErrorCode: agentResult.Error.Code})
+		return tools.MarshalAgentToolResult(agentResult)
 	}
 	if err := e.validateCurrentTurnReadGrounding(request); err != nil {
-		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: err.Error()})
 		// Grounding rejects an invented optional filter before any read runs. It
 		// is also wholly model-owned: the user already gave the question, so the
 		// next step is to remove the invention or use an expressed condition.
-		return marshalModelOwnedReadArgumentError(
+		agentResult := modelOwnedReadArgumentError(
 			action,
 			"read_argument_grounding",
 			"工具参数包含用户本轮或近期对话未明确表达的筛选条件。请删除或改为用户已明确表达的条件后，重发同一次调用；不要向用户追问。",
 		)
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: err.Error(), ErrorCode: agentResult.Error.Code})
+		return tools.MarshalAgentToolResult(agentResult)
 	}
 	if missing := request.MissingFields(); len(missing) > 0 {
 		observation := ReadCapabilityObservation{Capability: string(readIntent), Status: platform.ReadStatusNeedsInput, MissingFields: missing}
@@ -74,8 +76,9 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 	}
 	reg, ok := capability.RegisteredReadForTool(action)
 	if !ok {
-		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: "unregistered read capability"})
-		return marshalReadCapabilityError(action, "unregistered read capability")
+		agentResult := readCapabilityInternalError(action, "unregistered read capability")
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: "unregistered read capability", ErrorCode: agentResult.Error.Code})
+		return tools.MarshalAgentToolResult(agentResult)
 	}
 	return e.executeTypedReadCapability(ctx, action, string(readIntent), reg, request, args, onStep)
 }
@@ -164,7 +167,7 @@ func (e *Engine) buildUnavailableObservation(action, capabilityLabel string, r c
 	}
 	payload, err := json.Marshal(observation)
 	if err != nil {
-		return marshalReadCapabilityError(action, err.Error())
+		return tools.MarshalAgentToolResult(readCapabilityInternalError(action, err.Error()))
 	}
 	var traceResult map[string]any
 	_ = json.Unmarshal(payload, &traceResult)
@@ -200,7 +203,7 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 	}
 	payload, err := json.Marshal(observation)
 	if err != nil {
-		return marshalReadCapabilityError(action, err.Error())
+		return tools.MarshalAgentToolResult(readCapabilityInternalError(action, err.Error()))
 	}
 	var traceResult map[string]any
 	_ = json.Unmarshal(payload, &traceResult)
@@ -239,6 +242,7 @@ func (e *Engine) buildModelOwnedReadCorrection(action, capabilityLabel string, r
 			"fallback_reason": string(result.FallbackReason),
 			"tool_action":     result.ToolAction,
 		},
+		ErrorCode: agentResult.Error.Code,
 	})
 	return tools.MarshalAgentToolResult(agentResult)
 }
@@ -358,30 +362,30 @@ func routeStatusForReadResult(r capability.ReadResult) platform.RouteStatus {
 	}
 }
 
-// marshalModelOwnedReadArgumentError keeps invalid typed read calls on the
+// modelOwnedReadArgumentError keeps invalid typed read calls on the
 // already-established correct_tool_call branch. It must return the outer Agent
 // result directly: agentToolObservation recognizes that envelope and therefore
 // cannot re-wrap it as ask_user.
-func marshalModelOwnedReadArgumentError(action, sourceStatus, message string) string {
-	return tools.MarshalAgentToolResult(tools.AgentToolInvalidToolCall(
+func modelOwnedReadArgumentError(action, sourceStatus, message string) tools.AgentToolResult {
+	return tools.AgentToolInvalidToolCall(
 		action,
 		tools.AgentToolCodeInvalidArguments,
 		message,
 		tools.AgentToolMeta{SourceStatus: sourceStatus},
-	))
+	)
 }
 
-// marshalReadCapabilityError is for wiring and result-encoding faults after the
+// readCapabilityInternalError is for wiring and result-encoding faults after the
 // model's arguments were accepted. These are server faults, not a request for
 // the user to restate a valid question. The protected step event/log retains the
 // diagnostic; the model gets only a stable, non-retryable failure disposition.
-func marshalReadCapabilityError(action, diagnostic string) string {
+func readCapabilityInternalError(action, diagnostic string) tools.AgentToolResult {
 	_ = diagnostic
-	return tools.MarshalAgentToolResult(tools.AgentToolFailure(
+	return tools.AgentToolFailure(
 		action,
 		nil,
 		"READ_CAPABILITY_INTERNAL_ERROR",
 		"读取能力当前无法完成该请求，请如实说明暂时无法查询，不要要求用户重复提供相同信息。",
 		tools.AgentToolMeta{SourceStatus: "read_internal_error"},
-	))
+	)
 }

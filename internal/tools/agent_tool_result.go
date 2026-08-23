@@ -81,6 +81,28 @@ type AgentToolResult struct {
 
 const agentToolNoErrorCode = "NONE"
 
+const TraceAgentToolErrorOther = "_OTHER"
+
+// TraceAgentToolErrorCode accepts the control code produced by AgentToolResult
+// without maintaining a second copy of every producer's vocabulary. It only
+// validates the bounded machine-code shape; model/user-facing prose is never
+// parsed into a code.
+func TraceAgentToolErrorCode(code string) string {
+	code = strings.TrimSpace(code)
+	if code == "" || code == agentToolNoErrorCode {
+		return ""
+	}
+	if len(code) > 96 {
+		return TraceAgentToolErrorOther
+	}
+	for _, r := range code {
+		if (r < 'A' || r > 'Z') && (r < '0' || r > '9') && r != '_' {
+			return TraceAgentToolErrorOther
+		}
+	}
+	return code
+}
+
 func AgentToolSuccess(action string, data any, meta AgentToolMeta) AgentToolResult {
 	return newAgentToolResult(AgentToolStatusSuccess, action, data, agentToolNoErrorCode, "", false, AgentToolNextAnswerUser, meta)
 }

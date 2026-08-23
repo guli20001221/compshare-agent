@@ -23,6 +23,7 @@ func (e *Engine) resetTurnCompletion() {
 	e.turnModelProviderThisTurn = ""
 	e.turnModelIDsThisTurn = nil
 	e.turnProviderFinishReasonsThisTurn = nil
+	e.turnModelAttemptsThisTurn = nil
 	e.turnCompletionClassHint = ""
 	e.turnCompletionReasonHint = ""
 	e.runtimeFinishReasonThisTurn = ""
@@ -56,6 +57,7 @@ func (e *Engine) emitTurnCompletion() {
 		ModelProvider:         e.turnModelProviderThisTurn,
 		ModelIDs:              append([]string(nil), e.turnModelIDsThisTurn...),
 		ProviderFinishReasons: append([]string(nil), e.turnProviderFinishReasonsThisTurn...),
+		ModelAttempts:         append([]observability.ModelAttemptTrace(nil), e.turnModelAttemptsThisTurn...),
 		ToolNames:             centralAgentToolNames(e.mutatingToolsEnabled, e.instanceOps != nil),
 	}
 
@@ -93,15 +95,20 @@ func (e *Engine) recordTurnModel(call llm.OutboundCall) {
 	e.turnModelIDsThisTurn = append(e.turnModelIDsThisTurn, model)
 }
 
-func (e *Engine) recordTurnProviderFinishReason(reason string) {
+func (e *Engine) recordTurnModelAttempt(result llm.OutboundCallResult) {
 	if e == nil {
 		return
 	}
-	// OutboundCallResult is only emitted after a successful provider response.
-	// Its producer already applies llm.TraceFinishReason, so preserve that
-	// closed-set value verbatim. In particular, "unspecified" must remain
-	// distinguishable from an attempt that never completed.
-	e.turnProviderFinishReasonsThisTurn = append(e.turnProviderFinishReasonsThisTurn, reason)
+	if result.StopReason != "" {
+		// A finish reason exists only for a successful provider response. Its
+		// producer already applies llm.TraceFinishReason.
+		e.turnProviderFinishReasonsThisTurn = append(e.turnProviderFinishReasonsThisTurn, result.StopReason)
+	}
+	e.turnModelAttemptsThisTurn = append(e.turnModelAttemptsThisTurn, observability.ModelAttemptTrace{
+		AttemptInCall: result.AttemptInCall, LatencyMS: result.LatencyMS, Outcome: result.Outcome,
+		ErrorClass: result.ErrorClass, Retried: result.Retried,
+		FinishReason: result.StopReason, FirstChunkMS: result.ProviderFirstChunkMS,
+	})
 }
 
 func (e *Engine) classifyTurnCompletion() (string, string) {

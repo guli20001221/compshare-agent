@@ -297,6 +297,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"turnModelProviderThisTurn":         true,
 		"turnModelIDsThisTurn":              true,
 		"turnProviderFinishReasonsThisTurn": true,
+		"turnModelAttemptsThisTurn":         true,
 		"turnCompletionClassHint":           true,
 		"turnCompletionReasonHint":          true,
 		"runtimeFinishReasonThisTurn":       true,

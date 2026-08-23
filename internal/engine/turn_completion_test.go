@@ -58,7 +58,19 @@ func TestChatCompletionCountsRealOutboundModelRequests(t *testing.T) {
 	assert.Equal(t, "openai_compatible", completions[0].ModelProvider)
 	assert.Equal(t, []string{"test-model"}, completions[0].ModelIDs)
 	assert.Equal(t, []string{"stop"}, completions[0].ProviderFinishReasons)
+	require.Len(t, completions[0].ModelAttempts, 1)
+	assert.Equal(t, 1, completions[0].ModelAttempts[0].AttemptInCall)
+	assert.Equal(t, "success", completions[0].ModelAttempts[0].Outcome)
+	require.NotNil(t, completions[0].ModelAttempts[0].FirstChunkMS)
 	assert.Equal(t, centralAgentToolNames(true, false), completions[0].ToolNames)
+
+	// A second logical model call in the same Engine/session starts its own
+	// attempt numbering and does not inherit the prior turn's attempt slice.
+	_, err = eng.Chat(context.Background(), "再介绍一句", noopStep)
+	require.NoError(t, err)
+	require.Len(t, completions, 2)
+	require.Len(t, completions[1].ModelAttempts, 1)
+	assert.Equal(t, 1, completions[1].ModelAttempts[0].AttemptInCall)
 }
 
 // A provider may complete a valid streaming response without sending a native

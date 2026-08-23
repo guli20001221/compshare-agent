@@ -20,13 +20,14 @@ func (e *Engine) executeModelTool(ctx context.Context, tc openai.ToolCall, toolW
 	action := tc.Function.Name
 	if !toolListContainsFunction(toolWindow, action) {
 		const message = "当前轮次未开放该工具，已拒绝执行"
+		agentResult := tools.AgentToolFailure(
+			action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{},
+		)
 		onStep(StepEvent{
 			Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct,
-			Message: message,
+			Message: message, ErrorCode: agentResult.Error.Code,
 		})
-		return tools.MarshalAgentToolResult(tools.AgentToolFailure(
-			action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{},
-		))
+		return tools.MarshalAgentToolResult(agentResult)
 	}
 	return e.executeTool(ctx, tc, onStep)
 }

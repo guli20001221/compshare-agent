@@ -149,3 +149,25 @@ func TestOnlyAMalformedCallGetsTheModelOwnedNextStep(t *testing.T) {
 			"%s/%s must not claim the model-owned next step", result.Status, result.Error.Code)
 	}
 }
+
+func TestTraceAgentToolErrorCodeUsesTheProducerCodeWithoutASecondVocabulary(t *testing.T) {
+	tests := []struct {
+		name string
+		code string
+		want string
+	}{
+		{name: "none", code: "NONE", want: ""},
+		{name: "empty", code: "", want: ""},
+		{name: "existing producer", code: "INVALID_TOOL_ARGUMENTS", want: "INVALID_TOOL_ARGUMENTS"},
+		{name: "future producer", code: "NEW_STABLE_CODE_7", want: "NEW_STABLE_CODE_7"},
+		{name: "upstream retcode", code: "UPSTREAM_RETCODE_230", want: "UPSTREAM_RETCODE_230"},
+		{name: "prose is not parsed", code: "password=hunter2 timed out", want: TraceAgentToolErrorOther},
+		{name: "lowercase is malformed", code: "invalid_tool_arguments", want: TraceAgentToolErrorOther},
+		{name: "over bound", code: strings.Repeat("A", 97), want: TraceAgentToolErrorOther},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, TraceAgentToolErrorCode(tc.code))
+		})
+	}
+}

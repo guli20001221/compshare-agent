@@ -141,9 +141,15 @@ type TokenUsage struct {
 // Chat sends a streaming request and assembles the full response.
 // Streaming is required because the proxy drops content in non-streaming mode.
 func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
-	resp, err := c.chat(ctx, req, true)
+	attempt := 0
+	resp, err := c.chat(ctx, req, true, &attempt, func(err error) bool {
+		return isUsageUnsupportedChatError(err) ||
+			(isForcedToolChoice(req.ToolChoice) && isForcedToolChoiceUnsupportedError(err))
+	})
 	if err != nil && isUsageUnsupportedChatError(err) {
-		resp, err = c.chat(ctx, req, false)
+		resp, err = c.chat(ctx, req, false, &attempt, func(err error) bool {
+			return isForcedToolChoice(req.ToolChoice) && isForcedToolChoiceUnsupportedError(err)
+		})
 	}
 	// Some thinking-mode providers reject forced tool_choice. Retry only that
 	// specific rejection with auto; absent-tool and other 4xx errors still fail.
@@ -151,9 +157,9 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 		log.Printf("runtime: upstream rejected forced tool_choice in thinking mode; retrying with auto (configure a forced-tool-capable LLM key for deterministic forcing)")
 		auto := req
 		auto.ToolChoice = nil
-		resp, err = c.chat(ctx, auto, true)
+		resp, err = c.chat(ctx, auto, true, &attempt, isUsageUnsupportedChatError)
 		if err != nil && isUsageUnsupportedChatError(err) {
-			resp, err = c.chat(ctx, auto, false)
+			resp, err = c.chat(ctx, auto, false, &attempt, nil)
 		}
 		// Signal the silent degrade so a caller that relied on the forcing being
 		// honored can fall back instead of trusting an unforced response.
@@ -189,7 +195,7 @@ func isForcedToolChoiceUnsupportedError(err error) bool {
 	return strings.Contains(msg, "tool_choice") && strings.Contains(msg, "thinking mode")
 }
 
-func (c *Client) chat(ctx context.Context, req ChatRequest, includeUsage bool) (*ChatResponse, error) {
+func (c *Client) chat(ctx context.Context, req ChatRequest, includeUsage bool, attemptCounter *int, terminalRetry func(error) bool) (*ChatResponse, error) {
 	var lastErr error
 	for attempt := 0; attempt < maxChatAttempts; attempt++ {
 		// A retry is one logical model response. Do not let a failed stream leak
@@ -204,8 +210,15 @@ func (c *Client) chat(ctx context.Context, req ChatRequest, includeUsage bool) (
 				attemptDeltas = append(attemptDeltas, delta)
 			}
 		}
-		resp, err := c.chatOnce(ctx, attemptReq, includeUsage)
+		*attemptCounter++
+		attemptNumber := *attemptCounter
+		resp, timing, err := c.chatOnce(ctx, attemptReq, includeUsage)
 		if err == nil {
+			observeOutboundCallResult(ctx, OutboundCallResult{
+				Call: OutboundCall{Provider: c.provider, Model: c.model}, AttemptInCall: attemptNumber,
+				LatencyMS: timing.latencyMS, Outcome: OutboundAttemptSuccess,
+				StopReason: TraceFinishReason(resp.StopReason), ProviderFirstChunkMS: timing.firstChunkMS,
+			})
 			if req.OnTextDelta != nil {
 				for _, delta := range attemptDeltas {
 					req.OnTextDelta(delta)
@@ -214,23 +227,46 @@ func (c *Client) chat(ctx context.Context, req ChatRequest, includeUsage bool) (
 			return resp, nil
 		}
 		lastErr = err
-		if !isTransientChatError(ctx, err) {
+		transient := isTransientChatError(ctx, err)
+		errorClass := traceOutboundErrorClass(ctx, err)
+		observeFailure := func(retried bool) {
+			observeOutboundCallResult(ctx, OutboundCallResult{
+				Call: OutboundCall{Provider: c.provider, Model: c.model}, AttemptInCall: attemptNumber,
+				LatencyMS: timing.latencyMS, Outcome: OutboundAttemptError,
+				ErrorClass: errorClass, Retried: retried,
+				ProviderFirstChunkMS: timing.firstChunkMS,
+			})
+		}
+		fallbackRetry := terminalRetry != nil && terminalRetry(err)
+		if !transient {
+			observeFailure(fallbackRetry)
 			return nil, err
 		}
 		// Only pause when another attempt actually follows — sleeping before
 		// returning the final error just delays the user's error by a second.
 		if attempt+1 >= maxChatAttempts {
+			observeFailure(fallbackRetry)
 			break
 		}
 		if _, overloaded := providerOverloadStatus(err); overloaded {
 			select {
 			case <-ctx.Done():
+				observeFailure(false)
 				return nil, err
 			case <-time.After(providerOverloadBackoff):
 			}
 		}
+		// The next loop iteration begins immediately after this point. In the
+		// overload case the observation is deliberately delayed until after the
+		// cancellable backoff, so Retried never claims a request that did not run.
+		observeFailure(true)
 	}
 	return nil, lastErr
+}
+
+type outboundAttemptTiming struct {
+	latencyMS    int64
+	firstChunkMS *int64
 }
 
 // wireTemperature makes a requested temperature survive serialization.
@@ -247,7 +283,7 @@ func wireTemperature(requested float32) float32 {
 	return requested
 }
 
-func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage bool) (*ChatResponse, error) {
+func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage bool) (response *ChatResponse, timing outboundAttemptTiming, err error) {
 	ccReq := openai.ChatCompletionRequest{
 		Model:    c.model,
 		Messages: req.Messages,
@@ -273,10 +309,12 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage boo
 	// Putting this in Chat or chat would miss internal retries or count logical
 	// calls that never became requests.
 	call := OutboundCall{Provider: c.provider, Model: c.model}
+	started := time.Now()
+	defer func() { timing.latencyMS = time.Since(started).Milliseconds() }()
 	observeOutboundCall(ctx, call)
 	stream, err := c.client.CreateChatCompletionStream(ctx, ccReq)
 	if err != nil {
-		return nil, fmt.Errorf("llm stream: %w", err)
+		return nil, timing, fmt.Errorf("llm stream: %w", err)
 	}
 	defer stream.Close()
 
@@ -291,7 +329,11 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage boo
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("llm stream recv: %w", err)
+			return nil, timing, fmt.Errorf("llm stream recv: %w", err)
+		}
+		if timing.firstChunkMS == nil {
+			firstChunkMS := time.Since(started).Milliseconds()
+			timing.firstChunkMS = &firstChunkMS
 		}
 
 		if chunk.Usage != nil {
@@ -356,14 +398,50 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage boo
 		}
 	}
 
-	response := &ChatResponse{
+	response = &ChatResponse{
 		Content:    contentBuf.String(),
 		ToolCalls:  toolCalls,
 		Usage:      usage,
 		StopReason: stopReason,
 	}
-	observeOutboundCallResult(ctx, OutboundCallResult{Call: call, StopReason: TraceFinishReason(response.StopReason)})
-	return response, nil
+	return response, timing, nil
+}
+
+// traceOutboundErrorClass reduces typed transport/provider failures to a closed
+// set. It deliberately never inspects err.Error().
+func traceOutboundErrorClass(ctx context.Context, err error) string {
+	switch {
+	case errors.Is(err, context.Canceled) || errors.Is(ctx.Err(), context.Canceled):
+		return OutboundErrorCancelled
+	case errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
+		return OutboundErrorDeadline
+	}
+	var apiErr *openai.APIError
+	var requestErr *openai.RequestError
+	status := 0
+	switch {
+	case errors.As(err, &apiErr):
+		status = apiErr.HTTPStatusCode
+	case errors.As(err, &requestErr):
+		status = requestErr.HTTPStatusCode
+	}
+	switch {
+	case status == http.StatusTooManyRequests:
+		return OutboundErrorRateLimited
+	case status >= 500:
+		return OutboundErrorUpstream5xx
+	case status >= 400:
+		return OutboundErrorUpstream4xx
+	}
+	var netErr net.Error
+	switch {
+	case errors.As(err, &netErr):
+		return OutboundErrorNetwork
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return OutboundErrorStream
+	default:
+		return OutboundErrorOther
+	}
 }
 
 func isUsageUnsupportedChatError(err error) bool {

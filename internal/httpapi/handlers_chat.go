@@ -166,6 +166,14 @@ type streamWriter interface {
 	WriteKeepalive() error
 }
 
+func writeVisibleEvent(sw streamWriter, recorder *chatTraceRecorder, event string, data any) error {
+	err := sw.WriteEvent(event, data)
+	if err == nil && recorder != nil {
+		recorder.ObserveFirstVisibleEvent(recorder.clockNow())
+	}
+	return err
+}
+
 func stepTypeString(t engine.StepType) string {
 	switch t {
 	case engine.StepToolCall:
@@ -491,7 +499,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		if traceRecorder != nil {
 			traceRecorder.OnStep(ev)
 		}
-		_ = sw.WriteEvent("step", stepEvent{
+		_ = writeVisibleEvent(sw, traceRecorder, "step", stepEvent{
 			Type:    stepTypeString(ev.Type),
 			Action:  ev.Action,
 			Label:   stepActionLabel(ev.Action),
@@ -508,7 +516,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 				firstToken = time.Now()
 			}
 			tokenEmitted = true
-			_ = sw.WriteEvent("token", tokenEvent{Text: s})
+			_ = writeVisibleEvent(sw, traceRecorder, "token", tokenEvent{Text: s})
 		},
 		OnUsage: func(u llm.TokenUsage) { usage = u },
 		GuidedCreate: prep.confirmFormOptIn &&
@@ -521,7 +529,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			defer h.confirmBroker.Cancel(confirmID)
 			// Both in-instance lane cards come through HERE (the plain y/N path); the
 			// form path below is create-flow only, so it has nothing to label.
-			if err := sw.WriteEvent("confirmation", confirmationEvent{
+			if err := writeVisibleEvent(sw, traceRecorder, "confirmation", confirmationEvent{
 				ConfirmationID: confirmID,
 				Action:         action,
 				Summary:        sanitizeConfirmArgs(args),
@@ -550,7 +558,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			firstToken = time.Now()
 		}
 		tokenEmitted = true
-		_ = sw.WriteEvent("token", tokenEvent{Text: reply})
+		_ = writeVisibleEvent(sw, traceRecorder, "token", tokenEvent{Text: reply})
 	}
 
 	latencyMs := int(time.Since(start).Milliseconds())
@@ -714,7 +722,7 @@ func (h *Handlers) confirmEditsFuncFor(streamCtx context.Context, sw streamWrite
 	return func(action string, args map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
 		confirmID, ch := h.confirmBroker.RegisterWithForm(sessionID, owner, form)
 		defer h.confirmBroker.Cancel(confirmID)
-		if err := sw.WriteEvent("confirmation", confirmationEvent{
+		if err := writeVisibleEvent(sw, prep.traceRecorder, "confirmation", confirmationEvent{
 			ConfirmationID: confirmID,
 			Action:         action,
 			Summary:        sanitizeConfirmArgs(args),

@@ -16,7 +16,7 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-const SchemaVersion = "trace.v0.12"
+const SchemaVersion = "trace.v0.13"
 
 const (
 	ToolSourceMainReAct          = "main_react"
@@ -251,10 +251,14 @@ type ToolCallTrace struct {
 	// tool call. A pointer to 0 is a real measured duration below one
 	// millisecond. Keeping those states distinct prevents unmatched events from
 	// biasing latency analysis toward zero.
-	LatencyMS        *int64 `json:"latency_ms,omitempty"`
-	Attempts         int    `json:"attempts"`
-	Status           string `json:"status"`
-	ErrorClass       string `json:"error_class"`
+	LatencyMS  *int64 `json:"latency_ms,omitempty"`
+	Attempts   int    `json:"attempts"`
+	Status     string `json:"status"`
+	ErrorClass string `json:"error_class"`
+	// ErrorCode is the bounded AgentToolResult code. Unknown or malformed
+	// producer values are stored as _OTHER; model/user-facing error prose is
+	// never parsed into this field.
+	ErrorCode        string `json:"error_code,omitempty"`
 	ResultHash       string `json:"result_hash"`
 	Capped           string `json:"capped"`
 	CapReason        string `json:"cap_reason"`
@@ -262,6 +266,11 @@ type ToolCallTrace struct {
 	ExecutedTargets  int    `json:"executed_targets"`
 	WindowSeconds    int    `json:"window_seconds"`
 	Projected        bool   `json:"projected,omitempty"`
+	// ToolResult* measures only the generic FormatToolResult layer, after any
+	// tool-specific projection. Pointers preserve absent vs a measured zero.
+	ToolResultRawRunes     *int  `json:"tool_result_raw_runes,omitempty"`
+	ToolResultVisibleRunes *int  `json:"tool_result_visible_runes,omitempty"`
+	ToolResultTruncated    *bool `json:"tool_result_truncated,omitempty"`
 }
 
 const (
@@ -700,8 +709,12 @@ type OutcomeTrace struct {
 	// not ("rejected:<slot>=<kind>", "missing:<fields>", "dependency_failure", ...).
 	// "" when no proposal ran. Attributes why a create did or did not card without
 	// re-running the model.
-	ActionProposalDisposition  string `json:"action_proposal_disposition,omitempty"`
-	TotalLatencyMS             int64  `json:"total_latency_ms,omitempty"`
+	ActionProposalDisposition string `json:"action_proposal_disposition,omitempty"`
+	TotalLatencyMS            int64  `json:"total_latency_ms,omitempty"`
+	// FirstVisibleEventMS is measured at the transport write boundary for the
+	// first successfully written token, step, or confirmation event. It is not
+	// the assistant-row TTFT and remains nil when no such event was delivered.
+	FirstVisibleEventMS        *int64 `json:"first_visible_event_ms,omitempty"`
 	TotalTokens                int    `json:"total_tokens,omitempty"`
 	PromptTokens               int    `json:"prompt_tokens,omitempty"`
 	CompletionTokens           int    `json:"completion_tokens,omitempty"`
@@ -933,6 +946,7 @@ func traceDiagnosisObserved(trace DiagnosisTrace) bool {
 
 func traceOutcomeObserved(trace OutcomeTrace) bool {
 	return trace.TotalLatencyMS != 0 ||
+		trace.FirstVisibleEventMS != nil ||
 		trace.TotalTokens != 0 ||
 		trace.AttemptedHallucinatedCount != 0 ||
 		trace.EscapedHallucinatedCount != 0 ||

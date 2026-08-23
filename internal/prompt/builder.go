@@ -191,13 +191,27 @@ var toolResultShrinkLevels = []struct {
 
 // FormatToolResult returns parseable JSON within maxToolResultRunes. It drops
 // whole values and records truncation explicitly; it never byte-cuts JSON.
-func FormatToolResult(result map[string]any) string {
+type ToolResultFormatTrace struct {
+	// RawRunes is nil when the input could not be serialized, rather than
+	// misreporting an unknown size as a measured zero.
+	RawRunes     *int
+	VisibleRunes int
+	Truncated    bool
+}
+
+// FormatToolResultWithTrace is FormatToolResult plus content-free measurements
+// of this generic formatting layer. A caller may already have applied a
+// tool-specific projection; RawRunes therefore means "input to this formatter",
+// not the upstream payload size.
+func FormatToolResultWithTrace(result map[string]any) (string, ToolResultFormatTrace) {
 	b, err := json.Marshal(result)
 	if err != nil {
-		return fmt.Sprintf(`{"error": %q}`, err.Error())
+		visible := fmt.Sprintf(`{"error": %q}`, err.Error())
+		return visible, ToolResultFormatTrace{VisibleRunes: utf8.RuneCountInString(visible)}
 	}
-	if utf8.RuneCount(b) <= maxToolResultRunes {
-		return string(b)
+	rawRunes := utf8.RuneCount(b)
+	if rawRunes <= maxToolResultRunes {
+		return string(b), ToolResultFormatTrace{RawRunes: &rawRunes, VisibleRunes: rawRunes}
 	}
 
 	for _, level := range toolResultShrinkLevels {
@@ -206,14 +220,30 @@ func FormatToolResult(result map[string]any) string {
 			shrunk = truncateStrings(shrunk, level.scalarRunes)
 		}
 		if b2, err := json.Marshal(shrunk); err == nil && utf8.RuneCount(b2) <= maxToolResultRunes {
-			return string(b2)
+			return string(b2), ToolResultFormatTrace{
+				RawRunes:     &rawRunes,
+				VisibleRunes: utf8.RuneCount(b2),
+				Truncated:    true,
+			}
 		}
 	}
 
 	// Every rung failed: the payload is over the cap even with all lists
 	// emptied and all strings clipped to 120 runes. No shape we have seen does
 	// this, but the contract holds anyway — an explicit notice, not a fragment.
-	return oversizeNotice(result)
+	visible := oversizeNotice(result)
+	return visible, ToolResultFormatTrace{
+		RawRunes:     &rawRunes,
+		VisibleRunes: utf8.RuneCountInString(visible),
+		Truncated:    true,
+	}
+}
+
+// FormatToolResult preserves the existing call contract for callers that do
+// not need formatting telemetry.
+func FormatToolResult(result map[string]any) string {
+	formatted, _ := FormatToolResultWithTrace(result)
+	return formatted
 }
 
 // truncateArrays limits every []any it can reach — top level, nested in maps,

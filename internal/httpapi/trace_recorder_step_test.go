@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -91,6 +92,91 @@ func TestChatTraceRecorderNormalizesToolErrorsAndMeasuresPairedLatency(t *testin
 	require.NotNil(t, call.LatencyMS, "a paired failure must carry observed latency")
 	assert.Equal(t, int64(1350), *call.LatencyMS)
 	assert.NotContains(t, call.ErrorClass, "hunter2")
+}
+
+func TestChatTraceRecorderPersistsStructuredErrorAndFormatterMeasurements(t *testing.T) {
+	w := &captureTraceWriter{}
+	start := time.Date(2026, time.August, 24, 10, 0, 0, 0, time.UTC)
+	base := BaseRequest{RequestUUID: "req-precision", Owner: store.Owner{TopOrganizationID: 1, OrganizationID: 2}}
+	rec := newChatTraceRecorder(w, base, "sess-1", 1, "msg", start)
+
+	raw, visible, truncated := 4200, 3900, true
+	rec.OnStep(engine.StepEvent{Type: engine.StepToolCall, Action: "DescribeLarge"})
+	rec.OnStep(engine.StepEvent{
+		Type: engine.StepToolResult, Action: "DescribeLarge",
+		ToolResultRawRunes: &raw, ToolResultVisibleRunes: &visible, ToolResultTruncated: &truncated,
+	})
+	smallRaw, smallVisible, notTruncated := 12, 12, false
+	rec.OnStep(engine.StepEvent{Type: engine.StepToolCall, Action: "DescribeSmall"})
+	rec.OnStep(engine.StepEvent{
+		Type: engine.StepToolResult, Action: "DescribeSmall",
+		ToolResultRawRunes: &smallRaw, ToolResultVisibleRunes: &smallVisible, ToolResultTruncated: &notTruncated,
+	})
+	rec.OnStep(engine.StepEvent{Type: engine.StepToolCall, Action: "DescribeFailed"})
+	rec.OnStep(engine.StepEvent{
+		Type: engine.StepError, Action: "DescribeFailed",
+		ErrorCode: "UPSTREAM_RETCODE_230", Message: "secret diagnostic text",
+	})
+	rec.OnStep(engine.StepEvent{Type: engine.StepToolCall, Action: "MalformedProducer"})
+	rec.OnStep(engine.StepEvent{
+		Type: engine.StepError, Action: "MalformedProducer",
+		ErrorCode: "password=hunter2 timed out", Message: "password=hunter2 timed out",
+	})
+
+	require.NoError(t, rec.Finish(nil, start.Add(time.Second)))
+	require.Len(t, w.records, 1)
+	require.Len(t, w.records[0].ToolCalls, 4)
+
+	formatted := w.records[0].ToolCalls[0]
+	require.NotNil(t, formatted.ToolResultRawRunes)
+	require.NotNil(t, formatted.ToolResultVisibleRunes)
+	require.NotNil(t, formatted.ToolResultTruncated)
+	assert.Equal(t, 4200, *formatted.ToolResultRawRunes)
+	assert.Equal(t, 3900, *formatted.ToolResultVisibleRunes)
+	assert.True(t, *formatted.ToolResultTruncated)
+	require.NotNil(t, w.records[0].ToolCalls[1].ToolResultTruncated)
+	assert.False(t, *w.records[0].ToolCalls[1].ToolResultTruncated,
+		"measured false must remain distinguishable from an absent formatter observation")
+	assert.Equal(t, "UPSTREAM_RETCODE_230", w.records[0].ToolCalls[2].ErrorCode)
+	assert.Equal(t, "_OTHER", w.records[0].ToolCalls[3].ErrorCode)
+	assert.NotContains(t, w.records[0].ToolCalls[3].ErrorCode, "hunter2")
+}
+
+type failOnceVisibleSink struct {
+	failed bool
+}
+
+func (s *failOnceVisibleSink) WriteEvent(string, any) error {
+	if !s.failed {
+		s.failed = true
+		return errors.New("transport rejected event")
+	}
+	return nil
+}
+
+func (*failOnceVisibleSink) WriteKeepalive() error { return nil }
+
+func TestFirstVisibleEventStartsAtTheFirstSuccessfulUserVisibleWrite(t *testing.T) {
+	w := &captureTraceWriter{}
+	start := time.Date(2026, time.August, 24, 10, 0, 0, 0, time.UTC)
+	base := BaseRequest{RequestUUID: "req-visible", Owner: store.Owner{TopOrganizationID: 1, OrganizationID: 2}}
+	rec := newChatTraceRecorder(w, base, "sess-1", 1, "msg", start)
+	now := start.Add(2 * time.Second)
+	rec.now = func() time.Time { return now }
+	sink := &failOnceVisibleSink{}
+
+	require.Error(t, writeVisibleEvent(sink, rec, "step", stepEvent{Action: "first failed"}))
+	assert.True(t, rec.firstVisibleEventAt.IsZero(), "a failed write was not visible")
+	now = start.Add(3500 * time.Millisecond)
+	require.NoError(t, writeVisibleEvent(sink, rec, "confirmation", confirmationEvent{Action: "visible"}))
+	now = start.Add(7 * time.Second)
+	require.NoError(t, writeVisibleEvent(sink, rec, "token", tokenEvent{Text: "later"}))
+	require.NoError(t, rec.Finish(nil, start.Add(8*time.Second)))
+
+	require.Len(t, w.records, 1)
+	require.NotNil(t, w.records[0].Outcome.FirstVisibleEventMS)
+	assert.Equal(t, int64(3500), *w.records[0].Outcome.FirstVisibleEventMS,
+		"later visible events must not overwrite the first sample")
 }
 
 // A result/error without an observed call exists in compatibility and recovery
