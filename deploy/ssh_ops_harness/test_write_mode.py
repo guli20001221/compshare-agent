@@ -290,6 +290,14 @@ check("write-system-prompt-platform-boundary::names-and-hands-off-restart",
       "需要重启实例才能继续" in _WRITE_PROMPT and
       "ask whether the user wants the instance restarted" in flat(_WRITE_PROMPT) and
       "Do not bypass those limits" in _WRITE_PROMPT)
+check("write-prompts::distinguish-service-restart-from-instance-reboot",
+      "A process or service restart is not an instance reboot" in _WRITE_PROMPT and
+      "A process or service restart is not an instance reboot" in _WRITE_DESC and
+      "guest-local restart cannot recover" in _WRITE_PROMPT and
+      "guest-local restart cannot recover" in _WRITE_DESC)
+check("write-tool-desc::separates-independent-probes",
+      "Each call is classified as one effect" in _WRITE_DESC and
+      "independently useful probes in separate calls" in _WRITE_DESC)
 # The verdict is Chinese, so the sentence the user actually reads is pinned too.
 check("write-system-prompt::states-the-boundary-in-the-verdict-language",
       "需要重启实例才能继续" in _WRITE_PROMPT)
@@ -315,6 +323,15 @@ _td = _WRITE_DESC
 # rules 0/3). Asserted in BOTH directions so it cannot quietly drift back to the dead channel.
 check("tooldesc-rule-prefer-image-launcher",
       "use its existing supervisor" in _td and "rather than starting an inner binary" in _td)
+check("tooldesc-rule-does-not-invent-manager-ownership",
+      "presence does not authorize creating a new unit" in _td and
+      "image supplies only a launcher" in _td and "report the durability gap" in _td)
+check("prompt-and-tool-do-not-invent-traceback-semantics",
+      "A traceback proves a failure site, not intended" in _wp and
+      "A traceback proves the failure site, not intended semantics" in _td and
+      "local test" in _wp and "version contract" in _wp and
+      "reversible rollback/disable within scope" in _wp and
+      "reversible rollback/disable within scope" in _td)
 check("prompt-and-tool-align-on-managed-service-ownership",
       "identify its existing supervisor" in _wp and "use its existing supervisor" in _td)
 check("prompts-drop-product-specific-launcher-patches",

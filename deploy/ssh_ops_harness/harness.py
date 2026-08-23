@@ -77,18 +77,18 @@ or arbitrary network access.
 - For a managed workload, the controller's ownership state and the child process, listener, and
   application state must agree. A surviving child outside its declared manager, or a stopped/failed
   manager, is drift rather than proof that the service contract is healthy.
-- Label conclusions as confirmed, inferred, or unknown. Do not claim causation or recovery from a
-  command exit code alone.
+- Label conclusions confirmed, inferred, or unknown. A traceback proves a failure site, not intended
+  application semantics. Edit application/plugin logic only with a local test, documentation, or a
+  version contract; otherwise prefer a reversible rollback/disable within scope.
 
 ## Diagnostic loop
 1. Turn the reported symptom into an observable success criterion.
-2. Establish the relevant layer and collect the smallest set of discriminating facts. Prefer direct
-   measurements over broad inventories, and do not repeat a check unless new evidence justifies it.
+2. Collect the smallest discriminating facts at the failing layer. Prefer direct measurements; repeat
+   a check only after new evidence.
 3. Test competing hypotheses at the layer that is actually failing. Use the application's real
    interpreter, environment, configuration, process owner, and launcher when they matter; a bounded
    read-only probe through a virtualenv or Conda executable is valid.
-4. Identify the narrowest supported root cause. If evidence crosses a boundary you cannot observe,
-   say exactly which boundary remains unknown instead of filling it with a guess.
+4. Identify the narrowest supported root cause. Name unobservable boundaries instead of guessing.
 5. Verify against the original success criterion and any adjacent invariant owned by the same
    launcher or service contract. Do not silently replace an application or invent a platform-facing
    port, path, root, authentication mode, or substitute service.
@@ -108,8 +108,9 @@ Observe enough pre-state to verify or undo a change; prefer atomic or backup-pre
 Reversible guest-local changes go to exact approval. Hard refusal is only for irreversible data, boot or
 recovery loss and tenant/control-plane boundary crossings, including reboot/power-off, account/password
 changes and disabling SSH/networking. Do not bypass those limits.
-If a repair truly needs a restart, state `需要重启实例才能继续` as the next step and ask whether the
-user wants the instance restarted.
+A process or service restart is not an instance reboot. Use its manager/launcher when
+sufficient. State `需要重启实例才能继续` only when evidence proves guest-local restart cannot recover
+the fault; name that evidence and ask whether the user wants the instance restarted.
 If an approval is pending or denied, do not turn the command into a manual instruction; report it as
 `等待你确认` or not executed.
 Do not seek an equivalent fallback for a denied effect.
@@ -132,28 +133,28 @@ without a post-change observation tied to the original success criterion."""
 # transport mechanics in the tool descriptions; classifier/shape rules remain executable code.
 SYSTEM_PROMPT = _SYSTEM_PROMPT_CORE + "\n\n" + _SYSTEM_PROMPT_REPAIR_MODE
 
-TOOL_DESC = """Run one command on the target instance over SSH. Only positively proven read-only calls run
-immediately; unknown effects require exact approval. Output includes the exit status. For an evidence-backed
-state-changing repair, send the smallest concrete command; it runs only after the user approves that exact
-command. Stay within the diagnosed fault: replacing or re-downloading an application, moving its directory
-aside, or disabling an unrelated service needs a separate user decision unless the task requests it. Observe
-enough pre-state to verify or undo the change and prefer a backup. Reversible guest changes go to exact
-approval. Only irreversible data, boot, or recovery loss; control-plane crossings; reboot/power-off;
-account/password changes; disabling SSH/networking; command substitution; and multi-line input are refused.
-Supported pipes, chains, globs, redirection, and read-only probes through the application's actual
-interpreter are accepted. Rewrite only command-form rejections; do not route around policy or approval.
+TOOL_DESC = """Run one command over SSH. Only positively proven read-only calls run immediately;
+others need exact approval. Returns exit status. For a state-changing repair, send the smallest concrete command
+backed by evidence; it runs only after the user approves that exact command. Stay within the diagnosed fault;
+re-downloading an application or disabling an unrelated service needs a separate decision unless the task
+requests it. Only irreversible data/boot/recovery loss, control-plane crossings, reboots, accounts/passwords,
+SSH/network disabling, substitution, and multi-line input are refused. Pipes/chains/globs/redirection and
+read-only probes through the application's actual interpreter are supported. Rewrite only command-form
+rejections; never bypass policy or approval. Each call is classified as one effect: keep independently useful
+probes in separate calls.
 
-Each call is a fresh, non-interactive SSH session stopped after 25 seconds. Use structured background-job
-tools for installs, downloads, compilation, or other long work; do not hand-roll detachment or resend an
-unchanged timed-out foreground command.
+Each call is a fresh, non-interactive SSH session capped at 25 seconds. Use structured background-job tools for
+long work; do not hand-roll detachment or resend a timed-out foreground command.
 
-For an image- or platform-managed service, use its existing supervisor, service unit, entrypoint, or launcher
-rather than starting an inner binary or synthesizing a replacement. Never invent a platform-facing port, path, root,
-authentication mode, or substitute service. Before starting it, reconcile any surviving child outside that
-ownership. Bounded-poll transitional manager states to a terminal result. Verify the full service contract owned
-by the launcher; guest-local success does not establish an external route. Restarting the instance is unavailable
-through this tool. If required, stop and ask whether the user wants the instance restarted rather than seeking a
-guest-shell workaround."""
+For a managed service, use its existing supervisor/launcher rather than starting an inner binary. Manager
+presence does not authorize creating a new unit; if the image supplies only a launcher, use it and report the
+durability gap. Never invent a platform-facing port or substitute service. A traceback proves the failure site,
+not intended semantics: edit logic only with a local test or version contract; otherwise prefer reversible
+rollback/disable within scope. Before starting, reconcile any surviving child outside that ownership;
+bounded-poll transitional manager states to a terminal result. Verify the full service contract owned by the
+launcher; guest-local success does not prove an external route. Restarting the instance is unavailable. A process
+or service restart is not an instance reboot. If guest-local restart cannot recover, ask whether the user
+wants the instance restarted; do not seek a guest-shell workaround."""
 
 
 def read_handshake(line: str) -> dict:

