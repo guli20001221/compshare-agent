@@ -350,7 +350,8 @@ check("tooldesc-rule-verify-every-launcher-port",
       "Verify the full service contract owned by the launcher" in _td)
 check("prompt-no-longer-carries-port-diff", "list the listening ports" not in _wp)
 check("prompt-rule-verdict-starts-with-status",
-      all(token in _wp for token in ("`已修复`", "`部分修复`", "`未修复`")))
+      all(token in _wp for token in ("`已修复`", "`部分修复`", "`未修复`", "`无需修复`")) and
+      "never describe a read-only check itself as a repair" in _wp)
 check("prompt-rule-verdict-stays-compact",
       "Then include `已完成` and, only when needed, `下一步`" in _wp and
       "结论 / 证据 / 确证vs推测" not in _wp)

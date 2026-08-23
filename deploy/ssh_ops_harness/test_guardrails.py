@@ -56,6 +56,13 @@ CLASSIFY_CASES = [
     ("pgrep -a supervisord; supervisorctl status", "read_only"),
     ("lsof -nP -iTCP -sTCP:LISTEN", "read_only"),
     ("pkill supervisord", "mutating"),
+    ("(netstat -ltnp 2>/dev/null || lsof -nP -iTCP -sTCP:LISTEN 2>/dev/null || true)", "read_only"),
+    ("if [ -x /usr/bin/supervisorctl ]; then supervisorctl -c /usr/supervisor/supervisord.conf status; else echo missing; fi", "read_only"),
+    ("if [ -x /usr/bin/systemctl ]; then systemctl restart vllm; fi", "mutating"),
+    ("while true; do ps -ef; done", "mutating"),
+    ("printenv CUDA_VISIBLE_DEVICES NVIDIA_VISIBLE_DEVICES PATH", "read_only"),
+    ("printenv AWS_SECRET_ACCESS_KEY", "mutating"),
+    ("env", "mutating"),
     ("journalctl -u docker --no-pager -n 100", "read_only"),
     ("journalctl -xe", "read_only"),                  # r2 FP: -e is a bound
     ("journalctl -u vllm -n 100 -e", "read_only"),
@@ -229,7 +236,7 @@ CLASSIFY_CASES = [
     ("cat /proc/self/cmdline", "mutating"),                 # argv leak (cmdline excluded from pid-safe)
     ("stat /etc/shadow", "mutating"),                       # deny-substr wins even for metadata
     ("file /root/.ssh/id_rsa", "mutating"),                 # deny-substr
-    ("ls /root", "mutating"),                               # deny-substr (/root)
+    ("ls /root", "read_only"),                              # metadata only; secret names still deny
     ("md5sum /etc/shadow", "mutating"),
     ("file $(which nvidia-smi)", "mutating"),               # $() substitution still blocked
     ("which nvidia-smi; rm -rf /", "destructive"),          # chaining + destructive wins
@@ -250,17 +257,25 @@ CLASSIFY_CASES = [
     ("cat /proc/net/tcp6", "read_only"),
     ("awk 'NR>1 && $4==\"0A\" {print}' /proc/net/tcp /proc/net/tcp6", "read_only"),
     ("cat /proc/net/tcp | awk '$4==\"0A\" {print}'", "read_only"),
+    ("awk 'NR==1 || $2 ~ /:1FD4$|:22B8$/ {print}' /proc/net/tcp /proc/net/tcp6", "read_only"),
     ("awk 'BEGIN { system(\"id\") }' /proc/net/tcp", "mutating"),
     ("awk '{print > \"/tmp/out\"}' /proc/net/tcp", "mutating"),
+    ("awk '{print | \"sh\"}' /proc/net/tcp", "mutating"),
     ("awk '{print}' /etc/shadow", "mutating"),
     ("awk -f /tmp/filter.awk /proc/net/tcp", "mutating"),
+    ("ls -ld /root/ComfyUI /home/ubuntu/app /workspace/app", "read_only"),
+    ("ls -la /root/.ssh", "mutating"),
+    ("tail -80 /root/ComfyUI/comfy.log", "read_only"),
+    ("tail -20 /home/ubuntu/app/server.err", "read_only"),
+    ("tail -20 /root/app/.env", "mutating"),
+    ("wget -qO- --timeout=8 http://127.0.0.1:8188/system_stats; printf '\\nprobe_rc=%s\\n' \"$?\"", "read_only"),
 
     # === F5 bypass attempts that MUST stay refused ===
     ("du -sh /root/.ssh", "mutating"),                      # secret-file substr denies even a size read
     ("du -sh /root/.bash_history", "mutating"),
     ("du -sh /etc", "mutating"),                            # /etc is not a user dir — du stays scoped
     ("du /var/lib/mysql", "mutating"),                      # /var not opened for du
-    ("ls -la /root/models", "mutating"),                    # ls leaks NAMES -> stays refused where du is ok
+    ("ls -la /root/models", "read_only"),                   # customer app metadata, never file content
     ("cat /root/.bashrc", "mutating"),                      # content read of /root stays refused
     ("cat /proc/net/dev", "mutating"),                      # allowlist is EXACT — only tcp/udp added
 
@@ -278,7 +293,7 @@ CLASSIFY_CASES = [
     ("cat /proc/meminfo | grep '$(whoami)'", "mutating"),   # $ banned even inside quotes (conservative)
     ("cat '/etc/shadow'", "mutating"),                      # quoted secret path still hits _safe_path
     ("grep 'x' /etc/shadow", "mutating"),                   # grep is a filter, not a read-only SOURCE
-    ("ls '/root'", "mutating"),                             # quoted /root still denied
+    ("ls '/root'", "read_only"),                            # quoted spelling follows same metadata rule
     ("cat /proc/net/tcp | grep 'x", "mutating"),            # unbalanced single quote -> fail closed
     ("cat /proc/net/tcp | grep 'root' > /tmp/x", "mutating"),  # real-file redirect still banned
 
@@ -338,7 +353,7 @@ CLASSIFY_CASES = [
     ("cat /root/site-packagesfoo/secret", "mutating"),                    # look-alike dir, not a real site-packages
     ("cat /root/badenv/lib/python3.10/site-packages/../../../.ssh/id_rsa", "mutating"),  # traversal out
     ("cat /root/.bashrc", "mutating"),                                    # /root content still denied
-    ("ls /root", "mutating"),                                             # /root listing still denied
+    ("ls /root", "read_only"),                                            # metadata only
     # An interpreter under /root never got special treatment: `--version` on this very path
     # was already read_only. What made this refused was the payload, and `import torch` is
     # provably read-only by the AST rule below. Executing a relative path

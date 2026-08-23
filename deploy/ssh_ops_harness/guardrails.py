@@ -410,7 +410,7 @@ def _systemctl_is_readonly(tokens) -> bool:
 _AWK_BINARIES = {"awk", "gawk", "mawk", "nawk"}
 _AWK_UNSAFE_PROGRAM = re.compile(
     r"(?:\bsystem\s*\(|\bgetline\b|\b(?:ARGV|ARGC|ENVIRON)\b|@[a-zA-Z_]"
-    r"|(?<!\|)\|(?!\|)|\b(?:print|printf)\b[^{};\n]*>{1,2}|\b(?:while|for|do)\b)",
+    r"|\b(?:print|printf)\b[^{};\n]*(?:>{1,2}|(?<!\|)\|(?!\|))|\b(?:while|for|do)\b)",
     re.IGNORECASE,
 )
 
@@ -549,8 +549,9 @@ _META_SAFE_PREFIXES = ("/dev/", "/usr/", "/sys/", "/proc/", "/lib/", "/lib64/",
                        "/bin/", "/sbin/", "/opt/")
 # F11: non-home application/data dirs, where these GPU images put the served app (/workspace/ComfyUI,
 # /data/..., mounted volumes). Metadata-only, and deliberately NOT /root or /home — see _safe_meta_path.
-_META_APP_PREFIXES = ("/workspace", "/data", "/mnt")
+_META_APP_PREFIXES = ("/workspace", "/data", "/mnt", "/root", "/home")
 _META_STATE_PREFIXES = ("/var/lib/docker", "/var/lib/containerd")
+_META_DENY_SUBSTR = tuple(d for d in _DENY_PATH_SUBSTR if d != "/root")
 
 # --- F7: venv / Python-package introspection (content + metadata) ------------------------------
 # Python-env diagnosis ("torch.cuda.is_available() 是 False / import 报没这个模块") fundamentally
@@ -580,7 +581,8 @@ def _pkg_safe_path(p: str) -> bool:
 
 # Application logs are content-safe only under application directories, never /var/log. Output is
 # still secret-scrubbed and secret-file tripwires still apply.
-_APP_LOG_PREFIXES = ("/workspace/", "/data/", "/mnt/", "/opt/", "/start.d/", "/usr/local/")
+_APP_LOG_PREFIXES = ("/workspace/", "/data/", "/mnt/", "/opt/", "/start.d/", "/usr/local/",
+                     "/root/", "/home/")
 _APP_LOG_SHAPE = re.compile(r"(?:\.(?:log|out|err)|(?:^|/)nohup\.out)$", re.I)
 
 
@@ -636,18 +638,16 @@ def _safe_meta_path(p: str) -> bool:
     that, allow the introspection tree AND the user/app data dirs (still minus any secret-FILE
     location).
 
-    Non-home application directories are included because metadata is needed to locate installed
-    software; these reads return names, sizes and permissions, never file content.
-
-    /root and /home stay excluded because filenames there may be sensitive.
-    Where the app lives under /root, its existence is still provable with the size-only `du`
-    allowance (F5) — so the agent is never forced to guess."""
+    Application trees frequently live below /root or a login user's home on these images. Metadata
+    readers reveal names, modes and sizes rather than file content, so those trees are included
+    while credential/private-key component tripwires remain in force. Content still uses the
+    narrower _safe_path policy apart from explicitly shaped source and log files."""
     p = _unquote(p)
     if _safe_path(p):
         return True
     if ".." in p:
         return False
-    if any(d in p.lower() for d in _DENY_PATH_SUBSTR):
+    if any(d in p.lower() for d in _META_DENY_SUBSTR):
         return False
     if any(p == pre or p.startswith(pre + "/") for pre in _META_APP_PREFIXES):
         return True
@@ -843,7 +843,8 @@ _PROBE_VALUE_FLAGS = {"-m", "--max-time", "--connect-timeout", "--max-redirs", "
                       "-D", "--dump-header", "--timeout", "--tries", "-t", "-w", "--write-out"}
 _PROBE_BOOL_FLAGS = {"-s", "--silent", "-S", "--show-error", "-I", "--head", "-i", "--include",
                      "-L", "--location", "-f", "--fail", "-k", "--insecure", "-4", "-6",
-                     "-q", "--quiet", "--spider", "-nv", "--no-verbose", "-O-", "--server-response"}
+                     "-q", "--quiet", "--spider", "-nv", "--no-verbose", "-O-", "-qO-",
+                     "--server-response"}
 # Short-flag letters that are boolean (take no value) — used to accept clusters like `-sS`.
 _PROBE_BOOL_SHORT = set("sSIiLfk46q")
 # Anything that can send data, upload, re-method, authenticate, or name an output file.
@@ -943,6 +944,10 @@ def _is_read_only(cmd: str) -> bool:
         return _literal_cd_ok(cmd)
     if binary == "sleep":                               # bounded wait before a verification probe
         return _bounded_sleep_ok(cmd)
+    if binary == "[":                                   # shell test builtin spelling
+        return len(tokens) >= 2 and tokens[-1] == "]"
+    if binary == "printenv":                            # runtime-selection facts, not full secret env
+        return len(tokens) > 1 and all(t in _DIAGNOSTIC_ENV_NAMES for t in tokens[1:])
     if binary in ("curl", "wget"):                       # F10: loopback-only service probe
         return _http_probe_ok(tokens)
     blk = _STREAM_BLOCK.get(binary)
@@ -1726,6 +1731,12 @@ def _env_is_read(tokens) -> bool:
 _SHELL_KEYWORDS = {"if", "then", "else", "elif", "fi", "do", "done", "while", "until", "for",
                    "case", "esac", "in", "select", "function", "coproc", "time", "!",
                    "{", "}", "(", ")"}
+_READ_CONTROL_KEYWORDS = {"if", "then", "else", "elif", "fi"}
+_DIAGNOSTIC_ENV_NAMES = {
+    "CUDA_VISIBLE_DEVICES", "NVIDIA_VISIBLE_DEVICES", "NVIDIA_DRIVER_CAPABILITIES",
+    "CUDA_HOME", "CONDA_DEFAULT_ENV", "VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH",
+    "LD_LIBRARY_PATH", "PATH",
+}
 
 
 def _strip_shell_keywords(seg: str) -> str:
@@ -1734,6 +1745,22 @@ def _strip_shell_keywords(seg: str) -> str:
     while i < len(toks) and toks[i] in _SHELL_KEYWORDS:
         i += 1
     return " ".join(toks[i:])
+
+
+def _strip_subshell_edges(seg: str) -> str:
+    """Peel grouping punctuation left on segments after quote-aware &&/||/; splitting.
+
+    A grouped fallback such as ``(netstat ... || lsof ... || true)`` is read-only exactly when
+    every command inside it is read-only. classify() already checks every resulting segment;
+    unmatched group edges should not turn those commands into fake executable names. Command
+    substitution is rejected before this helper is reached.
+    """
+    value = seg.strip()
+    while value.startswith("("):
+        value = value[1:].lstrip()
+    while value.endswith(")"):
+        value = value[:-1].rstrip()
+    return value
 
 
 def _strip_wrapper(binary: str, tokens) -> str:
@@ -1769,14 +1796,18 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     # Strip everything that can merely PRECEDE the real command, to a fixed point: `then sudo rm ...`
     # needs both strippers, and either one alone leaves the other's prefix in token 0.
     seg, prev = seg.strip(), None
+    if _SUBSTITUTION.search(seg):                         # reject before peeling grouping parens
+        return True
+    seg = _strip_subshell_edges(seg)
     initial_tokens = seg.split()
-    if initial_tokens and initial_tokens[0] in _SHELL_KEYWORDS:
+    if (initial_tokens and initial_tokens[0] in _SHELL_KEYWORDS
+            and initial_tokens[0] not in _READ_CONTROL_KEYWORDS):
         return True                                       # do not auto-run shell control-flow/loops
     while prev != seg:
         prev = seg
         seg = _strip_sudo(_strip_shell_keywords(seg).strip())
     if not seg:
-        return True                                      # syntax fragment, not a proven read
+        return not (initial_tokens and initial_tokens[0] in _READ_CONTROL_KEYWORDS)
     if ">" in _SAFE_REDIR.sub(" ", seg):                  # real-file redirection writes
         return True
     # `2>/dev/null` / `2>&1` / `>/dev/null` change nothing, but they are bare WORDS to a naive
@@ -1788,8 +1819,10 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
         return False
     raw0 = _unquote(tokens[0])
     binary = _basename(raw0).lower()
-    if _SUBSTITUTION.search(seg):                         # substitution executes, even quoted
-        return True
+    if binary == "[":
+        return not (len(tokens) >= 2 and tokens[-1] == "]")  # shell test; no state change
+    if binary in ("printf", "echo", "true", "false"):
+        return False                                      # captured output/status, no real-file redirect
     # running a file on the box: a script by name, or anything by relative path
     if _SCRIPT_SHAPE.search(binary) or raw0.startswith("./") or raw0.startswith("../"):
         return True
@@ -2085,6 +2118,8 @@ def classify(command: str) -> str:
     """Return 'destructive' | 'read_only' | 'mutating'. Reasoning-blind: command text only."""
     cmd = (command or "").strip()
     if not cmd:
+        return "mutating"
+    if cmd in _SHELL_KEYWORDS:                            # bare syntax is not a useful remote probe
         return "mutating"
     if _scan_destructive(cmd):                            # 1) destructive precedes everything
         return "destructive"
