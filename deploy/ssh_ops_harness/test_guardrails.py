@@ -46,6 +46,16 @@ CLASSIFY_CASES = [
     ("dmesg", "read_only"),
     ("dmesg -T", "read_only"),
     ("systemctl status ssh", "read_only"),
+    ("systemctl is-system-running", "read_only"),
+    ("systemctl --no-pager --type=service --state=running", "read_only"),
+    ("systemctl --no-pager --type service --state running list-units", "read_only"),
+    ("systemctl --no-pager restart vllm", "mutating"),
+    ("systemctl --force --type=service", "mutating"),
+    ("pgrep -a supervisord", "read_only"),
+    ("pidof python3", "read_only"),
+    ("pgrep -a supervisord; supervisorctl status", "read_only"),
+    ("lsof -nP -iTCP -sTCP:LISTEN", "read_only"),
+    ("pkill supervisord", "mutating"),
     ("journalctl -u docker --no-pager -n 100", "read_only"),
     ("journalctl -xe", "read_only"),                  # r2 FP: -e is a bound
     ("journalctl -u vllm -n 100 -e", "read_only"),
@@ -238,6 +248,12 @@ CLASSIFY_CASES = [
     ("du -sh /root/* | sort -h | tail", "read_only"),       # glob under /root piped to safe filters
     ("cat /proc/net/tcp", "read_only"),                     # ss/netstat fallback: socket table
     ("cat /proc/net/tcp6", "read_only"),
+    ("awk 'NR>1 && $4==\"0A\" {print}' /proc/net/tcp /proc/net/tcp6", "read_only"),
+    ("cat /proc/net/tcp | awk '$4==\"0A\" {print}'", "read_only"),
+    ("awk 'BEGIN { system(\"id\") }' /proc/net/tcp", "mutating"),
+    ("awk '{print > \"/tmp/out\"}' /proc/net/tcp", "mutating"),
+    ("awk '{print}' /etc/shadow", "mutating"),
+    ("awk -f /tmp/filter.awk /proc/net/tcp", "mutating"),
 
     # === F5 bypass attempts that MUST stay refused ===
     ("du -sh /root/.ssh", "mutating"),                      # secret-file substr denies even a size read

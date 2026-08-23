@@ -304,6 +304,8 @@ def _bounded_nvidia_monitor(tokens) -> bool:
 _STRUCTURED_DIAG = [re.compile(p) for p in [
     r"systemctl\s+(status|is-active|is-enabled|is-failed|list-units|list-unit-files|list-dependencies)(\s+\S+)*",
     r"(free|uptime|uname|hostname|whoami|id|pwd|date|lscpu|lsblk|lsmod|lspci|nproc|arch|sensors)(\s+\S+)*",
+    r"(pgrep|pidof)(\s+\S+)*",                         # process lookup only; pkill is separate
+    r"lsof(\s+\S+)*",                                  # open-file/socket metadata; no write mode
     r"df(\s+\S+)*",
     r"dmesg(\s+(-T|-x|-t|-H|-k|-r|-e|--ctime|--color=\w+|-l\s+\w+|-n\s+\d+|--level=\S+))*",
     r"(ss|netstat)(\s+\S+)*",
@@ -352,6 +354,98 @@ _STRUCTURED_DIAG = [re.compile(p) for p in [
     r"sshd\s+-t",                                       # validate daemon config without applying it
     r"fuser(\s+\S+)*",                                  # kill forms are rejected before this proof
 ]]
+
+_SYSTEMCTL_READ_VERBS = {
+    "status", "is-active", "is-enabled", "is-failed", "is-system-running",
+    "list-units", "list-unit-files", "list-dependencies", "list-jobs",
+    "list-sockets", "list-timers",
+}
+_SYSTEMCTL_READ_FLAGS = {
+    "--all", "-a", "--failed", "--full", "-l", "--no-ask-password",
+    "--no-legend", "--no-pager", "--plain", "--quiet", "-q", "--reverse",
+    "--show-types", "--system", "--user", "--value",
+}
+_SYSTEMCTL_READ_VALUE_FLAGS = {
+    "--lines", "-n", "--output", "-o", "--property", "-p", "--state", "--type", "-t",
+}
+_SYSTEMCTL_READ_VALUE_PREFIXES = (
+    "--lines=", "--output=", "--property=", "--state=", "--type=",
+)
+
+
+def _systemctl_is_readonly(tokens) -> bool:
+    """Prove reporting-only systemctl forms, including options before the verb.
+
+    `systemctl --no-pager --type=service --state=running` is the ordinary spelling of
+    the implicit `list-units` read. The old regex required a verb in argv[1], so this
+    live command and `is-system-running` both produced spurious confirmation cards.
+    Unknown options and every non-reporting verb still fail closed.
+    """
+    i, verb = 1, None
+    while i < len(tokens):
+        token = tokens[i]
+        if token == "--":
+            i += 1
+            if i < len(tokens):
+                verb = tokens[i]
+            break
+        if token in _SYSTEMCTL_READ_FLAGS or token.startswith(_SYSTEMCTL_READ_VALUE_PREFIXES):
+            i += 1
+            continue
+        if token in _SYSTEMCTL_READ_VALUE_FLAGS:
+            if i + 1 >= len(tokens) or tokens[i + 1].startswith("-"):
+                return False
+            i += 2
+            continue
+        if token.startswith("-"):
+            return False
+        verb = token
+        break
+    # No verb means systemctl's default list-units report. Unit operands are accepted only
+    # after an explicit reviewed reporting verb; option parsing above has already rejected
+    # mutating flags such as --now and --force.
+    return verb is None or verb in _SYSTEMCTL_READ_VERBS
+
+
+_AWK_BINARIES = {"awk", "gawk", "mawk", "nawk"}
+_AWK_UNSAFE_PROGRAM = re.compile(
+    r"(?:\bsystem\s*\(|\bgetline\b|\b(?:ARGV|ARGC|ENVIRON)\b|@[a-zA-Z_]"
+    r"|(?<!\|)\|(?!\|)|\b(?:print|printf)\b[^{};\n]*>{1,2}|\b(?:while|for|do)\b)",
+    re.IGNORECASE,
+)
+
+
+def _awk_is_readonly(tokens, allow_stdin: bool) -> bool:
+    """Prove the small awk form used to filter safe diagnostic text.
+
+    Awk is otherwise an execution/write primitive. This accepts one inline program and
+    either stdin or explicitly allowlisted files, while rejecting system/getline, dynamic
+    ARGV/ENVIRON access, redirection/pipes, program files, assignments and loops. It is a
+    structural proof, not an awk-name allowlist.
+    """
+    i = 1
+    while i < len(tokens) and tokens[i].startswith("-"):
+        token = tokens[i]
+        if token == "-F":
+            if i + 1 >= len(tokens):
+                return False
+            i += 2
+            continue
+        if token.startswith("-F") and len(token) > 2:
+            i += 1
+            continue
+        return False
+    if i >= len(tokens):
+        return False
+    program = tokens[i]
+    if _AWK_UNSAFE_PROGRAM.search(program):
+        return False
+    paths = tokens[i + 1:]
+    if not paths:
+        return allow_stdin
+    if any("=" in path or path.startswith("-") for path in paths):
+        return False
+    return all(path.startswith("/") and _safe_path(path) for path in paths)
 
 # Readers that emit raw file CONTENT — strict: every target must be a curated-safe absolute path.
 _CONTENT_READERS = {"cat", "nl", "tac", "strings", "od", "xxd", "hexdump",
@@ -858,6 +952,16 @@ def _is_read_only(cmd: str) -> bool:
         return _ps_ok(tokens)
     if binary == "journalctl":
         return _journalctl_ok(cmd)
+    if binary == "systemctl":
+        try:
+            return _systemctl_is_readonly(shlex.split(cmd))
+        except ValueError:
+            return False
+    if binary in _AWK_BINARIES:
+        try:
+            return _awk_is_readonly(shlex.split(cmd), allow_stdin=False)
+        except ValueError:
+            return False
     if binary in ("tail", "head"):                 # content readers that can stream via -f
         if _FOLLOW.search(cmd):
             return False
@@ -1037,6 +1141,11 @@ def _is_safe_filter(seg: str) -> bool:
     if _basename(toks[0]) in ("grep", "egrep", "fgrep"):
         try:
             return _grep_stdin_only(shlex.split(seg))
+        except ValueError:
+            return False
+    if _basename(toks[0]) in _AWK_BINARIES:
+        try:
+            return _awk_is_readonly(shlex.split(seg), allow_stdin=True)
         except ValueError:
             return False
     if _basename(toks[0]) not in _SAFE_FILTERS:
