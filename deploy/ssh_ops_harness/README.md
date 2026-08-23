@@ -14,9 +14,16 @@ sudoers.d drop-in 都是可确认操作。只有不可恢复的数据/启动/登
   32 KiB 输出上限返回，并给出整文件 SHA-256；不跟随软链，凭据目录、私钥和内核/设备伪文件
   不可读。它承接 Claude Code 本地 `Read` 在远端实例里的等价职责，也为原子修改提供前置 hash，
   不会在控制面本机读取同名路径。
+- `find_paths` / `search_text_tree`：前者按 basename glob 有界查找文件/目录，后者在已由进程、
+  监听或启动器证据确定的一个应用目录内做有界字面量内容搜索；二者都不跟随软链、跳过凭据
+  路径、最多访问 256 个目录，路径最多返回 100 条，内容搜索另限 512 个文件 / 8 MiB / 100 条
+  脱敏匹配。它们分别承接 Claude Code 本地 `Glob` 与 `Grep` 在远端实例里的等价职责，不通过
+  远端 shell 执行搜索，也不会因应用恰好在 `/root/<app>` 就要求写操作确认。
 - `endpoint_probe`：只接受服务端从 `Softwares[].URL` / `TcpForwards` 派生的 opaque ID。
-  HTTP 只发一次有界 GET、TCP 只 connect 不发数据；模型不能传 URL、主机、端口、header 或 body，
-  返回值也不带真实地址或 URL 中的 token。结果只证明 ssh-ops runner 这一网络视角。
+  HTTP 只发一次有界 GET、TCP 只 connect 不发数据；HTTP 可在同一个服务端选定 origin 上指定
+  绝对 path/query，以验证 `/health`、`/index.html` 等真实入口，但模型仍不能传 URL、主机、端口、
+  header 或 body，平台 URL 中已有的 token 只在 harness 内私有保留。结果也不带真实地址或 token，
+  只证明 ssh-ops runner 这一网络视角。
 - `start_background_job` / `poll_background_job`：写模式下将已经诊断清楚、已经逐项确认的长命令
   放入私有 job 目录；stdin/stdout/stderr 全部脱离 SSH 会话，PID 带 job marker，完成码原子落盘。
   轮询只返回有界日志尾部并只接受 `job-...` ID，不能借它读取任意路径。任务文件不继承日志大小限制，

@@ -16,7 +16,10 @@ def check(name, condition):
 
 
 class _Handler(http.server.BaseHTTPRequestHandler):
+    seen_paths = []
+
     def do_GET(self):
+        self.__class__.seen_paths.append(self.path)
         if self.path == "/redirect":
             self.send_response(302)
             self.send_header("Location", f"http://localhost:{self.server.server_address[1]}/ok")
@@ -75,11 +78,32 @@ check("public-targets-hide-url-host-and-token",
 schema = endpoint_probe.input_schema(targets)
 check("schema-is-an-opaque-enum", schema["properties"]["target_id"]["enum"] == list(targets))
 check("schema-accepts-no-url-host-port", all(k not in schema["properties"] for k in ("url", "host", "port")))
+check("schema-allows-only-an-absolute-bounded-path",
+      schema["properties"]["path"]["pattern"] == "^/"
+      and schema["properties"]["path"]["maxLength"] == endpoint_probe._MAX_PATH_LENGTH)
 
 http_result = endpoint_probe.probe(targets, "platform-http-1")
 check("http-probe-reaches-response", http_result["transport_reachable"] is True and http_result["http_status"] == 204)
 check("http-result-hides-private-destination",
       all(value not in json.dumps(http_result) for value in ("127.0.0.1", "live-secret", "token=", "must-not-return")))
+path_result = endpoint_probe.probe(targets, "platform-http-1", "/index.html?view=compact")
+check("http-path-stays-on-selected-origin-and-preserves-platform-query",
+      path_result["transport_reachable"] is True and path_result["http_status"] == 204
+      and _Handler.seen_paths[-1] in (
+          "/index.html?token=live-secret&view=compact",
+          "/index.html?view=compact&token=live-secret",
+      ))
+check("http-path-result-still-hides-query-and-destination",
+      all(value not in json.dumps(path_result)
+          for value in ("127.0.0.1", "live-secret", "view=compact", "token=", "must-not-return")))
+for bad_path in ("relative", "//example.com/escape", "https://example.com/escape", "/ok#hidden"):
+    invalid = endpoint_probe.probe(targets, "platform-http-1", bad_path)
+    check("invalid-path-is-rejected-before-network::" + bad_path,
+          invalid["transport_reachable"] is False
+          and invalid["stage"] == "request_validation"
+          and invalid["error_class"] == "invalid_path")
+too_long = endpoint_probe.probe(targets, "platform-http-1", "/" + "a" * endpoint_probe._MAX_PATH_LENGTH)
+check("overlong-path-is-rejected", too_long["error_class"] == "invalid_path")
 failed_http = endpoint_probe.probe(targets, "platform-http-3")
 check("http-error-still-proves-transport-not-application-health",
       failed_http["transport_reachable"] is True
@@ -92,6 +116,10 @@ check("cross-origin-redirect-is-not-followed",
 tcp_result = endpoint_probe.probe(targets, "platform-tcp-2")
 check("tcp-probe-connects-without-payload",
       tcp_result["transport_reachable"] is True and tcp_result["stage"] == "tcp_connected")
+tcp_path = endpoint_probe.probe(targets, "platform-tcp-2", "/not-applicable")
+check("tcp-target-rejects-a-path",
+      tcp_path["transport_reachable"] is False
+      and tcp_path["error_class"] == "path_not_supported")
 unknown = endpoint_probe.probe(targets, "not-listed")
 check("model-cannot-invent-a-destination",
       unknown["transport_reachable"] is False and unknown["error_class"] == "unknown_target_id")

@@ -309,6 +309,7 @@ _STRUCTURED_DIAG = [re.compile(p) for p in [
     r"systemctl\s+(status|is-active|is-enabled|is-failed|list-units|list-unit-files|list-dependencies)(\s+\S+)*",
     r"(free|uptime|uname|hostname|whoami|id|pwd|date|lscpu|lsblk|lsmod|lspci|nproc|arch|sensors)(\s+\S+)*",
     r"(pgrep|pidof)(\s+\S+)*",                         # process lookup only; pkill is separate
+    r"pwdx\s+\d+",                                     # one process cwd; no write form
     r"pstree(\s+\S+)*",                                # process ancestry only
     r"lsof(\s+\S+)*",                                  # open-file/socket metadata; no write mode
     r"df(\s+\S+)*",
@@ -367,6 +368,11 @@ _SYSTEMCTL_READ_VERBS = {
     "list-units", "list-unit-files", "list-dependencies", "list-jobs",
     "list-sockets", "list-timers",
 }
+_SYSTEMCTL_SAFE_PROPERTIES = {
+    "ActiveEnterTimestamp", "ActiveState", "Description", "ExecMainCode", "ExecMainStatus",
+    "FragmentPath", "Id", "InactiveEnterTimestamp", "LoadState", "MainPID", "Names",
+    "NRestarts", "Restart", "SourcePath", "SubState", "UnitFileState", "Version",
+}
 _SYSTEMCTL_READ_FLAGS = {
     "--all", "-a", "--failed", "--full", "-l", "--no-ask-password",
     "--no-legend", "--no-pager", "--plain", "--quiet", "-q", "--reverse",
@@ -388,7 +394,7 @@ def _systemctl_is_readonly(tokens) -> bool:
     live command and `is-system-running` both produced spurious confirmation cards.
     Unknown options and every non-reporting verb still fail closed.
     """
-    i, verb = 1, None
+    i, verb, properties = 1, None, []
     while i < len(tokens):
         token = tokens[i]
         if token == "--":
@@ -396,21 +402,54 @@ def _systemctl_is_readonly(tokens) -> bool:
             if i < len(tokens):
                 verb = tokens[i]
             break
-        if token in _SYSTEMCTL_READ_FLAGS or token.startswith(_SYSTEMCTL_READ_VALUE_PREFIXES):
+        if token in _SYSTEMCTL_READ_FLAGS:
+            i += 1
+            continue
+        if token.startswith(_SYSTEMCTL_READ_VALUE_PREFIXES):
+            if token.startswith("--property="):
+                properties.extend(part for part in token.split("=", 1)[1].split(",") if part)
             i += 1
             continue
         if token in _SYSTEMCTL_READ_VALUE_FLAGS:
             if i + 1 >= len(tokens) or tokens[i + 1].startswith("-"):
                 return False
+            if token in ("--property", "-p"):
+                properties.extend(part for part in tokens[i + 1].split(",") if part)
             i += 2
             continue
         if token.startswith("-"):
             return False
         verb = token
+        i += 1
         break
     # No verb means systemctl's default list-units report. Unit operands are accepted only
     # after an explicit reviewed reporting verb; option parsing above has already rejected
     # mutating flags such as --now and --force.
+    if verb == "show":
+        # An unrestricted `systemctl show` includes Environment= and may expose credentials.
+        # A caller-selected set of non-secret lifecycle properties is a bounded observation.
+        while i < len(tokens):
+            token = tokens[i]
+            if token.startswith("--property="):
+                properties.extend(part for part in token.split("=", 1)[1].split(",") if part)
+                i += 1
+                continue
+            if token in ("--property", "-p"):
+                if i + 1 >= len(tokens) or tokens[i + 1].startswith("-"):
+                    return False
+                properties.extend(part for part in tokens[i + 1].split(",") if part)
+                i += 2
+                continue
+            if token in _SYSTEMCTL_READ_FLAGS:
+                i += 1
+                continue
+            if token == "--":
+                i += 1
+                continue
+            if token.startswith("-"):
+                return False
+            i += 1                                      # literal unit name
+        return bool(properties) and all(prop in _SYSTEMCTL_SAFE_PROPERTIES for prop in properties)
     return verb is None or verb in _SYSTEMCTL_READ_VERBS
 
 
@@ -557,7 +596,7 @@ _META_SAFE_PREFIXES = ("/dev/", "/usr/", "/sys/", "/proc/", "/lib/", "/lib64/",
                        "/bin/", "/sbin/", "/opt/")
 # F11: non-home application/data dirs, where these GPU images put the served app (/workspace/ComfyUI,
 # /data/..., mounted volumes). Metadata-only, and deliberately NOT /root or /home — see _safe_meta_path.
-_META_APP_PREFIXES = ("/workspace", "/data", "/mnt", "/root", "/home", "/tmp", "/var/tmp")
+_META_APP_PREFIXES = ("/workspace", "/data", "/mnt", "/model", "/root", "/home", "/tmp", "/var/tmp")
 _META_STATE_PREFIXES = ("/var/lib/docker", "/var/lib/containerd")
 _META_DENY_SUBSTR = tuple(d for d in _DENY_PATH_SUBSTR if d != "/root")
 
@@ -589,7 +628,7 @@ def _pkg_safe_path(p: str) -> bool:
 
 # Application logs are content-safe only under application directories, never /var/log. Output is
 # still secret-scrubbed and secret-file tripwires still apply.
-_APP_LOG_PREFIXES = ("/workspace/", "/data/", "/mnt/", "/opt/", "/start.d/", "/usr/local/",
+_APP_LOG_PREFIXES = ("/workspace/", "/data/", "/mnt/", "/model/", "/opt/", "/start.d/", "/usr/local/",
                      "/root/", "/home/")
 _APP_LOG_SHAPE = re.compile(r"(?:\.(?:log|out|err)|(?:^|/)nohup\.out)$", re.I)
 
@@ -602,7 +641,7 @@ def _app_log_path(p: str) -> bool:
     return bool(_APP_LOG_SHAPE.search(p)) and any(p.startswith(pre) for pre in _APP_LOG_PREFIXES)
 
 
-_APP_SOURCE_PREFIXES = ("/workspace/", "/data/", "/mnt/", "/opt/")
+_APP_SOURCE_PREFIXES = ("/workspace/", "/data/", "/mnt/", "/model/", "/opt/")
 
 
 def _app_source_path(p: str) -> bool:
@@ -819,7 +858,12 @@ def _literal_cd_ok(cmd: str) -> bool:
 
 
 def _bounded_sleep_ok(cmd: str) -> bool:
-    """Permit a short observation delay without mislabelling it as a guest mutation."""
+    """Permit a bounded observation delay without mislabelling it as a guest mutation.
+
+    The SSH call itself is capped at 25 seconds. Service warm-up probes commonly wait 6-15 seconds;
+    asking for approval to spend time (while changing no guest state) is both misleading and noisy.
+    Keep a margin for the actual verification command in the same call.
+    """
     try:
         argv = shlex.split(cmd)
     except ValueError:
@@ -832,7 +876,7 @@ def _bounded_sleep_ok(cmd: str) -> bool:
     if len(rest) != 1 or re.fullmatch(r"(?:\d+(?:\.\d*)?|\.\d+)s?", rest[0]) is None:
         return False
     value = rest[0][:-1] if rest[0].endswith("s") else rest[0]
-    return float(value) <= 5.0
+    return float(value) <= 20.0
 
 
 # --- F10: loopback-only HTTP probe -------------------------------------------
@@ -999,7 +1043,8 @@ def _is_read_only(cmd: str) -> bool:
         return False
     if binary == "git":
         try:
-            if _git_local_config_read(shlex.split(cmd)):
+            git_tokens = shlex.split(cmd)
+            if _git_local_config_read(git_tokens) or _git_repository_read(git_tokens):
                 return True
         except ValueError:
             pass
@@ -1148,6 +1193,50 @@ def _git_local_config_read(tokens) -> bool:
     return re.fullmatch(r"[A-Za-z0-9_.^$*+?()|\\-]+", rest[1]) is not None
 
 
+def _git_repository_read(tokens) -> bool:
+    """Prove a small metadata-only Git inspection inside an explicit application repository.
+
+    Requiring ``-C /absolute/path`` keeps the target observable to the classifier. Remote URL
+    queries, diffs/file content and every worktree-changing verb stay behind confirmation.
+    """
+    if len(tokens) < 4 or tokens[1] != "-C":
+        return False
+    repo = tokens[2]
+    if not repo.startswith("/") or not _safe_meta_path(repo):
+        return False
+    verb, rest = tokens[3], tokens[4:]
+    if verb == "status":
+        allowed = {"-s", "--short", "-b", "--branch", "--porcelain", "--no-renames"}
+        return all(token in allowed or token.startswith(("--porcelain=", "--untracked-files="))
+                   for token in rest)
+    if verb == "rev-parse":
+        if not rest:
+            return False
+        allowed_flags = {"--show-toplevel", "--git-dir", "--is-inside-work-tree", "--is-bare-repository"}
+        return all(token in allowed_flags or token == "HEAD" or
+                   re.fullmatch(r"--short(?:=\d+)?", token) is not None for token in rest)
+    if verb == "log":
+        # Commit identity/subject only, bounded to one entry; no -p/--stat/name/content forms.
+        bounded = any(token == "-1" or token == "--max-count=1" for token in rest)
+        if not bounded:
+            return False
+        for token in rest:
+            if token in {"-1", "--max-count=1", "--oneline", "--no-decorate",
+                         "--no-show-signature", "HEAD"}:
+                continue
+            if token.startswith(("--format=", "--pretty=")):
+                value = token.split("=", 1)[1]
+                # Permit identity/subject/time placeholders and literal separators only. %b/%B
+                # (commit body), %N (notes), signature payloads and unknown future placeholders
+                # stay behind confirmation instead of contradicting the metadata-only contract.
+                if "%" in re.sub(r"%(?:%|H|h|s|f|ct|cI|an)", "", value):
+                    return False
+                continue
+            return False
+        return True
+    return False
+
+
 def _is_safe_filter(seg: str) -> bool:
     """A downstream pipe stage: an allowlisted text filter reading ONLY stdin. No
     file-path args (so `| grep root /etc/shadow` cannot read a file) and no -f stream."""
@@ -1191,6 +1280,17 @@ def _strip_safe_input_redirect(cmd: str):
         tokens = shlex.split(source)
     except ValueError:
         return None
+    # POSIX shells accept both `< /proc/PID/cmdline` and the equally common compact spelling
+    # `</proc/PID/cmdline`.  shlex keeps the latter as one token, so split that token only when the
+    # raw unquoted command proves there is exactly one compact absolute-path redirect.  A quoted
+    # literal such as `printf '</tmp/x'` is blanked by _mask_quoted and cannot enter this branch.
+    compact_redirects = re.findall(r"(?<!\S)<(?=/)", _mask_quoted(source))
+    if "<" not in tokens and len(compact_redirects) == 1:
+        compact_tokens = [i for i, token in enumerate(tokens) if token.startswith("</")]
+        if len(compact_tokens) != 1:
+            return None
+        i = compact_tokens[0]
+        tokens = tokens[:i] + ["<", tokens[i][1:]] + tokens[i + 1:]
     if "<" not in tokens:
         return (cmd, False) if "<" not in masked else None
     if tokens.count("<") != 1:

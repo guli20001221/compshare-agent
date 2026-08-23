@@ -53,6 +53,31 @@ for bad in ['{"user":"u","port":22,"password":"x"}',     # missing host
 harness.set_conn(conn)
 check("cred-not-in-environ", "Pl4inPwd77x" not in "".join(os.environ.values()))
 check("secrets-has-pw-and-b64", harness._secrets()[0] == "Pl4inPwd77x" and len(harness._secrets()) == 2)
+_prompt_flat = " ".join(harness.SYSTEM_PROMPT.split())
+check("prompt-does-not-infer-events-from-absence-or-time-order",
+      "Current absence, timestamp ordering" in _prompt_flat and
+      "Do not claim a restart, rebuild, crash, eviction, or actor" in _prompt_flat)
+check("prompt-stops-discovery-after-repair-path-is-proven",
+      "Once the fault and narrowest repair path are supported, stop" in _prompt_flat and
+      "do not inspect shell history, backups, or broad unrelated trees" in _prompt_flat)
+check("prompt-prefers-direct-environment-interpreter",
+      "Invoke that executable directly" in _prompt_flat and
+      "instead of sourcing an activation script" in _prompt_flat)
+check("prompt-does-not-call-reproduction-a-repair",
+      "reproduction, compatibility probe, or fault injection is not a repair" in _prompt_flat and
+      "corrected the user's original fault" in _prompt_flat and
+      "post-change" in _prompt_flat and
+      "success criterion remains untested" in _prompt_flat and
+      "one confirmed failure path is removed" in _prompt_flat)
+check("prompt-does-not-call-a-failed-probe-no-repair-needed",
+      "positive observation proves the original user success criterion" in _prompt_flat and
+      "inspection-only run or absence of a state change does not justify" in _prompt_flat and
+      "failed or inconclusive diagnostic/reproduction/repair" in _prompt_flat and
+      "is `未修复`, not `无需修复`" in _prompt_flat)
+check("prompt-requires-runtime-reload-after-on-disk-change",
+      "not applied to an already-running process" in _prompt_flat and
+      "File/path verification alone is not runtime verification" in _prompt_flat and
+      "intentionally split across approvals" in _prompt_flat)
 
 
 # --- versioned reference context: data only, bounded, and backwards-compatible -----------------
@@ -907,8 +932,8 @@ check("context-main-receipt-matches-sdk-prompt",
 check("context-main-verdict-still-emits", "mocked contextual diagnosis" in _main_output)
 _first_tools = _captured_sdk_servers[0]["tools"]
 _legacy_flag_tools = _captured_sdk_servers[1]["tools"]
-check("mcp-surface-version-bumped-for-guest-endpoint-tool",
-      _captured_sdk_servers[0]["version"] == "2.3.0")
+check("mcp-surface-version-bumped-for-remote-glob-tool",
+      _captured_sdk_servers[0]["version"] == "2.5.0")
 check("main-registers-exact-single-repair-tool-surface",
       [tool._test_tool_name for tool in _first_tools] == [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
 check("removed-mode-flag-cannot-change-the-tool-surface",
@@ -916,6 +941,8 @@ check("removed-mode-flag-cannot-change-the-tool-surface",
       [tool._test_tool_name for tool in _first_tools])
 _endpoint_tool = next(tool for tool in _first_tools if tool._test_tool_name == "endpoint_probe")
 _remote_text_tool = next(tool for tool in _first_tools if tool._test_tool_name == "read_text_file")
+_find_paths_tool = next(tool for tool in _first_tools if tool._test_tool_name == "find_paths")
+_remote_search_tool = next(tool for tool in _first_tools if tool._test_tool_name == "search_text_tree")
 _process_env_tool = next(tool for tool in _first_tools
                          if tool._test_tool_name == "read_process_environment")
 _remote_text_annotations = _remote_text_tool._test_tool_annotations
@@ -928,6 +955,26 @@ check("remote-text-tool-schema-carries-only-a-remote-path-and-bounds",
 check("remote-text-tool-is-declared-read-only-to-the-sdk",
       getattr(_remote_text_annotations, "readOnlyHint", None) is True and
       getattr(_remote_text_annotations, "destructiveHint", None) is False)
+check("remote-search-schema-is-bounded-and-has-no-shell-or-credential-input",
+      _remote_search_tool._test_tool_schema["required"] == ["root", "query"] and
+      set(_remote_search_tool._test_tool_schema["properties"]) ==
+      {"root", "query", "file_glob", "ignore_case", "max_matches"} and
+      all(field not in _remote_search_tool._test_tool_schema["properties"]
+          for field in ("host", "user", "password", "key", "command", "url")) and
+      _remote_search_tool._test_tool_schema["properties"]["max_matches"]["maximum"] == 100)
+check("remote-search-tool-is-declared-read-only-to-the-sdk",
+      getattr(_remote_search_tool._test_tool_annotations, "readOnlyHint", None) is True and
+      getattr(_remote_search_tool._test_tool_annotations, "destructiveHint", None) is False)
+check("remote-glob-schema-is-bounded-and-has-no-shell-or-credential-input",
+      _find_paths_tool._test_tool_schema["required"] == ["root", "name_glob"] and
+      set(_find_paths_tool._test_tool_schema["properties"]) ==
+      {"root", "name_glob", "ignore_case", "max_depth", "max_results"} and
+      all(field not in _find_paths_tool._test_tool_schema["properties"]
+          for field in ("host", "user", "password", "key", "command", "url")) and
+      _find_paths_tool._test_tool_schema["properties"]["max_depth"]["maximum"] == 12)
+check("remote-glob-tool-is-declared-read-only-to-the-sdk",
+      getattr(_find_paths_tool._test_tool_annotations, "readOnlyHint", None) is True and
+      getattr(_find_paths_tool._test_tool_annotations, "destructiveHint", None) is False)
 check("process-environment-tool-schema-has-no-arbitrary-key-or-credential-input",
       _process_env_tool._test_tool_schema["required"] == ["pid", "names"] and
       set(_process_env_tool._test_tool_schema["properties"]) == {"pid", "names"} and

@@ -63,7 +63,7 @@ jobs:
       - name: Install the pinned Agent SDK (for the INV-9 real-options check)
         run: pip install claude-agent-sdk==0.2.106
 
-      # All nine suites, not two: the skill-deletion assertions (`skill-tool-no-longer-exists`,
+      # All twelve suites, not two: the skill-deletion assertions (`skill-tool-no-longer-exists`,
       # `skills-directory-is-gone`) live in test_write_mode.py, and a gate that runs only some of
       # the files invites the next invariant to be written into an ungated one.
       - name: ssh-ops harness suites (guardrails, INV-9, redaction, write mode)
@@ -80,3 +80,4 @@ jobs:
           python3 test_atomic_file.py
           python3 test_remote_job.py
           python3 test_process_env.py
+          python3 test_remote_search.py
