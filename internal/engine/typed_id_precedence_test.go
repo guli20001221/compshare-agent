@@ -117,6 +117,39 @@ func TestASecondTypedIDAlsoOutranksCarriedContextForWriteWorkflows(t *testing.T)
 	require.Equal(t, actionresolver.SourceUserExplicit, resolved.action.Provenance["UHostId"].Source)
 }
 
+func TestAWriteWorkflowCannotUseTheCarriedTargetWhenTheUserNamesAnother(t *testing.T) {
+	const carried = "cpod-aaaa1111aaaa"
+	for _, current := range []string{"cpod-bbbb2222bbbb", "uhost-bbbb2222bbbb"} {
+		t.Run(current, func(t *testing.T) {
+			executor := &mockExecutor{results: map[string]map[string]any{
+				"DescribeCompShareInstance": {
+					"UHostSet": []any{map[string]any{"UHostId": carried, "State": "Running"}},
+				},
+			}}
+			eng := NewWithDeps(&mockLLM{}, executor, nil)
+			eng.SetSessionState(SessionState{
+				SchemaVersion:          SessionStateSchemaCurrent,
+				SelectedInstanceID:     carried,
+				SelectedInstanceSource: SelectedInstanceSourceUser,
+				SelectedInstanceAtUnix: time.Now().Unix(),
+			}, 1)
+			eng.lastUserMsg = "停止 " + current
+			eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-new-target", time.Now())
+			eng.turnContextViewReady = true
+
+			resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
+				"turn_id": "turn-new-target", "operation": "StopInstanceWorkflow",
+				"slots": []any{map[string]any{"name": "UHostId", "value": carried}},
+			})
+
+			require.NoError(t, err)
+			require.False(t, resolved.action.ReadyForConfirmation,
+				"the model must not turn a current reference to B into a confirmation card for carried A")
+			require.NotEmpty(t, resolved.action.Conflicts)
+		})
+	}
+}
+
 // A proposed target only helps the binder when the current message contains that
 // exact ID. An ID invented by the model still cannot reach a card.
 func TestAModelInventedIDIsStillRefusedWhenTheBinderSeesProposals(t *testing.T) {
@@ -156,46 +189,40 @@ func TestAModelInventedIDIsStillRefusedWhenTheBinderSeesProposals(t *testing.T) 
 	require.NotEqual(t, invented, state.SelectedInstanceID)
 }
 
-// The half a proposed-target check cannot see. It fires only when the model
-// proposes the SAME id the user typed; when the model proposes the CARRIED one
-// instead, the check is silent and the carried target sails through — so a user
-// who typed B got an authorization card for A, and the lane entered A.
-//
-// Measured on this branch: with only the proposed-target check in place, this
-// scenario produced two cards, both naming A. The user had asked about B.
-//
-// The id-shaped-token branch is what notices that the user pointed somewhere else,
-// and on a cold registry it needs the session's own ids to notice with. Refusing is
-// the right outcome: the server cannot verify B here, and entering A — an instance
-// this turn never named — is the one thing it must not do quietly.
+// When the model repeats carried A after the user types B, the ID-shaped-token
+// signal must suppress A even though the proposal signal cannot see B.
 func TestACarriedTargetTheUserDidNotNameThisTurnDoesNotReachACard(t *testing.T) {
 	const carried = "cpod-aaaa1111aaaa"
-	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
-	model := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
-			`{"UHostId":"cpod-aaaa1111aaaa","Task":"排查 ComfyUI"}`)}},
-		{ToolCalls: []openai.ToolCall{toolCall("d2", "DiagnoseInstanceInternals",
-			`{"UHostId":"cpod-aaaa1111aaaa","Task":"排查这台"}`)}},
-		{Content: "请确认要排查哪台实例。"},
-	}}
-	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
-	eng.SetInstanceOps(runner)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	for _, second := range []string{"cpod-bbbb2222bbbb", "uhost-bbbb2222bbbb"} {
+		t.Run(second, func(t *testing.T) {
+			runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
+			model := &mockLLM{responses: []llm.ChatResponse{
+				{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
+					`{"UHostId":"cpod-aaaa1111aaaa","Task":"排查 ComfyUI"}`)}},
+				{ToolCalls: []openai.ToolCall{toolCall("d2", "DiagnoseInstanceInternals",
+					`{"UHostId":"cpod-aaaa1111aaaa","Task":"排查这台"}`)}},
+				{Content: "请确认要排查哪台实例。"},
+			}}
+			eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
+			eng.SetInstanceOps(runner)
+			eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 
-	var carded []string
-	opts := ChatOptions{ConfirmResultFunc: func(_ string, args map[string]any) ConfirmationResult {
-		id, _ := args["UHostId"].(string)
-		carded = append(carded, id)
-		return ConfirmationResult{Confirmed: true}
-	}}
-	_, err := eng.ChatWithOptions(context.Background(), "排查 cpod-aaaa1111aaaa 上的 ComfyUI", noopStep, opts)
-	require.NoError(t, err)
-	require.Equal(t, []string{carried}, carded)
+			var carded []string
+			opts := ChatOptions{ConfirmResultFunc: func(_ string, args map[string]any) ConfirmationResult {
+				id, _ := args["UHostId"].(string)
+				carded = append(carded, id)
+				return ConfirmationResult{Confirmed: true}
+			}}
+			_, err := eng.ChatWithOptions(context.Background(), "排查 "+carried+" 上的 ComfyUI", noopStep, opts)
+			require.NoError(t, err)
+			require.Equal(t, []string{carried}, carded)
 
-	rehydrate(t, eng)
-	_, err = eng.ChatWithOptions(context.Background(), "现在排查 cpod-bbbb2222bbbb 上的 ComfyUI", noopStep, opts)
-	require.NoError(t, err)
-	require.Equal(t, []string{carried}, carded,
-		"the user named a different instance this turn; the carried one must not reach a second card")
-	require.Equal(t, 1, runner.calls, "and must not be entered")
+			rehydrate(t, eng)
+			_, err = eng.ChatWithOptions(context.Background(), "现在排查 "+second+" 上的 ComfyUI", noopStep, opts)
+			require.NoError(t, err)
+			require.Equal(t, []string{carried}, carded,
+				"the user named a different instance this turn; the carried one must not reach a second card")
+			require.Equal(t, 1, runner.calls, "and must not be entered")
+		})
+	}
 }

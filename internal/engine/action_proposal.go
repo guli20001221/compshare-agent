@@ -103,6 +103,13 @@ func (v agentContextEvidenceVerifier) AdjudicateTarget(candidate actionresolver.
 	if field.TargetKind == "instance" && v.binding.conflict {
 		return actionresolver.TargetConflict
 	}
+	if field.TargetKind == "instance" && v.binding.explicit && !v.binding.bound() &&
+		candidate.Source == actionresolver.SourceAgentInference &&
+		!entity.TextExplicitlyMentionsName(v.context.CurrentQuestion, value) {
+		// The user named an instance this turn, but the candidate is a different
+		// model inference. Ask instead of showing a write card for the wrong target.
+		return actionresolver.TargetConflict
+	}
 	// Look up evidence by the SAME (field, kind, id) key it was built under, so an
 	// instance proof can never be reused for a same-id disk/CFS target.
 	ev, ok := v.targetEvidence[targetEvidenceKey{field: candidate.Name, kind: field.TargetKind, id: strings.TrimSpace(value)}]
