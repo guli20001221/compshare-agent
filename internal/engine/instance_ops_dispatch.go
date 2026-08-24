@@ -121,11 +121,11 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 		return friendlyToolResultJSON(msg)
 	}
-	// The approved entry card names this exact instance, so it is a genuine user
-	// selection for a later continuation. Record it only AFTER the confirmation:
-	// an observed list row, a model-elected id, or a declined card must never gain
-	// selection authority. Do it before Run because a failed SSH attempt does not
-	// undo what the user explicitly chose to diagnose.
+	// The approved entry card also establishes a genuine selection when the target
+	// came from a non-literal binding. A literal user designation is already stored
+	// at turn entry; an observed or model-elected target reaches this point only
+	// after the card. Record before Run because a failed SSH attempt does not undo
+	// what the user chose to diagnose.
 	e.recordSelectedInstanceIDWithSource(instanceID, "", SelectedInstanceSourceUser)
 
 	// Connected and command progress become bounded activity events. Command
@@ -133,7 +133,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	commandsEmitted := 0
 	// Settled commands are accumulated separately from the emitted ones. The live stream is capped
 	// at maxInstanceOpsStepEvents because it is a UI feed, but the interruption notice has to be
-	// able to say "N ran, M of them changed the box" over the WHOLE run — a cap on the feed must not
+	// able to report all settled commands over the WHOLE run — a cap on the feed must not
 	// silently become a cap on what the user is told a killed run did.
 	var settled []instanceOpsSettledStep
 	onProgress := func(p InstanceOpsProgress) {
@@ -291,7 +291,7 @@ func (e *Engine) instanceOpsTargetMayReachConfirmation(instanceID string) bool {
 		return false
 	}
 	view := e.turnContextViewThisTurn
-	binding := e.bindInstanceTarget(view)
+	binding := e.bindInstanceTarget(view, instanceID)
 	if binding.conflict {
 		return false
 	}

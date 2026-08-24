@@ -6,11 +6,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// createdAndDescribed puts a sealed create context at the point the workflow has
-// finished: the create returned an id, and the optional 查看状态 read came back with
-// whatever the platform actually built. The observed row is written RELATIVE to the
-// sealed intent, so the test asserts a divergence rather than two hard-coded numbers
-// that could both drift with the catalog fixture.
+// createdAndDescribed builds a completed create with a sealed intent and readback.
+// Observed values are relative to that intent so the fixture has one source of truth.
 func createdAndDescribed(t *testing.T, mutate func(intended, observed map[string]any)) (*Context, map[string]any) {
 	t.Helper()
 	wfCtx := draftContext("cn-sh2-02")
@@ -41,11 +38,7 @@ func createdAndDescribed(t *testing.T, mutate func(intended, observed map[string
 	return wfCtx, intended
 }
 
-// The production case, 2026-08-23: a create asked for 14 vCPU / 120 GB and the
-// platform served 16 vCPU / 96 GB. The reply told the user 14C/120GB — not because
-// anything lied, but because the requested spec was the only spec that existed
-// anywhere in the turn. stepDescribeInstance had already run, against the exact
-// created id; its answer was thrown away one function later.
+// A differing readback must be reported alongside the sealed intent.
 func TestCreateResultReportsWhatWasServedNotOnlyWhatWasAsked(t *testing.T) {
 	wfCtx, intended := createdAndDescribed(t, func(_, observed map[string]any) {
 		observed["CPU"] = observed["CPU"].(float64) + 2
@@ -53,7 +46,7 @@ func TestCreateResultReportsWhatWasServedNotOnlyWhatWasAsked(t *testing.T) {
 	})
 
 	data := createInstanceResultData(wfCtx)
-	require.Equal(t, true, data["ActualVerified"])
+	require.Equal(t, true, data["ActualReadbackAvailable"])
 
 	served, _ := data["Observed"].([]map[string]any)
 	require.Len(t, served, 1)
@@ -79,7 +72,7 @@ func TestCreateResultReportsWhatWasServedNotOnlyWhatWasAsked(t *testing.T) {
 func TestCreateResultNamesNoDriftWhenThePlatformServedTheContract(t *testing.T) {
 	wfCtx, _ := createdAndDescribed(t, nil)
 	data := createInstanceResultData(wfCtx)
-	require.Equal(t, true, data["ActualVerified"])
+	require.Equal(t, true, data["ActualReadbackAvailable"])
 	require.NotContains(t, data, "SpecMismatch")
 	require.Len(t, data["Observed"], 1)
 }
@@ -87,13 +80,13 @@ func TestCreateResultNamesNoDriftWhenThePlatformServedTheContract(t *testing.T) 
 // 查看状态 is Optional. A create that succeeded while the follow-up read did not come
 // back is still a created instance — it must not be reported as a failure, and it
 // must not be reported as verified either, because nobody looked.
-func TestCreateResultSaysTheSpecIsUnverifiedWhenTheReadNeverCameBack(t *testing.T) {
+func TestCreateResultReportsReadbackUnavailableWhenTheReadNeverCameBack(t *testing.T) {
 	wfCtx, _ := createdAndDescribed(t, nil)
 	delete(wfCtx.StepResults, "查看状态")
 
 	data := createInstanceResultData(wfCtx)
 	require.NotNil(t, data["UHostIds"], "the instance exists and its id must still be published")
-	require.Equal(t, false, data["ActualVerified"])
+	require.Equal(t, false, data["ActualReadbackAvailable"])
 	require.NotContains(t, data, "Observed")
 	require.NotContains(t, data, "SpecMismatch")
 }
@@ -105,6 +98,6 @@ func TestCreateResultIgnoresDescribeRowsForOtherInstances(t *testing.T) {
 		observed["UHostId"] = "uhost-somebody-else"
 	})
 	data := createInstanceResultData(wfCtx)
-	require.Equal(t, false, data["ActualVerified"])
+	require.Equal(t, false, data["ActualReadbackAvailable"])
 	require.NotContains(t, data, "Observed")
 }

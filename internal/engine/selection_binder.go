@@ -44,7 +44,7 @@ func (b selectionBinding) bound() bool { return b.id != "" && !b.conflict }
 // carried context (prior pick / account-single) — a user pointing now overrides a
 // stale selection. Within either tier, two references to DIFFERENT instances are a
 // conflict, never a pick-one.
-func (e *Engine) bindInstanceTarget(view AgentContext) selectionBinding {
+func (e *Engine) bindInstanceTarget(view AgentContext, proposedIDs ...string) selectionBinding {
 	if e == nil {
 		return selectionBinding{}
 	}
@@ -57,7 +57,9 @@ func (e *Engine) bindInstanceTarget(view AgentContext) selectionBinding {
 
 	// Tier A — explicit references in the current message.
 	var refs []string
-	explicit := false
+	// A caller-proposed target is only a parsing hint. It suppresses carried
+	// context only when the exact ID appears in the current user message.
+	explicit := textMentionsProposedInstanceID(text, proposedIDs)
 	conflict := false
 
 	if pending, ok := e.pendingResourceSelectionFromSession(); ok {
@@ -119,9 +121,9 @@ func (e *Engine) bindInstanceTarget(view AgentContext) selectionBinding {
 				refs = appendDistinctID(refs, id)
 			}
 		}
-	} else if len(entity.InstanceIDTokensForPrefixes(text, sessionInstanceIDPrefixes(view, snap))) > 0 {
+	} else if len(snap.InstanceIDTokensInText(text)) > 0 {
 		// A cold/stale registry cannot resolve, but an id-shaped token is still an
-		// explicit reference: suppress account-single and let existence adjudicate.
+		// explicit reference: suppress carried context and let existence adjudicate.
 		explicit = true
 	}
 
@@ -161,33 +163,13 @@ func (e *Engine) bindInstanceTarget(view AgentContext) selectionBinding {
 	return selectionBinding{}
 }
 
-// sessionInstanceIDPrefixes is the id-prefix vocabulary this SESSION has observed:
-// the registry's instances plus every instance id already carried as a selection.
-//
-// The registry alone is not enough and the gap is not hypothetical. A snapshot
-// derives prefixes from the instances it holds, so an HTTP session that never
-// listed instances has an empty vocabulary and the cold branch above goes blind —
-// while the carried selection that is about to WIN the binding is itself an
-// instance id, and therefore standing proof that its own prefix is real.
-//
-// Without this, a user who typed one id, had it bound, and then typed a DIFFERENT
-// id in the same session could not be heard at all: Tier A saw nothing, Tier B
-// returned the first id, and the second was refused as an instance the user had
-// not named — with nothing the user could say to clear it, because saying the id
-// again was the thing that did not work. Expired and observed entities count here:
-// this decides which strings are LEGIBLE as ids, never which instance is
-// authorized, and an id we once saw proves its own prefix either way.
-func sessionInstanceIDPrefixes(view AgentContext, snap entity.RegistrySnapshot) []string {
-	prefixes := snap.InstanceIDPrefixes()
-	for _, ent := range view.SelectedEntities {
-		if ent.Kind != "instance" {
-			continue
-		}
-		if prefix, ok := entity.InstanceIDPrefixOf(ent.ID); ok {
-			prefixes = append(prefixes, prefix)
+func textMentionsProposedInstanceID(text string, proposedIDs []string) bool {
+	for _, id := range proposedIDs {
+		if entity.TextExplicitlyMentionsName(text, strings.TrimSpace(id)) {
+			return true
 		}
 	}
-	return prefixes
+	return false
 }
 
 // uniqueRegistryNameInText reports the single instance id whose exact name the text

@@ -573,9 +573,7 @@ for _name, _cmd, _want in [
 ]:
     check(f"ssh-channel-tiering::{_name}", guardrails.classify(_cmd) == _want)
 
-# A partial run must LIST every confirmed command it executed -- and say only that they MAY have
-# changed the box. `mutating` is "could not be proven read-only", not "wrote": 246 of 334 real
-# mutating steps in a 3-day production window contained no write verb at all.
+# A partial run lists confirmed commands without claiming that each one changed the instance.
 del harness.AUDIT[:]
 harness.AUDIT.extend([
     {"command": "systemctl status infersvc", "tier": "read_only", "disposition": "ran_read_only"},
@@ -586,10 +584,10 @@ harness.AUDIT.extend([
     {"command": "chmod 777 /etc", "tier": "mutating", "disposition": "refused_not_approved"},
 ])
 _note = harness._partial_note("500 fetch failed")
-check("partial-note::says-the-box-may-have-been-changed", "其中可能有改动过这台实例的操作" in _note)
+check("partial-note::says-confirmed-commands-may-affect-state", "其中可能包含影响实例状态的操作" in _note)
 check("partial-note::does-not-assert-the-write-happened", "已经被改动过" not in _note)
 check("partial-note::does-not-claim-read-only", "只执行了已证明为只读的命令" not in _note)
-check("partial-note::lists-the-writes-that-ran",
+check("partial-note::lists-confirmed-commands-that-ran",
       "apt-get install -y python3-tomli" in _note and "systemctl restart infersvc" in _note)
 check("partial-note::omits-the-refused-ones",
       "rm -rf /" not in _note and "chmod 777 /etc" not in _note)

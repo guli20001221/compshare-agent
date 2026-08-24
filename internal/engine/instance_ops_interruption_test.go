@@ -20,7 +20,7 @@ func settled(cmd, tier, disposition string) instanceOpsSettledStep {
 	return instanceOpsSettledStep{Command: cmd, Tier: tier, Disposition: disposition}
 }
 
-func TestInterruptionNoticeNamesTheWritesItActuallySaw(t *testing.T) {
+func TestInterruptionNoticeNamesConfirmedCommandsThatMayModify(t *testing.T) {
 	msg := renderInstanceOpsInterruptionNotice(instanceOpsInterruption{
 		InstanceID: "uhost-abc",
 		Steps: []instanceOpsSettledStep{
@@ -33,11 +33,9 @@ func TestInterruptionNoticeNamesTheWritesItActuallySaw(t *testing.T) {
 
 	require.Contains(t, msg, "uhost-abc")
 	require.Contains(t, msg, "已确认执行 2 条命令")
-	// The one number that decides what the user does next: 2 reads and 1 refused write reads the
-	// same as 1 read and 1 landed write without it.
-	require.Contains(t, msg, "其中 1 条属于需确认的写入档，可能修改了实例")
+	require.Contains(t, msg, "其中 1 条经确认执行，可能影响实例状态")
 	require.Contains(t, msg, "拒绝 1 条")
-	require.Contains(t, msg, "已执行（写入档，可能修改实例）：`rm -rf /root/.cache/pip`")
+	require.Contains(t, msg, "已确认执行（可能影响实例状态）：`rm -rf /root/.cache/pip`")
 	require.Contains(t, msg, "已执行：`df -h /`")
 	// The refused one carries WHY, from the same mapping the live stream uses — a card that expired
 	// must not be reported to the user as a decision they made.
@@ -89,7 +87,7 @@ func TestInterruptionNoticeReportsTrueTotalsWhenTheListIsTruncated(t *testing.T)
 	// The COUNTS are over every settled step, not over the listing — a cap on how much is printed
 	// must not become a cap on what the user is told the run did.
 	require.Contains(t, msg, "已确认执行 27 条命令")
-	require.Contains(t, msg, "其中 1 条属于需确认的写入档，可能修改了实例")
+	require.Contains(t, msg, "其中 1 条经确认执行，可能影响实例状态")
 	require.Contains(t, msg, "另有 7 条未在此列出")
 	require.Equal(t, maxInterruptionNoticeCommands+1, strings.Count(msg, "\n· "),
 		"listed lines are bounded (plus the ellipsis line)")
@@ -111,20 +109,15 @@ func TestInterruptionNoticeWithNothingSettledStillSaysTheBoxWasEntered(t *testin
 	require.Contains(t, msg, "`nvidia-smi`")
 }
 
-// The `mutating` tier means "the guardrail could not prove this read-only", which is not the same
-// claim as "this wrote". Over 334 real mutating steps in a 3-day production window, 246 (73.7%)
-// contained no write verb and no redirection — `sed -n '1,240p' …`, `ls -la /`. The notice therefore
-// says 可能, in both the tally and the per-command line, and this pins it: a user who reads
-// "已执行（修改了实例）：`cat …`" has been told something the server does not know.
-func TestInterruptionNoticeSaysAWriteTierMayHaveWrittenNotThatItDid(t *testing.T) {
+// A non-read-only tier is not proof that the command changed the instance.
+func TestInterruptionNoticeSaysAConfirmedCommandMayModifyNotThatItDid(t *testing.T) {
 	msg := renderInstanceOpsInterruptionNotice(instanceOpsInterruption{
 		InstanceID: "uhost-x",
 		Steps: []instanceOpsSettledStep{
 			settled("sed -n '1,240p' /etc/nginx/nginx.conf", "mutating", "ran"),
 		},
 	})
-	require.Contains(t, msg, "可能修改了实例")
-	require.Contains(t, msg, "实际是否修改以命令本身为准")
+	require.Contains(t, msg, "可能影响实例状态")
 	require.NotContains(t, msg, "条修改了实例", "the tally must not assert the write happened")
 	require.NotContains(t, msg, "已执行（修改了实例）", "nor may the per-command line")
 }
@@ -139,7 +132,7 @@ func TestInterruptionNoticeTreatsAnUnknownTierAsUnknown(t *testing.T) {
 	})
 	require.Contains(t, msg, "已确认执行 1 条命令")
 	require.NotContains(t, msg, "可能修改了实例", "an unknown tier must not be counted into the write tally")
-	require.NotContains(t, msg, "写入档", "nor labelled as one on its own line")
+	require.NotContains(t, msg, "可能影响实例状态", "an unknown tier must not be labelled as state-changing")
 	require.Contains(t, msg, "可能不完整")
 }
 
@@ -254,7 +247,7 @@ func TestAKilledRunStashesWhatItSawForTheNextTurn(t *testing.T) {
 	var next []StepEvent
 	eng.emitPendingInstanceOpsInterruption(captureSteps(&next))
 	require.Len(t, next, 1)
-	require.Contains(t, next[0].Message, "其中 1 条属于需确认的写入档，可能修改了实例")
+	require.Contains(t, next[0].Message, "其中 1 条经确认执行，可能影响实例状态")
 }
 
 // A run that never entered the box leaves nothing behind. Every preflight failure (no SSH target,

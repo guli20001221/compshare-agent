@@ -187,29 +187,12 @@ func (s RegistrySnapshot) ResolveByName(name string) ([]*InstanceSnapshot, Resol
 }
 
 func (s RegistrySnapshot) InstanceIDTokensInText(text string) []string {
-	return InstanceIDTokensForPrefixes(text, s.instanceIDPrefixes())
-}
-
-// InstanceIDPrefixOf reports the id-prefix an instance id carries ("uhost" for
-// "uhost-1qy6d8tkfrl4"). Exported so a caller holding an id but no registry can
-// contribute to the prefix vocabulary InstanceIDTokensForPrefixes matches on.
-func InstanceIDPrefixOf(id string) (string, bool) { return instanceIDPrefix(strings.TrimSpace(id)) }
-
-// InstanceIDTokensForPrefixes reports every id-shaped token in text, against a
-// prefix vocabulary the caller supplies. It normalizes that vocabulary itself, so
-// two callers handing over the same prefixes in different orders — or in different
-// case, or with duplicates — get the same tokens back. What keeps a short prefix
-// from truncating a longer id is not the order but the '-' the match is anchored
-// on: "uhost" cannot match inside "uhostx-abc" because the byte after it is 'x'.
-//
-// Split out of the snapshot method because the vocabulary and the registry are two
-// different questions. A snapshot can only derive prefixes from instances it
-// already holds — exactly zero on a cold HTTP session — and a session that has
-// listed nothing is the one that most needs a typed id to stay legible.
-func InstanceIDTokensForPrefixes(text string, prefixes []string) []string {
 	text = strings.TrimSpace(text)
-	prefixes = normalizedInstanceIDPrefixes(prefixes)
-	if text == "" || len(prefixes) == 0 {
+	if text == "" || len(s.Instances) == 0 {
+		return nil
+	}
+	prefixes := s.instanceIDPrefixes()
+	if len(prefixes) == 0 {
 		return nil
 	}
 	seen := map[string]struct{}{}
@@ -294,12 +277,6 @@ func (r *EntityRegistry) instancesForIDsLocked(ids []string) []*InstanceSnapshot
 	return matches
 }
 
-// InstanceIDPrefixes is the prefix vocabulary this snapshot can recognise. It is
-// derived from the instances the snapshot HOLDS, so a snapshot that has listed
-// nothing recognises nothing — callers that need a session-wide vocabulary must
-// widen it themselves.
-func (s RegistrySnapshot) InstanceIDPrefixes() []string { return s.instanceIDPrefixes() }
-
 func (s RegistrySnapshot) instanceIDPrefixes() []string {
 	seen := map[string]struct{}{}
 	prefixes := make([]string, 0)
@@ -318,34 +295,13 @@ func (s RegistrySnapshot) instanceIDPrefixes() []string {
 		seen[prefix] = struct{}{}
 		prefixes = append(prefixes, prefix)
 	}
-	return normalizedInstanceIDPrefixes(prefixes)
-}
-
-// normalizedInstanceIDPrefixes lower-cases, de-duplicates and orders a prefix
-// vocabulary so that the same set always tokenizes the same way. Longest first
-// then lexical is the historical order and is kept; it is a determinism rule, not
-// a correctness one — see the '-' anchor in InstanceIDTokensForPrefixes.
-func normalizedInstanceIDPrefixes(prefixes []string) []string {
-	seen := map[string]struct{}{}
-	ordered := make([]string, 0, len(prefixes))
-	for _, prefix := range prefixes {
-		prefix = strings.ToLower(strings.TrimSpace(prefix))
-		if prefix == "" {
-			continue
+	sort.Slice(prefixes, func(i, j int) bool {
+		if len(prefixes[i]) != len(prefixes[j]) {
+			return len(prefixes[i]) > len(prefixes[j])
 		}
-		if _, ok := seen[prefix]; ok {
-			continue
-		}
-		seen[prefix] = struct{}{}
-		ordered = append(ordered, prefix)
-	}
-	sort.Slice(ordered, func(i, j int) bool {
-		if len(ordered[i]) != len(ordered[j]) {
-			return len(ordered[i]) > len(ordered[j])
-		}
-		return ordered[i] < ordered[j]
+		return prefixes[i] < prefixes[j]
 	})
-	return ordered
+	return prefixes
 }
 
 func instanceIDPrefix(id string) (string, bool) {

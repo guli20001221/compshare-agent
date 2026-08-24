@@ -156,13 +156,13 @@ const instanceOpsInterruptionAction = "InstanceOpsInterrupted"
 // renderInstanceOpsInterruptionNotice builds the user-facing text. Deterministic: same input, same
 // bytes, no model involved.
 func renderInstanceOpsInterruptionNotice(notice instanceOpsInterruption) string {
-	ran, wrote, refused, failed := 0, 0, 0, 0
+	ran, mayModify, refused, failed := 0, 0, 0, 0
 	for _, step := range notice.Steps {
 		switch step.Disposition {
 		case "ran":
 			ran++
 			if instanceOpsTierMayWrite(step.Tier) {
-				wrote++
+				mayModify++
 			}
 		case "refused":
 			refused++
@@ -175,18 +175,9 @@ func renderInstanceOpsInterruptionNotice(notice instanceOpsInterruption) string 
 	fmt.Fprintf(&b, "上一轮对实例 %s 的实例内排查没有正常结束。", notice.InstanceID)
 	if ran > 0 {
 		fmt.Fprintf(&b, "中断前已确认执行 %d 条命令", ran)
-		if wrote > 0 {
-			// The one number that decides what the user does next. It is counted over every settled
-			// step, not over the listing, so a truncated list cannot understate it.
-			//
-			// Worded as MAY have modified, because that is all the tier says. The guardrail sorts a
-			// command into `mutating` when it cannot PROVE the command is read-only, which is not the
-			// same claim as "this wrote": over 334 real mutating steps in a 3-day production window,
-			// 246 (73.7%) contained no write verb and no redirection at all — `sed -n '1,240p' …`,
-			// `ls -la /`, `cat /sys/fs/cgroup/memory.events`. Telling a user their box was changed by
-			// a `cat` is the same false certainty in the other direction as the read_only claim this
-			// tier exists to avoid.
-			fmt.Fprintf(&b, "（其中 %d 条属于需确认的写入档，可能修改了实例；实际是否修改以命令本身为准）", wrote)
+		if mayModify > 0 {
+			// Count every settled step, not only the bounded list rendered below.
+			fmt.Fprintf(&b, "（其中 %d 条经确认执行，可能影响实例状态）", mayModify)
 		}
 	} else {
 		fmt.Fprint(&b, "中断前没有命令执行成功")
@@ -237,8 +228,7 @@ const interruptionIncompletenessNotice = "以上是中断前已回传结果的�
 // the field is an ordinary rolling-upgrade state, and "we do not know whether this changed the box"
 // must not print as "this did not change the box".
 //
-// The name is the whole point: this is "the guardrail could not prove it read-only", NOT "it wrote".
-// Every caller must word its output that way — see the base rate in the summary above.
+// A non-read-only tier means the command may affect state; it does not prove that it did.
 func instanceOpsTierMayWrite(tier string) bool {
 	return tier == "mutating" || tier == "destructive"
 }
@@ -248,7 +238,7 @@ func interruptionStepLine(step instanceOpsSettledStep) string {
 	switch step.Disposition {
 	case "ran":
 		if instanceOpsTierMayWrite(step.Tier) {
-			return fmt.Sprintf("已执行（写入档，可能修改实例）：`%s`", cmd)
+			return fmt.Sprintf("已确认执行（可能影响实例状态）：`%s`", cmd)
 		}
 		return fmt.Sprintf("已执行：`%s`", cmd)
 	case "refused":

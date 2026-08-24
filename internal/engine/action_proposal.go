@@ -333,7 +333,7 @@ func (e *Engine) resolveActionProposal(ctx context.Context, args map[string]any)
 	// user's verifiable reference (typed id / ordinal / unique name / prior explicit
 	// pick / sole account instance) and is threaded into provenance, the point-query
 	// gate and the target adjudicator so all three agree on which id the user chose.
-	binding := e.bindInstanceTarget(view)
+	binding := e.bindInstanceTarget(view, proposalInstanceTargetValue(proposal, spec))
 	proposal = e.deriveProposalProvenance(proposal, view, spec, binding)
 	// A current-turn opaque image id is a literal user choice, not an Agent
 	// recommendation. The model should carry it in its proposal, but dropping a
@@ -500,9 +500,7 @@ func (e *Engine) targetEvidenceForProposal(ctx context.Context, proposal actionr
 	return out
 }
 
-// proposalInstanceTargetValue returns the value of the proposal's instance target
-// field (UHostId), used to scope a disk target to its parent instance. Empty when
-// the proposal names no instance target.
+// proposalInstanceTargetValue returns the proposal's instance target, if any.
 func proposalInstanceTargetValue(proposal actionresolver.ActionProposal, spec actionresolver.OperationSpec) string {
 	for _, candidate := range proposal.Slots {
 		field, ok := spec.Fields[candidate.Name]

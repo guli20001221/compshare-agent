@@ -2640,24 +2640,11 @@ func stepDescribeInstance() Step {
 	}
 }
 
-// createInstanceResultData publishes what the create produced. It carries two
-// things and keeps them apart, because they are two different claims: the ids the
-// platform returned, and — when the optional 查看状态 read came back — what that
-// read OBSERVED about the instance that now exists.
-//
-// The upstream is free to serve something other than what was asked for. A
-// production create requested 14 vCPU / 120 GB and got 16 vCPU / 96 GB, and the
-// reply told the user 14C/120GB, because the only spec anywhere in the turn was
-// the one we had ASKED for. stepDescribeInstance already ran, against the exact
-// created ids; its answer was dropped on the floor here, so nothing downstream
-// COULD have compared. Publishing observed beside intended is the whole fix — no
-// new API call, no new step.
-//
-// ActualVerified is always present and is about the READ, never about the create.
-// The describe step is Optional: an instance that was created while the follow-up
-// read failed is still created. False means "we could not look", which must not be
-// read as "it does not match" — and, just as important, must not let a reader fall
-// back to assuming the requested spec is the one that exists.
+// createInstanceResultData keeps two claims separate: Intended comes from the
+// sealed contract the user confirmed; Observed comes from the optional readback
+// of the exact ids returned by create. ActualReadbackAvailable reports only that
+// a matching readback row was available. It does not redefine create success or
+// claim that every actual field was present.
 func createInstanceResultData(wfCtx *Context) map[string]any {
 	createResult := wfCtx.Result("创建实例")
 	if createResult == nil {
@@ -2670,10 +2657,10 @@ func createInstanceResultData(wfCtx *Context) map[string]any {
 	data := map[string]any{"UHostIds": ids}
 	observed := createObservedInstances(wfCtx, ids)
 	if len(observed) == 0 {
-		data["ActualVerified"] = false
+		data["ActualReadbackAvailable"] = false
 		return data
 	}
-	data["ActualVerified"] = true
+	data["ActualReadbackAvailable"] = true
 	data["Observed"] = observed
 	intended, hasIntent := createIntendedSpec(wfCtx)
 	if !hasIntent {
@@ -2686,9 +2673,7 @@ func createInstanceResultData(wfCtx *Context) map[string]any {
 	return data
 }
 
-// createObservedInstances projects the 查看状态 read onto the ids the create
-// returned. Rows for anything else are ignored: the step asks for the exact ids,
-// so a row that is not one of them is not evidence about this create.
+// createObservedInstances projects only rows for ids returned by this create.
 func createObservedInstances(wfCtx *Context, ids any) []map[string]any {
 	describe := wfCtx.Result("查看状态")
 	if describe == nil {
@@ -2740,11 +2725,7 @@ func createObservedInstances(wfCtx *Context, ids any) []map[string]any {
 	return out
 }
 
-// createIntendedSpec reads what the user CONFIRMED, from the sealed contract — not
-// from wfCtx.Params, which the steps rewrite as they resolve. An unsealed or
-// unparseable contract yields no intent rather than a guess: without it there is
-// nothing to compare against, and comparing against a re-derivation would report
-// drift between two of our own values instead of between ours and the platform's.
+// createIntendedSpec reads the confirmed sealed contract, never mutable Params.
 func createIntendedSpec(wfCtx *Context) (map[string]any, bool) {
 	snapshot, err := sealedCreateConfirmation(wfCtx)
 	if err != nil {
@@ -2760,9 +2741,9 @@ func createIntendedSpec(wfCtx *Context) (map[string]any, bool) {
 	}, true
 }
 
-// createSpecMismatches names every confirmed field the platform did not serve.
-// A field the contract left unset (0 / "") is not compared: the user agreed to
-// the platform's default there, so whatever came back IS what they agreed to.
+// createSpecMismatches compares fields that are present on both sides. An unset
+// confirmed value delegates that field to the platform; an unset observed value
+// is unknown rather than evidence of a mismatch.
 func createSpecMismatches(intended map[string]any, observed []map[string]any) []map[string]any {
 	var out []map[string]any
 	for _, inst := range observed {
