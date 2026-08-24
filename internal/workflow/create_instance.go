@@ -2640,15 +2640,160 @@ func stepDescribeInstance() Step {
 	}
 }
 
+// createInstanceResultData publishes what the create produced. It carries two
+// things and keeps them apart, because they are two different claims: the ids the
+// platform returned, and — when the optional 查看状态 read came back — what that
+// read OBSERVED about the instance that now exists.
+//
+// The upstream is free to serve something other than what was asked for. A
+// production create requested 14 vCPU / 120 GB and got 16 vCPU / 96 GB, and the
+// reply told the user 14C/120GB, because the only spec anywhere in the turn was
+// the one we had ASKED for. stepDescribeInstance already ran, against the exact
+// created ids; its answer was dropped on the floor here, so nothing downstream
+// COULD have compared. Publishing observed beside intended is the whole fix — no
+// new API call, no new step.
+//
+// ActualVerified is always present and is about the READ, never about the create.
+// The describe step is Optional: an instance that was created while the follow-up
+// read failed is still created. False means "we could not look", which must not be
+// read as "it does not match" — and, just as important, must not let a reader fall
+// back to assuming the requested spec is the one that exists.
 func createInstanceResultData(wfCtx *Context) map[string]any {
 	createResult := wfCtx.Result("创建实例")
 	if createResult == nil {
 		return nil
 	}
-	if ids, ok := createResult["UHostIds"]; ok {
-		return map[string]any{"UHostIds": ids}
+	ids, ok := createResult["UHostIds"]
+	if !ok {
+		return nil
 	}
-	return nil
+	data := map[string]any{"UHostIds": ids}
+	observed := createObservedInstances(wfCtx, ids)
+	if len(observed) == 0 {
+		data["ActualVerified"] = false
+		return data
+	}
+	data["ActualVerified"] = true
+	data["Observed"] = observed
+	intended, hasIntent := createIntendedSpec(wfCtx)
+	if !hasIntent {
+		return data
+	}
+	data["Intended"] = intended
+	if mismatches := createSpecMismatches(intended, observed); len(mismatches) > 0 {
+		data["SpecMismatch"] = mismatches
+	}
+	return data
+}
+
+// createObservedInstances projects the 查看状态 read onto the ids the create
+// returned. Rows for anything else are ignored: the step asks for the exact ids,
+// so a row that is not one of them is not evidence about this create.
+func createObservedInstances(wfCtx *Context, ids any) []map[string]any {
+	describe := wfCtx.Result("查看状态")
+	if describe == nil {
+		return nil
+	}
+	rows, _ := describe["UHostSet"].([]any)
+	if len(rows) == 0 {
+		return nil
+	}
+	wanted := map[string]struct{}{}
+	switch list := ids.(type) {
+	case []string:
+		for _, id := range list {
+			if id = strings.TrimSpace(id); id != "" {
+				wanted[strings.ToLower(id)] = struct{}{}
+			}
+		}
+	case []any:
+		for _, id := range list {
+			if s, _ := id.(string); strings.TrimSpace(s) != "" {
+				wanted[strings.ToLower(strings.TrimSpace(s))] = struct{}{}
+			}
+		}
+	}
+	out := make([]map[string]any, 0, len(wanted))
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row == nil {
+			continue
+		}
+		// Projected here rather than through entity.InstanceFromMap: internal/entity's
+		// own tests import this package, so depending on it the other way round is an
+		// import cycle. These are the eight fields a created instance is judged by.
+		id := strings.TrimSpace(paramStr(row, "UHostId", ""))
+		if _, want := wanted[strings.ToLower(id)]; !want {
+			continue
+		}
+		out = append(out, map[string]any{
+			"UHostId": id,
+			"Name":    paramStr(row, "Name", ""),
+			"State":   paramStr(row, "State", ""),
+			"CPU":     int(paramNum(row, "CPU", 0)),
+			"Memory":  int(paramNum(row, "Memory", 0)),
+			"GPU":     int(paramNum(row, "GPU", 0)),
+			"GpuType": paramStr(row, "GpuType", ""),
+			"Zone":    paramStr(row, "Zone", ""),
+		})
+	}
+	return out
+}
+
+// createIntendedSpec reads what the user CONFIRMED, from the sealed contract — not
+// from wfCtx.Params, which the steps rewrite as they resolve. An unsealed or
+// unparseable contract yields no intent rather than a guess: without it there is
+// nothing to compare against, and comparing against a re-derivation would report
+// drift between two of our own values instead of between ours and the platform's.
+func createIntendedSpec(wfCtx *Context) (map[string]any, bool) {
+	snapshot, err := sealedCreateConfirmation(wfCtx)
+	if err != nil {
+		return nil, false
+	}
+	args := snapshot.Execution.Args
+	return map[string]any{
+		"CPU":     int(args.CPU),
+		"Memory":  int(args.Memory),
+		"GPU":     int(args.GPU),
+		"GpuType": args.GpuType,
+		"Zone":    args.Zone,
+	}, true
+}
+
+// createSpecMismatches names every confirmed field the platform did not serve.
+// A field the contract left unset (0 / "") is not compared: the user agreed to
+// the platform's default there, so whatever came back IS what they agreed to.
+func createSpecMismatches(intended map[string]any, observed []map[string]any) []map[string]any {
+	var out []map[string]any
+	for _, inst := range observed {
+		for _, field := range []string{"CPU", "Memory", "GPU", "GpuType", "Zone"} {
+			want, got := intended[field], inst[field]
+			if createSpecValueUnset(want) || createSpecValueUnset(got) {
+				continue
+			}
+			if fmt.Sprint(want) == fmt.Sprint(got) {
+				continue
+			}
+			out = append(out, map[string]any{
+				"UHostId": inst["UHostId"], "Field": field, "Intended": want, "Observed": got,
+			})
+		}
+	}
+	return out
+}
+
+func createSpecValueUnset(v any) bool {
+	switch value := v.(type) {
+	case string:
+		return strings.TrimSpace(value) == ""
+	case int:
+		return value == 0
+	case float64:
+		return value == 0
+	case nil:
+		return true
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
