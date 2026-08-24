@@ -629,21 +629,21 @@ def _confirmation_refusal_text(disposition: str, command: str) -> str:
 
 
 def _partial_note(sdk_error: str) -> str:
-    """The note appended when the run ended early, worded from what ACTUALLY ran.
-
-    A run that ends after changing the box must say what changed. The list comes from the audit
-    trail rather than from anything the model reports about itself, so it cannot overstate or
-    understate: `ran_mutating` is written by run_command only on the path where the write actually
-    executed. The whole verdict is scrubbed by _emit_verdict afterwards, so echoing the commands
-    here cannot leak the credential.
-    """
-    changed = [e["command"] for e in AUDIT if e.get("disposition") == "ran_mutating"]
-    if changed:
-        listed = "\n".join("  - " + c for c in changed)
-        return ("\n\n（注：诊断中途结束（%s）。**中断前这台实例已经被改动过**，"
-                "下列写操作已执行成功，请以此判断当前状态：\n%s）" % (sdk_error, listed))
-    return ("\n\n（注：诊断中途结束（%s），期间没有执行任何写操作，"
-            "以上为基于已执行只读命令的阶段性结论。）" % sdk_error)
+    """Append an honest summary of confirmed commands when a run ends early."""
+    ran_needing_confirmation = [
+        e["command"] for e in AUDIT if e.get("disposition") == "ran_mutating"
+    ]
+    if ran_needing_confirmation:
+        listed = "\n".join("  - " + c for c in ran_needing_confirmation)
+        return ("\n\n（注：诊断中途结束（%s）。"
+                "中断前经确认执行了下列 %d 条命令，"
+                "**其中可能包含影响实例状态的操作**，"
+                "请以命令本身判断当前状态：\n%s）"
+                % (sdk_error, len(ran_needing_confirmation), listed))
+    return ("\n\n（注：诊断中途结束（%s），"
+            "期间只执行了已证明为只读的命令，"
+            "以上为基于这些命令的阶段性结论。）"
+            % sdk_error)
 
 
 def _emit_outcome(outcome: str, err_class: str = "", context_applied: bool = False) -> None:

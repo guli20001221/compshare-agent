@@ -4,6 +4,8 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+
+	"github.com/compshare-agent/internal/platform"
 )
 
 type ResolveStatus string
@@ -186,9 +188,11 @@ func (s RegistrySnapshot) ResolveByName(name string) ([]*InstanceSnapshot, Resol
 	return matches, ResolveResult{Status: status, Query: query, Candidates: idsOfSnapshots(matches)}
 }
 
+// InstanceIDTokensInText recognizes platform instance IDs without resolving or
+// authorizing them. Prefixes observed in the snapshot remain supported as well.
 func (s RegistrySnapshot) InstanceIDTokensInText(text string) []string {
 	text = strings.TrimSpace(text)
-	if text == "" || len(s.Instances) == 0 {
+	if text == "" {
 		return nil
 	}
 	prefixes := s.instanceIDPrefixes()
@@ -278,8 +282,7 @@ func (r *EntityRegistry) instancesForIDsLocked(ids []string) []*InstanceSnapshot
 }
 
 func (s RegistrySnapshot) instanceIDPrefixes() []string {
-	seen := map[string]struct{}{}
-	prefixes := make([]string, 0)
+	prefixes := platform.InstanceIDPrefixes()
 	for id, inst := range s.Instances {
 		instanceID := strings.TrimSpace(inst.UHostId)
 		if instanceID == "" {
@@ -289,19 +292,33 @@ func (s RegistrySnapshot) instanceIDPrefixes() []string {
 		if !ok {
 			continue
 		}
-		if _, exists := seen[prefix]; exists {
+		prefixes = append(prefixes, prefix)
+	}
+	return normalizedInstanceIDPrefixes(prefixes)
+}
+
+// normalizedInstanceIDPrefixes makes tokenization deterministic for a prefix set.
+func normalizedInstanceIDPrefixes(prefixes []string) []string {
+	seen := map[string]struct{}{}
+	ordered := make([]string, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		prefix = strings.ToLower(strings.TrimSpace(prefix))
+		if prefix == "" {
+			continue
+		}
+		if _, ok := seen[prefix]; ok {
 			continue
 		}
 		seen[prefix] = struct{}{}
-		prefixes = append(prefixes, prefix)
+		ordered = append(ordered, prefix)
 	}
-	sort.Slice(prefixes, func(i, j int) bool {
-		if len(prefixes[i]) != len(prefixes[j]) {
-			return len(prefixes[i]) > len(prefixes[j])
+	sort.Slice(ordered, func(i, j int) bool {
+		if len(ordered[i]) != len(ordered[j]) {
+			return len(ordered[i]) > len(ordered[j])
 		}
-		return prefixes[i] < prefixes[j]
+		return ordered[i] < ordered[j]
 	})
-	return prefixes
+	return ordered
 }
 
 func instanceIDPrefix(id string) (string, bool) {

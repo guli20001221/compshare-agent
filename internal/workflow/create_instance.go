@@ -2640,15 +2640,141 @@ func stepDescribeInstance() Step {
 	}
 }
 
+// createInstanceResultData keeps two claims separate: Intended comes from the
+// sealed contract the user confirmed; Observed comes from the optional readback
+// of the exact ids returned by create. ActualReadbackAvailable reports only that
+// a matching readback row was available. It does not redefine create success or
+// claim that every actual field was present.
 func createInstanceResultData(wfCtx *Context) map[string]any {
 	createResult := wfCtx.Result("创建实例")
 	if createResult == nil {
 		return nil
 	}
-	if ids, ok := createResult["UHostIds"]; ok {
-		return map[string]any{"UHostIds": ids}
+	ids, ok := createResult["UHostIds"]
+	if !ok {
+		return nil
 	}
-	return nil
+	data := map[string]any{"UHostIds": ids}
+	observed := createObservedInstances(wfCtx, ids)
+	if len(observed) == 0 {
+		data["ActualReadbackAvailable"] = false
+		return data
+	}
+	data["ActualReadbackAvailable"] = true
+	data["Observed"] = observed
+	intended, hasIntent := createIntendedSpec(wfCtx)
+	if !hasIntent {
+		return data
+	}
+	data["Intended"] = intended
+	if mismatches := createSpecMismatches(intended, observed); len(mismatches) > 0 {
+		data["SpecMismatch"] = mismatches
+	}
+	return data
+}
+
+// createObservedInstances projects only rows for ids returned by this create.
+func createObservedInstances(wfCtx *Context, ids any) []map[string]any {
+	describe := wfCtx.Result("查看状态")
+	if describe == nil {
+		return nil
+	}
+	rows, _ := describe["UHostSet"].([]any)
+	if len(rows) == 0 {
+		return nil
+	}
+	wanted := map[string]struct{}{}
+	switch list := ids.(type) {
+	case []string:
+		for _, id := range list {
+			if id = strings.TrimSpace(id); id != "" {
+				wanted[strings.ToLower(id)] = struct{}{}
+			}
+		}
+	case []any:
+		for _, id := range list {
+			if s, _ := id.(string); strings.TrimSpace(s) != "" {
+				wanted[strings.ToLower(strings.TrimSpace(s))] = struct{}{}
+			}
+		}
+	}
+	out := make([]map[string]any, 0, len(wanted))
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row == nil {
+			continue
+		}
+		// Projected here rather than through entity.InstanceFromMap: internal/entity's
+		// own tests import this package, so depending on it the other way round is an
+		// import cycle. These are the eight fields a created instance is judged by.
+		id := strings.TrimSpace(paramStr(row, "UHostId", ""))
+		if _, want := wanted[strings.ToLower(id)]; !want {
+			continue
+		}
+		out = append(out, map[string]any{
+			"UHostId": id,
+			"Name":    paramStr(row, "Name", ""),
+			"State":   paramStr(row, "State", ""),
+			"CPU":     int(paramNum(row, "CPU", 0)),
+			"Memory":  int(paramNum(row, "Memory", 0)),
+			"GPU":     int(paramNum(row, "GPU", 0)),
+			"GpuType": paramStr(row, "GpuType", ""),
+			"Zone":    paramStr(row, "Zone", ""),
+		})
+	}
+	return out
+}
+
+// createIntendedSpec reads the confirmed sealed contract, never mutable Params.
+func createIntendedSpec(wfCtx *Context) (map[string]any, bool) {
+	snapshot, err := sealedCreateConfirmation(wfCtx)
+	if err != nil {
+		return nil, false
+	}
+	args := snapshot.Execution.Args
+	return map[string]any{
+		"CPU":     int(args.CPU),
+		"Memory":  int(args.Memory),
+		"GPU":     int(args.GPU),
+		"GpuType": args.GpuType,
+		"Zone":    args.Zone,
+	}, true
+}
+
+// createSpecMismatches compares fields that are present on both sides. An unset
+// confirmed value delegates that field to the platform; an unset observed value
+// is unknown rather than evidence of a mismatch.
+func createSpecMismatches(intended map[string]any, observed []map[string]any) []map[string]any {
+	var out []map[string]any
+	for _, inst := range observed {
+		for _, field := range []string{"CPU", "Memory", "GPU", "GpuType", "Zone"} {
+			want, got := intended[field], inst[field]
+			if createSpecValueUnset(want) || createSpecValueUnset(got) {
+				continue
+			}
+			if fmt.Sprint(want) == fmt.Sprint(got) {
+				continue
+			}
+			out = append(out, map[string]any{
+				"UHostId": inst["UHostId"], "Field": field, "Intended": want, "Observed": got,
+			})
+		}
+	}
+	return out
+}
+
+func createSpecValueUnset(v any) bool {
+	switch value := v.(type) {
+	case string:
+		return strings.TrimSpace(value) == ""
+	case int:
+		return value == 0
+	case float64:
+		return value == 0
+	case nil:
+		return true
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------

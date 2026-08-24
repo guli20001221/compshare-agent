@@ -266,7 +266,10 @@ func TestRegistrySnapshotInstanceIDRefsInText(t *testing.T) {
 	cpodOnly := RegistrySnapshot{Instances: map[string]InstanceSnapshot{
 		"cpod-1rkv126dxgiq": {UHostId: "cpod-1rkv126dxgiq"},
 	}}
-	assert.Empty(t, cpodOnly.InstanceIDTokensInText("uhost-1qy6d8tkfrl4 的状态"))
+	assert.Equal(t,
+		[]string{"uhost-1qy6d8tkfrl4"},
+		cpodOnly.InstanceIDTokensInText("uhost-1qy6d8tkfrl4 的状态"),
+	)
 
 	hits, unresolved := snap.ResolveInstanceRefsInText("查 CPOD-1RKV126DXGIQ 和 cpod-1rkv126dxgiq")
 	require.Len(t, hits, 1)

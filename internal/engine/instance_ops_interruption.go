@@ -156,13 +156,13 @@ const instanceOpsInterruptionAction = "InstanceOpsInterrupted"
 // renderInstanceOpsInterruptionNotice builds the user-facing text. Deterministic: same input, same
 // bytes, no model involved.
 func renderInstanceOpsInterruptionNotice(notice instanceOpsInterruption) string {
-	ran, wrote, refused, failed := 0, 0, 0, 0
+	ran, mayModify, refused, failed := 0, 0, 0, 0
 	for _, step := range notice.Steps {
 		switch step.Disposition {
 		case "ran":
 			ran++
-			if isInstanceOpsWriteTier(step.Tier) {
-				wrote++
+			if instanceOpsTierMayWrite(step.Tier) {
+				mayModify++
 			}
 		case "refused":
 			refused++
@@ -175,10 +175,9 @@ func renderInstanceOpsInterruptionNotice(notice instanceOpsInterruption) string 
 	fmt.Fprintf(&b, "上一轮对实例 %s 的实例内排查没有正常结束。", notice.InstanceID)
 	if ran > 0 {
 		fmt.Fprintf(&b, "中断前已确认执行 %d 条命令", ran)
-		if wrote > 0 {
-			// The one number that decides what the user does next. It is counted over every settled
-			// step, not over the listing, so a truncated list cannot understate it.
-			fmt.Fprintf(&b, "（其中 %d 条修改了实例）", wrote)
+		if mayModify > 0 {
+			// Count every settled step, not only the bounded list rendered below.
+			fmt.Fprintf(&b, "（其中 %d 条经确认执行，可能影响实例状态）", mayModify)
 		}
 	} else {
 		fmt.Fprint(&b, "中断前没有命令执行成功")
@@ -224,11 +223,13 @@ func renderInstanceOpsInterruptionNotice(notice instanceOpsInterruption) string 
 const interruptionIncompletenessNotice = "以上是中断前已回传结果的命令，可能不完整：" +
 	"最后发出的命令是否已在实例上执行完成，无法确认。"
 
-// isInstanceOpsWriteTier answers only for a tier the runner actually reported. An empty tier is
+// instanceOpsTierMayWrite answers only for a tier the runner actually reported. An empty tier is
 // UNKNOWN, never read_only: the two halves of the lane deploy separately, so a harness that predates
 // the field is an ordinary rolling-upgrade state, and "we do not know whether this changed the box"
 // must not print as "this did not change the box".
-func isInstanceOpsWriteTier(tier string) bool {
+//
+// A non-read-only tier means the command may affect state; it does not prove that it did.
+func instanceOpsTierMayWrite(tier string) bool {
 	return tier == "mutating" || tier == "destructive"
 }
 
@@ -236,8 +237,8 @@ func interruptionStepLine(step instanceOpsSettledStep) string {
 	cmd := truncateCommandForStep(step.Command)
 	switch step.Disposition {
 	case "ran":
-		if isInstanceOpsWriteTier(step.Tier) {
-			return fmt.Sprintf("已执行（修改了实例）：`%s`", cmd)
+		if instanceOpsTierMayWrite(step.Tier) {
+			return fmt.Sprintf("已确认执行（可能影响实例状态）：`%s`", cmd)
 		}
 		return fmt.Sprintf("已执行：`%s`", cmd)
 	case "refused":
@@ -247,7 +248,7 @@ func interruptionStepLine(step instanceOpsSettledStep) string {
 		// that failed may have failed after changing something, and what the harness reports is the
 		// transport's verdict, not the box's. A failed WRITE says so, because "did my instance get
 		// modified" is the question and the honest answer there is "possibly".
-		if isInstanceOpsWriteTier(step.Tier) {
+		if instanceOpsTierMayWrite(step.Tier) {
 			return fmt.Sprintf("执行未成功（可能已修改实例，结果不确定）：`%s`", cmd)
 		}
 		return fmt.Sprintf("执行未成功（结果不确定）：`%s`", cmd)
