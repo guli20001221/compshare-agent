@@ -109,6 +109,8 @@ func (e *Engine) recordTurnModelAttempt(result llm.OutboundCallResult) {
 		AttemptInCall: result.AttemptInCall, LatencyMS: result.LatencyMS, Outcome: result.Outcome,
 		ErrorClass: result.ErrorClass, Retried: result.Retried,
 		FinishReason: result.StopReason, FirstChunkMS: result.ProviderFirstChunkMS,
+		PromptTokens: result.PromptTokens, CachedPromptTokens: result.CachedPromptTokens,
+		ToolCount: result.ToolCount, ToolWindowRunes: result.ToolWindowRunes, ToolWindowHash: result.ToolWindowHash,
 	})
 }
 

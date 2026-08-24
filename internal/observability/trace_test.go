@@ -133,14 +133,15 @@ func TestSparseTraceRecordMissingOptionalBlocksStillReadable(t *testing.T) {
 	}
 }
 
-func TestSchemaVersionIsV013(t *testing.T) {
+func TestSchemaVersionIsV014(t *testing.T) {
 	// v0.10 distinguishes unobserved tool latency from a measured 0ms duration
 	// and preserves an absent native provider finish reason as "unspecified";
 	// v0.11 adds bounded instance-selection provenance; v0.12 removes retired
 	// planner/runtime-form fields and records internal capability calls directly;
-	// v0.13 adds content-free error, truncation, attempt, and first-visible timing.
-	if SchemaVersion != "trace.v0.13" {
-		t.Fatalf("SchemaVersion = %q, want trace.v0.13", SchemaVersion)
+	// v0.13 adds content-free error, truncation, attempt, and first-visible timing;
+	// v0.14 adds per-attempt prompt-cache and tool-window observations.
+	if SchemaVersion != "trace.v0.14" {
+		t.Fatalf("SchemaVersion = %q, want trace.v0.14", SchemaVersion)
 	}
 }
 

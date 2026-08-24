@@ -16,7 +16,7 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-const SchemaVersion = "trace.v0.13"
+const SchemaVersion = "trace.v0.14"
 
 const (
 	ToolSourceMainReAct          = "main_react"
