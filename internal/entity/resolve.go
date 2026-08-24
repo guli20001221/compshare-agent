@@ -187,11 +187,28 @@ func (s RegistrySnapshot) ResolveByName(name string) ([]*InstanceSnapshot, Resol
 }
 
 func (s RegistrySnapshot) InstanceIDTokensInText(text string) []string {
+	return s.InstanceIDTokensInTextKnowing(text, nil)
+}
+
+// InstanceIDTokensInTextKnowing is InstanceIDTokensInText widened by ids the CALLER
+// has seen. A snapshot can only recognise the id prefixes of instances it holds, so
+// one that has listed nothing recognises nothing — and an HTTP session that never
+// listed is exactly where a typed id most needs to stay legible. An id the caller
+// already holds is itself proof that its own prefix is real, which is all this
+// needs: recognising a string as id-SHAPED decides only that the user pointed at
+// something, never which instance is authorized.
+func (s RegistrySnapshot) InstanceIDTokensInTextKnowing(text string, alsoSeenIDs []string) []string {
 	text = strings.TrimSpace(text)
-	if text == "" || len(s.Instances) == 0 {
+	if text == "" {
 		return nil
 	}
 	prefixes := s.instanceIDPrefixes()
+	for _, id := range alsoSeenIDs {
+		if prefix, ok := instanceIDPrefix(strings.TrimSpace(id)); ok {
+			prefixes = append(prefixes, prefix)
+		}
+	}
+	prefixes = normalizedInstanceIDPrefixes(prefixes)
 	if len(prefixes) == 0 {
 		return nil
 	}
@@ -295,13 +312,35 @@ func (s RegistrySnapshot) instanceIDPrefixes() []string {
 		seen[prefix] = struct{}{}
 		prefixes = append(prefixes, prefix)
 	}
-	sort.Slice(prefixes, func(i, j int) bool {
-		if len(prefixes[i]) != len(prefixes[j]) {
-			return len(prefixes[i]) > len(prefixes[j])
+	return normalizedInstanceIDPrefixes(prefixes)
+}
+
+// normalizedInstanceIDPrefixes lower-cases, de-duplicates and orders a prefix
+// vocabulary so the same set always tokenizes the same way whichever order it was
+// assembled in. Longest-then-lexical is the historical order and is kept; it is a
+// determinism rule, not a correctness one — what stops a short prefix matching
+// inside a longer id is the '-' the match is anchored on.
+func normalizedInstanceIDPrefixes(prefixes []string) []string {
+	seen := map[string]struct{}{}
+	ordered := make([]string, 0, len(prefixes))
+	for _, prefix := range prefixes {
+		prefix = strings.ToLower(strings.TrimSpace(prefix))
+		if prefix == "" {
+			continue
 		}
-		return prefixes[i] < prefixes[j]
+		if _, ok := seen[prefix]; ok {
+			continue
+		}
+		seen[prefix] = struct{}{}
+		ordered = append(ordered, prefix)
+	}
+	sort.Slice(ordered, func(i, j int) bool {
+		if len(ordered[i]) != len(ordered[j]) {
+			return len(ordered[i]) > len(ordered[j])
+		}
+		return ordered[i] < ordered[j]
 	})
-	return prefixes
+	return ordered
 }
 
 func instanceIDPrefix(id string) (string, bool) {

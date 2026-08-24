@@ -121,9 +121,26 @@ func (e *Engine) bindInstanceTarget(view AgentContext, proposedIDs ...string) se
 				refs = appendDistinctID(refs, id)
 			}
 		}
-	} else if len(snap.InstanceIDTokensInText(text)) > 0 {
+	} else if len(snap.InstanceIDTokensInTextKnowing(text, carriedInstanceIDs(view))) > 0 {
 		// A cold/stale registry cannot resolve, but an id-shaped token is still an
 		// explicit reference: suppress carried context and let existence adjudicate.
+		//
+		// Widened by the ids this session already carries, because the proposed-target
+		// check above only fires when the model proposes the SAME id the user typed.
+		// When it proposes the carried one instead, that check is silent and only this
+		// branch is left to notice that the user pointed somewhere else — and on a cold
+		// registry it has no prefixes of its own to notice with. Without the widening a
+		// user who typed B got a card for A, twice, and the lane entered A.
+		//
+		// The two signals cover different halves and neither subsumes the other:
+		// the proposed-target check works for ANY id type but only when the model
+		// echoes what the user typed; this one works whatever the model proposes but
+		// only for a type the session has already seen. One case is left over — the
+		// user names a type never seen in this session AND the model proposes the
+		// carried id instead — and closing it would take a SHAPE rule, which is
+		// deliberately not here: `python3-tomli` in a pasted apt command is
+		// id-shaped, and a false positive suppresses carried context and refuses a
+		// user who pointed at nothing.
 		explicit = true
 	}
 
@@ -161,6 +178,19 @@ func (e *Engine) bindInstanceTarget(view AgentContext, proposedIDs ...string) se
 		return selectionBinding{id: carried[0]}
 	}
 	return selectionBinding{}
+}
+
+// carriedInstanceIDs is the id vocabulary this session has already seen. Expired and
+// observed entities count: this decides which strings are LEGIBLE as ids, never
+// which instance is authorized.
+func carriedInstanceIDs(view AgentContext) []string {
+	ids := make([]string, 0, len(view.SelectedEntities))
+	for _, ent := range view.SelectedEntities {
+		if ent.Kind == "instance" {
+			ids = append(ids, ent.ID)
+		}
+	}
+	return ids
 }
 
 func textMentionsProposedInstanceID(text string, proposedIDs []string) bool {
