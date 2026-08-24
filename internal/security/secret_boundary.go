@@ -10,6 +10,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/compshare-agent/internal/agentprotocol"
 	"github.com/compshare-agent/internal/guardrails"
 )
 
@@ -333,6 +334,12 @@ func RedactUserConversationText(s string) string {
 // persistence and canonical history share one exact boundary rather than
 // attempting to fuzzy-match redacted text during cold reconstruction.
 func RedactAssistantConversationText(s string) string {
+	// The Feishu support marker is an adapter-private display instruction, not
+	// conversation content. Persist the semantic completion so a cold session
+	// cannot replay the marker to the model or trigger the adapter without the
+	// original handoff tool call.
+	s = strings.ReplaceAll(s, agentprotocol.FeishuCustomerSupportMarker,
+		agentprotocol.CustomerSupportHistoryCompletion)
 	redacted := RedactOperationalTokensInText(guardrails.RedactOutputLeak(s))
 	// A redacted command is not a reusable command. The live SSE response may
 	// still contain the original value, but the persisted/replayed copy cannot.

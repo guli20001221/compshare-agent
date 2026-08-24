@@ -25,18 +25,40 @@ type OutboundCall struct {
 // including retries and requests that fail before a stream is established.
 type OutboundCallObserver func(OutboundCall)
 
-// OutboundCallResult describes a successfully completed upstream model
-// response. Failed transport attempts have no provider finish_reason and are
-// represented by OutboundCall alone; this keeps call counts honest without
-// inventing a terminal reason for a request that never completed.
+const (
+	OutboundAttemptSuccess = "success"
+	OutboundAttemptError   = "error"
+
+	OutboundErrorCancelled   = "cancelled"
+	OutboundErrorDeadline    = "deadline_exceeded"
+	OutboundErrorRateLimited = "rate_limited"
+	OutboundErrorUpstream4xx = "upstream_4xx"
+	OutboundErrorUpstream5xx = "upstream_5xx"
+	OutboundErrorNetwork     = "network"
+	OutboundErrorStream      = "stream"
+	OutboundErrorOther       = "other"
+)
+
+// OutboundCallResult describes the terminal observation for one actual
+// upstream request, successful or failed. It carries no prompt, response, URL,
+// or provider diagnostic text.
 type OutboundCallResult struct {
-	Call       OutboundCall
-	StopReason string
+	Call OutboundCall
+	// AttemptInCall is 1-based within one Client.Chat invocation. A turn may
+	// contain several calls, so this is deliberately not named as a turn-global
+	// sequence number.
+	AttemptInCall        int
+	LatencyMS            int64
+	Outcome              string
+	ErrorClass           string
+	Retried              bool
+	StopReason           string
+	ProviderFirstChunkMS *int64
 }
 
-// OutboundCallResultObserver receives the provider's terminal finish_reason
-// for every successful upstream response. It deliberately carries neither
-// prompts nor response content.
+// OutboundCallResultObserver receives one terminal record for every actual
+// attempt. A failed attempt has no StopReason; an attempt that yielded no
+// provider chunk has a nil ProviderFirstChunkMS.
 type OutboundCallResultObserver func(OutboundCallResult)
 
 // TraceFinishReason reduces a provider's free-form finish_reason to the
@@ -45,7 +67,7 @@ type OutboundCallResultObserver func(OutboundCallResult)
 // non-empty spellings remain visible as "other" and still fail closed in
 // ChatResponse.OutputIncomplete. A successful response that omitted a native
 // finish_reason is recorded as "unspecified"; it is deliberately distinct
-// from a transport failure, which produces no OutboundCallResult at all.
+// from a transport failure, whose attempt result carries no StopReason.
 func TraceFinishReason(reason string) string {
 	switch normalized := strings.ToLower(strings.TrimSpace(reason)); normalized {
 	// A standard JSON null decodes to the zero value of the SDK's string alias,
@@ -90,7 +112,7 @@ func observeOutboundCall(ctx context.Context, call OutboundCall) {
 	}
 }
 
-// WithOutboundCallResultObserver adds a successful-response observer without
+// WithOutboundCallResultObserver adds a terminal-attempt observer without
 // discarding one already attached by an outer layer.
 func WithOutboundCallResultObserver(ctx context.Context, observer OutboundCallResultObserver) context.Context {
 	if ctx == nil || observer == nil {

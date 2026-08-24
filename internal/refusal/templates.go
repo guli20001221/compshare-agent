@@ -2,13 +2,6 @@
 // capability boundaries.
 package refusal
 
-// Category names — must match observability.EngineHardBlockTrace.Category
-// values. Downstream MySQL trace ingest + per-category eval dashboards
-// pivot on these exact strings; treat as a stable contract.
-const (
-	CategoryHumanAgent = "human_agent_transfer"
-)
-
 // MonitorHistoryUnsupported is returned when the user asks for a historical
 // monitor shape the agent cannot safely execute yet (missing target, missing
 // concrete time window, multiple instances, or a window beyond the supported

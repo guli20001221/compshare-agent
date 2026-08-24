@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/config"
 	openai "github.com/sashabaranov/go-openai"
@@ -151,11 +152,75 @@ func TestClientChatOutboundObserverCountsEveryActualAttempt(t *testing.T) {
 			t.Fatalf("observer call %d provider = %q, want %s", i, call.Provider, ProviderOpenAICompatible)
 		}
 	}
-	if got := len(completed); got != 1 {
-		t.Fatalf("completed observer calls = %d, want one successful attempt", got)
+	if got := len(completed); got != 2 {
+		t.Fatalf("completed observer calls = %d, want both actual attempts", got)
 	}
-	if completed[0].StopReason != "stop" {
-		t.Fatalf("completed stop_reason = %q, want stop", completed[0].StopReason)
+	if completed[0].AttemptInCall != 1 || completed[0].Outcome != OutboundAttemptError ||
+		!completed[0].Retried || completed[0].ErrorClass == "" ||
+		completed[0].StopReason != "" || completed[0].ProviderFirstChunkMS != nil {
+		t.Fatalf("failed attempt trace = %#v", completed[0])
+	}
+	if completed[1].AttemptInCall != 2 || completed[1].Outcome != OutboundAttemptSuccess ||
+		completed[1].Retried || completed[1].StopReason != "stop" || completed[1].ProviderFirstChunkMS == nil {
+		t.Fatalf("successful attempt trace = %#v", completed[1])
+	}
+}
+
+func TestTraceOutboundErrorClassUsesTypedSignalsNotErrorText(t *testing.T) {
+	tests := []struct {
+		name string
+		ctx  context.Context
+		err  error
+		want string
+	}{
+		{name: "cancelled", ctx: context.Background(), err: context.Canceled, want: OutboundErrorCancelled},
+		{name: "deadline", ctx: context.Background(), err: context.DeadlineExceeded, want: OutboundErrorDeadline},
+		{name: "rate limit", ctx: context.Background(), err: &openai.APIError{HTTPStatusCode: 429}, want: OutboundErrorRateLimited},
+		{name: "upstream 4xx", ctx: context.Background(), err: &openai.APIError{HTTPStatusCode: 400}, want: OutboundErrorUpstream4xx},
+		{name: "upstream 5xx", ctx: context.Background(), err: &openai.RequestError{HTTPStatusCode: 503}, want: OutboundErrorUpstream5xx},
+		{name: "truncated stream", ctx: context.Background(), err: io.ErrUnexpectedEOF, want: OutboundErrorStream},
+		{name: "text that looks like status stays other", ctx: context.Background(), err: errors.New("429 password=hunter2"), want: OutboundErrorOther},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := traceOutboundErrorClass(tc.ctx, tc.err); got != tc.want {
+				t.Fatalf("traceOutboundErrorClass() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestCancelledOverloadBackoffDoesNotClaimASecondAttempt(t *testing.T) {
+	var outbound int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&outbound, 1)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"message":"overloaded","type":"server_error"}}`))
+	}))
+	defer srv.Close()
+
+	client := NewClient(config.LLMConfig{BaseURL: srv.URL + "/v1", APIKey: "test-key", Model: "test-model"})
+	// Leave ample time for the first httptest request even under -race, while
+	// staying well below the client's 900 ms overload backoff.
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	var attempts []OutboundCallResult
+	ctx = WithOutboundCallResultObserver(ctx, func(result OutboundCallResult) {
+		attempts = append(attempts, result)
+	})
+
+	_, err := client.Chat(ctx, ChatRequest{Messages: []openai.ChatCompletionMessage{{
+		Role: openai.ChatMessageRoleUser, Content: "hello",
+	}}})
+	if err == nil {
+		t.Fatal("expected the overloaded request to fail")
+	}
+	if got := atomic.LoadInt32(&outbound); got != 1 {
+		t.Fatalf("actual outbound attempts = %d, want 1", got)
+	}
+	if len(attempts) != 1 || attempts[0].Retried || attempts[0].ErrorClass != OutboundErrorUpstream5xx {
+		t.Fatalf("attempt trace must report no actual retry: %#v", attempts)
 	}
 }
 

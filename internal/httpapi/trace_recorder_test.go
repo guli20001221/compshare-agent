@@ -21,22 +21,22 @@ func TestChatTraceRecorderReceivesEngineCompletion(t *testing.T) {
 		BaseRequest{RequestUUID: "req-completion", Owner: store.Owner{TopOrganizationID: 1, OrganizationID: 2}},
 		"sess-completion",
 		1,
-		"帮我转接人工",
+		"介绍平台",
 		time.Now(),
 	)
 	eng := engine.NewWithDeps(chatLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
 	attachChatTraceObservers(eng, recorder)
 	t.Cleanup(func() { clearChatTraceObservers(eng) })
 
-	_, chatErr := eng.Chat(context.Background(), "帮我转接人工", nil)
+	_, chatErr := eng.Chat(context.Background(), "介绍平台", nil)
 	require.NoError(t, chatErr)
 	require.NoError(t, recorder.Finish(nil, time.Now()))
 	require.Len(t, writer.records, 1)
 	got := writer.records[0]
-	assert.Equal(t, observability.CompletionClassSafetyBlock, got.Completion.Class)
-	assert.Equal(t, observability.CompletionReasonPolicyBlock, got.Completion.Reason)
-	assert.Zero(t, got.Completion.ModelCalls)
-	assert.Equal(t, observability.TerminatedByBlocked, got.Outcome.TerminatedBy)
+	assert.Equal(t, observability.CompletionClassAgent, got.Completion.Class)
+	assert.Equal(t, observability.CompletionReasonAgentLoop, got.Completion.Reason)
+	assert.Zero(t, got.Completion.ModelCalls, "the in-process mock does not emit outbound-call telemetry")
+	assert.Equal(t, observability.TerminatedByDone, got.Outcome.TerminatedBy)
 }
 
 func TestChatTraceRecorderMarksChatError(t *testing.T) {

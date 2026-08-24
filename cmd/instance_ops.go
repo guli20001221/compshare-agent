@@ -74,6 +74,12 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 	// entered the box.
 	connectedSent := false
 	onStep := func(st sshops.Step) {
+		if st.JobLifecycleOnly {
+			onProgress(engine.InstanceOpsProgress{
+				Kind: engine.InstanceOpsProgressBackgroundJob, JobID: st.JobID, JobState: st.JobState,
+			})
+			return
+		}
 		if !connectedSent {
 			connectedSent = true
 			onProgress(engine.InstanceOpsProgress{Kind: engine.InstanceOpsProgressConnected})
@@ -88,6 +94,8 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 			Reason:      st.Reason,
 			ExitCode:    st.ExitCode,
 			Bytes:       st.Bytes,
+			JobID:       st.JobID,
+			JobState:    st.JobState,
 		})
 	}
 

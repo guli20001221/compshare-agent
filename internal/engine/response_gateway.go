@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/compshare-agent/internal/agentprotocol"
 	"github.com/compshare-agent/internal/security"
 )
 
@@ -16,6 +17,10 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 	if security.ContainsToolProtocolMarkup(draft) {
 		return malformedToolProtocolReply
 	}
+	// Customer-support delivery is valid only as the deterministic result of
+	// HandoffToCustomerSupport. A model-authored copy of the private marker must
+	// not trigger the adapter without the tool call and its trace.
+	draft = strings.ReplaceAll(draft, agentprotocol.FeishuCustomerSupportMarker, "")
 	content := e.guardMonitorNoDataFinalReply(draft)
 	content = security.RedactOperationalTokensInText(content)
 

@@ -20,7 +20,8 @@ func TestFeishuConsoleHandoffPromptIsOptInOnly(t *testing.T) {
 
 	handoff, sections := BuildSystemWithOptionsAndTrace("ctx", BuildOptions{FeishuConsoleHandoff: true})
 	require.Contains(t, handoff, agentprotocol.FeishuConsoleHandoffMarker)
-	require.Contains(t, handoff, agentprotocol.FeishuCustomerSupportMarker)
+	require.NotContains(t, handoff, agentprotocol.FeishuCustomerSupportMarker)
+	require.Contains(t, handoff, "HandoffToCustomerSupport")
 	require.Contains(t, handoff, "不能读取、推断或操作任何用户账号、实例")
 	require.Contains(t, handoff, "你只能依据已检索到的产品知识回答")
 	require.Contains(t, handoff, "必须查看其日志、进程、端口或网络")
@@ -32,7 +33,8 @@ func TestFeishuConsoleHandoffPromptIsOptInOnly(t *testing.T) {
 		FeishuPublicPlatformReadOnly: true,
 	})
 	require.Contains(t, public, agentprotocol.FeishuConsoleHandoffMarker)
-	require.Contains(t, public, agentprotocol.FeishuCustomerSupportMarker)
+	require.NotContains(t, public, agentprotocol.FeishuCustomerSupportMarker)
+	require.Contains(t, public, "HandoffToCustomerSupport")
 	require.Contains(t, public, "GPU 规格、库存、平台/社区镜像目录、可用区、公共模型仓库和目录价")
 	require.Contains(t, public, "账号价格、自制/共享镜像或其他私有资源")
 	require.Contains(t, public, "先用知识库和公开平台能力回答能可靠确认的部分")

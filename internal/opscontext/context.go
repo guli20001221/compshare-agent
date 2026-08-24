@@ -64,6 +64,19 @@ type Context struct {
 	// this slice under its own stdin-only handshake key, while the model receives only each target's
 	// opaque ID and non-secret label through the MCP tool schema.
 	EndpointTargets []EndpointTarget `json:"-"`
+	// PendingBackgroundJob is an opaque handle produced by the reviewed guest job tool. It is
+	// session-memory continuity, not conversation memory and not a command: the supervisor sends it
+	// on a separate handshake field so it cannot change the versioned reference-context schema.
+	// A resumed harness may only poll this handle; it never receives the original command.
+	PendingBackgroundJob *BackgroundJob `json:"-"`
+}
+
+// BackgroundJob is the minimum state needed to continue observing a long guest operation after
+// the browser disconnected. JobID is opaque and State is only a lifecycle hint. Neither field is
+// sufficient to replay the command that created it, which is deliberately not retained here.
+type BackgroundJob struct {
+	JobID string `json:"job_id"`
+	State string `json:"state"`
 }
 
 // Enabled reports whether this payload uses the currently supported schema.

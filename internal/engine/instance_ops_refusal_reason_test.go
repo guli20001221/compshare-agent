@@ -123,4 +123,25 @@ func TestCommandStepMessageCarriesTheSpecificReason(t *testing.T) {
 	if strings.Contains(ev.Message, "属于高危操作或命令形式不被接受") {
 		t.Fatalf("step message fell back to the collapsed sentence: %q", ev.Message)
 	}
+	if ev.ErrorCode != "SSH_REFUSED_CONFIRMATION_TIMEOUT" {
+		t.Fatalf("trace code = %q, want the mechanically normalized harness reason", ev.ErrorCode)
+	}
+}
+
+func TestCommandStepTraceDistinguishesExecutionFailureWithoutParsingText(t *testing.T) {
+	failed := instanceOpsCommandStep("DiagnoseInstanceInternals", InstanceOpsProgress{
+		Command: "opaque user command", Disposition: "failed",
+	})
+	if failed.ErrorCode != "SSH_COMMAND_FAILED" {
+		t.Fatalf("failed command trace code = %q", failed.ErrorCode)
+	}
+	unknown := instanceOpsCommandStep("DiagnoseInstanceInternals", InstanceOpsProgress{
+		Command: "password=hunter2", Disposition: "refused", Reason: "refused_future_reason",
+	})
+	if unknown.ErrorCode != "_OTHER" {
+		t.Fatalf("malformed structured reason = %q, want _OTHER", unknown.ErrorCode)
+	}
+	if strings.Contains(unknown.ErrorCode, "hunter2") {
+		t.Fatalf("command text leaked into trace code: %q", unknown.ErrorCode)
+	}
 }

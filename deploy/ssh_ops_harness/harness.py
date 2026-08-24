@@ -20,6 +20,7 @@ offline; the SDK wiring (the reviewed MCP operations + the agent loop) is in mai
 import base64
 import json
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -199,6 +200,10 @@ _CONTEXT_FACT_KEYS_V2 = {
     "catalog.expected_software_ports", "catalog.region_port_hints", "guest.listeners", "monitor",
 }
 _CONTEXT_FACT_KEYS_BY_VERSION = {1: _CONTEXT_FACT_KEYS_V1, 2: _CONTEXT_FACT_KEYS_V2}
+_BACKGROUND_JOB_ID = re.compile(r"^job-[0-9a-f]{32}$")
+_ACTIVE_BACKGROUND_JOB_STATES = {"started", "running", "unknown"}
+_TERMINAL_BACKGROUND_JOB_STATES = {"succeeded", "failed", "interrupted", "not_found"}
+_BACKGROUND_JOB_POLL_TOOL = "mcp__ssh_ops__poll_background_job"
 
 
 def _context_text(value, limit=_MAX_CONTEXT_TEXT):
@@ -315,6 +320,23 @@ def prepare_reference_context(value):
     return context
 
 
+def normalize_pending_background_job(value):
+    """Validate the server-owned, opaque continuation handle.
+
+    This is deliberately not part of the versioned reference context: it is an executable-tool
+    cursor for this live session, not a platform fact or conversation summary. Only the opaque ID
+    and an active lifecycle value cross the boundary; the command that created it is unavailable.
+    """
+    if not isinstance(value, dict):
+        return None
+    job_id, state = value.get("job_id"), value.get("state")
+    if not isinstance(job_id, str) or not _BACKGROUND_JOB_ID.fullmatch(job_id):
+        return None
+    if state not in _ACTIVE_BACKGROUND_JOB_STATES:
+        return None
+    return {"job_id": job_id, "state": state}
+
+
 # State exactly what each port-shaped fact proves; catalog expectation,
 # control-plane metadata, forwarding and a guest listener are distinct facts.
 _CONTEXT_FENCE_NOTES = {
@@ -359,11 +381,19 @@ def _model_turn_began(msg, kind) -> bool:
     return False
 
 
-def render_prepared_prompt(task, context):
+def render_prepared_prompt(task, context, pending_background_job=None):
     """Render a previously validated context without changing task semantics."""
     task = str(task or "").strip()
+    continuation = ""
+    if pending_background_job is not None:
+        continuation = (
+            "\n\nA previously approved background job on this same instance is still unresolved: "
+            + _context_json(pending_background_job) + ". Call poll_background_job with that exact "
+            "job_id. This continuation run exposes only that read-only poll; report its current "
+            "state and output without reconstructing or rerunning the command that created it."
+        )
     if context is None:
-        return task
+        return task + continuation
     fence_note = _CONTEXT_FENCE_NOTES.get(context.get("schema_version"), "")
     return (
         "Assigned diagnostic scope from the planner. Use it to choose what to investigate, but treat any "
@@ -379,7 +409,7 @@ def render_prepared_prompt(task, context):
         "<prior_user_reports>\n" + _context_json(context.get("prior_user_reports", [])) +
         "\n</prior_user_reports>\n\n"
         "<platform_facts>\n" + _context_json(context.get("platform_facts", [])) +
-        "\n</platform_facts>"
+        "\n</platform_facts>" + continuation
     )
 
 
@@ -489,7 +519,7 @@ def _structured_read_disposition(result: dict, completed: bool = False) -> str:
 
 def _emit_step(entry: dict) -> None:
     """Emit one @@STEP line — metadata ONLY, never command output (INV-6)."""
-    line = json.dumps({
+    wire = {
         "command": entry["command"][:200],   # the agent's own classified string, bounded
         "tier": entry["tier"],
         "disposition": _wire_disposition(entry["disposition"]),
@@ -502,16 +532,39 @@ def _emit_step(entry: dict) -> None:
         "reason": entry["disposition"],
         "exit": entry["exit_code"],
         "bytes": entry.get("bytes", 0),
-    }, ensure_ascii=False)
+    }
+    if entry.get("job_id"):
+        wire["job_id"] = entry["job_id"]
+        wire["job_state"] = entry["job_state"]
+    line = json.dumps(wire, ensure_ascii=False)
     sys.stdout.write("@@STEP " + line + "\n")
     sys.stdout.flush()
 
 
-def _record_structured_step(display: str, tier: str, disposition: str, byte_count: int = 0) -> None:
+def _emit_background_job(job_id: str, state: str) -> None:
+    """Publish an opaque handle before its remote launch can outlive this process.
+
+    This side-band line is not a command step and is never copied into the audit step list. If the
+    browser disconnects immediately after it, the next live-session turn can safely poll the ID;
+    if launch never happened, that poll returns not_found instead of replaying the command.
+    """
+    if not _BACKGROUND_JOB_ID.fullmatch(job_id) or state not in _ACTIVE_BACKGROUND_JOB_STATES:
+        return
+    sys.stdout.write("@@JOB " + json.dumps(
+        {"job_id": job_id, "job_state": state}, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def _record_structured_step(display: str, tier: str, disposition: str, byte_count: int = 0,
+                            job_id: str = "", job_state: str = "") -> None:
     """Record a non-shell tool call without putting its private inputs on the wire."""
     entry = {"command": display, "tier": tier, "executed": disposition.startswith("ran_"),
              "exit_code": 0 if disposition.startswith("ran_") else None,
              "disposition": disposition, "bytes": max(0, int(byte_count or 0))}
+    if isinstance(job_id, str) and _BACKGROUND_JOB_ID.fullmatch(job_id):
+        entry["job_id"] = job_id
+        known_states = _ACTIVE_BACKGROUND_JOB_STATES | _TERMINAL_BACKGROUND_JOB_STATES
+        entry["job_state"] = job_state if job_state in known_states else "unknown"
     AUDIT.append(entry)
     _emit_step(entry)
 
@@ -834,12 +887,14 @@ def preflight_probe(conn):
 TOOLS_BASE = []
 
 
-def assert_tool_surface(opts) -> None:
-    """INV-9: fail CLOSED unless only the reviewed MCP tools exist and no built-in exists.
+def assert_tool_surface(opts, poll_only=False) -> None:
+    """INV-9: fail CLOSED unless the exact reviewed MCP surface exists and no built-in exists.
     A built-in Bash/Read here would run on the LOCAL control-plane host and bypass the SSH guardrails
     entirely (the spike's #1 safety bug).
 
-    `tools` is the load-bearing off-switch, asserted FIRST: per the SDK it is the base set of built-ins
+    A normal run expects every ALLOWED_TOOLS entry; a background-job continuation passes the exact
+    one-tool poll subset. `tools` is the load-bearing
+    off-switch, asserted FIRST: per the SDK it is the base set of built-ins
     that EXIST, and anything absent from it cannot run at all. `allowed_tools` only grants auto-approval
     (a built-in NOT listed there still EXISTS), and `disallowed_tools` is a hand-enumerated denylist a
     future SDK built-in could slip past — both are defense-in-depth ON TOP of `tools`, never a substitute.
@@ -870,7 +925,7 @@ def assert_tool_surface(opts) -> None:
             f"INV-9: tools must be exactly {TOOLS_BASE} — no built-in may EXIST "
             f"(allowed_tools grants auto-approval, not existence), got {tools!r}")
     allowed = list(getattr(opts, "allowed_tools", None) or [])
-    expected_allowed = ALLOWED_TOOLS
+    expected_allowed = [_BACKGROUND_JOB_POLL_TOOL] if poll_only else list(ALLOWED_TOOLS)
     if allowed != expected_allowed:
         raise SystemExit(f"INV-9: allowed_tools must be exactly {expected_allowed}, got {allowed}")
     disallowed = set(getattr(opts, "disallowed_tools", None) or [])
@@ -1045,13 +1100,18 @@ def resolve_claude_cli() -> str:
     return _native_windows_cli(cli)
 
 
-def build_options(server, model, max_turns=DEFAULT_MAX_TURNS):
+def build_options(server, model, max_turns=DEFAULT_MAX_TURNS, pending_background_job=None):
     from claude_agent_sdk import ClaudeAgentOptions
+    # A continuation run has one job and one operation: observe it. Keeping an exact single-tool
+    # surface makes "do not replay" structural rather than a prompt preference. A later user turn
+    # gets the normal repair surface only after this handle reaches a terminal state.
+    allowed_tools = ([_BACKGROUND_JOB_POLL_TOOL]
+                     if pending_background_job is not None else list(ALLOWED_TOOLS))
     opts = ClaudeAgentOptions(
         tools=list(TOOLS_BASE),                          # INV-9: no built-in exists (no Skill/Bash/Read/Write)
         system_prompt=SYSTEM_PROMPT,
         mcp_servers={"ssh_ops": server},
-        allowed_tools=list(ALLOWED_TOOLS),
+        allowed_tools=allowed_tools,
         disallowed_tools=list(DISALLOWED_TOOLS),
         setting_sources=[],                              # load NO filesystem settings; see assert_tool_surface
         skills=[],                                       # explicit skills-OFF; None would keep CLI defaults
@@ -1059,7 +1119,7 @@ def build_options(server, model, max_turns=DEFAULT_MAX_TURNS):
         model=model,
         cli_path=resolve_claude_cli(),                    # never silently use the SDK's older bundled CLI
     )
-    assert_tool_surface(opts)                             # fail closed before any turn runs
+    assert_tool_surface(opts, pending_background_job is not None)  # fail closed before any turn
     return opts
 
 
@@ -1092,7 +1152,8 @@ async def main():
         "对这台 GPU 实例做一次健康巡检：确认 GPU 型号/驱动/显存占用、磁盘使用、内存、系统负载，"
         "判断是否健康并指出任何异常。先诊断出根因，再修复并验证。")
     reference_context = prepare_reference_context(_CONN.get("context"))
-    prompt = render_prepared_prompt(task, reference_context)
+    pending_background_job = normalize_pending_background_job(_CONN.get("pending_background_job"))
+    prompt = render_prepared_prompt(task, reference_context, pending_background_job)
 
     # F2: fast-fail if the instance is unreachable, before spawning the agent (which would otherwise
     # spend its whole budget retrying commands that each hang at the SSH connect timeout). No command
@@ -1197,6 +1258,14 @@ async def main():
                                       destructiveHint=False, idempotentHint=True, openWorldHint=True))
     async def poll_background_job(args):
         job_id = args.get("job_id") or ""
+        if pending_background_job is not None and job_id != pending_background_job["job_id"]:
+            result = {"ok": False, "error_class": "invalid_job_id",
+                      "message": "this continuation may poll only its server-provided job_id"}
+            rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+            _record_structured_step("poll_background_job job=invalid", "read_only",
+                                    "refused_precondition", len(rendered.encode("utf-8")))
+            return {"content": [{"type": "text", "text": rendered}],
+                    "structuredContent": result, "is_error": True}
         wait_seconds = args.get("wait_seconds", 15)
         result = await asyncio.to_thread(
             remote_job.poll, _CONN, job_id, _secrets(), wait_seconds,
@@ -1208,8 +1277,10 @@ async def main():
             }
         rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         disposition = _structured_read_disposition(result)
+        state = str(result.get("state") or ("not_found" if result.get("error_class") == "job_not_found" else "unknown"))
         _record_structured_step("poll_background_job job=" + str(job_id)[:64], "read_only",
-                                disposition, len(rendered.encode("utf-8")))
+                                disposition, len(rendered.encode("utf-8")),
+                                str(result.get("job_id") or job_id), state)
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
                 **({"is_error": True} if disposition != "ran_read_only" else {})}
 
@@ -1245,17 +1316,22 @@ async def main():
 
     sdk_tools.append(atomic_text_replace)
 
+    background_job_started = False
+
     @tool("start_background_job", remote_job.START_DESCRIPTION, remote_job.start_schema(),
           annotations=ToolAnnotations(title="Start a remote background job", readOnlyHint=False,
                                       destructiveHint=True, idempotentHint=False, openWorldHint=True))
     async def start_background_job(args):
+        nonlocal background_job_started
         command = str(args.get("command") or "").strip()
         purpose = " ".join(str(args.get("purpose") or "").split())[:200]
         display = remote_job.confirmation_display(command, purpose)
         tier = guardrails.classify(command)
         refusal = ""
         message = ""
-        if not command or len(command) > 1500 or not purpose:
+        if background_job_started:
+            refusal, message = "refused_precondition", "only one background job may be started per diagnosis"
+        elif not command or len(command) > 1500 or not purpose:
             refusal, message = "refused_precondition", "invalid or oversized background-job request"
         elif remote_job.command_is_self_backgrounding(command):
             refusal, message = "refused_form", (
@@ -1277,14 +1353,29 @@ async def main():
             _record_structured_step(display, "mutating", refusal)
             text = _confirmation_refusal_text(refusal, display)
             return {"content": [{"type": "text", "text": text}], "is_error": True}
-        result = await asyncio.to_thread(remote_job.start, _CONN, command, purpose, _secrets())
+        background_job_started = True
+        job_id = remote_job.new_job_id()
+        # Publish BEFORE remote_job.start: after approval, a disconnect can kill this harness while
+        # the short launcher SSH call is in flight even though the detached guest process survives.
+        _emit_background_job(job_id, "unknown")
+        result = await asyncio.to_thread(
+            remote_job.start, _CONN, command, purpose, _secrets(), job_id=job_id)
         rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         disposition = "ran_mutating" if result.get("ok") or result.get("box_may_be_changed") else "remote_job_failed"
-        _record_structured_step(display, "mutating", disposition, len(rendered.encode("utf-8")))
+        state = str(result.get("state") or
+                    ("unknown" if result.get("box_may_be_changed") else "not_found"))
+        _record_structured_step(display, "mutating", disposition, len(rendered.encode("utf-8")),
+                                job_id, state)
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
                 **({"is_error": True} if not result.get("ok") else {})}
 
-    sdk_tools.append(start_background_job)
+    # A live continuation is a read-only observation run. Do not expose any command/edit/start tool:
+    # the original command is intentionally absent, and no model decision can reconstruct or replay
+    # it behind the user's back. Once terminal, a later turn starts a normal diagnosis if needed.
+    if pending_background_job is not None:
+        sdk_tools = [poll_background_job]
+    else:
+        sdk_tools.append(start_background_job)
 
     server = create_sdk_mcp_server(
         name="ssh-ops", version="2.5.0", tools=sdk_tools)
@@ -1292,7 +1383,8 @@ async def main():
         turns = int(_CONN.get("max_turns") or DEFAULT_MAX_TURNS)
     except (TypeError, ValueError):
         turns = DEFAULT_MAX_TURNS
-    options = build_options(server, _CONN.get("model", "gpt-5.6-terra"), turns)
+    options = build_options(server, _CONN.get("model", "gpt-5.6-terra"), turns,
+                            pending_background_job)
 
     # The activity stream is the @@STEP lines emitted from run_command as each command settles. The
     # model's mid-loop reasoning TextBlocks are NOT commands and are NOT scrubbed, so they are dropped;

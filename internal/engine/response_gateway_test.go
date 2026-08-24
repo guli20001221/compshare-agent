@@ -55,23 +55,22 @@ func TestResponseGatewayDoesNotOverrideConversationOnlyAnswer(t *testing.T) {
 	require.Equal(t, "结合上一轮的回答继续即可。", eng.finalizeResponse(context.Background(), "那继续呢", "结合上一轮的回答继续即可。"))
 }
 
-func TestResponseGatewayDoesNotMistakeFeishuHandoffForKnowledgeCitation(t *testing.T) {
-	for name, marker := range map[string]string{
-		"console diagnosis": agentprotocol.FeishuConsoleHandoffMarker,
-		"customer support":  agentprotocol.FeishuCustomerSupportMarker,
-	} {
-		t.Run(name, func(t *testing.T) {
-			eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-			eng.searchKnowledgeRanThisTurn = true
-			eng.knowledgeQAAgentLoopThisTurn = true
+func TestResponseGatewayKeepsThePromptedConsoleMarker(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.searchKnowledgeRanThisTurn = true
+	eng.knowledgeQAAgentLoopThisTurn = true
 
-			reply := eng.finalizeResponse(context.Background(), "谁能帮忙处理？", marker)
+	reply := eng.finalizeResponse(context.Background(), "谁能帮忙处理？", agentprotocol.FeishuConsoleHandoffMarker)
 
-			require.Equal(t, marker, reply,
-				"an adapter control marker is a legal completion, not an unknown [[chunk_id]]")
-			require.NotEqual(t, emptyReplyFallbackMessage, reply)
-		})
-	}
+	require.Equal(t, agentprotocol.FeishuConsoleHandoffMarker, reply,
+		"the prompted console marker is a legal completion, not an unknown [[chunk_id]]")
+}
+
+func TestResponseGatewayDoesNotAcceptAModelAuthoredCustomerSupportMarker(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	reply := eng.finalizeResponse(context.Background(), "继续回答", agentprotocol.FeishuCustomerSupportMarker)
+	require.NotContains(t, reply, agentprotocol.FeishuCustomerSupportMarker)
+	require.Equal(t, emptyReplyFallbackMessage, reply)
 }
 
 func TestResponseGatewayNeverShipsToolProtocolMarkup(t *testing.T) {

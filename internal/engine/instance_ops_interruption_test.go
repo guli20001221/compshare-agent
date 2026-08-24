@@ -302,3 +302,88 @@ func TestTheNextRealTurnDeliversTheNotice(t *testing.T) {
 		require.NotEqual(t, instanceOpsInterruptionAction, s.Action)
 	}
 }
+
+func TestBackgroundJobSurvivesAnInterruptedTurnAndOnlyPollsOnTheSameInstance(t *testing.T) {
+	jobID := "job-" + strings.Repeat("a", 32)
+	runner := &fakeInstanceOpsRunner{
+		progress: []InstanceOpsProgress{{
+			Kind: InstanceOpsProgressBackgroundJob, JobID: jobID, JobState: "unknown",
+		}},
+		err: context.Canceled,
+	}
+	eng := newInstanceOpsEngine(runner, alwaysConfirm)
+
+	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), func(StepEvent) {})
+
+	require.NotNil(t, eng.pendingInstanceOpsBackgroundJob)
+	require.Equal(t, "uhost-1", eng.pendingInstanceOpsBackgroundJob.InstanceID)
+	require.Equal(t, jobID, eng.pendingInstanceOpsBackgroundJob.Job.JobID)
+	require.NotNil(t, eng.pendingInstanceOpsInterruption)
+	require.Contains(t, renderInstanceOpsInterruptionNotice(*eng.pendingInstanceOpsInterruption), jobID)
+	require.Nil(t, eng.backgroundJobForInstance("uhost-other"),
+		"an opaque handle must never be offered to a different instance")
+
+	// The next turn on the same instance gets only the opaque handle. No command is retained in the
+	// continuation payload, so the harness can poll but cannot replay what start_background_job ran.
+	runner.progress = []InstanceOpsProgress{{
+		Kind: InstanceOpsProgressCommand, Command: "poll_background_job job=" + jobID,
+		Tier: "read_only", Disposition: "ran", JobID: jobID, JobState: "succeeded",
+	}}
+	runner.err = nil
+	runner.verdict = InstanceOpsVerdict{Text: "后台任务已完成", Ran: 1}
+	eng.instanceOpsRanThisTurn = false
+	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), func(StepEvent) {})
+
+	require.NotNil(t, runner.lastReq.Context.PendingBackgroundJob)
+	require.Equal(t, jobID, runner.lastReq.Context.PendingBackgroundJob.JobID)
+	require.Equal(t, "unknown", runner.lastReq.Context.PendingBackgroundJob.State)
+	require.Nil(t, eng.pendingInstanceOpsBackgroundJob,
+		"a terminal poll must clear the live handle instead of polling it forever")
+}
+
+func TestBackgroundJobUnknownStateIsPolledButMalformedStateCannotClearIt(t *testing.T) {
+	jobID := "job-" + strings.Repeat("b", 32)
+	eng := &Engine{}
+	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "unknown")
+	require.Equal(t, "unknown", eng.backgroundJobForInstance("uhost-1").State)
+
+	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "future_state")
+	require.NotNil(t, eng.backgroundJobForInstance("uhost-1"),
+		"version skew must degrade to keeping an unresolved handle, not silently dropping it")
+
+	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "not_found")
+	require.Nil(t, eng.backgroundJobForInstance("uhost-1"))
+
+	// This is deliberately one slot rather than a job registry. The harness prevents a second start
+	// within one diagnosis; if a later diagnosis on another instance starts one, that newer handle is
+	// the only one this minimal live-session bridge retains.
+	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "running")
+	newJobID := "job-" + strings.Repeat("d", 32)
+	eng.observeInstanceOpsBackgroundJob("uhost-2", newJobID, "unknown")
+	require.Nil(t, eng.backgroundJobForInstance("uhost-1"))
+	require.Equal(t, newJobID, eng.backgroundJobForInstance("uhost-2").JobID)
+}
+
+func TestRehydrateHistoryDropsLiveBackgroundJobContinuity(t *testing.T) {
+	jobID := "job-" + strings.Repeat("c", 32)
+	eng := &Engine{}
+	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "running")
+	eng.recordInstanceOpsInterruption("uhost-1", []instanceOpsSettledStep{
+		settled("poll_background_job job="+jobID, "read_only", "ran"),
+	})
+	eng.ClearSessionState()
+	require.NotNil(t, eng.pendingInstanceOpsBackgroundJob,
+		"the HTTP handler clears persisted context every turn; that is not a session replacement")
+
+	eng.RehydrateHistory(nil)
+
+	require.Nil(t, eng.pendingInstanceOpsBackgroundJob,
+		"a pooled Engine repurposed for a hydrated session must not leak another session's handle")
+	require.Nil(t, eng.pendingInstanceOpsInterruption)
+
+	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "running")
+	eng.recordInstanceOpsInterruption("uhost-1", nil)
+	eng.InitWithContext("another isolated session")
+	require.Nil(t, eng.pendingInstanceOpsBackgroundJob)
+	require.Nil(t, eng.pendingInstanceOpsInterruption)
+}

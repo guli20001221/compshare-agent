@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/opscontext"
 )
 
 // An interrupted diagnosis may already have changed the instance. The next turn
@@ -30,20 +31,97 @@ type instanceOpsSettledStep struct {
 // instanceOpsInterruption is the pending notice, stashed when a run ends without a verdict and
 // drained by the next turn.
 type instanceOpsInterruption struct {
-	InstanceID string
-	Steps      []instanceOpsSettledStep
+	InstanceID    string
+	Steps         []instanceOpsSettledStep
+	BackgroundJob *opscontext.BackgroundJob
 }
 
-// recordInstanceOpsInterruption stashes the notice. Called only when the run returned an error AND
-// at least one command settled: a preflight failure (no SSH target, instance not found, not
-// running, address unavailable) entered no box and has nothing to report.
+// instanceOpsBackgroundJob binds an opaque guest handle to the box that produced it. It is kept
+// outside SessionState on purpose: this is continuity for one still-live process/session, not a
+// retired durable turn or a command replay record.
+type instanceOpsBackgroundJob struct {
+	InstanceID string
+	Job        opscontext.BackgroundJob
+}
+
+func validInstanceOpsJobID(id string) bool {
+	id = strings.TrimSpace(id)
+	if len(id) != len("job-")+32 || id[:len("job-")] != "job-" {
+		return false
+	}
+	for _, r := range id[len("job-"):] {
+		if !(r >= '0' && r <= '9') && !(r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+func activeInstanceOpsJobState(state string) bool {
+	switch strings.TrimSpace(state) {
+	case "started", "running", "unknown":
+		return true
+	default:
+		return false
+	}
+}
+
+func terminalInstanceOpsJobState(state string) bool {
+	switch strings.TrimSpace(state) {
+	case "succeeded", "failed", "interrupted", "not_found":
+		return true
+	default:
+		return false
+	}
+}
+
+// observeInstanceOpsBackgroundJob updates the live-session continuation handle from one settled
+// structured-tool event. Terminal observations clear the matching handle. Malformed lifecycle
+// values are ignored, and no command text is retained.
+func (e *Engine) observeInstanceOpsBackgroundJob(instanceID, jobID, state string) {
+	if e == nil || !validInstanceOpsJobID(jobID) {
+		return
+	}
+	instanceID = strings.TrimSpace(instanceID)
+	jobID = strings.TrimSpace(jobID)
+	state = strings.TrimSpace(state)
+	if activeInstanceOpsJobState(state) {
+		e.pendingInstanceOpsBackgroundJob = &instanceOpsBackgroundJob{
+			InstanceID: instanceID,
+			Job:        opscontext.BackgroundJob{JobID: jobID, State: state},
+		}
+		return
+	}
+	if !terminalInstanceOpsJobState(state) {
+		return
+	}
+	if current := e.pendingInstanceOpsBackgroundJob; current != nil &&
+		strings.EqualFold(current.InstanceID, instanceID) && current.Job.JobID == jobID {
+		e.pendingInstanceOpsBackgroundJob = nil
+	}
+}
+
+func (e *Engine) backgroundJobForInstance(instanceID string) *opscontext.BackgroundJob {
+	current := e.pendingInstanceOpsBackgroundJob
+	if current == nil || !strings.EqualFold(strings.TrimSpace(current.InstanceID), strings.TrimSpace(instanceID)) {
+		return nil
+	}
+	job := current.Job
+	return &job
+}
+
+// recordInstanceOpsInterruption stashes the notice when the run returned an error and either a
+// command settled or an approved background launch published its opaque handle. A preflight
+// failure has neither and remains silent.
 func (e *Engine) recordInstanceOpsInterruption(instanceID string, steps []instanceOpsSettledStep) {
-	if len(steps) == 0 {
+	job := e.backgroundJobForInstance(instanceID)
+	if len(steps) == 0 && job == nil {
 		return
 	}
 	e.pendingInstanceOpsInterruption = &instanceOpsInterruption{
-		InstanceID: instanceID,
-		Steps:      append([]instanceOpsSettledStep(nil), steps...),
+		InstanceID:    instanceID,
+		Steps:         append([]instanceOpsSettledStep(nil), steps...),
+		BackgroundJob: job,
 	}
 }
 
@@ -127,6 +205,15 @@ func renderInstanceOpsInterruptionNotice(notice instanceOpsInterruption) string 
 		fmt.Fprintf(&b, "· ……另有 %d 条未在此列出\n", omitted)
 	}
 	b.WriteString(interruptionIncompletenessNotice)
+	if notice.BackgroundJob != nil {
+		if notice.BackgroundJob.State == "unknown" {
+			fmt.Fprintf(&b, " 后台任务可能已经启动，任务编号为 %s；继续排查同一实例时只会查询该任务状态，不会重新启动。",
+				notice.BackgroundJob.JobID)
+		} else {
+			fmt.Fprintf(&b, " 后台任务 %s 已保留；继续排查同一实例时只会查询该任务状态，不会重新启动。",
+				notice.BackgroundJob.JobID)
+		}
+	}
 	return b.String()
 }
 

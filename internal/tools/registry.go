@@ -5,6 +5,11 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
+// CustomerSupportHandoffName is the central Agent's response-only handoff
+// capability. The model decides whether to call it; the active channel owns
+// the exact user-facing delivery.
+const CustomerSupportHandoffName = "HandoffToCustomerSupport"
+
 func portDeltaSchema(description string) map[string]any {
 	return map[string]any{
 		"type":        "array",
@@ -21,6 +26,18 @@ func portDeltaSchema(description string) map[string]any {
 
 // Registry holds all registered tools for function calling.
 var Registry = []openai.Tool{
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        CustomerSupportHandoffName,
+			Description: "转接人工客服。仅当用户明确要求联系人工客服，或现有能力无法完成且确实需要平台人员核验时调用；用户只是提及、询问、引用或拒绝人工客服时不要调用。渠道适配器会生成适合当前入口的转接说明，不要自行输出联系方式。",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+				"required":   []string{},
+			},
+		},
+	},
 	// --- Knowledge Tools (local, no API call) ---
 	{
 		Type: openai.ToolTypeFunction,

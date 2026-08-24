@@ -62,6 +62,8 @@ func TestExecuteTool_MalformedArgsReturnsCorrectiveHint(t *testing.T) {
 			require.Len(t, steps, 1)
 			assert.Equal(t, StepError, steps[0].Type)
 			assert.Equal(t, "SearchKnowledge", steps[0].Action)
+			assert.Equal(t, result.Error.Code, steps[0].ErrorCode,
+				"trace must carry the producer's control code, not reconstruct one from the message")
 			assert.Contains(t, steps[0].Message, "parameter parse error:",
 				"recorded message must be the concise parse error, got %q", steps[0].Message)
 			assert.NotContains(t, steps[0].Message, "重新调用",

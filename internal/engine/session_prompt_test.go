@@ -89,7 +89,7 @@ func TestRefreshSystemPrompt_ClearsStaleInstance(t *testing.T) {
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.InitWithContext("")
 
-	// Turn 1: inject selected instance via SessionState.
+	// Turn 1: load a selected instance into SessionState.
 	eng.SetSessionState(SessionState{
 		SchemaVersion:        SessionStateSchemaV1,
 		SelectedInstanceID:   "uhost-stale",

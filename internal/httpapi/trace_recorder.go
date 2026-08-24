@@ -12,6 +12,7 @@ import (
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/tools"
 )
 
 type traceEnqueuer interface {
@@ -31,6 +32,7 @@ type chatTraceRecorder struct {
 	registryTraceSupplier func(time.Time) observability.EntityRegistryTrace
 	terminalSignals       observability.FinishSignals
 	stateTrace            observability.StateTrace
+	firstVisibleEventAt   time.Time
 }
 
 // pendingToolCall ties an observed completion to the exact call that began it.
@@ -152,6 +154,16 @@ func (r *chatTraceRecorder) SetEngineSnapshot(snapshot engine.TraceSnapshot) {
 	r.record.Outcome.PromptMessagesRawPeak = snapshot.PromptMessagesRawPeak
 	r.record.Outcome.PromptMessagesAssembledPeak = snapshot.PromptMessagesAssembledPeak
 	r.record.Outcome.PromptMessagesCapApplied = snapshot.PromptMessagesCapApplied
+}
+
+// ObserveFirstVisibleEvent records the first token/step/confirmation/error that
+// the transport actually accepted. Calling it before WriteEvent would turn a
+// failed write into a false user-visible latency sample.
+func (r *chatTraceRecorder) ObserveFirstVisibleEvent(at time.Time) {
+	if r == nil || !r.firstVisibleEventAt.IsZero() || at.Before(r.start) {
+		return
+	}
+	r.firstVisibleEventAt = at
 }
 
 func (r *chatTraceRecorder) SetRetrievalTrace(trace observability.RetrievalTrace) {
@@ -302,6 +314,8 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 		r.record.ToolCalls[idx].ResultHash = resultHash
 		r.record.ToolCalls[idx].Attempts = ev.Attempts
 		r.record.ToolCalls[idx].Projected = ev.Projected
+		r.applyToolResultFormat(idx, ev)
+		r.applyErrorCode(idx, ev.ErrorCode)
 		if r.record.ToolCalls[idx].RequestedTargets > 0 && r.record.ToolCalls[idx].ExecutedTargets == 0 {
 			r.record.ToolCalls[idx].ExecutedTargets = r.record.ToolCalls[idx].RequestedTargets
 		}
@@ -314,12 +328,14 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 		// Step messages are user-facing diagnostics and may contain upstream
 		// detail. Trace records only the closed-set error class.
 		r.record.ToolCalls[idx].ErrorClass = "tool_error"
+		r.applyErrorCode(idx, ev.ErrorCode)
 		r.applyLatency(idx, startedAt)
 		r.applyCapFields(idx, ev)
 	case engine.StepBlocked:
 		idx, startedAt := r.matchPending(key, ev.Action, source)
 		r.record.ToolCalls[idx].Status = observability.ToolStatusError
 		r.record.ToolCalls[idx].ErrorClass = "blocked"
+		r.applyErrorCode(idx, ev.ErrorCode)
 		r.applyLatency(idx, startedAt)
 		r.applyCapFields(idx, ev)
 	case engine.StepUserNotice:
@@ -366,6 +382,10 @@ func (r *chatTraceRecorder) Finish(chatErr error, end time.Time) error {
 		}
 	}
 	r.record.Outcome.TotalLatencyMS = end.Sub(r.start).Milliseconds()
+	if !r.firstVisibleEventAt.IsZero() {
+		firstVisibleMS := r.firstVisibleEventAt.Sub(r.start).Milliseconds()
+		r.record.Outcome.FirstVisibleEventMS = &firstVisibleMS
+	}
 	r.record.Outcome.TotalTokens = r.totalTokens
 	r.record.Outcome.PromptTokens = r.promptTokens
 	r.record.Outcome.CompletionTokens = r.completionTokens
@@ -416,6 +436,30 @@ func (r *chatTraceRecorder) applyCapFields(idx int, ev engine.StepEvent) {
 	if ev.CapReason != "" {
 		call.CapReason = ev.CapReason
 	}
+}
+
+func (r *chatTraceRecorder) applyErrorCode(idx int, code string) {
+	if r == nil || idx < 0 || idx >= len(r.record.ToolCalls) || code == "" {
+		return
+	}
+	code = tools.TraceAgentToolErrorCode(code)
+	if code == "" {
+		return
+	}
+	r.record.ToolCalls[idx].ErrorCode = code
+	r.record.ToolCalls[idx].Status = observability.ToolStatusError
+	if r.record.ToolCalls[idx].ErrorClass == "" {
+		r.record.ToolCalls[idx].ErrorClass = "tool_error"
+	}
+}
+
+func (r *chatTraceRecorder) applyToolResultFormat(idx int, ev engine.StepEvent) {
+	if r == nil || idx < 0 || idx >= len(r.record.ToolCalls) {
+		return
+	}
+	r.record.ToolCalls[idx].ToolResultRawRunes = ev.ToolResultRawRunes
+	r.record.ToolCalls[idx].ToolResultVisibleRunes = ev.ToolResultVisibleRunes
+	r.record.ToolCalls[idx].ToolResultTruncated = ev.ToolResultTruncated
 }
 
 func (r *chatTraceRecorder) matchPending(key, action, source string) (int, time.Time) {

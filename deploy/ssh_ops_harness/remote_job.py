@@ -22,7 +22,8 @@ START_DESCRIPTION = (
     "both output streams, records the exit code, and returns a job_id. Check available disk space "
     "before starting large work; poll returns bounded log tails even though the on-instance logs "
     "remain complete. The "
-    "exact original command is shown on the approval card. Use poll_background_job on later calls; "
+    "exact original command is shown on the approval card. At most one background job may be started "
+    "in a diagnosis. Use poll_background_job on later calls; "
     "do not resend the foreground command or hand-roll nohup/redirection. This does not authorize a "
     "broader repair, destructive operation, reboot, or substitute platform service.")
 
@@ -93,12 +94,19 @@ def command_is_self_backgrounding(command):
     return False
 
 
-def start(conn, command, purpose, secrets=(), runner=ssh_transport.run_ssh):
+def new_job_id():
+    return "job-" + uuid.uuid4().hex
+
+
+def start(conn, command, purpose, secrets=(), runner=ssh_transport.run_ssh, job_id=None):
     command = str(command or "").strip()
     purpose = " ".join(str(purpose or "").split())[:200]
     if not command or len(command) > 1500 or not purpose or command_is_self_backgrounding(command):
         return {"ok": False, "error_class": "invalid_arguments", "box_may_be_changed": False}
-    job_id = "job-" + uuid.uuid4().hex
+    if job_id is None:
+        job_id = new_job_id()
+    if not isinstance(job_id, str) or not _JOB_ID.fullmatch(job_id):
+        return {"ok": False, "error_class": "invalid_job_id", "box_may_be_changed": False}
     directory = _JOB_ROOT + "/" + job_id
     status_tmp, status = directory + "/status.tmp", directory + "/status"
     # The original command runs in a subshell so an `exit` inside it cannot skip the completion

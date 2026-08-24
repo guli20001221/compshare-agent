@@ -153,7 +153,9 @@ func TestInstanceOpsRunner_TranslatesActivityStream(t *testing.T) {
 	diag := &fakeDiagnoser{
 		output: "结论",
 		steps: []sshops.Step{
-			{Command: "nvidia-smi", Tier: "read_only", Disposition: "ran", ExitCode: intp(0), Bytes: 42},
+			{JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", JobState: "unknown", JobLifecycleOnly: true},
+			{Command: "poll_background_job", Tier: "read_only", Disposition: "ran", ExitCode: intp(0), Bytes: 42,
+				JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", JobState: "running"},
 			{Command: "modprobe nvidia", Tier: "mutating", Disposition: "refused"},
 			{Command: "df -h", Tier: "read_only", Disposition: "ran", ExitCode: intp(0), Bytes: 10},
 		},
@@ -165,20 +167,25 @@ func TestInstanceOpsRunner_TranslatesActivityStream(t *testing.T) {
 		func(p engine.InstanceOpsProgress) { got = append(got, p) })
 
 	require.NoError(t, err)
-	require.Len(t, got, 4, "1 connected + 3 commands")
-	require.Equal(t, engine.InstanceOpsProgressConnected, got[0].Kind)
-	require.Equal(t, engine.InstanceOpsProgressCommand, got[1].Kind)
-	require.Equal(t, "nvidia-smi", got[1].Command)
-	require.Equal(t, "ran", got[1].Disposition)
-	require.Equal(t, 42, got[1].Bytes)
-	require.Equal(t, "refused", got[2].Disposition)
-	require.Nil(t, got[2].ExitCode, "a refused command has no exit code")
+	require.Len(t, got, 5, "1 internal job handle + 1 connected + 3 commands")
+	require.Equal(t, engine.InstanceOpsProgressBackgroundJob, got[0].Kind)
+	require.Equal(t, "unknown", got[0].JobState)
+	require.Equal(t, engine.InstanceOpsProgressConnected, got[1].Kind,
+		"publishing a handle is not proof that the SSH command reached the box")
+	require.Equal(t, engine.InstanceOpsProgressCommand, got[2].Kind)
+	require.Equal(t, "poll_background_job", got[2].Command)
+	require.Equal(t, "ran", got[2].Disposition)
+	require.Equal(t, 42, got[2].Bytes)
+	require.Equal(t, "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", got[2].JobID)
+	require.Equal(t, "running", got[2].JobState)
+	require.Equal(t, "refused", got[3].Disposition)
+	require.Nil(t, got[3].ExitCode, "a refused command has no exit code")
 	// The TIER has to cross this boundary too. The audit row has carried it since 0014, but the
 	// live stream was dropping it — and it is the only thing that separates "this diagnosis looked
 	// at the box" from "this diagnosis changed it", which is the question the interruption notice
 	// (internal/engine/instance_ops_interruption.go) exists to answer.
-	require.Equal(t, "read_only", got[1].Tier)
-	require.Equal(t, "mutating", got[2].Tier)
+	require.Equal(t, "read_only", got[2].Tier)
+	require.Equal(t, "mutating", got[3].Tier)
 	// tally feeds the terminal summary: 2 ran, 1 refused
 	require.Equal(t, 2, verdict.Ran)
 	require.Equal(t, 1, verdict.Refused)

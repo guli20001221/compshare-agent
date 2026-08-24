@@ -6,6 +6,7 @@ import (
 )
 
 func TestTurnCompletionTraceMarshalWiring(t *testing.T) {
+	firstChunkBelowOneMS := int64(0)
 	record := TraceRecord{
 		SchemaVersion: SchemaVersion,
 		Completion: TurnCompletionTrace{
@@ -16,7 +17,11 @@ func TestTurnCompletionTraceMarshalWiring(t *testing.T) {
 			ModelProvider:         "modelverse",
 			ModelIDs:              []string{"gpt-5.6-terra"},
 			ProviderFinishReasons: []string{"tool_calls", "stop"},
-			ToolNames:             []string{"DescribeCompShareInstance"},
+			ModelAttempts: []ModelAttemptTrace{
+				{AttemptInCall: 1, LatencyMS: 500, Outcome: "error", ErrorClass: "network", Retried: true},
+				{AttemptInCall: 2, LatencyMS: 800, Outcome: "success", FinishReason: "stop", FirstChunkMS: &firstChunkBelowOneMS},
+			},
+			ToolNames: []string{"DescribeCompShareInstance"},
 		},
 	}
 	data, err := json.Marshal(record)
@@ -40,6 +45,13 @@ func TestTurnCompletionTraceMarshalWiring(t *testing.T) {
 	}
 	if decoded.Completion.ModelProvider != "modelverse" || len(decoded.Completion.ModelIDs) != 1 || len(decoded.Completion.ProviderFinishReasons) != 2 {
 		t.Fatalf("model attribution lost from completion: %#v", decoded.Completion)
+	}
+	if len(decoded.Completion.ModelAttempts) != 2 || decoded.Completion.ModelAttempts[0].AttemptInCall != 1 ||
+		decoded.Completion.ModelAttempts[0].FirstChunkMS != nil {
+		t.Fatalf("failed attempt or absent first-chunk signal lost: %#v", decoded.Completion.ModelAttempts)
+	}
+	if decoded.Completion.ModelAttempts[1].FirstChunkMS == nil || *decoded.Completion.ModelAttempts[1].FirstChunkMS != 0 {
+		t.Fatalf("a real sub-millisecond first chunk must survive as pointer-to-zero: %#v", decoded.Completion.ModelAttempts[1])
 	}
 }
 

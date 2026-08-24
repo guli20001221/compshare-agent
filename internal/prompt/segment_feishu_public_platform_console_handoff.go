@@ -11,6 +11,6 @@ const segmentFeishuPublicPlatformScope = `## 外部平台查询范围
 // URLs and strips the marker before rendering.
 const segmentFeishuPublicPlatformConsoleHandoff = segmentFeishuPublicPlatformScope + `
 
-先用知识库和公开平台能力回答能可靠确认的部分。账号、认证、登录或平台服务问题只有在证据不足或必须核验私有状态时，才只输出 {{support_marker}}。用户明确要求排查某个实例，且必须查看其日志、进程、端口或网络时，在简短回答末尾另起一行输出 {{handoff_marker}}。
+先用知识库和公开平台能力回答能可靠确认的部分。账号、认证、登录或平台服务问题只有在证据不足或必须由平台人员核验时，才调用 HandoffToCustomerSupport。用户明确要求排查某个实例，且必须查看其日志、进程、端口或网络时，在简短回答末尾另起一行输出 {{handoff_marker}}。
 
 不要因问题模糊、公开信息不足、账号内资源或用户想继续咨询就交接；不要声称已查看私有状态、索取凭证或自行输出交接链接。`

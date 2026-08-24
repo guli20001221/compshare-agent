@@ -291,18 +291,18 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Per-turn ReAct loop counters feeding the trace's react_rounds field and
 		// the budget terminus. Per-session/per-turn by design — a shared counter
 		// would attribute one tenant's loop depth to another's turn. Reset every turn.
-		"reactRoundsThisTurn":               true,
-		"reactCeilingHitThisTurn":           true,
-		"turnModelCallsThisTurn":            true,
-		"turnModelProviderThisTurn":         true,
-		"turnModelIDsThisTurn":              true,
-		"turnProviderFinishReasonsThisTurn": true,
-		"turnCompletionClassHint":           true,
-		"turnCompletionReasonHint":          true,
-		"runtimeFinishReasonThisTurn":       true,
-		"turnCompletionEmittedThisTurn":     true,
-		"hardBlockStandingThisTurn":         true,
-		"hardBlockTraceThisTurn":            true,
+		"reactRoundsThisTurn":           true,
+		"reactCeilingHitThisTurn":       true,
+		"turnModelCallsThisTurn":        true,
+		"turnModelProviderThisTurn":     true,
+		"turnModelIDsThisTurn":          true,
+		"turnModelAttemptsThisTurn":     true,
+		"turnCompletionClassHint":       true,
+		"turnCompletionReasonHint":      true,
+		"runtimeFinishReasonThisTurn":   true,
+		"turnCompletionEmittedThisTurn": true,
+		"hardBlockStandingThisTurn":     true,
+		"hardBlockTraceThisTurn":        true,
 		// Per-turn instance-binding observables (#3 StateTrace). Per-session/
 		// per-turn by design — sharing would attribute one tenant's bound
 		// instance to another's turn. Reset every turn.
@@ -337,6 +337,9 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// The Feishu handoff completion contract is likewise per-turn. A pooled
 		// engine must never carry its private marker contract into console chats.
 		"feishuConsoleHandoffThisTurn": true,
+		// Renderer selection is channel-local even when authorization precedence
+		// chooses the narrower knowledge-only tool window.
+		"feishuSupportRendererThisTurn": true,
 		// One immutable support-zone view per active turn. Sharing it across
 		// sessions would expose one tenant/turn's catalog availability to another.
 		"zoneCatalogThisTurn": true,
@@ -384,6 +387,9 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// box, so a shared field would show tenant A's half-finished repair to tenant B
 		// as if it were their own. Cleared on delivery, never carried further.
 		"pendingInstanceOpsInterruption": true,
+		// The opaque guest-job handle is live-session continuity. It must remain per-session and is
+		// cleared by RehydrateHistory if an Engine is ever repurposed.
+		"pendingInstanceOpsBackgroundJob": true,
 		// Why the most recent authorization card in THIS turn ended, used to phrase
 		// the refusal. Turn-local and per-session for the obvious reason: inheriting
 		// another session's reason would tell this user their card timed out when
@@ -423,12 +429,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 98, len(perSessionFields); want != got {
+	if want, got := 100, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 104, typ.NumField(); want != got {
+	if want, got := 106, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update this test's whitelists to match.", want, got)
 	}

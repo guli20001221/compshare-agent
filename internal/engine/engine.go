@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/compshare-agent/internal/agentprotocol"
 	"github.com/compshare-agent/internal/agentruntime"
 	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/config"
@@ -27,7 +28,6 @@ import (
 	"github.com/compshare-agent/internal/readprojection"
 	"github.com/compshare-agent/internal/refusal"
 	"github.com/compshare-agent/internal/security"
-	"github.com/compshare-agent/internal/textutil"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
 	"github.com/compshare-agent/internal/zones"
@@ -177,9 +177,9 @@ type ChatOptions struct {
 	// window for untrusted chat transports. KnowledgeOnly takes precedence when
 	// both are set.
 	PublicPlatformReadOnly bool
-	// FeishuConsoleHandoff adds a response-only prompt contract used by the
-	// Feishu adapter. It never changes the tool window, authorization, or user
-	// identity; the adapter consumes its private marker before rendering.
+	// FeishuConsoleHandoff adds the response-only console-diagnosis contract.
+	// It never changes the tool window, authorization, or user identity; the
+	// adapter consumes its private marker before rendering.
 	FeishuConsoleHandoff bool
 }
 
@@ -287,7 +287,7 @@ type Engine struct {
 	turnModelCallsThisTurn              int
 	turnModelProviderThisTurn           string
 	turnModelIDsThisTurn                []string
-	turnProviderFinishReasonsThisTurn   []string
+	turnModelAttemptsThisTurn           []observability.ModelAttemptTrace
 	turnCompletionClassHint             string
 	turnCompletionReasonHint            string
 	runtimeFinishReasonThisTurn         agentruntime.FinishReason
@@ -380,9 +380,12 @@ type Engine struct {
 	publicPlatformReadOnlyThisTurn bool
 	// feishuConsoleHandoffThisTurn changes only the model's completion contract
 	// for a public Feishu Q&A turn. It is reset after every ChatWithOptions call
-	// so the regular console agent cannot inherit it from a pooled engine.
+	// so the console cannot inherit it from a pool.
 	feishuConsoleHandoffThisTurn bool
-	// sessionState is the JSON-serializable per-session execution state injected
+	// feishuSupportRendererThisTurn is a delivery choice, independent of which
+	// authorization scope wins when a client advertises multiple read modes.
+	feishuSupportRendererThisTurn bool
+	// sessionState is the JSON-serializable per-session execution state loaded
 	// before each Chat turn and read back through SessionStateSnapshot afterward.
 	// See session_state.go.
 	sessionState         SessionState
@@ -428,6 +431,13 @@ type Engine struct {
 	// is deliberately NOT reset in the per-turn block — resetting it there would clear it on the
 	// very turn that is supposed to show it. See instance_ops_interruption.go.
 	pendingInstanceOpsInterruption *instanceOpsInterruption
+	// pendingInstanceOpsBackgroundJob is the one opaque guest-job handle that may be polled on a
+	// later turn in this same live session. One handle is an intentional minimum, not a general job
+	// registry: the harness refuses a second start within one diagnosis, while a later diagnosis that
+	// starts work on another instance replaces this slot. It is not persisted into conversation
+	// history and never contains the command that created the job. Process restart/LRU eviction
+	// therefore degrades to honest unknown state instead of pretending to resume a command.
+	pendingInstanceOpsBackgroundJob *instanceOpsBackgroundJob
 	// lastConfirmationTerminalReason is why the most recent authorization card in
 	// this turn ended, in observability's closed-set spelling. It exists because
 	// ConfirmFunc answers a bool, so every non-approval — the user declining, the
@@ -867,6 +877,8 @@ func (e *Engine) RegistrySnapshot() entity.RegistrySnapshot {
 
 // InitWithContext initializes an isolated Engine with test context.
 func (e *Engine) InitWithContext(userCtx string) {
+	e.pendingInstanceOpsInterruption = nil
+	e.pendingInstanceOpsBackgroundJob = nil
 	e.baseUserContext = userCtx
 	systemPrompt := prompt.BuildSystemWithOptions(userCtx, e.reactPromptBuildOptions())
 	e.messages = []openai.ChatCompletionMessage{
@@ -879,6 +891,12 @@ func (e *Engine) InitWithContext(userCtx string) {
 // prompt followed by the supplied user/assistant turns. Empty content and
 // non-user/non-assistant roles are silently skipped.
 func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
+	// RehydrateHistory is a whole-session replacement boundary. A live guest-job handle belongs to
+	// the Engine instance that observed it and must never survive if a caller repurposes that Engine
+	// for another hydrated session. The production pool already creates one Engine per session; this
+	// keeps the lower-level API just as strict.
+	e.pendingInstanceOpsInterruption = nil
+	e.pendingInstanceOpsBackgroundJob = nil
 	e.baseUserContext = ""
 	systemPrompt := prompt.BuildSystemWithOptions("", e.reactPromptBuildOptions())
 	e.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: systemPrompt}}
@@ -895,15 +913,12 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 		case openai.ChatMessageRoleAssistant:
 			transcript := transcriptFromRow(msg.Transcript)
 			assistantContent := msg.Content
-			// A verbatim billing block is deliberately a USER-display projection:
-			// the persisted assistant row contains its exact amounts so the UI can
-			// reload the reply, while the live model saw only an amount-free tool
-			// observation. Replaying the display text here would make a restart or
-			// replica hand the model figures it never saw on the hot path. When the
-			// existing canonical transcript proves this was that shape, restore its
-			// model-facing terminal content instead. Ordinary assistant rows retain
-			// their persisted content unchanged.
-			if content, ok := verbatimBillingModelHistoryContent(transcript); ok {
+			// Some deterministic tool results have a channel-specific display form:
+			// billing cards contain exact amounts and support handoffs contain QR or
+			// adapter markup. The canonical transcript records what the live model
+			// actually saw; restore that terminal content on cold rebuild. Ordinary
+			// assistant rows retain their persisted content unchanged.
+			if content, ok := displayProjectedModelHistoryContent(transcript); ok {
 				assistantContent = content
 			}
 			e.messages = append(e.messages, openai.ChatCompletionMessage{Role: msg.Role, Content: assistantContent})
@@ -920,21 +935,20 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 	}
 }
 
-// verbatimBillingModelHistoryContent returns the assistant text that belongs in
-// the model's semantic history for a persisted billing-card turn.
-//
-// The messages.content column has two consumers: the conversation UI needs the
-// exact server-rendered card, while the model must not see figures it could
-// restate, extrapolate or treat as current. The canonical transcript already
-// records the latter view. Do not identify cards by their display text: that
-// would make a formatting change alter model semantics. The typed observation
-// is the persisted, narrow discriminator.
-//
-// Rows without a terminal assistant message use the same amount-free completion
-// rather than falling back to the persisted display card.
-func verbatimBillingModelHistoryContent(transcript *TranscriptV1) (string, bool) {
+// displayProjectedModelHistoryContent returns the channel-neutral assistant
+// completion for turns whose persisted row is a user-display projection. The
+// canonical transcript is the model-facing source of truth: billing cards keep
+// amounts out of model history, while support handoffs keep QR/adapter markup
+// out. Typed tool observations/calls identify these turns; display text is
+// never parsed. Ordinary turns retain their persisted assistant row.
+func displayProjectedModelHistoryContent(transcript *TranscriptV1) (string, bool) {
 	projected := ProjectTranscript(transcript)
-	if len(projected) == 0 || !containsVerbatimBillingObservation(projected) {
+	if len(projected) == 0 {
+		return "", false
+	}
+	billing := containsVerbatimBillingObservation(projected)
+	support := containsCustomerSupportHandoff(projected)
+	if !billing && !support {
 		return "", false
 	}
 	for i := len(projected) - 1; i >= 0; i-- {
@@ -943,7 +957,24 @@ func verbatimBillingModelHistoryContent(transcript *TranscriptV1) (string, bool)
 			return message.Content, true
 		}
 	}
-	return verbatimBillingHistoryCompletion, true
+	if billing {
+		return verbatimBillingHistoryCompletion, true
+	}
+	return agentprotocol.CustomerSupportHistoryCompletion, true
+}
+
+func containsCustomerSupportHandoff(messages []openai.ChatCompletionMessage) bool {
+	for _, message := range messages {
+		if message.Role != openai.ChatMessageRoleAssistant {
+			continue
+		}
+		for _, call := range message.ToolCalls {
+			if call.Function.Name == tools.CustomerSupportHandoffName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func containsVerbatimBillingObservation(messages []openai.ChatCompletionMessage) bool {
@@ -1009,14 +1040,9 @@ func (e *Engine) SessionStateSnapshot() (state SessionState, version int, hydrat
 	return state, e.sessionStateVersion, e.sessionStateHydrated
 }
 
-// refreshSystemPrompt rebuilds e.messages[0] with the current SessionState
-// injected into the user context section. Called per-turn at the start of
-// ChatWithOptions, AFTER SetSessionState has been called (HTTP handler
-// serializes: ClearSessionState → SetSessionState → ChatWithOptions).
-// This solves the HTTP timing issue: RehydrateHistory builds the initial
-// system prompt with empty userContext because SessionState isn't
-// available yet; refreshSystemPrompt patches it once state is hydrated.
-// An unhydrated test Engine rebuilds from baseUserContext only.
+// refreshSystemPrompt rebuilds the static prompt and records how the carried
+// instance target was resolved. SessionState is not injected here; the
+// per-turn context card is assembled separately by ContextCompiler.
 func (e *Engine) refreshSystemPrompt() {
 	if len(e.messages) == 0 || e.messages[0].Role != openai.ChatMessageRoleSystem {
 		return
@@ -1091,7 +1117,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		e.recordTurnModel(call)
 	})
 	ctx = llm.WithOutboundCallResultObserver(ctx, func(result llm.OutboundCallResult) {
-		e.recordTurnProviderFinishReason(result.StopReason)
+		e.recordTurnModelAttempt(result)
 	})
 	e.currentCtx = ctx
 	defer func() { e.currentCtx = nil }()
@@ -1101,6 +1127,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	defer func() { e.publicPlatformReadOnlyThisTurn = false }()
 	e.feishuConsoleHandoffThisTurn = opts.FeishuConsoleHandoff
 	defer func() { e.feishuConsoleHandoffThisTurn = false }()
+	e.feishuSupportRendererThisTurn = opts.PublicPlatformReadOnly || opts.FeishuConsoleHandoff
+	defer func() { e.feishuSupportRendererThisTurn = false }()
 	defer e.emitTurnCompletion()
 	if u, ok := tools.UserFrom(ctx); ok {
 		if subject, ok := governance.SubjectKeyFromOrganization(u.TopOrganizationID, u.OrganizationID); ok {
@@ -1247,25 +1275,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// Trim before appending to guarantee the new user message is never dropped.
 	e.trimHistory()
 
-	// An explicit support handoff is a product protocol, not a semantic route.
-	// All other input reaches the central Agent.
-	if isHumanAgentTransferRequest(userMsg) {
-		e.emitKnowledgeHardBlock(observability.EngineHardBlockTrace{
-			Hit:         true,
-			Category:    refusal.CategoryHumanAgent,
-			TriggeredBy: observability.HardBlockTriggerKeyword,
-		})
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleUser,
-			Content: userMsg,
-		})
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: refusal.HumanAgentTransfer,
-		})
-		return refusal.HumanAgentTransfer, nil
-	}
-
 	// Build the LLM-facing message from the user's text and optional image context.
 	// userMsg remains the authoritative text for deterministic target binding;
 	// llmUserMsg carries image evidence into conversation history so the
@@ -1310,13 +1319,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// (disciplined cited synthesis) instead of discarding the turn for
 			// a bare "请简化问题". Only fall back to the budget refusal when
 			// nothing groundable was retrieved (the "no evidence → refuse,
-			// never fabricate" guard). Round 0 normally reaches this with an
-			// empty ledger (no tool has run yet) and so still refuses — EXCEPT
-			// under the forced-hop arm, where the engine has already retrieved
-			// before the loop, so a round-0 budget trip can now synthesize from
-			// evidence the Agent never got to vet. Reaching that state requires
-			// one planner call alone to exhaust max_tokens_per_turn (400000 in
-			// the deploy config), so it is documented rather than special-cased.
+			// never fabricate" guard). Round 0 has no tool evidence and therefore
+			// takes the refusal path.
 			if synth, ok := e.synthesizeOnBudgetExceeded(ctx, userMsg); ok {
 				e.messages = append(e.messages, openai.ChatCompletionMessage{
 					Role:    openai.ChatMessageRoleAssistant,
@@ -1628,10 +1632,17 @@ func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, 
 		// Deterministic final reply — return directly without LLM narration
 		if finalMsg, ok := isFinalReply(toolResult); ok {
 			finalMsg = security.RedactOperationalTokensInText(finalMsg)
+			historyFinalMsg := finalMsg
+			if tc.Function.Name == tools.CustomerSupportHandoffName {
+				// The active channel receives a QR or private adapter marker. Model
+				// history retains only the semantic outcome, so neither renderer can
+				// be copied into a later answer without another tool call.
+				historyFinalMsg = agentprotocol.CustomerSupportHistoryCompletion
+			}
 			// Append matching tool response for this tool call
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:       openai.ChatMessageRoleTool,
-				Content:    finalMsg,
+				Content:    historyFinalMsg,
 				ToolCallID: tc.ID,
 			})
 			// Pad remaining unprocessed tool calls with synthetic responses
@@ -1646,7 +1657,7 @@ func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, 
 			// Append the final assistant message
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
-				Content: finalMsg,
+				Content: historyFinalMsg,
 			})
 			return agentruntime.Final(finalMsg, agentruntime.FinishDeterministicReply), nil
 		}
@@ -2182,6 +2193,10 @@ func cappedTraceForFriendlyError(err error, message string) (string, string) {
 
 func blockedStepEvent(action, source string, args map[string]any, message string, err error) StepEvent {
 	capped, reason := cappedTraceForFriendlyError(err, message)
+	errorCode := ""
+	if err != nil {
+		errorCode = tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{}).Error.Code
+	}
 	return StepEvent{
 		Type:      StepBlocked,
 		Action:    action,
@@ -2190,6 +2205,7 @@ func blockedStepEvent(action, source string, args map[string]any, message string
 		Message:   message,
 		Capped:    capped,
 		CapReason: reason,
+		ErrorCode: errorCode,
 	}
 }
 
@@ -2550,20 +2566,22 @@ func searchKnowledgeResultJSON(ledger knowledge.EvidenceLedger, followUp string,
 func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep func(StepEvent)) string {
 	action := tc.Function.Name
 	if e.knowledgeOnlyThisTurn && !knowledgeOnlyToolAllowed(action) {
-		const message = "当前公共问答入口仅允许查询知识库，不能查询账号资源、执行诊断或发起操作"
+		const message = "当前公共问答入口仅允许查询知识库或转接人工客服，不能查询账号资源、执行诊断或发起操作"
+		agentResult := tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{})
 		onStep(StepEvent{
 			Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct,
-			Message: message,
+			Message: message, ErrorCode: agentResult.Error.Code,
 		})
-		return tools.MarshalAgentToolResult(tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{}))
+		return tools.MarshalAgentToolResult(agentResult)
 	}
 	if e.publicPlatformReadOnlyThisTurn && !publicPlatformReadOnlyToolAllowed(action) {
 		const message = "当前外部群仅允许查询公开平台目录，不能查询账号或实例数据、执行诊断或发起操作"
+		agentResult := tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{})
 		onStep(StepEvent{
 			Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct,
-			Message: message,
+			Message: message, ErrorCode: agentResult.Error.Code,
 		})
-		return tools.MarshalAgentToolResult(tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{}))
+		return tools.MarshalAgentToolResult(agentResult)
 	}
 	if repeatableAgentTool(action) {
 		if e.toolResultsByCallThisTurn == nil {
@@ -2594,7 +2612,8 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 
 func knowledgeOnlyToolAllowed(action string) bool {
 	capability, ok := tools.DefaultCapabilityRegistry().Lookup(action)
-	return ok && capability.Policy.Route == tools.ActionRouteKnowledge
+	return ok && (capability.Policy.Route == tools.ActionRouteKnowledge ||
+		capability.Policy.Route == tools.ActionRouteHandoff)
 }
 
 func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep func(StepEvent)) string {
@@ -2606,18 +2625,20 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		// Reject malformed arguments and give the model one precise correction;
 		// never coerce a non-object into a tool call.
 		errClass := fmt.Sprintf("parameter parse error: %v", err)
-		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errClass})
-		return tools.MarshalAgentToolResult(tools.AgentToolInvalidToolCall(
+		agentResult := tools.AgentToolInvalidToolCall(
 			action,
 			"INVALID_TOOL_ARGUMENTS",
 			"工具参数必须是合法的 JSON 对象，请按该工具的参数结构重新调用。",
 			tools.AgentToolMeta{SourceStatus: "argument_parse_error"},
-		))
+		)
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errClass, ErrorCode: agentResult.Error.Code})
+		return tools.MarshalAgentToolResult(agentResult)
 	}
 	if e.publicPlatformReadOnlyThisTurn && !publicPlatformReadOnlyArgsAllowed(action, args) {
 		const message = "当前外部群只能查询公开平台目录：镜像仅限平台/社区目录，价格仅限目录价"
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: message})
-		return tools.MarshalAgentToolResult(tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{}))
+		agentResult := tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{})
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: message, ErrorCode: agentResult.Error.Code})
+		return tools.MarshalAgentToolResult(agentResult)
 	}
 
 	// SearchKnowledge executes through the engine's configured retriever (remote
@@ -2636,6 +2657,18 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	if action == "ReadChunk" {
 		args = e.safeExecutor.FilterArgs(action, args)
 		return e.executeReadChunk(args, onStep)
+	}
+
+	// The model owns the semantic handoff decision. The engine owns delivery, so
+	// neither the support QR nor the Feishu control marker is model-authored.
+	if action == tools.CustomerSupportHandoffName {
+		onStep(StepEvent{Type: StepToolCall, Action: action, Source: observability.ToolSourceMainReAct})
+		reply := refusal.HumanAgentTransfer
+		if e.feishuSupportRendererThisTurn {
+			reply = agentprotocol.FeishuCustomerSupportMarker
+		}
+		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "已提供人工客服转接说明"})
+		return finalReplyPrefix + reply
 	}
 
 	if _, ok := capability.ReadIntentForTool(action); ok {
@@ -2673,8 +2706,9 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	// Invariant: BuildArgs functions must only reference specific named keys from wfCtx.Params.
 	if workflow.IsWorkflowTool(action) {
 		msg := "write workflows are unavailable until a verified ActionProposal is accepted"
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
-		return tools.MarshalAgentToolResult(tools.AgentToolFailure(action, nil, "WORKFLOW_DIRECT_CALL_REFUSED", msg, tools.AgentToolMeta{}))
+		agentResult := tools.AgentToolFailure(action, nil, "WORKFLOW_DIRECT_CALL_REFUSED", msg, tools.AgentToolMeta{})
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg, ErrorCode: agentResult.Error.Code})
+		return tools.MarshalAgentToolResult(agentResult)
 	}
 
 	// In-instance SSH diagnosis lane → its own dispatch, BEFORE the diagnosis-chain
@@ -2727,14 +2761,16 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		}
 		if errors.Is(err, tools.ErrDestructiveAction) {
 			msg := fmt.Sprintf("安全限制：%s 是破坏性操作（L2），已拒绝执行。请到控制台手动操作。", action)
-			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+			agentResult := tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{})
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg, ErrorCode: agentResult.Error.Code})
 			return finalReplyPrefix + msg
 		}
 		if errors.Is(err, tools.ErrUserDeclined) {
 			// ErrUserDeclined also covers unresolved confirmations, so do not claim
 			// that the user explicitly cancelled.
 			msg := fmt.Sprintf("好的，%s操作未执行。如需继续，请重新发送指令并确认。", friendlyActionName(action))
-			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
+			agentResult := tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{})
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg, ErrorCode: agentResult.Error.Code})
 			return finalReplyPrefix + msg
 		}
 		errMsg := fmt.Sprintf("API 调用失败: %v", err)
@@ -2747,8 +2783,9 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		if apiErr, ok := tools.UpstreamAPIErrorFrom(err); ok && apiErr.Hint != "" {
 			errMsg += "\n建议：" + apiErr.Hint
 		}
-		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errMsg})
-		return tools.MarshalAgentToolResult(tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{}))
+		agentResult := tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{})
+		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errMsg, ErrorCode: agentResult.Error.Code})
+		return tools.MarshalAgentToolResult(agentResult)
 	}
 
 	// Bound full-account list dumps before they enter model context.
@@ -2758,8 +2795,13 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	}
 	projected := projectToolResultForReAct(action, result.LLMResult)
 
-	formatted := prompt.FormatToolResult(result.LLMResult)
-	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "调用成功", TraceResult: result.TraceResult, Attempts: result.Attempts, Projected: projected})
+	formatted, formatTrace := prompt.FormatToolResultWithTrace(result.LLMResult)
+	visibleRunes, truncated := formatTrace.VisibleRunes, formatTrace.Truncated
+	onStep(StepEvent{
+		Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct,
+		Message: "调用成功", TraceResult: result.TraceResult, Attempts: result.Attempts, Projected: projected,
+		ToolResultRawRunes: formatTrace.RawRunes, ToolResultVisibleRunes: &visibleRunes, ToolResultTruncated: &truncated,
+	})
 	return formatted
 }
 
@@ -4104,6 +4146,10 @@ type StepEvent struct {
 	ExecutedTargets            int
 	WindowSeconds              int
 	Projected                  bool // ReAct result projection shrank this result (observability only)
+	ErrorCode                  string
+	ToolResultRawRunes         *int
+	ToolResultVisibleRunes     *int
+	ToolResultTruncated        *bool
 }
 
 // trimHistory keeps the message list under maxRawHistoryRunes by dropping the
@@ -4366,31 +4412,4 @@ func withEphemeralSystemBeforeLastUser(messages []openai.ChatCompletionMessage, 
 	out = append(out, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleSystem, Content: content})
 	out = append(out, messages[insertAt:]...)
 	return out
-}
-
-// humanAgentTransferPhrases keeps explicit human-support requests separate
-// from unrelated phrases such as 人工智能 and 人工成本.
-var humanAgentTransferPhrases = []string{
-	"转人工",  // 转人工
-	"转接人工", // 转接人工（"转人工" 的子串不含 "接"，需单列）
-	"人工客服", // 人工客服
-	"联系人工", // 联系人工
-	"找人工",  // 找人工
-	"叫人工",  // 叫人工
-}
-
-func isHumanAgentTransferRequest(userMsg string) bool {
-	normalized := textutil.Normalize(userMsg)
-	return containsAnyKeyword(normalized, humanAgentTransferPhrases)
-}
-
-// containsAnyKeyword is used only for explicit product-protocol phrases, not
-// for semantic routing or topic classification.
-func containsAnyKeyword(normalized string, keywords []string) bool {
-	for _, keyword := range keywords {
-		if strings.Contains(normalized, keyword) {
-			return true
-		}
-	}
-	return false
 }

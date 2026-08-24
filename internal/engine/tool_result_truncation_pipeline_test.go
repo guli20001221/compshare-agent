@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/compshare-agent/internal/prompt"
 )
@@ -58,6 +60,45 @@ func pipelineInstanceRow(i int) map[string]any {
 			"DiskId": "udisk-1exampledsk", "DiskType": "CLOUD_SSD", "Size": 500,
 			"Drive": "/dev/vda", "IsBoot": "True", "Type": "Boot",
 		}},
+	}
+}
+
+func TestRealPipelineReportsTheGenericFormatterMeasurements(t *testing.T) {
+	rows := make([]any, 0, 30)
+	for i := 1; i <= 30; i++ {
+		rows = append(rows, pipelineInstanceRow(i))
+	}
+	result := map[string]any{
+		"Action": "DescribeCompShareInstanceResponse", "RetCode": 0,
+		"TotalCount": 30, "UHostSet": rows,
+	}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": result,
+	}}, nil)
+	var steps []StepEvent
+	out := eng.executeTool(context.Background(), toolCall("format-trace", "DescribeCompShareInstance", `{}`), func(ev StepEvent) {
+		steps = append(steps, ev)
+	})
+
+	var completion *StepEvent
+	for i := range steps {
+		if steps[i].Type == StepToolResult && steps[i].Action == "DescribeCompShareInstance" {
+			completion = &steps[i]
+		}
+	}
+	if completion == nil || completion.ToolResultRawRunes == nil ||
+		completion.ToolResultVisibleRunes == nil || completion.ToolResultTruncated == nil {
+		t.Fatalf("generic formatter observation missing from tool completion: %#v", completion)
+	}
+	if *completion.ToolResultVisibleRunes != utf8.RuneCountInString(out) {
+		t.Fatalf("visible runes = %d, actual model-visible output = %d", *completion.ToolResultVisibleRunes, utf8.RuneCountInString(out))
+	}
+	if !*completion.ToolResultTruncated {
+		t.Fatal("precondition: the post-projection fixture must exercise generic truncation")
+	}
+	if *completion.ToolResultRawRunes <= *completion.ToolResultVisibleRunes {
+		t.Fatalf("raw runes = %d, visible = %d; truncation must reduce this fixture",
+			*completion.ToolResultRawRunes, *completion.ToolResultVisibleRunes)
 	}
 }
 

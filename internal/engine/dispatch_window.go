@@ -35,7 +35,9 @@ func centralAgentToolWindow(mutatingEnabled, instanceOpsEnabled bool) []openai.T
 		if !capability.ExposedToAgent || capability.Tool.Function == nil {
 			continue
 		}
-		if capability.Policy.Route == tools.ActionRouteKnowledge || capability.Policy.Route == tools.ActionRouteDiagnosis {
+		if capability.Policy.Route == tools.ActionRouteKnowledge ||
+			capability.Policy.Route == tools.ActionRouteDiagnosis ||
+			capability.Policy.Route == tools.ActionRouteHandoff {
 			// DiagnoseInstanceInternals carries an ActionRouteDiagnosis policy (derived
 			// from its "Diagnose" prefix) so it would append unconditionally here.
 			// Gate it on the in-instance lane being wired, so with the lane off the
@@ -51,8 +53,8 @@ func centralAgentToolWindow(mutatingEnabled, instanceOpsEnabled bool) []openai.T
 
 // centralAgentKnowledgeToolWindow is the fail-closed public-Q&A surface used by
 // untrusted chat channels such as Feishu groups. It exposes only knowledge
-// retrieval/read capabilities. Platform reads, diagnoses and every action
-// proposal are deliberately absent.
+// retrieval/read capabilities plus the response-only customer-support handoff.
+// Platform reads, diagnoses and every action proposal are deliberately absent.
 func centralAgentKnowledgeToolWindow() []openai.Tool {
 	registry := tools.DefaultCapabilityRegistry()
 	var out []openai.Tool
@@ -60,7 +62,8 @@ func centralAgentKnowledgeToolWindow() []openai.Tool {
 		if !capability.ExposedToAgent || capability.Tool.Function == nil {
 			continue
 		}
-		if capability.Policy.Route == tools.ActionRouteKnowledge {
+		if capability.Policy.Route == tools.ActionRouteKnowledge ||
+			capability.Policy.Route == tools.ActionRouteHandoff {
 			out = append(out, capability.Tool)
 		}
 	}

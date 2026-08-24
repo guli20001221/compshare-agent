@@ -9,6 +9,7 @@ import (
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/tools"
 )
 
 // maxInstanceOpsStepEvents caps the per-command activity events the engine emits
@@ -137,6 +138,9 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	var settled []instanceOpsSettledStep
 	onProgress := func(p InstanceOpsProgress) {
 		switch p.Kind {
+		case InstanceOpsProgressBackgroundJob:
+			// Side-band session continuity only: not a command, UI step, trace event or audit row.
+			e.observeInstanceOpsBackgroundJob(instanceID, p.JobID, p.JobState)
 		case InstanceOpsProgressConnected:
 			onStep(StepEvent{
 				Type:    StepToolCall,
@@ -145,6 +149,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 				Message: fmt.Sprintf("已连接到实例 %s，开始%s", instanceID, instanceOpsPhaseNoun()),
 			})
 		case InstanceOpsProgressCommand:
+			e.observeInstanceOpsBackgroundJob(instanceID, p.JobID, p.JobState)
 			settled = append(settled, instanceOpsSettledStep{
 				Command:     p.Command,
 				Tier:        p.Tier,
@@ -172,22 +177,25 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		}
 	}
 
+	modelContext := e.instanceOpsModelContext()
+	modelContext.PendingBackgroundJob = e.backgroundJobForInstance(instanceID)
 	verdict, err := e.instanceOps.Run(ctx, InstanceOpsRequest{
 		TurnID:       e.currentTurnID,
 		InstanceID:   instanceID,
 		Task:         task,
-		Context:      e.instanceOpsModelContext(),
+		Context:      modelContext,
 		ConfirmWrite: confirmWrite,
 	}, onProgress)
 	if err != nil {
 		// The run ended with no verdict. Whatever settled before it did is the only account the user
-		// will ever get of a box that may already have been changed — so stash it for
-		// the next turn. Guarded on settled being non-empty, which is what keeps every preflight
-		// branch below (no SSH target, not found, not running, address unavailable) silent: those
-		// entered no box and have nothing to report.
+		// will ever get of a box that may already have been changed — so stash it for the next turn.
+		// A run with neither a settled command nor a background-job handle stays silent, which keeps
+		// every preflight branch below (no SSH target, not found, not running, address unavailable)
+		// from implying the box was entered.
 		//
-		// Stashed BEFORE the branches rather than inside each, so a future branch cannot be added
-		// that returns without considering it.
+		// A pre-launch background-job handle also counts even when no command result made it back: the
+		// detached process may have survived the killed harness. Stashed BEFORE the branches rather
+		// than inside each, so a future branch cannot return without considering it.
 		e.recordInstanceOpsInterruption(instanceID, settled)
 		// No SSH entrypoint (empty SshLoginCommand — e.g. a Windows instance): the box
 		// can never be entered, so this is honest and NON-retryable. Never the generic
@@ -358,7 +366,33 @@ func instanceOpsCommandStep(action string, p InstanceOpsProgress) StepEvent {
 		stepType = StepBlocked
 		msg = fmt.Sprintf("`%s` → 执行失败", cmd)
 	}
-	return StepEvent{Type: stepType, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg}
+	return StepEvent{
+		Type: stepType, Action: action, Source: observability.ToolSourceDiagnosisInternal,
+		Message: msg, ErrorCode: instanceOpsTraceErrorCode(p),
+	}
+}
+
+// instanceOpsTraceErrorCode mechanically exposes the harness's existing closed
+// disposition/reason signals. Command text and user-facing explanations are
+// never inspected, and there is no second reason-to-code lookup table to drift.
+func instanceOpsTraceErrorCode(p InstanceOpsProgress) string {
+	switch p.Disposition {
+	case "ran":
+		return ""
+	case "failed":
+		return "SSH_COMMAND_FAILED"
+	case "refused":
+		reason := strings.TrimSpace(p.Reason)
+		if reason == "" {
+			return "SSH_REFUSED"
+		}
+		if _, known := knownInstanceOpsRefusalReason(reason); !known {
+			return tools.TraceAgentToolErrorOther
+		}
+		return tools.TraceAgentToolErrorCode("SSH_" + strings.ToUpper(reason))
+	default:
+		return tools.TraceAgentToolErrorOther
+	}
 }
 
 // truncateCommandForStep bounds a command to 200 runes before it enters a
@@ -399,31 +433,38 @@ func instanceOpsPhaseNoun() string {
 // instanceOpsRefusalReason maps the harness's closed reasons to actionable user
 // text. Unknown reasons keep a conservative compatibility fallback.
 func instanceOpsRefusalReason(reason string) string {
+	if message, ok := knownInstanceOpsRefusalReason(reason); ok {
+		return message
+	}
+	return "属于高危操作或命令形式不被接受"
+}
+
+func knownInstanceOpsRefusalReason(reason string) (string, bool) {
 	switch reason {
 	case "refused_destructive":
-		return "属于高危操作，已硬性拒绝"
+		return "属于高危操作，已硬性拒绝", true
 	case "refused_form":
-		return "命令形式不被接受（含命令替换）；请移除命令替换后重发"
+		return "命令形式不被接受（含命令替换）；请移除命令替换后重发", true
 	case "refused_user_declined":
-		return "你未批准这条命令，命令未执行"
+		return "你未批准这条命令，命令未执行", true
 	case "refused_confirmation_timeout":
-		return fmt.Sprintf("等待你的确认超过 %d 秒，命令未执行", int(InstanceOpsConfirmWindow.Seconds()))
+		return fmt.Sprintf("等待你的确认超过 %d 秒，命令未执行", int(InstanceOpsConfirmWindow.Seconds())), true
 	case "refused_client_disconnect":
-		return "连接已断开，命令未执行"
+		return "连接已断开，命令未执行", true
 	case "refused_confirmation_delivery_failed":
-		return "确认卡片未能送达，命令未执行"
+		return "确认卡片未能送达，命令未执行", true
 	case "refused_confirmation_broker_cancelled":
-		return "确认请求已取消，命令未执行"
+		return "确认请求已取消，命令未执行", true
 	case "refused_not_approved":
 		// A pre-terminal-reason harness can only prove that no approval arrived.
 		// Do not turn that absence into a claim that the user explicitly declined.
-		return "未收到对这条命令的确认，命令未执行"
+		return "未收到对这条命令的确认，命令未执行", true
 	case "refused_unconfirmable":
-		return "命令过长，无法完整展示在确认卡上"
+		return "命令过长，无法完整展示在确认卡上", true
 	case "refused_precondition":
-		return "前置条件未满足，操作未执行；请按工具返回的具体原因检查参数或重新读取目标状态后重试"
+		return "前置条件未满足，操作未执行；请按工具返回的具体原因检查参数或重新读取目标状态后重试", true
 	case "refused_mutating_phase1":
-		return "旧版只读执行器未运行这条修改命令，请重新发起实例内排查"
+		return "旧版只读执行器未运行这条修改命令，请重新发起实例内排查", true
 	}
-	return "属于高危操作或命令形式不被接受"
+	return "", false
 }

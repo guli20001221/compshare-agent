@@ -76,9 +76,11 @@ Production knowledge retrieval always uses the remote MCP configured at
 evaluation only.
 
 There is no keyword topic router or lexical jailbreak/off-topic pre-block in
-front of the Agent. Scope belongs in the system prompt. Deterministic early exits
-are reserved for explicit product protocols such as a user asking to transfer to
-human support.
+front of the Agent. Scope belongs in the system prompt. Natural-language support
+requests also reach the central Agent, which may call `HandoffToCustomerSupport`;
+the active channel renders the actual support entry, so the model never authors
+QR codes or adapter markers. Only an explicit structured transport event may
+bypass semantic interpretation.
 
 Model-visible read capabilities live in `internal/capability/`. Each capability
 owns its typed request, schema contract, handler and renderer. Do not recreate a
@@ -121,18 +123,23 @@ calls) is never persisted or executed as a normal answer.
 
 The lane fails closed when audit storage is unavailable. A missing audit schema
 disables only this lane and logs the missing migration; it does not take chat
-down. Destructive commands, multiline/opaque command shapes and guest-shell
-reboot remain refused. The definitive command policy and deployment contract
-live in `deploy/ssh_ops_harness/README.md` and its tests—do not duplicate their
-full history in config comments.
+down. Destructive effects, command substitution and guest-shell reboot remain
+refused. Multiline commands, pipes and chains are classified by effect, and
+guest changes still require exact confirmation. The definitive command policy
+and deployment contract live in `deploy/ssh_ops_harness/README.md` and its
+tests—do not duplicate their full history in config comments.
 
 Production address routing is configured in `config.prod.yaml`: UHost internal
 mapping first, the translated public-IPv4 candidate second. The advertised public
 EIP is diagnostic-only and is never selected as a dial target.
 
 If a browser disconnects during a diagnosis, the current process may show a
-bounded deterministic notice on the next turn. It does not resume or replay
-commands, does not enter model history, and does not survive process/LRU loss.
+bounded deterministic notice on the next turn. Ordinary commands are never
+replayed. When one approved managed background job already emitted its opaque
+handle, the same live session can give the next diagnosis on that instance a
+poll-only tool surface; neither its command nor output is retained. This
+continuity does not enter conversation/audit storage and does not survive
+process or LRU loss.
 
 ## Configuration
 
@@ -183,10 +190,12 @@ prefix. Tool/confirmation activity uses separate step frames.
 
 `internal/httpapi/trace_recorder.go` writes one content-free trace per completed
 turn through `internal/observability`. Trace may contain model/provider IDs,
-finish reasons, token counts, tool actions/error classes/latencies, prompt
-section IDs, request-size peaks, selected-instance provenance and workflow
-outcomes. It must not become a second conversation database: no raw prompt,
-reply, tool payload, credential or canonical transcript.
+finish reasons, token counts, per-attempt provider outcomes and latency, first
+successfully delivered event time, tool actions/error codes/latencies, generic
+result truncation sizes, prompt section IDs, request-size peaks,
+selected-instance provenance and workflow outcomes. It must not become a second
+conversation database: no raw prompt, reply, tool payload, credential or
+canonical transcript.
 
 When adding a tool failure, use the existing closed error-code/error-class
 contracts rather than parsing error messages. Preserve three-state metrics where

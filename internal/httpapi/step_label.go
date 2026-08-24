@@ -46,6 +46,7 @@ var stepActionLabels = map[string]string{
 	"GetCompShareCFSRefundPrice":              "查询文件存储退款金额",
 	"SearchKnowledge":                         "搜索知识库",
 	"ReadChunk":                               "查看知识原文",
+	"HandoffToCustomerSupport":                "联系人工客服",
 	"DiagnoseBilling":                         "诊断扣费异常",
 	// Byte-identical to the console's own STEP_LABELS entry, so shipping the
 	// server-sent label changes no rendered text — it only stops the console
