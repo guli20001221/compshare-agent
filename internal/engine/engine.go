@@ -2312,6 +2312,10 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	droppedQueries := 0
 	unavailableQueries := 0
 	successfulQueries := 0
+	// One call may fan out into several queries. Report "all" only when every
+	// non-empty result was rejected by the relevance floor.
+	floorDroppedCandidates := false
+	nonFlooredCandidates := false
 	for _, plannedQuery := range plan.SearchQueries {
 		if e.searchKnowledgeQueriesThisTurn >= maxRetrievalQueriesPerTurn {
 			droppedQueries = len(plan.SearchQueries) - executedQueries
@@ -2335,6 +2339,11 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		if isWeakEvidence(rawHits, retrieved.HybridMode, retrieved.RerankerMode != "") {
 			hits = nil
 			floorDroppedAll = len(rawHits) > 0
+		}
+		if floorDroppedAll {
+			floorDroppedCandidates = true
+		} else if len(rawHits) > 0 {
+			nonFlooredCandidates = true
 		}
 		ledger := knowledge.BuildSubstantiveEvidenceLedger(resolvedQuestion, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
 		combined = knowledge.MergeEvidenceLedgers(combined, ledger, maxKnowledgePlanQueries*knowledge.DefaultEvidenceLedgerMaxItems)
@@ -2378,6 +2387,12 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 			"partial":               true,
 			"unavailable_queries":   unavailableQueries,
 			"error":                 "知识库部分检索暂时不可用，当前证据可能不完整。",
+		})
+	}
+	if len(combined.Items) == 0 && floorDroppedCandidates && !nonFlooredCandidates {
+		return searchKnowledgeResultJSON(combined, "", map[string]any{
+			"floor_dropped_all": true,
+			"note":              "候选内容均低于相关性门槛，未形成可引用证据。请改写或收窄查询后再次检索；不得据此确认平台事实。",
 		})
 	}
 	return searchKnowledgeResultJSON(combined, "", nil)

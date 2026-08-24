@@ -8,6 +8,7 @@ import (
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -257,11 +258,82 @@ func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
 
 	// The weak (irrelevant) hit is NOT in the ledger the agent sees — no false-grounding.
 	assert.NotContains(t, out, "w0-resource_purchase-irrelevant", "weak hit must be dropped from the agent's ledger")
+	assert.Contains(t, out, `"floor_dropped_all":true`, "the model must know why the ledger is empty")
+	assert.Contains(t, out, "请改写或收窄查询后再次检索")
+	assert.Contains(t, out, "不得据此确认平台事实")
+	observation, ok := tools.ParseAgentToolResult(agentToolObservation("SearchKnowledge", out))
+	require.True(t, ok)
+	assert.Equal(t, "NO_CITABLE_EVIDENCE", observation.Error.Code,
+		"floor feedback must remain on the existing no-citable-evidence control plane")
+	data, ok := observation.Data.(map[string]any)
+	require.True(t, ok)
+	assert.Equal(t, true, data["floor_dropped_all"],
+		"the reason for the empty ledger must survive the real model-observation wrapper")
+	assert.Contains(t, data["note"], "请改写或收窄查询后再次检索")
 	// And it is NOT recorded as evidence the agent grounded on (the echo telemetry
 	// would otherwise be judged against content the agent never received).
 	assert.Empty(t, eng.searchKnowledgeHitsThisTurn, "weak hits must not be recorded as grounding evidence")
 	// SearchKnowledge still ran (the raw retrieval is traced as weak for observability).
 	assert.True(t, eng.searchKnowledgeRanThisTurn)
+}
+
+func TestExecuteSearchKnowledge_TrueEmptyDoesNotClaimTheFloorDroppedCandidates(t *testing.T) {
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+		Enabled: true,
+		Empty:   true,
+	}}}
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+
+	out := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "平台没有记录的问题"}, noopStep)
+
+	assert.Contains(t, out, `"empty":true`)
+	assert.NotContains(t, out, `"floor_dropped_all"`, "zero recall is not an all-below-floor result")
+	assert.NotContains(t, out, `"note"`)
+}
+
+func TestExecuteSearchKnowledge_MultiQueryKeepsStrongEvidenceWithoutFloorWarning(t *testing.T) {
+	weak := knowledge.RetrievalResult{
+		Enabled:      true,
+		HybridMode:   "qwen3_rrf",
+		RerankerMode: "qwen3-reranker-8b",
+		HitItems: []knowledge.RetrievalHit{{
+			Kept:  true,
+			Score: 0.07,
+			Chunk: knowledge.KBChunk{
+				ChunkID: "weak-unrelated",
+				Title:   "无关内容",
+				Content: "与用户问题无关的内容。",
+			},
+		}},
+	}
+	strong := knowledge.RetrievalResult{
+		Enabled:      true,
+		HybridMode:   "qwen3_rrf",
+		RerankerMode: "qwen3-reranker-8b",
+		HitItems: []knowledge.RetrievalHit{{
+			Kept:  true,
+			Score: 0.91,
+			Chunk: knowledge.KBChunk{
+				ChunkID: "strong-platform-fact",
+				Title:   "有效平台规则",
+				Content: "这是与用户问题直接相关的可引用平台规则。",
+			},
+		}},
+	}
+	eng, retriever := planningEngineWithConversation(t,
+		`{"answer_question":"实例关机后还会产生哪些费用","search_queries":["关机费用规则","数据盘关机费用"]}`,
+		[]knowledge.RetrievalResult{weak, strong, {Enabled: true, Empty: true}},
+	)
+
+	out := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "关机后还收什么"}, noopStep)
+
+	require.Len(t, retriever.calls, 3)
+	assert.Contains(t, out, "strong-platform-fact")
+	assert.NotContains(t, out, "weak-unrelated")
+	assert.NotContains(t, out, `"floor_dropped_all"`,
+		"one weak retrieval must not downgrade a multi-query call that produced citable evidence")
+	assert.NotContains(t, out, `"note"`)
 }
 
 // TestExecuteSearchKnowledge_RerankerFallbackKeepsHits is the counterpart: when
