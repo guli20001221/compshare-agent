@@ -573,7 +573,9 @@ for _name, _cmd, _want in [
 ]:
     check(f"ssh-channel-tiering::{_name}", guardrails.classify(_cmd) == _want)
 
-# A partial run that changed the box must list those changes.
+# A partial run must LIST every confirmed command it executed -- and say only that they MAY have
+# changed the box. `mutating` is "could not be proven read-only", not "wrote": 246 of 334 real
+# mutating steps in a 3-day production window contained no write verb at all.
 del harness.AUDIT[:]
 harness.AUDIT.extend([
     {"command": "systemctl status infersvc", "tier": "read_only", "disposition": "ran_read_only"},
@@ -584,25 +586,25 @@ harness.AUDIT.extend([
     {"command": "chmod 777 /etc", "tier": "mutating", "disposition": "refused_not_approved"},
 ])
 _note = harness._partial_note("500 fetch failed")
-check("partial-note::says-the-box-was-changed", "已经被改动过" in _note)
-check("partial-note::does-not-claim-read-only", "基于已执行只读命令" not in _note)
+check("partial-note::says-the-box-may-have-been-changed", "其中可能有改动过这台实例的操作" in _note)
+check("partial-note::does-not-assert-the-write-happened", "已经被改动过" not in _note)
+check("partial-note::does-not-claim-read-only", "只执行了已证明为只读的命令" not in _note)
 check("partial-note::lists-the-writes-that-ran",
       "apt-get install -y python3-tomli" in _note and "systemctl restart infersvc" in _note)
 check("partial-note::omits-the-refused-ones",
       "rm -rf /" not in _note and "chmod 777 /etc" not in _note)
 check("partial-note::keeps-the-error", "500 fetch failed" in _note)
 
-# With no write having executed, the old wording is the correct wording — and it now says so
-# positively ("没有执行任何写操作") instead of leaving the reader to infer it.
+# With nothing but proven-read-only commands executed, the note may state that positively: this is
+# the one direction the guardrail's verdict actually licenses.
 del harness.AUDIT[:]
 harness.AUDIT.extend([
     {"command": "systemctl status infersvc", "tier": "read_only", "disposition": "ran_read_only"},
     {"command": "systemctl restart infersvc", "tier": "mutating", "disposition": "refused_mutating_phase1"},
 ])
 _note = harness._partial_note("timed out")
-check("partial-note::read-only-run-still-says-read-only", "基于已执行只读命令" in _note)
-check("partial-note::read-only-run-states-no-writes", "没有执行任何写操作" in _note)
-check("partial-note::read-only-run-claims-no-change", "已经被改动过" not in _note)
+check("partial-note::read-only-run-still-says-read-only", "只执行了已证明为只读的命令" in _note)
+check("partial-note::read-only-run-claims-no-change", "改动过这台实例" not in _note)
 del harness.AUDIT[:]
 
 # The remote process group, not only the local SSH channel, must enforce the time bound.

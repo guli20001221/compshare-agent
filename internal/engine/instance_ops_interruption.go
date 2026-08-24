@@ -161,7 +161,7 @@ func renderInstanceOpsInterruptionNotice(notice instanceOpsInterruption) string 
 		switch step.Disposition {
 		case "ran":
 			ran++
-			if isInstanceOpsWriteTier(step.Tier) {
+			if instanceOpsTierMayWrite(step.Tier) {
 				wrote++
 			}
 		case "refused":
@@ -178,7 +178,15 @@ func renderInstanceOpsInterruptionNotice(notice instanceOpsInterruption) string 
 		if wrote > 0 {
 			// The one number that decides what the user does next. It is counted over every settled
 			// step, not over the listing, so a truncated list cannot understate it.
-			fmt.Fprintf(&b, "（其中 %d 条修改了实例）", wrote)
+			//
+			// Worded as MAY have modified, because that is all the tier says. The guardrail sorts a
+			// command into `mutating` when it cannot PROVE the command is read-only, which is not the
+			// same claim as "this wrote": over 334 real mutating steps in a 3-day production window,
+			// 246 (73.7%) contained no write verb and no redirection at all — `sed -n '1,240p' …`,
+			// `ls -la /`, `cat /sys/fs/cgroup/memory.events`. Telling a user their box was changed by
+			// a `cat` is the same false certainty in the other direction as the read_only claim this
+			// tier exists to avoid.
+			fmt.Fprintf(&b, "（其中 %d 条属于需确认的写入档，可能修改了实例；实际是否修改以命令本身为准）", wrote)
 		}
 	} else {
 		fmt.Fprint(&b, "中断前没有命令执行成功")
@@ -224,11 +232,14 @@ func renderInstanceOpsInterruptionNotice(notice instanceOpsInterruption) string 
 const interruptionIncompletenessNotice = "以上是中断前已回传结果的命令，可能不完整：" +
 	"最后发出的命令是否已在实例上执行完成，无法确认。"
 
-// isInstanceOpsWriteTier answers only for a tier the runner actually reported. An empty tier is
+// instanceOpsTierMayWrite answers only for a tier the runner actually reported. An empty tier is
 // UNKNOWN, never read_only: the two halves of the lane deploy separately, so a harness that predates
 // the field is an ordinary rolling-upgrade state, and "we do not know whether this changed the box"
 // must not print as "this did not change the box".
-func isInstanceOpsWriteTier(tier string) bool {
+//
+// The name is the whole point: this is "the guardrail could not prove it read-only", NOT "it wrote".
+// Every caller must word its output that way — see the base rate in the summary above.
+func instanceOpsTierMayWrite(tier string) bool {
 	return tier == "mutating" || tier == "destructive"
 }
 
@@ -236,8 +247,8 @@ func interruptionStepLine(step instanceOpsSettledStep) string {
 	cmd := truncateCommandForStep(step.Command)
 	switch step.Disposition {
 	case "ran":
-		if isInstanceOpsWriteTier(step.Tier) {
-			return fmt.Sprintf("已执行（修改了实例）：`%s`", cmd)
+		if instanceOpsTierMayWrite(step.Tier) {
+			return fmt.Sprintf("已执行（写入档，可能修改实例）：`%s`", cmd)
 		}
 		return fmt.Sprintf("已执行：`%s`", cmd)
 	case "refused":
@@ -247,7 +258,7 @@ func interruptionStepLine(step instanceOpsSettledStep) string {
 		// that failed may have failed after changing something, and what the harness reports is the
 		// transport's verdict, not the box's. A failed WRITE says so, because "did my instance get
 		// modified" is the question and the honest answer there is "possibly".
-		if isInstanceOpsWriteTier(step.Tier) {
+		if instanceOpsTierMayWrite(step.Tier) {
 			return fmt.Sprintf("执行未成功（可能已修改实例，结果不确定）：`%s`", cmd)
 		}
 		return fmt.Sprintf("执行未成功（结果不确定）：`%s`", cmd)
