@@ -27,6 +27,13 @@ type selectionBinding struct {
 	// use a complete account-single proof obtained later in the same turn; the
 	// former must never be silently replaced with that sole instance.
 	explicit bool
+	// namedID is the NARROWER half of explicit: the message contains an actual
+	// instance id. An ordinal ("第2台") is explicit and names no id, and the two
+	// must not be conflated — a reference the server cannot resolve is exactly the
+	// case the design hands to the Agent, whose inferred target then rides into the
+	// confirmation card where the user's confirm becomes the proof. Only a literal
+	// id the model then contradicts is a disagreement worth stopping for.
+	namedID bool
 }
 
 func (b selectionBinding) bound() bool { return b.id != "" && !b.conflict }
@@ -54,6 +61,10 @@ func (e *Engine) bindInstanceTarget(view AgentContext, proposedIDs ...string) se
 	}
 	now := time.Now()
 	snap := e.RegistrySnapshot()
+	// Computed once, before either tier: the prefix vocabulary now covers the
+	// platform's own id types, so this answers "did the user write an id" whether
+	// the registry is warm or has never listed anything.
+	namedID := len(snap.InstanceIDTokensInText(text)) > 0
 
 	// Tier A — explicit references in the current message.
 	var refs []string
@@ -128,16 +139,16 @@ func (e *Engine) bindInstanceTarget(view AgentContext, proposedIDs ...string) se
 	}
 
 	if conflict || len(refs) > 1 {
-		return selectionBinding{conflict: true, explicit: explicit}
+		return selectionBinding{conflict: true, explicit: explicit, namedID: namedID}
 	}
 	if len(refs) == 1 {
-		return selectionBinding{id: refs[0], explicit: explicit}
+		return selectionBinding{id: refs[0], explicit: explicit, namedID: namedID}
 	}
 	if explicit {
 		// The user referenced something we could not resolve to one id (typo'd id,
 		// out-of-range ordinal): do NOT fall back to carried context. Existence
 		// verification rejects it, never account-single overriding an explicit miss.
-		return selectionBinding{explicit: true}
+		return selectionBinding{explicit: true, namedID: namedID}
 	}
 
 	// Tier B — carried context, only when the message names no target.
@@ -155,12 +166,12 @@ func (e *Engine) bindInstanceTarget(view AgentContext, proposedIDs ...string) se
 		}
 	}
 	if len(carried) > 1 {
-		return selectionBinding{conflict: true}
+		return selectionBinding{conflict: true, namedID: namedID}
 	}
 	if len(carried) == 1 {
-		return selectionBinding{id: carried[0]}
+		return selectionBinding{id: carried[0], namedID: namedID}
 	}
-	return selectionBinding{}
+	return selectionBinding{namedID: namedID}
 }
 
 func textMentionsProposedInstanceID(text string, proposedIDs []string) bool {

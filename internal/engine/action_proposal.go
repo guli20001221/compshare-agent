@@ -103,11 +103,16 @@ func (v agentContextEvidenceVerifier) AdjudicateTarget(candidate actionresolver.
 	if field.TargetKind == "instance" && v.binding.conflict {
 		return actionresolver.TargetConflict
 	}
-	if field.TargetKind == "instance" && v.binding.explicit && !v.binding.bound() &&
+	if field.TargetKind == "instance" && v.binding.namedID && !v.binding.bound() &&
 		candidate.Source == actionresolver.SourceAgentInference &&
 		!entity.TextExplicitlyMentionsName(v.context.CurrentQuestion, value) {
-		// The user named an instance this turn, but the candidate is a different
-		// model inference. Ask instead of showing a write card for the wrong target.
+		// The user wrote an instance id this turn and the candidate is a DIFFERENT
+		// one the model inferred. Ask rather than card the wrong target.
+		//
+		// Keyed on namedID, not explicit. An ordinal is explicit and names no id, so
+		// the model's mapping of 第2台 to an id is the intended resolution, not a
+		// contradiction — gating on explicit stopped 「停止第2台」 from ever reaching a
+		// card, which is one of the commonest phrasings in this product's traffic.
 		return actionresolver.TargetConflict
 	}
 	// Look up evidence by the SAME (field, kind, id) key it was built under, so an

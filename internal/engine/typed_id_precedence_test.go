@@ -226,3 +226,61 @@ func TestACarriedTargetTheUserDidNotNameThisTurnDoesNotReachACard(t *testing.T) 
 		})
 	}
 }
+
+// The target adjudicator's new conflict arm must separate "the user wrote an id"
+// from "the user pointed at something". An out-of-list ordinal sets explicit and
+// names no id, so gating on explicit stopped 「停止第2台」 from ever reaching a
+// confirmation card — measured: ready=true before the arm existed, a
+// 目标引用不唯一 conflict after. That is the flow the binder's own contract hands
+// to the Agent on purpose: a reference the server cannot prove rides into the
+// card, where the user's confirm is the proof.
+func TestAnOrdinalTheServerCannotResolveStillReachesTheCard(t *testing.T) {
+	const inferred = "uhost-2222bbbb2222"
+	for _, msg := range []string{"停止第2台", "把刚才最慢的那台停掉", "停止它"} {
+		t.Run(msg, func(t *testing.T) {
+			executor := &mockExecutor{results: map[string]map[string]any{
+				"DescribeCompShareInstance": {
+					"UHostSet": []any{map[string]any{"UHostId": inferred, "State": "Running"}},
+				},
+			}}
+			eng := NewWithDeps(&mockLLM{}, executor, nil)
+			eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+			eng.lastUserMsg = msg
+			eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, msg, "t-ordinal", time.Now())
+			eng.turnContextViewReady = true
+
+			resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
+				"turn_id": "t-ordinal", "operation": "StopInstanceWorkflow",
+				"slots": []any{map[string]any{"name": "UHostId", "value": inferred}},
+			})
+			require.NoError(t, err)
+			require.Empty(t, resolved.action.Conflicts,
+				"a reference naming no id is the Agent's to resolve; the card is where it is proven")
+			require.True(t, resolved.action.ReadyForConfirmation)
+		})
+	}
+}
+
+// The control on the arm above: when the user DID write an id and the model
+// proposes a different one, that is a disagreement and must still stop.
+func TestAWrittenIDTheModelContradictsStillConflicts(t *testing.T) {
+	const written, inferred = "uhost-1111aaaa1111", "uhost-2222bbbb2222"
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{map[string]any{"UHostId": inferred, "State": "Running"}},
+		},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	eng.lastUserMsg = "停止 " + written
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "t-written", time.Now())
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
+		"turn_id": "t-written", "operation": "StopInstanceWorkflow",
+		"slots": []any{map[string]any{"name": "UHostId", "value": inferred}},
+	})
+	require.NoError(t, err)
+	require.NotEmpty(t, resolved.action.Conflicts)
+	require.False(t, resolved.action.ReadyForConfirmation)
+}
