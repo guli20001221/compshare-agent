@@ -7,6 +7,8 @@ import (
 
 func TestTurnCompletionTraceMarshalWiring(t *testing.T) {
 	firstChunkBelowOneMS := int64(0)
+	promptTokens := 120
+	cachedPromptTokens := 0
 	record := TraceRecord{
 		SchemaVersion: SchemaVersion,
 		Completion: TurnCompletionTrace{
@@ -19,7 +21,11 @@ func TestTurnCompletionTraceMarshalWiring(t *testing.T) {
 			ProviderFinishReasons: []string{"tool_calls", "stop"},
 			ModelAttempts: []ModelAttemptTrace{
 				{AttemptInCall: 1, LatencyMS: 500, Outcome: "error", ErrorClass: "network", Retried: true},
-				{AttemptInCall: 2, LatencyMS: 800, Outcome: "success", FinishReason: "stop", FirstChunkMS: &firstChunkBelowOneMS},
+				{
+					AttemptInCall: 2, LatencyMS: 800, Outcome: "success", FinishReason: "stop", FirstChunkMS: &firstChunkBelowOneMS,
+					PromptTokens: &promptTokens, CachedPromptTokens: &cachedPromptTokens,
+					ToolCount: 2, ToolWindowRunes: 321, ToolWindowHash: "sha256:tool-window",
+				},
 			},
 			ToolNames: []string{"DescribeCompShareInstance"},
 		},
@@ -52,6 +58,28 @@ func TestTurnCompletionTraceMarshalWiring(t *testing.T) {
 	}
 	if decoded.Completion.ModelAttempts[1].FirstChunkMS == nil || *decoded.Completion.ModelAttempts[1].FirstChunkMS != 0 {
 		t.Fatalf("a real sub-millisecond first chunk must survive as pointer-to-zero: %#v", decoded.Completion.ModelAttempts[1])
+	}
+	secondAttempt := decoded.Completion.ModelAttempts[1]
+	if secondAttempt.PromptTokens == nil || *secondAttempt.PromptTokens != 120 ||
+		secondAttempt.CachedPromptTokens == nil || *secondAttempt.CachedPromptTokens != 0 {
+		t.Fatalf("missing usage and a real zero cache hit must remain distinct: %#v", secondAttempt)
+	}
+	if secondAttempt.ToolCount != 2 || secondAttempt.ToolWindowRunes != 321 || secondAttempt.ToolWindowHash != "sha256:tool-window" {
+		t.Fatalf("tool-window observation lost from attempt: %#v", secondAttempt)
+	}
+	var wire struct {
+		Completion struct {
+			ModelAttempts []map[string]json.RawMessage `json:"model_attempts"`
+		} `json:"completion"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		t.Fatalf("Unmarshal wire shape: %v", err)
+	}
+	if _, ok := wire.Completion.ModelAttempts[0]["tool_count"]; !ok {
+		t.Fatal("a measured zero tool count must remain explicit in v0.14")
+	}
+	if _, ok := wire.Completion.ModelAttempts[0]["tool_window_runes"]; !ok {
+		t.Fatal("a measured zero tool-window size must remain explicit in v0.14")
 	}
 }
 

@@ -2,6 +2,9 @@ package llm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -218,6 +221,8 @@ func (c *Client) chat(ctx context.Context, req ChatRequest, includeUsage bool, a
 				Call: OutboundCall{Provider: c.provider, Model: c.model}, AttemptInCall: attemptNumber,
 				LatencyMS: timing.latencyMS, Outcome: OutboundAttemptSuccess,
 				StopReason: TraceFinishReason(resp.StopReason), ProviderFirstChunkMS: timing.firstChunkMS,
+				PromptTokens: timing.promptTokens, CachedPromptTokens: timing.cachedPromptTokens,
+				ToolCount: timing.toolCount, ToolWindowRunes: timing.toolWindowRunes, ToolWindowHash: timing.toolWindowHash,
 			})
 			if req.OnTextDelta != nil {
 				for _, delta := range attemptDeltas {
@@ -235,6 +240,8 @@ func (c *Client) chat(ctx context.Context, req ChatRequest, includeUsage bool, a
 				LatencyMS: timing.latencyMS, Outcome: OutboundAttemptError,
 				ErrorClass: errorClass, Retried: retried,
 				ProviderFirstChunkMS: timing.firstChunkMS,
+				PromptTokens:         timing.promptTokens, CachedPromptTokens: timing.cachedPromptTokens,
+				ToolCount: timing.toolCount, ToolWindowRunes: timing.toolWindowRunes, ToolWindowHash: timing.toolWindowHash,
 			})
 		}
 		fallbackRetry := terminalRetry != nil && terminalRetry(err)
@@ -265,8 +272,13 @@ func (c *Client) chat(ctx context.Context, req ChatRequest, includeUsage bool, a
 }
 
 type outboundAttemptTiming struct {
-	latencyMS    int64
-	firstChunkMS *int64
+	latencyMS          int64
+	firstChunkMS       *int64
+	promptTokens       *int
+	cachedPromptTokens *int
+	toolCount          int
+	toolWindowRunes    int
+	toolWindowHash     string
 }
 
 // wireTemperature makes a requested temperature survive serialization.
@@ -305,6 +317,11 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage boo
 		ccReq.Temperature = wireTemperature(*req.Temperature)
 	}
 
+	// Measure the final tool array at the last boundary before the SDK serializes
+	// the request. Hashing the ordered JSON is deliberate: prompt caches match an
+	// exact prefix, so reordering otherwise-identical tools is a different window.
+	timing.toolCount, timing.toolWindowRunes, timing.toolWindowHash = observeToolWindow(ccReq.Tools)
+
 	// Count at the last boundary before the SDK attempts the upstream request.
 	// Putting this in Chat or chat would miss internal retries or count logical
 	// calls that never became requests.
@@ -341,6 +358,21 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage boo
 				PromptTokens:     chunk.Usage.PromptTokens,
 				CompletionTokens: chunk.Usage.CompletionTokens,
 				TotalTokens:      chunk.Usage.TotalTokens,
+			}
+			// A later usage block is authoritative, including the absence of
+			// data or details. Do not retain data from an earlier chunk. An empty
+			// JSON usage object decodes to the SDK's all-zero struct; it is absence,
+			// not a provider-reported zero prompt. A real zero prompt remains
+			// observable when another usage field or the details block is present.
+			timing.promptTokens = nil
+			timing.cachedPromptTokens = nil
+			if usageBlockObserved(chunk.Usage) {
+				promptTokens := chunk.Usage.PromptTokens
+				timing.promptTokens = &promptTokens
+				if chunk.Usage.PromptTokensDetails != nil {
+					cachedPromptTokens := chunk.Usage.PromptTokensDetails.CachedTokens
+					timing.cachedPromptTokens = &cachedPromptTokens
+				}
 			}
 		}
 
@@ -405,6 +437,28 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage boo
 		StopReason: stopReason,
 	}
 	return response, timing, nil
+}
+
+// observeToolWindow returns content-free measurements of the exact ordered
+// tool array supplied to the SDK. It never changes request behavior: if a tool
+// schema is not JSON-serializable, the SDK remains responsible for returning
+// the request error and the unavailable size/hash stay empty.
+func observeToolWindow(tools []openai.Tool) (count, runes int, hash string) {
+	count = len(tools)
+	if count == 0 {
+		return count, 0, ""
+	}
+	raw, err := json.Marshal(tools)
+	if err != nil {
+		return count, 0, ""
+	}
+	sum := sha256.Sum256(raw)
+	return count, len([]rune(string(raw))), "sha256:" + hex.EncodeToString(sum[:])
+}
+
+func usageBlockObserved(usage *openai.Usage) bool {
+	return usage != nil && (usage.PromptTokens != 0 || usage.CompletionTokens != 0 || usage.TotalTokens != 0 ||
+		usage.PromptTokensDetails != nil || usage.CompletionTokensDetails != nil)
 }
 
 // traceOutboundErrorClass reduces typed transport/provider failures to a closed

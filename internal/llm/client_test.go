@@ -2,6 +2,8 @@ package llm
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -102,6 +104,19 @@ func TestChatHTTPClientBypassesProxyOnlyForLoopbackEndpoint(t *testing.T) {
 
 func TestClientChatOutboundObserverCountsEveryActualAttempt(t *testing.T) {
 	var attempts int32
+	tools := []openai.Tool{{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
+			Name:        "lookup",
+			Description: "look up one item",
+			Parameters:  map[string]any{"type": "object"},
+		},
+	}}
+	wantToolJSON, err := json.Marshal(tools)
+	if err != nil {
+		t.Fatalf("marshal expected tools: %v", err)
+	}
+	var sentToolJSON string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		attempt := atomic.AddInt32(&attempts, 1)
 		if attempt == 1 {
@@ -116,6 +131,17 @@ func TestClientChatOutboundObserverCountsEveryActualAttempt(t *testing.T) {
 			_ = conn.Close()
 			return
 		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Fatalf("read retry request: %v", err)
+		}
+		var wireRequest struct {
+			Tools json.RawMessage `json:"tools"`
+		}
+		if err := json.Unmarshal(body, &wireRequest); err != nil {
+			t.Fatalf("decode retry request: %v", err)
+		}
+		sentToolJSON = string(wireRequest.Tools)
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
@@ -131,15 +157,19 @@ func TestClientChatOutboundObserverCountsEveryActualAttempt(t *testing.T) {
 	ctx = WithOutboundCallResultObserver(ctx, func(result OutboundCallResult) {
 		completed = append(completed, result)
 	})
+	wantToolCount, wantToolRunes, wantToolHash := observeToolWindow(tools)
 
 	resp, err := client.Chat(ctx, ChatRequest{Messages: []openai.ChatCompletionMessage{{
 		Role: openai.ChatMessageRoleUser, Content: "hello",
-	}}})
+	}}, Tools: tools})
 	if err != nil {
 		t.Fatalf("Chat error: %v", err)
 	}
 	if resp.Content != "ok" {
 		t.Fatalf("Content = %q, want ok", resp.Content)
+	}
+	if sentToolJSON != string(wantToolJSON) {
+		t.Fatalf("SDK sent tools = %s, observed boundary serialized %s", sentToolJSON, wantToolJSON)
 	}
 	if got := len(observed); got != 2 {
 		t.Fatalf("observer calls = %d, want 2 actual attempts", got)
@@ -163,6 +193,107 @@ func TestClientChatOutboundObserverCountsEveryActualAttempt(t *testing.T) {
 	if completed[1].AttemptInCall != 2 || completed[1].Outcome != OutboundAttemptSuccess ||
 		completed[1].Retried || completed[1].StopReason != "stop" || completed[1].ProviderFirstChunkMS == nil {
 		t.Fatalf("successful attempt trace = %#v", completed[1])
+	}
+	for i, attempt := range completed {
+		if attempt.ToolCount != wantToolCount || attempt.ToolWindowRunes != wantToolRunes || attempt.ToolWindowHash != wantToolHash {
+			t.Fatalf("attempt %d tool observation = (%d, %d, %q), want (%d, %d, %q)",
+				i, attempt.ToolCount, attempt.ToolWindowRunes, attempt.ToolWindowHash,
+				wantToolCount, wantToolRunes, wantToolHash)
+		}
+	}
+}
+
+func TestClientChatAttemptUsagePreservesMissingZeroAndPositiveCacheStates(t *testing.T) {
+	zero := 0
+	prompt := 120
+	cached := 80
+	tests := []struct {
+		name       string
+		usageJSON  string
+		wantPrompt *int
+		wantCached *int
+	}{
+		{name: "no usage block"},
+		{name: "empty usage object", usageJSON: `,"usage":{}`},
+		{name: "usage without prompt details", usageJSON: `,"usage":{"prompt_tokens":0,"completion_tokens":1,"total_tokens":1}`, wantPrompt: &zero},
+		{name: "details report zero cache hit", usageJSON: `,"usage":{"prompt_tokens":120,"completion_tokens":1,"total_tokens":121,"prompt_tokens_details":{"cached_tokens":0}}`, wantPrompt: &prompt, wantCached: &zero},
+		{name: "details report positive cache hit", usageJSON: `,"usage":{"prompt_tokens":120,"completion_tokens":1,"total_tokens":121,"prompt_tokens_details":{"cached_tokens":80}}`, wantPrompt: &prompt, wantCached: &cached},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = w.Write([]byte(`data: {"choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]` + tc.usageJSON + "}\n\n"))
+				_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			}))
+			defer srv.Close()
+
+			client := NewClient(config.LLMConfig{BaseURL: srv.URL + "/v1", APIKey: "test-key", Model: "test-model"})
+			var attempts []OutboundCallResult
+			ctx := WithOutboundCallResultObserver(context.Background(), func(result OutboundCallResult) {
+				attempts = append(attempts, result)
+			})
+			_, err := client.Chat(ctx, ChatRequest{Messages: []openai.ChatCompletionMessage{{
+				Role: openai.ChatMessageRoleUser, Content: "hello",
+			}}})
+			if err != nil {
+				t.Fatalf("Chat error: %v", err)
+			}
+			if len(attempts) != 1 {
+				t.Fatalf("attempts = %d, want 1", len(attempts))
+			}
+			assertOptionalInt(t, "prompt tokens", attempts[0].PromptTokens, tc.wantPrompt)
+			assertOptionalInt(t, "cached prompt tokens", attempts[0].CachedPromptTokens, tc.wantCached)
+			if attempts[0].ToolCount != 0 || attempts[0].ToolWindowRunes != 0 || attempts[0].ToolWindowHash != "" {
+				t.Fatalf("tool-free attempt unexpectedly has tool observation: %#v", attempts[0])
+			}
+		})
+	}
+}
+
+func TestObserveToolWindowMeasuresOrderedWireJSON(t *testing.T) {
+	first := openai.Tool{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{
+		Name: "first", Description: "第一个", Parameters: map[string]any{"type": "object"},
+	}}
+	second := openai.Tool{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{
+		Name: "second", Description: "second", Parameters: map[string]any{"type": "object"},
+	}}
+	tools := []openai.Tool{first, second}
+	raw, err := json.Marshal(tools)
+	if err != nil {
+		t.Fatalf("marshal expected tools: %v", err)
+	}
+	sum := sha256.Sum256(raw)
+	wantHash := "sha256:" + hex.EncodeToString(sum[:])
+
+	count, runes, hash := observeToolWindow(tools)
+	if count != 2 || runes != len([]rune(string(raw))) || hash != wantHash {
+		t.Fatalf("observeToolWindow = (%d, %d, %q), want (2, %d, %q)",
+			count, runes, hash, len([]rune(string(raw))), wantHash)
+	}
+	_, _, reversedHash := observeToolWindow([]openai.Tool{second, first})
+	if reversedHash == hash {
+		t.Fatal("reordering tools must change the order-sensitive window hash")
+	}
+	if count, runes, hash := observeToolWindow(nil); count != 0 || runes != 0 || hash != "" {
+		t.Fatalf("nil tools = (%d, %d, %q), want zero observation", count, runes, hash)
+	}
+}
+
+func assertOptionalInt(t *testing.T, label string, got, want *int) {
+	t.Helper()
+	if want == nil {
+		if got != nil {
+			t.Fatalf("%s = %d, want nil", label, *got)
+		}
+		return
+	}
+	if got == nil || *got != *want {
+		if got == nil {
+			t.Fatalf("%s = nil, want %d", label, *want)
+		}
+		t.Fatalf("%s = %d, want %d", label, *got, *want)
 	}
 }
 

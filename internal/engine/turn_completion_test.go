@@ -35,7 +35,7 @@ func TestChatEmitsExactlyOneCompletionForAgentChosenHandoff(t *testing.T) {
 func TestChatCompletionCountsRealOutboundModelRequests(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"正常回答\"},\"finish_reason\":\"stop\"}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"正常回答\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":120,\"completion_tokens\":8,\"total_tokens\":128,\"prompt_tokens_details\":{\"cached_tokens\":0}}}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()
@@ -62,6 +62,13 @@ func TestChatCompletionCountsRealOutboundModelRequests(t *testing.T) {
 	assert.Equal(t, 1, completions[0].ModelAttempts[0].AttemptInCall)
 	assert.Equal(t, "success", completions[0].ModelAttempts[0].Outcome)
 	require.NotNil(t, completions[0].ModelAttempts[0].FirstChunkMS)
+	require.NotNil(t, completions[0].ModelAttempts[0].PromptTokens)
+	assert.Equal(t, 120, *completions[0].ModelAttempts[0].PromptTokens)
+	require.NotNil(t, completions[0].ModelAttempts[0].CachedPromptTokens)
+	assert.Zero(t, *completions[0].ModelAttempts[0].CachedPromptTokens)
+	assert.Equal(t, len(centralAgentToolNames(true, false)), completions[0].ModelAttempts[0].ToolCount)
+	assert.Positive(t, completions[0].ModelAttempts[0].ToolWindowRunes)
+	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, completions[0].ModelAttempts[0].ToolWindowHash)
 	assert.Equal(t, centralAgentToolNames(true, false), completions[0].ToolNames)
 
 	// A second logical model call in the same Engine/session starts its own

@@ -31,6 +31,17 @@ type ModelAttemptTrace struct {
 	Retried       bool   `json:"retried,omitempty"`
 	FinishReason  string `json:"finish_reason,omitempty"`
 	FirstChunkMS  *int64 `json:"provider_first_chunk_ms,omitempty"`
+	// PromptTokens is nil when this attempt returned no usage block. A pointer
+	// to zero is a real provider-reported value, distinct from missing usage.
+	PromptTokens *int `json:"prompt_tokens,omitempty"`
+	// CachedPromptTokens is nil when prompt-token details were absent. A pointer
+	// to zero means a details object was present and decoded to zero cached tokens.
+	CachedPromptTokens *int `json:"cached_prompt_tokens,omitempty"`
+	// ToolCount and ToolWindowRunes are always emitted for a v0.14 attempt,
+	// including explicit zeroes for requests that carried no tools.
+	ToolCount       int    `json:"tool_count"`
+	ToolWindowRunes int    `json:"tool_window_runes"`
+	ToolWindowHash  string `json:"tool_window_hash,omitempty"`
 }
 
 // Confirmation attribution lives in TraceRecord.Confirmations and the outcome

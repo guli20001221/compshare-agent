@@ -54,6 +54,20 @@ type OutboundCallResult struct {
 	Retried              bool
 	StopReason           string
 	ProviderFirstChunkMS *int64
+	// PromptTokens is nil when this attempt returned no usage block. A pointer
+	// to zero is a real provider-reported value, distinct from missing usage.
+	PromptTokens *int
+	// CachedPromptTokens is nil when prompt-token details were absent. A pointer
+	// to zero means a details object was present and decoded to zero cached tokens.
+	CachedPromptTokens *int
+	// ToolCount and ToolWindowRunes describe the final tool array handed to the
+	// SDK for this exact attempt. Both remain explicit zeroes for a tool-free
+	// request so new traces distinguish that shape from legacy missing fields.
+	ToolCount       int
+	ToolWindowRunes int
+	// ToolWindowHash is an order-sensitive SHA-256 of the serialized tool array.
+	// It is empty for a tool-free request or if the array could not be serialized.
+	ToolWindowHash string
 }
 
 // OutboundCallResultObserver receives one terminal record for every actual
