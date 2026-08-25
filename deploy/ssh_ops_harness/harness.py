@@ -613,12 +613,14 @@ def _emit_step(entry: dict) -> None:
     if entry.get("job_id"):
         wire["job_id"] = entry["job_id"]
         wire["job_state"] = entry["job_state"]
+        if entry.get("job_purpose"):
+            wire["purpose"] = entry["job_purpose"]
     line = json.dumps(wire, ensure_ascii=False)
     sys.stdout.write("@@STEP " + line + "\n")
     sys.stdout.flush()
 
 
-def _emit_background_job(job_id: str, state: str) -> None:
+def _emit_background_job(job_id: str, state: str, purpose: str = "") -> None:
     """Publish an opaque handle before its remote launch can outlive this process.
 
     This side-band line is not a command step and is never copied into the audit step list. If the
@@ -627,13 +629,16 @@ def _emit_background_job(job_id: str, state: str) -> None:
     """
     if not _BACKGROUND_JOB_ID.fullmatch(job_id) or state not in _ACTIVE_BACKGROUND_JOB_STATES:
         return
-    sys.stdout.write("@@JOB " + json.dumps(
-        {"job_id": job_id, "job_state": state}, ensure_ascii=False) + "\n")
+    payload = {"job_id": job_id, "job_state": state}
+    purpose = " ".join(str(purpose or "").split())[:200]
+    if purpose:
+        payload["purpose"] = purpose
+    sys.stdout.write("@@JOB " + json.dumps(payload, ensure_ascii=False) + "\n")
     sys.stdout.flush()
 
 
 def _record_structured_step(display: str, tier: str, disposition: str, byte_count: int = 0,
-                            job_id: str = "", job_state: str = "") -> None:
+                            job_id: str = "", job_state: str = "", job_purpose: str = "") -> None:
     """Record a non-shell tool call without putting its private inputs on the wire."""
     entry = {"command": display, "tier": tier, "executed": disposition.startswith("ran_"),
              "exit_code": 0 if disposition.startswith("ran_") else None,
@@ -642,6 +647,9 @@ def _record_structured_step(display: str, tier: str, disposition: str, byte_coun
         entry["job_id"] = job_id
         known_states = _ACTIVE_BACKGROUND_JOB_STATES | _TERMINAL_BACKGROUND_JOB_STATES
         entry["job_state"] = job_state if job_state in known_states else "unknown"
+        job_purpose = " ".join(str(job_purpose or "").split())[:200]
+        if job_purpose:
+            entry["job_purpose"] = job_purpose
     AUDIT.append(entry)
     _emit_step(entry)
 
@@ -1299,7 +1307,7 @@ async def main():
             active_background_job_id = job_id
             # Publish BEFORE the launcher SSH call: a disconnect may kill this harness while the
             # detached guest process survives. The next turn polls rather than replaying it.
-            _emit_background_job(job_id, "unknown")
+            _emit_background_job(job_id, "unknown", purpose)
             result = await asyncio.to_thread(
                 remote_job.start, _CONN, command, purpose, _secrets(), job_id=job_id)
             rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
@@ -1308,7 +1316,7 @@ async def main():
             state = str(result.get("state") or
                         ("unknown" if result.get("box_may_be_changed") else "not_found"))
             _record_structured_step(display, "mutating", disposition,
-                                    len(rendered.encode("utf-8")), job_id, state)
+                                    len(rendered.encode("utf-8")), job_id, state, purpose)
             if state in _TERMINAL_BACKGROUND_JOB_STATES:
                 active_background_job_id = None
             return {"content": [{"type": "text", "text": rendered}],

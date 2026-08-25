@@ -1201,9 +1201,11 @@ _start_job_line = next((line[len("@@JOB "):] for line in _start_wire.splitlines(
 _start_job = _json.loads(_start_job_line)
 check("background-job-start-emits-the-resumable-handle-before-a-turn-can-disconnect",
       "job_state\": \"succeeded" in _terminal_wire and
-      _start_job == {"job_id": _SECOND_JOB_ID, "job_state": "unknown"} and
+      _start_job == {"job_id": _SECOND_JOB_ID, "job_state": "unknown",
+                     "purpose": "install package"} and
       _start_wire.index("@@JOB ") < _start_wire.index("@@STEP ") and
-      _start_step.get("job_id") == _SECOND_JOB_ID and _start_step.get("job_state") == "started")
+      _start_step.get("job_id") == _SECOND_JOB_ID and _start_step.get("job_state") == "started"
+      and _start_step.get("purpose") == "install package")
 _second_start_wire = _capture(lambda: _asyncio.run(_pending_ssh_tool({
     "command": "python3 -m pip install another", "purpose": "install another",
     "run_in_background": True,
