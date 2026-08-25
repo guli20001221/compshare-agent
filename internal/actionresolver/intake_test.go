@@ -1,7 +1,6 @@
 package actionresolver
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/deployment"
@@ -96,9 +95,7 @@ func TestResolveNonCorrectableRejectionBlocksIntake(t *testing.T) {
 }
 
 // The create collectable set is the EXPLICIT declaration (the guided form's
-// fields), not an auto-derivation over the schema. Name is a valid optional
-// proposal field, but it is not a missing-input question: users who omit it keep
-// the platform-generated default.
+// fields), not an auto-derivation over the schema.
 func TestCreateCollectableFieldsAreDeclaredNotDerived(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
@@ -108,19 +105,7 @@ func TestCreateCollectableFieldsAreDeclaredNotDerived(t *testing.T) {
 	require.ElementsMatch(t,
 		[]string{"GpuType", "Zone", "Gpu", "Cpu", "Memory", "ImageSource", "ImageName", "ChargeType"},
 		spec.Intake.CollectableFields)
-	require.NotContains(t, spec.Intake.CollectableFields, "Name", "an optional name must not become a guided question")
-}
-
-func TestCreateAcceptsExplicitOptionalName(t *testing.T) {
-	catalog, err := BuildCatalog()
-	require.NoError(t, err)
-	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{Names: []string{"4090"}, Available: true})
-	resolved := resolver.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
-		{Name: "GpuType", Value: "4090", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "4090"}},
-		{Name: "Name", Value: "p7-guided-pod-5090-0722", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "p7-guided-pod-5090-0722"}},
-	}})
-	require.True(t, resolved.ReadyForConfirmation)
-	require.Equal(t, "p7-guided-pod-5090-0722", resolved.Arguments["Name"])
+	require.NotContains(t, spec.Fields, "Name", "free-form model output must not name a newly created instance")
 }
 
 // intakeSpecForOperation rejects a misdeclared collectable set at build time — a
@@ -208,7 +193,7 @@ func TestOnlyCreateDeclaresUserSuppliedOptionalFields(t *testing.T) {
 		spec, ok := catalog.Lookup(operation)
 		require.True(t, ok)
 		if operation == "CreateInstanceWorkflow" {
-			require.Equal(t, []string{"Name", "SystemDiskSize"}, spec.Intake.UserSuppliedOptionalFields)
+			require.Equal(t, []string{"SystemDiskSize"}, spec.Intake.UserSuppliedOptionalFields)
 			continue
 		}
 		require.Empty(t, spec.Intake.UserSuppliedOptionalFields)
@@ -223,13 +208,11 @@ func TestUngroundedOptionalCreateFieldsDoNotBecomeContractValues(t *testing.T) {
 
 	resolved := resolver.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
 		{Name: "GpuType", Value: "H20", Source: SourceAgentInference},
-		{Name: "Name", Value: ".", Source: SourceAgentInference},
 		{Name: "SystemDiskSize", Value: float64(1), Source: SourceAgentInference},
 	}})
 
 	require.True(t, resolved.ReadyForConfirmation)
 	require.Empty(t, resolved.Rejected)
-	require.NotContains(t, resolved.Arguments, "Name")
 	require.NotContains(t, resolved.Arguments, "SystemDiskSize")
 	require.Equal(t, "H20", resolved.Arguments["GpuType"])
 }
@@ -242,12 +225,10 @@ func TestGroundedOptionalCreateFieldsRemainInTheContract(t *testing.T) {
 
 	resolved := resolver.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
 		{Name: "GpuType", Value: "H20", Source: SourceAgentInference},
-		{Name: "Name", Value: "trainer", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "trainer"}},
 		{Name: "SystemDiskSize", Value: "190GB", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "190GB"}},
 	}})
 
 	require.True(t, resolved.ReadyForConfirmation)
-	require.Equal(t, "trainer", resolved.Arguments["Name"])
 	require.Equal(t, float64(190), resolved.Arguments["SystemDiskSize"])
 }
 
@@ -258,13 +239,13 @@ func TestInvalidUserSuppliedOptionalFieldBlocksIntake(t *testing.T) {
 
 	resolved := resolver.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
 		{Name: "GpuType", Value: "4090", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "4090"}},
-		{Name: "Name", Value: strings.Repeat("x", 513), Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: strings.Repeat("x", 513)}},
+		{Name: "SystemDiskSize", Value: "not-a-size", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "not-a-size"}},
 	}})
 
-	require.Equal(t, []RejectedProblem{{Slot: "Name", Kind: RejectInvalidValue}}, resolved.RejectedProblems)
+	require.Equal(t, []RejectedProblem{{Slot: "SystemDiskSize", Kind: RejectInvalidValue}}, resolved.RejectedProblems)
 	require.False(t, resolved.ReadyForConfirmation, "a rejected value never confirms straight through")
-	require.False(t, resolved.ReadyForIntake, "the form cannot recollect an invalid name")
-	require.NotContains(t, resolved.Arguments, "Name", "the bad value is dropped, never carried into the create")
+	require.False(t, resolved.ReadyForIntake, "the form cannot recollect an invalid disk size")
+	require.NotContains(t, resolved.Arguments, "SystemDiskSize", "the bad value is dropped, never carried into the create")
 }
 
 func TestInvalidExactImageIDCannotBeDiscardedIntoAnUnrelatedPicker(t *testing.T) {

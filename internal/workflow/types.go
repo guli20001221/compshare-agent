@@ -264,10 +264,10 @@ type Definition struct {
 	// form can collect AND correct — the only fields whose missing/invalid/
 	// conflicting values may open the form instead of bouncing to prose. It must
 	// be declared (not auto-derived from every non-secret schema field): a create
-	// schema carries fields the form has no input for (e.g. Name), and a resolver
-	// problem on such a field is NOT form-correctable. Required when GuidedIntake
-	// is true. Every name must be a real field of this workflow (BuildCatalog
-	// enforces it).
+	// schema carries fields the form has no input for (e.g. SystemDiskSize), and a
+	// resolver problem on such a field is NOT form-correctable. Required when
+	// GuidedIntake is true. Every name must be a real field of this workflow
+	// (BuildCatalog enforces it).
 	GuidedIntakeFields []string
 	// UserSuppliedOptionalFields answers a DIFFERENT question from
 	// GuidedIntakeFields, which is why it is a second list rather than a reuse of

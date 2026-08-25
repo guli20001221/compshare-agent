@@ -328,7 +328,6 @@ func TestAlignedToolSchemasMatchCurrentUpstreamContracts(t *testing.T) {
 		tool, field string
 		max         int
 	}{
-		{"CreateInstanceWorkflow", "Name", 63},
 		{"RenameInstanceWorkflow", "Name", 63},
 		{"CreateCustomImageWorkflow", "Name", 50},
 		{"CloneCustomImageWorkflow", "TargetImageName", 50},
@@ -340,6 +339,9 @@ func TestAlignedToolSchemasMatchCurrentUpstreamContracts(t *testing.T) {
 		if pattern, _ := field["pattern"].(string); pattern == "" {
 			t.Errorf("%s.%s must expose the upstream name character contract", tc.tool, tc.field)
 		}
+	}
+	if _, ok := properties("CreateInstanceWorkflow")["Name"]; ok {
+		t.Error("CreateInstanceWorkflow must leave naming to the platform; RenameInstanceWorkflow owns explicit names")
 	}
 }
 

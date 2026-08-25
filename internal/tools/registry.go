@@ -622,12 +622,6 @@ var Registry = []openai.Tool{
 						"type":        "string",
 						"description": "系统盘容量原文（如 190GB）；用户未指定则省略。",
 					},
-					"Name": map[string]any{
-						"type":        "string",
-						"description": "实例名称（可选，最多 63 个字符）。只在用户明确指定名称时填写并保持原文；仅允许中文、英文字母、数字以及 _ , . : -。未指定则省略，由平台生成。",
-						"maxLength":   63,
-						"pattern":     `^[\u4E00-\u9FA5A-Za-z0-9_,.:-]+$`,
-					},
 					"ImageSource": map[string]any{
 						"type":        "string",
 						"description": "镜像来源：platform（平台镜像，默认）/ community（社区镜像）/ custom（当前账户的自制镜像）。仅在用户明确说出来源，或 ID 来自近期已展示的镜像推荐且来源已知时填写。用户直接给出精确 CompShareImageId 但未说来源时，填写 ID 并省略本字段；服务端会通过实时目录确定其实际来源。",

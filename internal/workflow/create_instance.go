@@ -350,17 +350,15 @@ func CreateInstanceDef() *Definition {
 		// this to expose IntakeGuided instead of the engine switching on the name.
 		GuidedIntake: true,
 		// The exact fields the guided form collects/corrects (GPU / zone / count /
-		// CPU-memory / image source+selection / charge type). Name is accepted from
-		// an explicit user proposal and sealed below, but remains optional rather
-		// than turning the guided flow into an extra question for most users.
+		// CPU-memory / image source+selection / charge type).
 		GuidedIntakeFields: []string{"GpuType", "Zone", "Gpu", "Cpu", "Memory", "ImageSource", "ImageName", "ChargeType"},
-		// Name and SystemDiskSize have no guided-form controls. Keep them only when
-		// grounded in the user's current message; otherwise the platform generates
-		// the name and the live image/machine catalog derives the boot disk.
+		// SystemDiskSize has no guided-form control. Keep it only when grounded in
+		// the user's current message; otherwise the live image/machine catalog
+		// derives the boot disk.
 		// CompShareImageId is intentionally not user-supplied-only: once a
 		// request names an exact image, silently replacing a stale/wrong-source id
 		// with an unrelated browse result changes the requested object.
-		UserSuppliedOptionalFields: []string{"Name", "SystemDiskSize"},
+		UserSuppliedOptionalFields: []string{"SystemDiskSize"},
 	}
 }
 

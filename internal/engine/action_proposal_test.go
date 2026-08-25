@@ -760,27 +760,22 @@ func TestBlankWriteTargetStillBlocksTheCard(t *testing.T) {
 	require.NotContains(t, resolved.Arguments, "UHostId")
 }
 
-// The create regression this prune fixes. The system prompt tells the Agent to
-// submit as soon as the operation is clear and leave the rest blank, so terra
-// emitted an empty Name; a blank optional field was adjudicated as an invalid
-// VALUE, and any rejection blocks the guided form outright — so one empty Name
-// suppressed the entire create card (0/20 on a live four-arm WS run) while the
-// model narrated that a draft had been submitted.
+// Blank optional slots mean the Agent supplied no value. They must not be
+// adjudicated as invalid values that suppress an otherwise valid guided card.
 func TestBlankOptionalSlotDoesNotSuppressTheCreateCard(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{map[string]any{"Name": "4090"}}},
 	}}
 	eng := NewWithDeps(&mockLLM{}, executor, nil)
 	eng.lastUserMsg = "创建一台 4090"
-	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-blank-name", time.Now())
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-blank-optional", time.Now())
 	eng.turnContextViewReady = true
 
 	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
-		"turn_id": "turn-blank-name", "operation": "CreateInstanceWorkflow",
+		"turn_id": "turn-blank-optional", "operation": "CreateInstanceWorkflow",
 		"slots": []any{
 			map[string]any{"name": "GpuType", "value": "4090", "source": "user_explicit",
 				"evidence": map[string]any{"quote": "4090"}},
-			map[string]any{"name": "Name", "value": "", "source": "agent_inference"},
 			map[string]any{"name": "CompShareImageId", "value": nil, "source": "agent_inference"},
 		},
 	})
@@ -789,7 +784,6 @@ func TestBlankOptionalSlotDoesNotSuppressTheCreateCard(t *testing.T) {
 	require.Empty(t, resolved.action.Rejected,
 		"a blank slot is the Agent saying nothing, not a value the user got wrong")
 	require.True(t, resolved.action.ReadyForConfirmation, "the create must still reach a card")
-	require.NotContains(t, resolved.action.Arguments, "Name", "a blank name is dropped, never invented")
 	require.NotContains(t, resolved.action.Arguments, "CompShareImageId")
 }
 
@@ -809,14 +803,12 @@ func TestModelPlaceholdersDoNotOverrideCreateDefaults(t *testing.T) {
 	resolved, err := eng.resolveActionProposal(context.Background(), proposalArgsForOperation(
 		"CreateInstanceWorkflow", map[string]any{
 			"GpuType":        "H20",
-			"Name":           ".",
 			"SystemDiskSize": float64(1),
 		},
 	))
 
 	require.NoError(t, err)
 	require.Empty(t, resolved.action.Rejected)
-	require.NotContains(t, resolved.action.Arguments, "Name")
 	require.NotContains(t, resolved.action.Arguments, "SystemDiskSize")
 }
 
