@@ -130,7 +130,7 @@ func runServer(cmd *cobra.Command, _ []string) error {
 		WriteTimeout: cfg.Agent.HTTP.WriteTimeout,
 	}
 	log.Printf("startup: serving HTTP on %s", cfg.Agent.HTTP.ListenAddr)
-	return serveUntilSignal(srv)
+	return serveUntilSignal(srv, handlers.ShutdownWebSockets)
 }
 
 func newServerHandlers(
@@ -203,7 +203,7 @@ func validateServerConfig(cfg *config.Config) error {
 	return nil
 }
 
-func serveUntilSignal(srv *http.Server) error {
+func serveUntilSignal(srv *http.Server, drainHijacked func(context.Context) error) error {
 	errCh := make(chan error, 1)
 	go func() {
 		err := srv.ListenAndServe()
@@ -222,7 +222,16 @@ func serveUntilSignal(srv *http.Server) error {
 	case <-sigCh:
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		return srv.Shutdown(ctx)
+		// Shutdown deliberately does not close or wait for hijacked connections
+		// such as our chat WebSockets. Drain both classes under the same deadline;
+		// the WS path cancels active turns and waits for their persistence defers.
+		httpDone := make(chan error, 1)
+		go func() { httpDone <- srv.Shutdown(ctx) }()
+		var hijackedErr error
+		if drainHijacked != nil {
+			hijackedErr = drainHijacked(ctx)
+		}
+		return errors.Join(<-httpDone, hijackedErr)
 	}
 }
 

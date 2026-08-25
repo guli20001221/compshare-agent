@@ -37,6 +37,7 @@ type Handlers struct {
 	traceWriter   observability.Writer
 	ocrClient     OCRRecognizer
 	confirmBroker *ConfirmBroker
+	wsLifecycle   websocketLifecycle
 }
 
 // NewHandlers constructs a Handlers with all dependencies injected.
