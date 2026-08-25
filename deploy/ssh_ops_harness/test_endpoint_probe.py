@@ -107,7 +107,9 @@ check("schema-closes-http-methods-to-read-only-options",
       schema["properties"]["method"]["enum"] == ["GET", "HEAD"])
 check("schema-exposes-only-one-bounded-custom-header",
       schema["properties"]["authorization"]["maxLength"] ==
-      endpoint_probe._MAX_AUTHORIZATION_LENGTH)
+      endpoint_probe._MAX_AUTHORIZATION_LENGTH
+      and schema["properties"]["authorization"]["default"] == ""
+      and "no Authorization header" in schema["properties"]["authorization"]["description"])
 
 http_result = endpoint_probe.probe(targets, "platform-http-1")
 check("http-probe-reaches-response", http_result["transport_reachable"] is True and http_result["http_status"] == 204)

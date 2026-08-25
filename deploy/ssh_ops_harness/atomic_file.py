@@ -94,6 +94,15 @@ def _error(error_class, **fields):
     return {"ok": False, "error_class": error_class, **fields}
 
 
+def _exception_fields(exc, stage):
+    """Expose only stable diagnostics, never a remote/server error string."""
+    fields = {"detail": type(exc).__name__, "stage": stage}
+    error_number = getattr(exc, "errno", None)
+    if isinstance(error_number, int):
+        fields["errno"] = error_number
+    return fields
+
+
 def _valid_path(path):
     if not isinstance(path, str) or not path.startswith("/") or "\x00" in path or len(path) > 512:
         return False
@@ -309,7 +318,9 @@ def confirmation_display(plan):
 
 def _write_new_file(sftp, path, data, mode, uid=None, gid=None):
     # Exclusive creation prevents a guessed temporary/backup name from being a symlink target.
-    with sftp.file(path, "xb") as handle:
+    # Paramiko 2.8.1 maps `x` to CREATE|EXCL but, unlike Python open(), does not imply the SFTP
+    # WRITE flag. Include `w` explicitly; EXCL still makes an existing path fail before truncation.
+    with sftp.file(path, "wx") as handle:
         handle.write(data)
         handle.flush()
     sftp.chmod(path, mode)
@@ -330,6 +341,7 @@ def _apply_create(sftp, plan):
     temporary = posixpath.join(directory, ".%s.sshops-tmp-%s" % (name, nonce))
     created = False
     rename_attempted = False
+    stage = "recheck_preconditions"
     try:
         absent, existing_error = _target_absent(sftp, path)
         if not absent:
@@ -339,18 +351,20 @@ def _apply_create(sftp, plan):
             return _error("parent_changed_after_approval", path=path)
         if _resolved_target(sftp, path, False) != plan["_resolved_path"]:
             return _error("resolved_path_changed_after_approval", path=path)
+        stage = "write_temporary"
         _write_new_file(sftp, temporary, plan["_data"], plan["_mode"])
         try:
             # Standard SFTP rename requires the destination not to exist. Do not use posix_rename:
             # its overwrite semantics would turn a create race into silent data loss.
             rename_attempted = True
+            stage = "rename_no_overwrite"
             sftp.rename(temporary, path)
         except Exception as exc:  # noqa: BLE001
             try:
                 absent, _ = _target_absent(sftp, path)
                 if absent:
                     return _error("atomic_create_failed", path=path,
-                                  detail=type(exc).__name__, box_may_be_changed=False)
+                                  box_may_be_changed=False, **_exception_fields(exc, stage))
                 attrs, verified = _read_regular(sftp, path)
                 actual, actual_mode = _sha(verified), stat.S_IMODE(attrs.st_mode)
                 if actual == plan["after_sha256"] and actual_mode == plan["_mode"]:
@@ -362,15 +376,17 @@ def _apply_create(sftp, plan):
                         "rename_outcome_recovered": True,
                     }
                 return _error("atomic_create_outcome_unknown", path=path,
-                              detail=type(exc).__name__, actual_sha256=actual,
+                              actual_sha256=actual, **_exception_fields(exc, stage),
                               actual_mode="0%03o" % actual_mode, box_may_be_changed=True)
             except ValueError:
                 return _error("target_created_after_approval", path=path,
-                              detail=type(exc).__name__, box_may_be_changed=False)
+                              box_may_be_changed=False, **_exception_fields(exc, stage))
             except Exception as verify_exc:  # noqa: BLE001 — rename outcome is now unknowable
                 return _error("atomic_create_outcome_unknown", path=path,
-                              detail=type(verify_exc).__name__, box_may_be_changed=True)
+                              box_may_be_changed=True,
+                              **_exception_fields(verify_exc, "verify_rename_outcome"))
         created = True
+        stage = "verify_postcondition"
         attrs, verified = _read_regular(sftp, path)
         actual = _sha(verified)
         actual_mode = stat.S_IMODE(attrs.st_mode)
@@ -385,8 +401,9 @@ def _apply_create(sftp, plan):
     except ValueError as exc:
         return _error(str(exc), path=path, box_may_be_changed=created)
     except Exception as exc:  # noqa: BLE001
-        return _error("atomic_create_failed", path=path, detail=type(exc).__name__,
-                      box_may_be_changed=created or rename_attempted)
+        return _error("atomic_create_failed", path=path,
+                      box_may_be_changed=created or rename_attempted,
+                      **_exception_fields(exc, stage))
     finally:
         if not created:
             try:

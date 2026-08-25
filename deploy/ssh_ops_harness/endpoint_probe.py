@@ -147,11 +147,12 @@ def input_schema(targets):
             },
             "authorization": {
                 "type": "string",
-                "minLength": 1,
                 "maxLength": _MAX_AUTHORIZATION_LENGTH,
+                "default": "",
                 "description": (
                     "Optional exact Authorization header value supplied by the user, for example "
-                    "Bearer <key>. It is never returned. Not applicable to TCP targets."
+                    "Bearer <key>. Omit it or pass an empty string to send no Authorization header. "
+                    "It is never returned. Not applicable to TCP targets."
                 ),
             },
         },

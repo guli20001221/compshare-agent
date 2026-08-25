@@ -87,6 +87,16 @@ check("authenticated-guest-probe-sends-header-without-returning-secret",
       and authenticated["authorization_sent"] is True
       and auth_token not in authenticated["body"])
 
+blank_auth_client, blank_auth_channel, _ = _open(
+    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
+blank_auth = guest_endpoint_probe.probe(
+    {}, {"protocol": "http", "port": 8000, "path": "/v1/models", "authorization": ""},
+    opener=lambda _c: (blank_auth_client, None))
+check("explicit-empty-authorization-means-no-header",
+      blank_auth["ok"] is True and blank_auth["status_code"] == 401
+      and blank_auth["authorization_sent"] is False
+      and b"Authorization:" not in blank_auth_channel.sent)
+
 tcp_client, tcp_channel, tcp_transport = _open()
 tcp = guest_endpoint_probe.probe(
     {}, {"protocol": "tcp", "port": 8888}, opener=lambda _c: (tcp_client, None))
@@ -165,6 +175,8 @@ schema = guest_endpoint_probe.input_schema()
 check("schema-makes-protocol-and-integer-port-explicit",
       "Lowercase" in schema["properties"]["protocol"]["description"]
       and "integer" in schema["properties"]["port"]["description"]
+      and schema["properties"]["authorization"]["default"] == ""
+      and "no Authorization header" in schema["properties"]["authorization"]["description"]
       and "never pass a URL" in guest_endpoint_probe.TOOL_DESCRIPTION)
 
 secret_client, _, _ = _open(b"HTTP/1.1 200 OK\r\n\r\nknown-secret")

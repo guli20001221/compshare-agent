@@ -105,7 +105,9 @@ check("approval-display-binds-background-mode-purpose-and-command",
 check("poll-schema-supports-bounded-wait",
       remote_job.poll_schema()["properties"]["wait_seconds"]["maximum"] == 30 and
       "tight loop" in remote_job.POLL_DESCRIPTION and
-      "currently active" in remote_job.POLL_DESCRIPTION)
+      "currently active" in remote_job.POLL_DESCRIPTION and
+      "intentionally long-lived service" in remote_job.POLL_DESCRIPTION and
+      "stop polling" in remote_job.POLL_DESCRIPTION)
 
 
 class _File:

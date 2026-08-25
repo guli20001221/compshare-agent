@@ -120,6 +120,8 @@ func TestLiveCreateOpsCanary(t *testing.T) {
 // SSHH_APPROVE_SHELL_EXACT binds the literal shell effect of a managed-background card when the
 // model varies only its human-readable purpose. The explicit test switch plus exact effect match
 // make it impossible for the ordinary live suite to mutate a box accidentally.
+// SSHH_ASSERT_ABSENT optionally fails if one caller-supplied marker reaches the verdict or activity
+// stream; durable audit redaction remains a store/PostgreSQL test because this canary uses memory.
 func TestLiveOpsWriteCanary(t *testing.T) {
 	if os.Getenv("SSHH_WRITE_CANARY") != "1" {
 		t.Skip("set SSHH_WRITE_CANARY=1 and run this exact test")
@@ -184,6 +186,16 @@ func TestLiveOpsWriteCanary(t *testing.T) {
 	}
 	if approved != 1 {
 		t.Fatalf("approved exact operation %d times, want 1", approved)
+	}
+	if marker := os.Getenv("SSHH_ASSERT_ABSENT"); marker != "" {
+		if strings.Contains(result.Output, marker) {
+			t.Fatal("sensitive marker leaked into the live canary verdict")
+		}
+		for _, step := range result.Steps {
+			if strings.Contains(step.Command, marker) || strings.Contains(step.Reason, marker) {
+				t.Fatal("sensitive marker leaked into a live canary activity step")
+			}
+		}
 	}
 	if !result.ContextApplied {
 		t.Fatal("write canary did not deliver context to a model turn")

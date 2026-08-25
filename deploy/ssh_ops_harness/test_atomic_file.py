@@ -25,6 +25,7 @@ class _Attrs:
 
 class _SFTP:
     _modes = {}
+    _file_modes = []
 
     @staticmethod
     def _local(path):
@@ -47,7 +48,11 @@ class _SFTP:
     def file(self, path, mode):
         local = self._local(path)
         os.makedirs(os.path.dirname(local), exist_ok=True)
-        return open(local, mode)  # noqa: PTH123 — local test double only
+        self._file_modes.append(mode)
+        # Production uses Paramiko's `wx`: Paramiko needs the explicit w bit, while Python's local
+        # open() treats w and x as mutually exclusive. Preserve the same exclusive-create effect.
+        local_mode = "xb" if "w" in mode and "x" in mode else mode
+        return open(local, local_mode)  # noqa: PTH123 — local test double only
 
     def chmod(self, path, mode):
         os.chmod(self._local(path), mode)
@@ -177,6 +182,42 @@ class _RenameOutcomeUnverifiableClient:
 
 def _open_rename_outcome_unverifiable(_conn):
     return _RenameOutcomeUnverifiableClient(), None
+
+
+class _CreateWriteFailureSFTP(_SFTP):
+    def file(self, path, mode):
+        if "sshops-tmp" in path:
+            raise OSError(95, "fixture operation unsupported")
+        return super().file(path, mode)
+
+
+class _CreateWriteFailureClient:
+    def open_sftp(self):
+        return _CreateWriteFailureSFTP()
+
+    def close(self):
+        pass
+
+
+def _open_create_write_failure(_conn):
+    return _CreateWriteFailureClient(), None
+
+
+class _CreateRenameFailureSFTP(_SFTP):
+    def rename(self, _source, _target):
+        raise OSError(95, "fixture operation unsupported")
+
+
+class _CreateRenameFailureClient:
+    def open_sftp(self):
+        return _CreateRenameFailureSFTP()
+
+    def close(self):
+        pass
+
+
+def _open_create_rename_failure(_conn):
+    return _CreateRenameFailureClient(), None
 
 
 root = tempfile.mkdtemp(prefix="sshops-atomic-test-")
@@ -344,6 +385,32 @@ try:
     check("create-writes-exact-content-with-requested-mode",
           open(create_local, encoding="utf-8").read() == create_args["content"]
           and (os.name == "nt" or stat.S_IMODE(os.stat(create_local).st_mode) == 0o750))
+    check("exclusive-create-also-requests-paramiko-write-access",
+          any("w" in mode and "x" in mode for mode in _SFTP._file_modes))
+
+    write_failure_path = "/workspace/write-failure.conf"
+    write_failure_plan = atomic_file.prepare_edit(
+        {}, dict(create_args, path=write_failure_path), opener=_open)
+    write_failure = atomic_file.apply_edit(
+        {}, write_failure_plan, opener=_open_create_write_failure)
+    check("create-failure-identifies-temporary-write-stage-without-error-text",
+          write_failure["ok"] is False
+          and write_failure["error_class"] == "atomic_create_failed"
+          and write_failure["stage"] == "write_temporary"
+          and write_failure["errno"] == 95
+          and "fixture" not in repr(write_failure))
+
+    rename_failure_path = "/workspace/rename-failure.conf"
+    rename_failure_plan = atomic_file.prepare_edit(
+        {}, dict(create_args, path=rename_failure_path), opener=_open)
+    rename_failure = atomic_file.apply_edit(
+        {}, rename_failure_plan, opener=_open_create_rename_failure)
+    check("create-failure-identifies-no-overwrite-rename-stage",
+          rename_failure["ok"] is False
+          and rename_failure["error_class"] == "atomic_create_failed"
+          and rename_failure["stage"] == "rename_no_overwrite"
+          and rename_failure["errno"] == 95
+          and not os.path.exists(_SFTP._local(rename_failure_path)))
 
     lost_create_path = "/workspace/lost-create.conf"
     lost_create_plan = atomic_file.prepare_edit(

@@ -43,10 +43,11 @@ def input_schema():
             "host_header": {"type": "string", "minLength": 1, "maxLength": 253,
                             "description": "Optional literal virtual host; never an address to dial."},
             "authorization": {
-                "type": "string", "minLength": 1, "maxLength": _MAX_AUTHORIZATION_LENGTH,
+                "type": "string", "maxLength": _MAX_AUTHORIZATION_LENGTH, "default": "",
                 "description": (
                     "Optional exact Authorization header value supplied by the user, for example "
-                    "Bearer <key>. It is sent only to guest loopback and never returned."
+                    "Bearer <key>. Omit it or pass an empty string for an unauthenticated request; "
+                    "then no Authorization header is sent. It is never returned."
                 ),
             },
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},

@@ -30,7 +30,10 @@ POLL_DESCRIPTION = (
     "changes remain available while it runs, but a second background job is refused until a poll "
     "observes a terminal state. After six running polls, stop and report partial repair, the job_id, "
     "progress and pending "
-    "verification; a later turn resumes rather than restarts it. "
+    "verification; a later turn resumes rather than restarts it. An intentionally long-lived service "
+    "is different: once its requested endpoint/application criterion is independently proven, running "
+    "is the expected terminal observation for this diagnosis—stop polling and report the verified "
+    "outcome rather than waiting for the service to exit. "
     "Repeated calls return only new log bytes plus total byte counts and log_progress. `running` means the recorded PID still exists; `succeeded` means exit "
     "code zero; `failed` includes the non-zero exit code; `interrupted` means no completion record "
     "and no process (for example after a restart).")

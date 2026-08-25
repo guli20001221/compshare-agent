@@ -26,3 +26,11 @@ func TestAuditTaskTextRedactsAPIKeyAssignmentBeforeTruncation(t *testing.T) {
 	require.NotContains(t, got, secret)
 	require.LessOrEqual(t, len([]rune(got)), 4000)
 }
+
+func TestAuditTaskTextRedactsNaturalLanguageBearerValue(t *testing.T) {
+	secret := "sshops-auth-canary-" + "20260826"
+	got := auditTaskText("使用用户给出的 Authorization 值 Bearer " + secret + " 检查接口")
+
+	require.NotContains(t, got, secret)
+	require.Contains(t, got, "Bearer")
+}
