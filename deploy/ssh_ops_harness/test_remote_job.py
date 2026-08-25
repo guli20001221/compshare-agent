@@ -185,6 +185,21 @@ running_files = {base + "/pid": b"123\n", base + "/stdout.log": b"working\n",
 running = remote_job.poll({}, started["job_id"],
                           opener=lambda _c: (_Client(_SFTP(running_files)), None))
 check("poll-verifies-running-process-marker", running["ok"] and running["state"] == "running")
+large_environment_files = dict(running_files)
+large_environment_files["/proc/123/environ"] = (
+    b"PAD=" + b"x" * 5000 + b"\0" +
+    ("COMPSHARE_OPS_JOB_ID=" + started["job_id"]).encode() + b"\0")
+large_environment = remote_job.poll(
+    {}, started["job_id"], opener=lambda _c: (_Client(_SFTP(large_environment_files)), None))
+check("marker-after-four-kib-still-proves-running-process",
+      large_environment["ok"] and large_environment["state"] == "running")
+truncated_environment_files = dict(running_files)
+truncated_environment_files["/proc/123/environ"] = (
+    b"PAD=" + b"x" * (remote_job._PROCESS_IDENTITY_BYTES + 1) + b"\0")
+truncated_environment = remote_job.poll(
+    {}, started["job_id"], opener=lambda _c: (_Client(_SFTP(truncated_environment_files)), None))
+check("truncated-private-identity-never-falsely-releases-the-slot",
+      truncated_environment["ok"] and truncated_environment["state"] == "unknown")
 waited = []
 remote_job.poll({}, started["job_id"], wait_seconds=7,
                 opener=lambda _c: (_Client(_SFTP(running_files)), None), sleeper=waited.append)

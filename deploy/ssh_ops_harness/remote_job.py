@@ -10,6 +10,10 @@ import ssh_transport
 _JOB_ROOT = "/tmp/compshare-ops-jobs"
 _JOB_ID = re.compile(r"^job-[0-9a-f]{32}$")
 _RETURN_LOG_BYTES = 16000
+# Private process-identity read only; never returned to the model. A Kubernetes/GPU environment can
+# easily exceed 4 KiB, while Linux ARG_MAX is normally much larger. If even this bound truncates,
+# identity remains unknown and the durable slot stays occupied instead of declaring interruption.
+_PROCESS_IDENTITY_BYTES = 256 * 1024
 _SHELLS = {"sh", "bash", "dash", "zsh", "ksh"}
 _ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
 _ENV_OPTIONS_WITH_VALUE = {"-u", "--unset", "-C", "--chdir", "--argv0"}
@@ -270,9 +274,13 @@ def poll(conn, job_id, secrets=(), wait_seconds=0, offsets=None,
         elif re.fullmatch(r"\d+", pid_text):
             try:
                 sftp.lstat("/proc/%s/stat" % pid_text)
-                environ_b, _ = _read_optional(sftp, "/proc/%s/environ" % pid_text, 4096)
+                environ_b, environ_cut = _read_optional(
+                    sftp, "/proc/%s/environ" % pid_text, _PROCESS_IDENTITY_BYTES)
                 marker = ("COMPSHARE_OPS_JOB_ID=" + job_id).encode("ascii")
-                state = "running" if marker in environ_b.split(b"\0") else "interrupted"
+                if marker in environ_b.split(b"\0"):
+                    state = "running"
+                else:
+                    state = "unknown" if environ_cut else "interrupted"
             except Exception:  # noqa: BLE001
                 state = "interrupted"
         else:
