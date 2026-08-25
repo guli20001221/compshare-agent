@@ -27,6 +27,7 @@ conn = json.loads(sys.stdin.readline())
 context = conn.get("context") or {}
 facts = context.get("platform_facts") or []
 targets = conn.get("endpoint_targets") or []
+authorizations = conn.get("probe_authorizations") or []
 pending = conn.get("pending_background_job") or {}
 slot_busy = bool(conn.get("background_job_slot_busy"))
 print("@@OUTCOME " + json.dumps({"outcome": "", "err_class": "", "context_applied": True}))
@@ -36,6 +37,10 @@ print("CONTEXT_FACTS=%r" % len(facts))
 print("CONTEXT_HAS_PRIVATE_TARGETS=%r" % ("endpoint_targets" in context,))
 print("ENDPOINT_TARGETS=%r" % len(targets))
 print("ENDPOINT_FIRST=%r" % ((targets[0].get("id") if targets else None),))
+print("CONTEXT_HAS_AUTHORIZATIONS=%r" % ("probe_authorizations" in context,))
+print("PROBE_AUTHORIZATIONS=%r" % len(authorizations))
+print("AUTHORIZATION_FIRST=%r" % ((authorizations[0].get("ref") if authorizations else None),))
+print("AUTHORIZATION_VALUE_LENGTH=%r" % ((len(authorizations[0].get("value") or "") if authorizations else 0),))
 print("CONTEXT_HAS_PENDING_JOB=%r" % ("pending_background_job" in context,))
 print("PENDING_JOB=%r" % pending.get("job_id"))
 print("PENDING_JOB_PURPOSE=%r" % pending.get("purpose"))
@@ -62,6 +67,9 @@ func TestSupervisorSendsReferenceContextOnHandshake(t *testing.T) {
 			ID: "platform-http-1", Kind: "http", Label: "ComfyUI platform entry",
 			Source: "DescribeCompShareInstance.Softwares.URL", URL: "https://example.invalid/?token=private",
 		}},
+		ProbeAuthorizations: []opscontext.ProbeAuthorization{{
+			Reference: "current-user-authorization-1", Value: "Bear" + "er supervisor-private-canary",
+		}},
 		PendingBackgroundJob: &opscontext.BackgroundJob{
 			JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", State: "running", Purpose: "download model weights",
 		},
@@ -76,11 +84,16 @@ func TestSupervisorSendsReferenceContextOnHandshake(t *testing.T) {
 	require.Contains(t, res.Output, "CONTEXT_HAS_PRIVATE_TARGETS=False")
 	require.Contains(t, res.Output, "ENDPOINT_TARGETS=1")
 	require.Contains(t, res.Output, "ENDPOINT_FIRST='platform-http-1'")
+	require.Contains(t, res.Output, "CONTEXT_HAS_AUTHORIZATIONS=False")
+	require.Contains(t, res.Output, "PROBE_AUTHORIZATIONS=1")
+	require.Contains(t, res.Output, "AUTHORIZATION_FIRST='current-user-authorization-1'")
+	require.Contains(t, res.Output, "AUTHORIZATION_VALUE_LENGTH=32")
 	require.Contains(t, res.Output, "CONTEXT_HAS_PENDING_JOB=False")
 	require.Contains(t, res.Output, "PENDING_JOB='job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'")
 	require.Contains(t, res.Output, "PENDING_JOB_PURPOSE='download model weights'")
 	require.Contains(t, res.Output, "BACKGROUND_JOB_SLOT_BUSY=True")
 	require.NotContains(t, res.Output, "private")
+	require.NotContains(t, res.Output, "supervisor-private-canary")
 	require.True(t, res.ContextApplied)
 }
 

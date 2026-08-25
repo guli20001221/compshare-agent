@@ -73,3 +73,41 @@ func TestTruncateInstanceOpsContextTextPreservesUTF8(t *testing.T) {
 	require.True(t, utf8.ValidString(got))
 	require.Contains(t, got, "[context truncated]")
 }
+
+func TestInstanceOpsModelContextCarriesOneTypedAuthorizationAsAPrivateReference(t *testing.T) {
+	const secret = "Bear" + "er auth-canary-0123456789"
+	eng := &Engine{
+		lastUserMsg:          "请验证接口\nAuthorization: " + secret,
+		imageContextThisTurn: "Authorization: " + "Bear" + "er ocr-must-not-be-a-capability-0123456789",
+	}
+
+	got := eng.instanceOpsModelContext()
+	require.Len(t, got.ProbeAuthorizations, 1)
+	require.Equal(t, "current-user-authorization-1", got.ProbeAuthorizations[0].Reference)
+	require.Equal(t, secret, got.ProbeAuthorizations[0].Value)
+	require.NotContains(t, got.CurrentUserReport.Text, secret)
+	require.NotContains(t, got.CurrentUserReport.Text, "ocr-must-not-be-a-capability")
+	require.Contains(t, got.CurrentUserReport.Text, "Authorization: [REDACTED]")
+
+	raw, err := json.Marshal(got)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), secret)
+	require.NotContains(t, string(raw), "current-user-authorization")
+}
+
+func TestInstanceOpsModelContextRefusesAmbiguousOrHistoricalAuthorizations(t *testing.T) {
+	eng := &Engine{
+		lastUserMsg: "Authorization: " + "Bear" + "er first-secret-0123456789\n" +
+			"Authorization: Basic second-secret-0123456789",
+		messages: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleUser, Content: "Authorization: " + "Bear" + "er prior-secret-0123456789"},
+			{Role: openai.ChatMessageRoleAssistant, Content: "上一轮未执行"},
+		},
+	}
+	got := eng.instanceOpsModelContext()
+	require.Empty(t, got.ProbeAuthorizations,
+		"two distinct current values have no deterministic endpoint association")
+	require.NotContains(t, got.CurrentUserReport.Text, "first-secret")
+	require.NotContains(t, got.CurrentUserReport.Text, "second-secret")
+	require.NotContains(t, got.PriorUserReports[0].Text, "prior-secret")
+}

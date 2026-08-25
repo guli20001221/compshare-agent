@@ -87,6 +87,51 @@ check("authenticated-guest-probe-sends-header-without-returning-secret",
       and authenticated["authorization_sent"] is True
       and auth_token not in authenticated["body"])
 
+status_client, _, _ = _open(
+    ("HTTP/1.1 401 Bearer " + auth_token + "\r\nContent-Length: 0\r\n\r\n").encode())
+status_echo = guest_endpoint_probe.probe(
+    {}, {"protocol": "http", "port": 8000, "path": "/v1/models",
+         "authorization": auth_value}, opener=lambda _c: (status_client, None))
+check("http-status-line-is-secret-scrubbed",
+      status_echo["status_code"] == 401
+      and auth_token not in status_echo["status_line"]
+      and "REDACTED" in status_echo["status_line"])
+
+boundary_prefix = auth_token[:9]
+boundary_body = (b" " * (guest_endpoint_probe._MAX_BODY_BYTES - len(boundary_prefix))
+                 + auth_token.encode() + b"tail")
+boundary_client, _, _ = _open(b"HTTP/1.1 200 OK\r\n\r\n" + boundary_body)
+boundary_echo = guest_endpoint_probe.probe(
+    {}, {"protocol": "http", "port": 8000, "authorization": auth_value},
+    opener=lambda _c: (boundary_client, None))
+check("http-body-is-scrubbed-before-the-return-boundary",
+      boundary_echo["truncated"] is True
+      and boundary_prefix not in boundary_echo["body"]
+      and auth_token not in boundary_echo["body"])
+old_order_body = guest_endpoint_probe.guardrails.scrub_output(
+    boundary_body[:guest_endpoint_probe._MAX_BODY_BYTES].decode(), (auth_token,))
+check("boundary-fixture-would-catch-the-old-slice-before-scrub-order",
+      boundary_prefix in old_order_body)
+
+transport_prefix = auth_token[:9]
+http_prefix = b"HTTP/1.1 200 OK\r\nX-Pad: " + b"a" * 25000 + b"\r\n\r\n"
+transport_padding = b" " * (
+    guest_endpoint_probe._MAX_RESPONSE_BYTES - len(http_prefix) - len(transport_prefix))
+transport_body = transport_padding + auth_token.encode() + b"tail"
+transport_client, _, _ = _open(http_prefix + transport_body)
+transport_echo = guest_endpoint_probe.probe(
+    {}, {"protocol": "http", "port": 8000, "authorization": auth_value},
+    opener=lambda _c: (transport_client, None))
+check("http-body-drops-a-possible-partial-secret-at-the-transport-cap",
+      transport_echo["truncated"] is True
+      and transport_prefix not in transport_echo["body"]
+      and auth_token not in transport_echo["body"])
+old_transport_body = guest_endpoint_probe.guardrails.scrub_output(
+    transport_body[:guest_endpoint_probe._MAX_RESPONSE_BYTES - len(http_prefix)].decode(),
+    (auth_token,))
+check("transport-cap-fixture-would-catch-the-old-partial-secret-return",
+      transport_prefix in old_transport_body)
+
 blank_auth_client, blank_auth_channel, _ = _open(
     b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
 blank_auth = guest_endpoint_probe.probe(
@@ -175,9 +220,17 @@ schema = guest_endpoint_probe.input_schema()
 check("schema-makes-protocol-and-integer-port-explicit",
       "Lowercase" in schema["properties"]["protocol"]["description"]
       and "integer" in schema["properties"]["port"]["description"]
-      and schema["properties"]["authorization"]["default"] == ""
-      and "no Authorization header" in schema["properties"]["authorization"]["description"]
+      and "authorization" not in schema["properties"]
+      and "authorization_ref" not in schema["properties"]
       and "never pass a URL" in guest_endpoint_probe.TOOL_DESCRIPTION)
+authorization_ref = "current-user-authorization-1"
+auth_schema = guest_endpoint_probe.input_schema([authorization_ref, "x" * 65])
+check("schema-exposes-only-an-opaque-current-request-authorization-reference",
+      "authorization" not in auth_schema["properties"]
+      and auth_schema["properties"]["authorization_ref"]["enum"] == [authorization_ref]
+      and "privately" in auth_schema["properties"]["authorization_ref"]["description"]
+      and all(field not in auth_schema["properties"]
+              for field in ("token", "bearer_token", "headers", "body")))
 
 secret_client, _, _ = _open(b"HTTP/1.1 200 OK\r\n\r\nknown-secret")
 scrubbed = guest_endpoint_probe.probe(

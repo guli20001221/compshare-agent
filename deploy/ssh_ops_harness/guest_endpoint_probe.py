@@ -20,38 +20,42 @@ TOOL_DESCRIPTION = (
     "the existing SSH transport and without requiring curl/wget/python on the guest. Use it to "
     "separate process/listener/application health from an external platform route. The destination "
     "host is fixed to 127.0.0.1; the tool accepts only a port, bounded path, and optional literal "
-    "Host header for virtual-host diagnostics. For a caller-requested API check it can send one "
-    "exact user-provided Authorization value; that value is never returned or shown in activity. "
+    "Host header for virtual-host diagnostics. For a caller-requested API check it can use a "
+    "current-request opaque Authorization reference when the schema offers one; the harness resolves "
+    "the value privately and never returns it or shows it in activity. "
     "It cannot reach public/private network hosts, send request bodies, write files, or change the guest. "
     "For HTTP pass separate fields like protocol=http, port=8000, path=/health; never pass a URL.")
 
 
-def input_schema():
+def input_schema(authorization_refs=()):
+    properties = {
+        "protocol": {
+            "type": "string", "enum": ["tcp", "http"],
+            "description": "Lowercase http for GET/HEAD, or tcp for connect-only.",
+        },
+        "port": {
+            "type": "integer", "minimum": 1, "maximum": 65535,
+            "description": "Guest loopback TCP port as an integer, not a URL or string.",
+        },
+        "method": {"type": "string", "enum": ["GET", "HEAD"], "default": "GET"},
+        "path": {"type": "string", "minLength": 1, "maxLength": 512, "default": "/"},
+        "host_header": {"type": "string", "minLength": 1, "maxLength": 253,
+                        "description": "Optional literal virtual host; never an address to dial."},
+        "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
+    }
+    refs = [value for value in authorization_refs
+            if isinstance(value, str) and 1 <= len(value) <= 64]
+    if refs:
+        properties["authorization_ref"] = {
+            "type": "string", "enum": refs,
+            "description": (
+                "Opaque current-request Authorization reference. Omit it to send no Authorization "
+                "header. The value is resolved privately and never returned."
+            ),
+        }
     return {
         "type": "object",
-        "properties": {
-            "protocol": {
-                "type": "string", "enum": ["tcp", "http"],
-                "description": "Lowercase http for GET/HEAD, or tcp for connect-only.",
-            },
-            "port": {
-                "type": "integer", "minimum": 1, "maximum": 65535,
-                "description": "Guest loopback TCP port as an integer, not a URL or string.",
-            },
-            "method": {"type": "string", "enum": ["GET", "HEAD"], "default": "GET"},
-            "path": {"type": "string", "minLength": 1, "maxLength": 512, "default": "/"},
-            "host_header": {"type": "string", "minLength": 1, "maxLength": 253,
-                            "description": "Optional literal virtual host; never an address to dial."},
-            "authorization": {
-                "type": "string", "maxLength": _MAX_AUTHORIZATION_LENGTH, "default": "",
-                "description": (
-                    "Optional exact Authorization header value supplied by the user, for example "
-                    "Bearer <key>. Omit it or pass an empty string for an unauthenticated request; "
-                    "then no Authorization header is sent. It is never returned."
-                ),
-            },
-            "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
-        },
+        "properties": properties,
         "required": ["protocol", "port"],
         "additionalProperties": False,
     }
@@ -123,6 +127,19 @@ def _read_response(channel):
     return b"".join(chunks), total >= _MAX_RESPONSE_BYTES
 
 
+def _utf8_prefix(text, max_bytes):
+    raw = text.encode("utf-8")
+    if len(raw) <= max_bytes:
+        return text, False
+    raw = raw[:max_bytes]
+    while raw:
+        try:
+            return raw.decode("utf-8"), True
+        except UnicodeDecodeError:
+            raw = raw[:-1]
+    return "", True
+
+
 def probe(conn, args, secrets=(), opener=ssh_transport.open_client):
     checked, validation_error = _validated(args)
     if validation_error is not None:
@@ -167,15 +184,29 @@ def probe(conn, args, secrets=(), opener=ssh_transport.open_client):
         channel.sendall(request)
         raw, capped = _read_response(channel)
         head, separator, body = raw.partition(b"\r\n\r\n")
-        status_line = head.split(b"\r\n", 1)[0].decode("ascii", "replace") if head else ""
-        match = re.match(r"HTTP/\d(?:\.\d)?\s+(\d{3})(?:\s|$)", status_line)
-        status_code = int(match.group(1)) if match else None
-        body_cut = capped or len(body) > _MAX_BODY_BYTES
         auth_parts = authorization.split(None, 1) if authorization else []
         response_secrets = tuple(secrets) + tuple(
             item for item in (authorization, auth_parts[-1] if auth_parts else "") if item)
-        body_text = guardrails.scrub_output(
-            body[:_MAX_BODY_BYTES].decode("utf-8", "replace"), response_secrets)
+        # A bounded transport read can end in the middle of a known secret. Drop
+        # enough untrusted tail bytes that any such partial value cannot escape
+        # exact scrubbing. Complete values earlier in the response are retained
+        # and scrubbed normally.
+        secret_lengths = [len(item.encode("utf-8")) for item in response_secrets
+                          if isinstance(item, str) and len(item) >= 3]
+        tail_guard = max(secret_lengths, default=1) - 1
+        if capped and tail_guard and body:
+            body = body[:-min(tail_guard, len(body))]
+        status_complete = bool(separator) or b"\r\n" in head
+        raw_status_line = (
+            head.split(b"\r\n", 1)[0].decode("ascii", "replace")
+            if head and status_complete else "")
+        match = re.match(r"HTTP/\d(?:\.\d)?\s+(\d{3})(?:\s|$)", raw_status_line)
+        status_code = int(match.group(1)) if match else None
+        status_line = guardrails.scrub_output(raw_status_line, response_secrets)
+        scrubbed_body = guardrails.scrub_output(
+            body.decode("utf-8", "replace"), response_secrets)
+        body_text, redacted_body_cut = _utf8_prefix(scrubbed_body, _MAX_BODY_BYTES)
+        body_cut = capped or len(body) > _MAX_BODY_BYTES or redacted_body_cut
         return {"ok": bool(match), "protocol": "http", "port": port, "probe_completed": True,
                 "connected": True,
                 "method": method, "path": path, "host_header": virtual_host,

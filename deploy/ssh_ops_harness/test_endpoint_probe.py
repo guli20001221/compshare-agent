@@ -105,11 +105,17 @@ check("schema-allows-only-an-absolute-bounded-path",
       and schema["properties"]["path"]["maxLength"] == endpoint_probe._MAX_PATH_LENGTH)
 check("schema-closes-http-methods-to-read-only-options",
       schema["properties"]["method"]["enum"] == ["GET", "HEAD"])
-check("schema-exposes-only-one-bounded-custom-header",
-      schema["properties"]["authorization"]["maxLength"] ==
-      endpoint_probe._MAX_AUTHORIZATION_LENGTH
-      and schema["properties"]["authorization"]["default"] == ""
-      and "no Authorization header" in schema["properties"]["authorization"]["description"])
+check("schema-without-a-current-request-capability-exposes-no-authorization-input",
+      "authorization" not in schema["properties"]
+      and "authorization_ref" not in schema["properties"])
+authorization_ref = "current-user-authorization-1"
+auth_schema = endpoint_probe.input_schema(targets, [authorization_ref, "not valid"])
+check("schema-exposes-only-an-opaque-current-request-authorization-reference",
+      "authorization" not in auth_schema["properties"]
+      and auth_schema["properties"]["authorization_ref"]["enum"] == [authorization_ref]
+      and "privately" in auth_schema["properties"]["authorization_ref"]["description"]
+      and all(field not in auth_schema["properties"]
+              for field in ("token", "bearer_token", "headers", "body")))
 
 http_result = endpoint_probe.probe(targets, "platform-http-1")
 check("http-probe-reaches-response", http_result["transport_reachable"] is True and http_result["http_status"] == 204)

@@ -302,7 +302,8 @@ def search(conn, args, secrets=(), opener=ssh_transport.open_client):
                         continue
                     clipped, line_truncated = _clip_line(
                         guardrails.scrub_output(line, secrets))
-                    matches.append({"path": path, "line_number": line_number,
+                    matches.append({"path": guardrails.scrub_output(path, secrets),
+                                    "line_number": line_number,
                                     "line": clipped, "line_truncated": line_truncated})
                     if len(matches) >= spec["max_matches"]:
                         truncated = True
@@ -343,7 +344,7 @@ def search(conn, args, secrets=(), opener=ssh_transport.open_client):
             pass
 
 
-def find_paths(conn, args, opener=ssh_transport.open_client):
+def find_paths(conn, args, secrets=(), opener=ssh_transport.open_client):
     """Find bounded path metadata below one remote application tree without following symlinks."""
     spec, err = _validated_find_args(args)
     if err:
@@ -389,7 +390,8 @@ def find_paths(conn, args, opener=ssh_transport.open_client):
                 entry_depth = depth + 1
                 candidate = entry.filename.casefold() if spec["ignore_case"] else entry.filename
                 if entry_depth <= spec["max_depth"] and fnmatch.fnmatchcase(candidate, pattern):
-                    matches.append({"path": path, "type": "directory" if is_dir else "file",
+                    matches.append({"path": guardrails.scrub_output(path, secrets),
+                                    "type": "directory" if is_dir else "file",
                                     "depth": entry_depth})
                     if len(matches) >= spec["max_results"]:
                         truncated = True

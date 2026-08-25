@@ -9,6 +9,7 @@ import (
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/tools"
 )
 
@@ -79,6 +80,16 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 		return friendlyToolResultJSON(msg)
 	}
+	// Build the local-only portion before the entry card so a planner that copied
+	// a user Authorization value into Task cannot expose it on that card. The
+	// private values stay json:"-" and are handed to the runner only after the
+	// user approves entry; this step performs no platform call or SSH access.
+	modelContext := e.instanceOpsModelContext()
+	authorizations := make([]string, 0, len(modelContext.ProbeAuthorizations))
+	for _, item := range modelContext.ProbeAuthorizations {
+		authorizations = append(authorizations, item.Value)
+	}
+	task = security.RedactKnownAuthorizationText(task, authorizations)
 	// A model-authored id is not selection proof. Reuse the write-path binding
 	// rules; an expired user selection may reach a new card for the same id but is
 	// never authority by itself.
@@ -116,7 +127,9 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	}
 
 	// A decline is non-terminal so the Agent can still answer from cloud-side facts.
-	if !e.confirmFn(action, e.safeExecutor.RedactArgs(action, filtered)) {
+	confirmArgs := e.safeExecutor.RedactArgs(action, filtered)
+	confirmArgs["Task"] = task
+	if !e.confirmFn(action, confirmArgs) {
 		msg := instanceOpsUnauthorizedMessage(instanceID, e.lastConfirmationTerminalReason)
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 		return friendlyToolResultJSON(msg)
@@ -177,7 +190,6 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		}
 	}
 
-	modelContext := e.instanceOpsModelContext()
 	modelContext.PendingBackgroundJob = e.backgroundJobForInstance(instanceID)
 	modelContext.BackgroundJobSlotBusy = e.backgroundJobSlotBusyForOtherInstance(instanceID)
 	verdict, err := e.instanceOps.Run(ctx, InstanceOpsRequest{

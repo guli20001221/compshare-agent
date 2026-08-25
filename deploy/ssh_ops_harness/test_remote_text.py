@@ -110,6 +110,25 @@ try:
           and long_line["line_end"] == 1 and long_line["line_too_long"] is True
           and long_line["next_line"] is None)
 
+    boundary_secret = "remote-text-boundary-secret-012345"
+    boundary_prefix = boundary_secret[:9]
+    boundary_path = "/workspace/app/boundary.txt"
+    with open(_SFTP._local(boundary_path), "w", encoding="utf-8") as handle:
+        handle.write(" " * (remote_text._MAX_RETURN_BYTES - len(boundary_prefix))
+                     + boundary_secret + " tail")
+    boundary = remote_text.read(
+        {}, {"path": boundary_path}, secrets=(boundary_secret,), opener=_open)
+    check("known-secret-is-scrubbed-before-the-text-window-boundary",
+          boundary_prefix not in boundary["content"]
+          and boundary_secret not in boundary["content"])
+    old_window, _ = remote_text._line_window(
+        " " * (remote_text._MAX_RETURN_BYTES - len(boundary_prefix))
+        + boundary_secret + " tail", 1, remote_text._DEFAULT_LINE_COUNT)
+    old_order_content = remote_text.guardrails.scrub_output(
+        old_window["content"], (boundary_secret,))
+    check("text-boundary-fixture-would-catch-window-before-scrub",
+          boundary_prefix in old_order_content)
+
     symlink_path = "/workspace/app/link.ini"
     try:
         os.symlink(local_path, _SFTP._local(symlink_path))

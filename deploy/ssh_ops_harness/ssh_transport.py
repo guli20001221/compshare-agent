@@ -59,6 +59,11 @@ def _clip(text: str) -> str:
             f"{text[-half:]}")
 
 
+def _scrub_and_clip(text: str, secrets=()) -> str:
+    """Remove complete known secrets before a bounded view can split them."""
+    return _clip(guardrails.scrub_output(text, secrets))
+
+
 def _dec(b: bytearray) -> str:
     return bytes(b).decode("utf-8", "replace")
 
@@ -149,7 +154,7 @@ def run_ssh(conn: dict, command: str, secrets=()) -> dict:
             # recv_exit_status(), so the transport must enforce this deadline.
             # Partial output is kept — a command that printed and then hung is still evidence.
             return {"error": "exec_timeout", "detail": f"{_EXEC_TIMEOUT}s",
-                    "partial": guardrails.scrub_output(_clip(_dec(out_b)), secrets)}
+                    "partial": _scrub_and_clip(_dec(out_b), secrets)}
         out, err = _dec(out_b), _dec(err_b)
         truncated = len(out) > _MAX_OUTPUT or len(err) > _MAX_OUTPUT
         exit_code = so.channel.recv_exit_status()
@@ -163,8 +168,8 @@ def run_ssh(conn: dict, command: str, secrets=()) -> dict:
                 f"上面的输出是超时前已产生的部分结果；请缩小范围（限定目录、加 -maxdepth）后重试]")
         return {
             "exit_code": exit_code,
-            "stdout": guardrails.scrub_output(_clip(out), secrets),
-            "stderr": guardrails.scrub_output(_clip(err), secrets),
+            "stdout": _scrub_and_clip(out, secrets),
+            "stderr": _scrub_and_clip(err, secrets),
             "truncated": truncated,
         }
     finally:

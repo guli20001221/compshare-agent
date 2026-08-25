@@ -33,7 +33,7 @@ type getSessionData struct {
 // handleCreateSession creates a new session for the authenticated owner.
 // Optional fields: Title (string), Context (raw JSON object).
 func (h *Handlers) handleCreateSession(c *gin.Context, base BaseRequest, raw *simplejson.Json) (any, error) {
-	title := optionalString(raw, "Title")
+	title := redactSessionTitle(optionalString(raw, "Title"))
 	ctxJSON, err := optionalJSON(raw, "Context")
 	if err != nil {
 		return nil, ErrInvalidParam.WithMessage("invalid Context")
@@ -110,7 +110,7 @@ func (h *Handlers) handleGetSession(c *gin.Context, base BaseRequest, raw *simpl
 	}
 	return getSessionData{
 		SessionID:    sess.ID,
-		Title:        sess.Title,
+		Title:        redactSessionTitle(sess.Title),
 		MessageCount: sess.MessageCount,
 		CreatedAt:    sess.CreatedAt,
 		UpdatedAt:    sess.UpdatedAt,

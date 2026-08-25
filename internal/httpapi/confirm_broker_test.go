@@ -148,11 +148,14 @@ func TestConfirmBroker_CancelUnknownID(t *testing.T) {
 
 func TestSanitizeConfirmArgs_FiltersPasswords(t *testing.T) {
 	args := map[string]any{
-		"UHostId":  "uhost-xxx",
-		"Name":     "my-gpu",
-		"Password": "secret123",
-		"token":    "bearer-xyz",
-		"State":    "Running",
+		"UHostId":        "uhost-xxx",
+		"Name":           "my-gpu",
+		"Password":       "secret123",
+		"token":          "bearer-xyz",
+		"AUTHORIZATION":  "Bearer uppercase-secret",
+		"Authori-zation": "Basic punctuated-secret",
+		"author_ization": "Custom underscored-secret",
+		"State":          "Running",
 	}
 	safe := sanitizeConfirmArgs(args)
 	assert.Equal(t, "uhost-xxx", safe["UHostId"])
@@ -160,6 +163,9 @@ func TestSanitizeConfirmArgs_FiltersPasswords(t *testing.T) {
 	assert.Equal(t, "Running", safe["State"])
 	assert.NotContains(t, safe, "Password")
 	assert.NotContains(t, safe, "token")
+	assert.NotContains(t, safe, "AUTHORIZATION")
+	assert.NotContains(t, safe, "Authori-zation")
+	assert.NotContains(t, safe, "author_ization")
 }
 
 func TestSanitizeConfirmArgs_NilInput(t *testing.T) {

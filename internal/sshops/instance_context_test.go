@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/compshare-agent/internal/opscontext"
@@ -345,6 +346,42 @@ func TestContextDoesNotChangeTaskHash(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, firstAudit.Events[0].TaskHash, secondAudit.Events[0].TaskHash)
 	require.Equal(t, hashTask("同一个任务"), firstAudit.Events[0].TaskHash)
+}
+
+func TestPrivateAuthorizationDoesNotLeakOrChangeTaskHash(t *testing.T) {
+	b64 := base64.StdEncoding.EncodeToString([]byte(secretPW))
+	describe := describeResp("ssh root@10.0.0.9", b64)
+	const firstSecret = "Bear" + "er audit-secret-one-0123456789"
+	const secondSecret = "Bear" + "er audit-secret-two-0123456789"
+
+	run := func(turnID, secret string) (*fakeRunner, *MemAuditWriter) {
+		runner := &fakeRunner{res: Result{Output: "ok"}}
+		audit := &MemAuditWriter{}
+		service := NewService(runner, audit)
+		modelContext := opscontext.Context{
+			SchemaVersion: opscontext.SchemaVersion,
+			ProbeAuthorizations: []opscontext.ProbeAuthorization{{
+				Reference: "current-user-authorization-1", Value: secret,
+			}},
+		}
+		task := "验证 Authorization: " + secret + " 的接口"
+		_, err := service.DiagnoseWithContext(context.Background(), stubDescriber{resp: describe},
+			Owner{TurnID: turnID}, "uhost-abc", task, modelContext, nil, nil)
+		require.NoError(t, err)
+		require.Equal(t, secret, runner.lastContext.ProbeAuthorizations[0].Value,
+			"the private runner channel must retain the exact current-request value")
+		for _, rendered := range []string{runner.lastTask, fmt.Sprintf("%+v", audit.Events)} {
+			require.NotContains(t, rendered, secret)
+			require.Contains(t, rendered, "[REDACTED]")
+		}
+		return runner, audit
+	}
+
+	firstRunner, firstAudit := run("one", firstSecret)
+	secondRunner, secondAudit := run("two", secondSecret)
+	require.Equal(t, firstRunner.lastTask, secondRunner.lastTask)
+	require.Equal(t, firstAudit.Events[0].TaskHash, secondAudit.Events[0].TaskHash,
+		"private values must not create a second replay identity")
 }
 
 func TestSummarizeAuditStepsUsesOnlyFixedClasses(t *testing.T) {

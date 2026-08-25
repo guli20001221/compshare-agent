@@ -310,6 +310,20 @@ check("windows-cli-falls-back-to-selected-wrapper-when-package-layout-is-unknown
       harness._native_windows_cli("C:/unknown/claude.cmd", "nt") == "C:/unknown/claude.cmd")
 check("non-windows-cli-path-is-unchanged",
       harness._native_windows_cli("/usr/local/bin/claude", "posix") == "/usr/local/bin/claude")
+_clip_boundary_secret = "ssh-output-boundary-secret-012345"
+_clip_boundary_prefix = _clip_boundary_secret[:9]
+_clip_boundary_raw = (
+    " " * (ssh_transport._MAX_OUTPUT // 2 - len(_clip_boundary_prefix))
+    + _clip_boundary_secret + "y" * ssh_transport._MAX_OUTPUT)
+_clip_boundary_safe = ssh_transport._scrub_and_clip(
+    _clip_boundary_raw, (_clip_boundary_secret,))
+check("ssh-output-is-scrubbed-before-head-tail-clipping",
+      _clip_boundary_prefix not in _clip_boundary_safe
+      and _clip_boundary_secret not in _clip_boundary_safe)
+_clip_boundary_old_order = harness.guardrails.scrub_output(
+    ssh_transport._clip(_clip_boundary_raw), (_clip_boundary_secret,))
+check("ssh-boundary-fixture-would-catch-clip-before-scrub",
+      _clip_boundary_prefix in _clip_boundary_old_order)
 harness.os.path.isfile = _real_isfile
 harness.shutil.which = lambda _name: None
 try:
@@ -976,9 +990,13 @@ def _fake_server(**kwargs):
 
 _fake_sdk.tool = _fake_tool
 _fake_sdk.create_sdk_mcp_server = _fake_server
+_HANDSHAKE_AUTH_REF = "current-user-authorization-1"
+_HANDSHAKE_AUTH_TOKEN = "harness-api-" + "secret-789"
+_HANDSHAKE_AUTHORIZATION = "Bearer " + _HANDSHAKE_AUTH_TOKEN
 _saved_sdk = sys.modules.get("claude_agent_sdk")
 _saved_stdin, _saved_conn = sys.stdin, harness._CONN
 _saved_targets, _saved_preflight = harness._ENDPOINT_TARGETS, harness.preflight_probe
+_saved_probe_authorizations = harness._PROBE_AUTHORIZATIONS
 _saved_stage, _saved_options = harness.stage_clean_workdir, harness.build_options
 try:
     sys.modules["claude_agent_sdk"] = _fake_sdk
@@ -991,6 +1009,8 @@ try:
         "endpoint_targets": [{"id": "platform-http-1", "kind": "http",
                               "label": "ComfyUI platform entry", "source": "Describe test",
                               "url": "https://private.example.invalid/?token=never-render"}],
+        "probe_authorizations": [{"ref": _HANDSHAKE_AUTH_REF,
+                                  "value": _HANDSHAKE_AUTHORIZATION}],
     }) + "\n")
     _main_output = _capture(lambda: _asyncio.run(harness.main()))
     sys.stdin = _io.StringIO(_json.dumps({
@@ -1014,6 +1034,7 @@ finally:
     sys.stdin = _saved_stdin
     harness._CONN = _saved_conn
     harness._ENDPOINT_TARGETS = _saved_targets
+    harness._PROBE_AUTHORIZATIONS = _saved_probe_authorizations
     harness.preflight_probe, harness.stage_clean_workdir, harness.build_options = _saved_preflight, _saved_stage, _saved_options
     if _saved_sdk is None:
         sys.modules.pop("claude_agent_sdk", None)
@@ -1026,6 +1047,9 @@ check("context-main-passes-labelled-prompt-to-sdk",
 check("context-main-receipt-matches-sdk-prompt",
       '"context_applied": true' in _main_output.replace('"context_applied":true', '"context_applied": true'))
 check("context-main-verdict-still-emits", "mocked contextual diagnosis" in _main_output)
+check("private-probe-authorization-never-enters-model-prompt-or-wire-output",
+      all(secret not in "".join(_captured_sdk_prompts) + _main_output
+          for secret in (_HANDSHAKE_AUTHORIZATION, _HANDSHAKE_AUTH_TOKEN)))
 _first_tools = _captured_sdk_servers[0]["tools"]
 _legacy_flag_tools = _captured_sdk_servers[1]["tools"]
 _pending_tools = _captured_sdk_servers[2]["tools"]
@@ -1043,6 +1067,20 @@ check("pending-job-main-keeps-the-reviewed-surface-for-read-only-and-post-termin
 check("other-instance-busy-slot-keeps-the-reviewed-surface",
       [tool._test_tool_name for tool in _busy_tools] ==
       [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
+check("a-later-handshake-without-a-capability-does-not-revive-an-old-reference",
+      all("authorization" not in next(
+              tool for tool in tools if tool._test_tool_name == "endpoint_probe"
+          )._test_tool_schema["properties"]
+          and "authorization_ref" not in next(
+              tool for tool in tools if tool._test_tool_name == "endpoint_probe"
+          )._test_tool_schema["properties"]
+          and "authorization" not in next(
+              tool for tool in tools if tool._test_tool_name == "guest_endpoint_probe"
+          )._test_tool_schema["properties"]
+          and "authorization_ref" not in next(
+              tool for tool in tools if tool._test_tool_name == "guest_endpoint_probe"
+          )._test_tool_schema["properties"]
+          for tools in (_legacy_flag_tools, _pending_tools, _busy_tools)))
 check("pending-job-main-prompt-carries-the-opaque-handle-not-a-command",
       _JOB_ID in _captured_sdk_prompts[2] and "Read-only diagnosis and separately approved" in _captured_sdk_prompts[2] and
       "pip install package" not in _captured_sdk_prompts[2])
@@ -1305,21 +1343,43 @@ _endpoint_contract = _json.dumps({"description": _endpoint_tool._test_tool_descr
 check("endpoint-tool-exposes-only-opaque-target-id",
       _endpoint_tool._test_tool_schema["properties"]["target_id"]["enum"] == ["platform-http-1"] and
       all(field not in _endpoint_tool._test_tool_schema["properties"] for field in ("url", "host", "port")))
-check("endpoint-tool-offers-only-closed-read-methods-and-one-bounded-auth-input",
+check("endpoint-tool-offers-only-closed-read-methods-and-an-opaque-auth-capability",
       _endpoint_tool._test_tool_schema["properties"]["method"]["enum"] == ["GET", "HEAD"] and
-      _endpoint_tool._test_tool_schema["properties"]["authorization"]["maxLength"] == 2048 and
+      "authorization" not in _endpoint_tool._test_tool_schema["properties"] and
+      _endpoint_tool._test_tool_schema["properties"]["authorization_ref"]["enum"] ==
+      [_HANDSHAKE_AUTH_REF] and
       all(field not in _endpoint_tool._test_tool_schema["properties"]
           for field in ("token", "bearer_token", "headers", "body")))
+check("guest-endpoint-tool-exposes-the-same-opaque-auth-capability-not-the-value",
+      "authorization" not in _guest_endpoint_tool._test_tool_schema["properties"] and
+      _guest_endpoint_tool._test_tool_schema["properties"]["authorization_ref"]["enum"] ==
+      [_HANDSHAKE_AUTH_REF])
 check("endpoint-private-url-never-enters-prompt-or-tool-contract",
       all(secret not in (_captured_sdk_prompts[0] + _endpoint_contract)
-          for secret in ("private.example.invalid", "never-render", "token=")))
+          for secret in ("private.example.invalid", "never-render", "token=",
+                         _HANDSHAKE_AUTHORIZATION, _HANDSHAKE_AUTH_TOKEN)))
 
 # Exercise the registered handlers, not only the classifier helper: this is the exact activity/audit
 # path that used to turn every structured-tool failure into refused_precondition.
 _saved_find_impl = harness.remote_search.find_paths
 _saved_guest_probe_impl = harness.guest_endpoint_probe.probe
 _saved_endpoint_probe_impl = harness.endpoint_probe.probe
+_saved_handler_conn = harness._CONN
+_saved_handler_targets = harness._ENDPOINT_TARGETS
+_saved_handler_authorizations = harness._PROBE_AUTHORIZATIONS
+_saved_dynamic_secrets = list(harness._DYNAMIC_SECRETS)
 try:
+    harness.set_conn(dict(
+        conn,
+        endpoint_targets=[{
+            "id": "platform-http-1", "kind": "http", "label": "ComfyUI platform entry",
+            "source": "Describe test",
+            "url": "https://private.example.invalid/?token=never-render",
+        }],
+        probe_authorizations=[{
+            "ref": _HANDSHAKE_AUTH_REF, "value": _HANDSHAKE_AUTHORIZATION,
+        }],
+    ))
     harness.remote_search.find_paths = lambda *_args, **_kwargs: {
         "ok": False, "error_class": "connect_failed", "detail": "TimeoutError"}
     del harness.AUDIT[:]
@@ -1343,6 +1403,32 @@ try:
           and '"disposition": "ran"' in _guest_step
           and "is_error" not in _guest_responses[0])
 
+    _guest_args = []
+    harness.guest_endpoint_probe.probe = lambda _conn, args, secrets: (
+        _guest_args.append((dict(args), tuple(secrets))) or {
+            "ok": True, "protocol": "http", "port": 8000, "probe_completed": True,
+            "connected": True, "status_code": 200,
+            "authorization_sent": bool(args.get("authorization")),
+        })
+    del harness.AUDIT[:]
+    _guest_auth_responses = []
+    _guest_auth_step = _capture(lambda: _guest_auth_responses.append(
+        _asyncio.run(_guest_endpoint_tool({
+            "protocol": "http", "port": 8000, "path": "/v1/models",
+            "authorization_ref": _HANDSHAKE_AUTH_REF,
+        }))))
+    check("registered-guest-probe-resolves-the-opaque-reference-privately",
+          len(_guest_args) == 1
+          and _guest_args[0][0]["authorization"] == _HANDSHAKE_AUTHORIZATION
+          and _HANDSHAKE_AUTHORIZATION in _guest_args[0][1]
+          and _HANDSHAKE_AUTH_TOKEN in _guest_args[0][1]
+          and _guest_auth_responses[0]["structuredContent"]["status_code"] == 200)
+    check("guest-probe-wire-and-audit-never-carry-the-resolved-authorization",
+          all(secret not in _guest_auth_step
+              for secret in (_HANDSHAKE_AUTHORIZATION, _HANDSHAKE_AUTH_TOKEN))
+          and all(_HANDSHAKE_AUTHORIZATION not in str(item)
+                  and _HANDSHAKE_AUTH_TOKEN not in str(item) for item in harness.AUDIT))
+
     _endpoint_args = []
     harness.endpoint_probe.probe = lambda targets, target_id, path, method, authorization: (
         _endpoint_args.append((target_id, path, method, authorization)) or {
@@ -1353,22 +1439,77 @@ try:
         })
     del harness.AUDIT[:]
     _endpoint_responses = []
-    _harness_auth_token = "harness-api-" + "secret-789"
-    _harness_authorization = "Bearer " + _harness_auth_token
     _endpoint_step = _capture(lambda: _endpoint_responses.append(
         _asyncio.run(_endpoint_tool({
             "target_id": "platform-http-1", "path": "/health", "method": "HEAD",
-            "authorization": _harness_authorization,
+            "authorization_ref": _HANDSHAKE_AUTH_REF,
         }))))
-    check("registered-endpoint-tool-passes-the-closed-read-method",
+    check("registered-endpoint-tool-resolves-the-reference-and-passes-the-closed-read-method",
           _endpoint_args == [("platform-http-1", "/health", "HEAD",
-                              _harness_authorization)]
+                              _HANDSHAKE_AUTHORIZATION)]
           and _endpoint_responses[0]["structuredContent"]["http_status"] == 200)
     check("endpoint-step-and-audit-carry-only-the-opaque-target",
           "private.example.invalid" not in _endpoint_step and "never-render" not in _endpoint_step
-          and _harness_auth_token not in _endpoint_step
+          and _HANDSHAKE_AUTHORIZATION not in _endpoint_step
+          and _HANDSHAKE_AUTH_TOKEN not in _endpoint_step
           and all("private.example.invalid" not in str(item) and
-                  _harness_auth_token not in str(item) for item in harness.AUDIT))
+                  _HANDSHAKE_AUTHORIZATION not in str(item) and
+                  _HANDSHAKE_AUTH_TOKEN not in str(item) for item in harness.AUDIT))
+
+    _refusal_responses = []
+    _refusal_wire = _capture(lambda: (
+        _refusal_responses.append(_asyncio.run(_endpoint_tool({
+            "target_id": "platform-http-1", "authorization": _HANDSHAKE_AUTHORIZATION,
+        }))),
+        _refusal_responses.append(_asyncio.run(_endpoint_tool({
+            "target_id": "platform-http-1", "authorization_ref": "unknown-reference",
+        }))),
+        _refusal_responses.append(_asyncio.run(_guest_endpoint_tool({
+            "protocol": "http", "port": 8000, "authorization": _HANDSHAKE_AUTHORIZATION,
+        }))),
+        _refusal_responses.append(_asyncio.run(_guest_endpoint_tool({
+            "protocol": "http", "port": 8000, "authorization_ref": "unknown-reference",
+        }))),
+    ))
+    check("raw-and-unknown-authorization-inputs-are-refused-before-any-probe-io",
+          len(_endpoint_args) == 1 and len(_guest_args) == 1
+          and [item["structuredContent"]["error_class"] for item in _refusal_responses] == [
+              "raw_authorization_not_accepted", "unknown_authorization_ref",
+              "raw_authorization_not_accepted", "unknown_authorization_ref",
+          ]
+          and all(item.get("is_error") is True for item in _refusal_responses)
+          and _HANDSHAKE_AUTHORIZATION not in _refusal_wire
+          and _HANDSHAKE_AUTH_TOKEN not in _refusal_wire)
+
+    # The capability is current-request only. Re-latching a handshake without it invalidates even
+    # a handler/schema closure created in the previous turn; no stale value reaches either network
+    # implementation.
+    harness.set_conn(dict(
+        conn,
+        endpoint_targets=[{
+            "id": "platform-http-1", "kind": "http", "label": "ComfyUI platform entry",
+            "source": "Describe test",
+            "url": "https://private.example.invalid/?token=never-render",
+        }],
+    ))
+    _stale_responses = []
+    _stale_wire = _capture(lambda: (
+        _stale_responses.append(_asyncio.run(_endpoint_tool({
+            "target_id": "platform-http-1", "authorization_ref": _HANDSHAKE_AUTH_REF,
+        }))),
+        _stale_responses.append(_asyncio.run(_guest_endpoint_tool({
+            "protocol": "http", "port": 8000,
+            "authorization_ref": _HANDSHAKE_AUTH_REF,
+        }))),
+    ))
+    check("a-reference-from-the-previous-handshake-is-stale-before-probe-io",
+          len(_endpoint_args) == 1 and len(_guest_args) == 1
+          and all(item["structuredContent"]["error_class"] == "unknown_authorization_ref"
+                  for item in _stale_responses)
+          and all(item.get("is_error") is True for item in _stale_responses)
+          and _HANDSHAKE_AUTHORIZATION not in _stale_wire
+          and _HANDSHAKE_AUTH_TOKEN not in _stale_wire)
+
     harness.endpoint_probe.probe = lambda *_args, **_kwargs: {
         "target_id": "platform-http-1", "kind": "http", "vantage": "ssh_ops_runner",
         "transport_reachable": False, "stage": "connect_or_tls", "error_class": "timeout",
@@ -1394,6 +1535,10 @@ finally:
     harness.remote_search.find_paths = _saved_find_impl
     harness.guest_endpoint_probe.probe = _saved_guest_probe_impl
     harness.endpoint_probe.probe = _saved_endpoint_probe_impl
+    harness._CONN = _saved_handler_conn
+    harness._ENDPOINT_TARGETS = _saved_handler_targets
+    harness._PROBE_AUTHORIZATIONS = _saved_handler_authorizations
+    harness._DYNAMIC_SECRETS[:] = _saved_dynamic_secrets
 
 del harness._DYNAMIC_SECRETS[:]
 harness._remember_authorization("   ")
@@ -1406,6 +1551,33 @@ check("authorization-and-token-are-both-held-only-for-scrubbing",
       harness._DYNAMIC_SECRETS == [_dynamic_authorization, _dynamic_token] and
       _dynamic_token not in harness.guardrails.scrub_output(_dynamic_token, harness._secrets()))
 del harness._DYNAMIC_SECRETS[:]
+
+_multi_auth = (
+    'Digest username="Mufasa", realm="test", nonce="nonce-abcdef012345", '
+    'response="response-abcdef012345"')
+harness.set_conn(dict(conn, probe_authorizations=[{
+    "ref": _HANDSHAKE_AUTH_REF, "value": _multi_auth,
+}]))
+check("all-private-authorizations-are-scrubbed-before-any-tool-selects-a-ref",
+      _multi_auth in harness._secrets()
+      and 'nonce="nonce-abcdef012345"' in harness._secrets()
+      and "nonce-abcdef012345" in harness._secrets()
+      and 'response="response-abcdef012345"' in harness._secrets()
+      and "response-abcdef012345" in harness._secrets()
+      and "nonce-abcdef012345" not in harness.guardrails.scrub_output(
+          "guest echoed nonce-abcdef012345 before the probe", harness._secrets())
+      and "response-abcdef012345" not in harness.guardrails.scrub_output(
+          "response=response-abcdef012345", harness._secrets()))
+harness.set_conn(conn)
+check("a-new-handshake-clears-the-previous-authorization-scrub-set",
+      harness._PROBE_AUTHORIZATIONS == {} and harness._DYNAMIC_SECRETS == [])
+short_authorizations = harness._normalize_probe_authorizations([
+    {"ref": "short-raw", "value": "x"},
+    {"ref": "short-scheme", "value": "Bearer xy"},
+    {"ref": "valid-short-boundary", "value": "Bearer xyz"},
+])
+check("one-and-two-byte-credentials-cannot-become-private-capabilities",
+      short_authorizations == {"valid-short-boundary": "Bearer xyz"})
 
 
 # The receipt is an ATTESTATION the audit stores, so it must not fire on a run the model never saw.

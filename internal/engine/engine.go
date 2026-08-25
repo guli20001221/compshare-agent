@@ -1216,6 +1216,12 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	}
 
 	e.lastUserMsg = userMsg
+	// Authorization headers are always removed from the main Agent's live view.
+	// lastUserMsg retains the current typed text just long enough for the SSH-ops
+	// lane, when wired and selected later in this turn, to mint its private opaque
+	// probe reference. Do not apply broad user-message redaction here: signed URLs
+	// have a separate established flow and are not HTTP header capabilities.
+	llmCurrentUserMsg, _ := security.CaptureUserAuthorizationHeaders(userMsg)
 	e.zoneCatalogThisTurn = nil
 	e.imageContextThisTurn = opts.ImageContext
 	e.readExpensiveCallsThisTurn = 0
@@ -1307,9 +1313,12 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// reference data (see WrapScreenshotContext) — the httpapi persist path
 	// MUST produce byte-identical text because it is rehydrated and re-fed to
 	// the LLM on later turns.
-	llmUserMsg := userMsg
+	llmUserMsg := llmCurrentUserMsg
 	if opts.ImageContext != "" {
-		llmUserMsg = WrapScreenshotContext(opts.ImageContext, userMsg)
+		// Screenshot OCR is fallible reference data and can never mint a private
+		// credential capability. Remove any credential/PII before it reaches the
+		// main model, matching the durable user-message boundary.
+		llmUserMsg = WrapScreenshotContext(security.RedactUserConversationText(opts.ImageContext), llmCurrentUserMsg)
 	}
 
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
@@ -1346,7 +1355,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// nothing groundable was retrieved (the "no evidence → refuse,
 			// never fabricate" guard). Round 0 has no tool evidence and therefore
 			// takes the refusal path.
-			if synth, ok := e.synthesizeOnBudgetExceeded(ctx, userMsg); ok {
+			if synth, ok := e.synthesizeOnBudgetExceeded(ctx, llmCurrentUserMsg); ok {
 				e.messages = append(e.messages, openai.ChatCompletionMessage{
 					Role:    openai.ChatMessageRoleAssistant,
 					Content: synth,
@@ -1453,7 +1462,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// cancellation. Empty ledger → synthesizeOnBudgetExceeded returns false →
 			// the original error still propagates (TestChat_LLMError stays green).
 			if ctx.Err() == nil {
-				if synth, ok := e.synthesizeOnBudgetExceeded(ctx, userMsg); ok {
+				if synth, ok := e.synthesizeOnBudgetExceeded(ctx, llmCurrentUserMsg); ok {
 					e.messages = append(e.messages, openai.ChatCompletionMessage{
 						Role:    openai.ChatMessageRoleAssistant,
 						Content: synth,
@@ -1594,7 +1603,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// relevance floor emptied) keeps the canned message byte-identical and never
 	// fabricates. Final text is always buffered through the response gateway, so
 	// opts.OnTextDelta(synth) is the sole emission for this recovery as well.
-	if synth, ok := e.synthesizeOnBudgetExceeded(ctx, userMsg); ok {
+	if synth, ok := e.synthesizeOnBudgetExceeded(ctx, llmCurrentUserMsg); ok {
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
 			Content: synth,

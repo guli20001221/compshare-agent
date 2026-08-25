@@ -195,12 +195,15 @@ def read(conn, args, secrets=(), opener=ssh_transport.open_client):
             text = data.decode("utf-8")
         except UnicodeDecodeError:
             return _error("not_utf8", path=spec["path"], size_bytes=len(data), sha256=digest)
+        # Scrub the complete bounded file before selecting a line/byte window;
+        # clipping first can expose a prefix when a known secret straddles the
+        # return boundary.
+        text = guardrails.scrub_output(text, secrets)
         window, err = _line_window(text, spec["line_start"], spec["line_count"])
         if err:
             return _error(err["error_class"], path=spec["path"], size_bytes=len(data),
                           sha256=digest, **{key: value for key, value in err.items()
                                             if key not in ("ok", "error_class")})
-        window["content"] = guardrails.scrub_output(window["content"], secrets)
         return {"ok": True, "path": spec["path"], "size_bytes": len(data),
                 "sha256": digest, **window}
     except ValueError as exc:

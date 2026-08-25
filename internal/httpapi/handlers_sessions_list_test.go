@@ -54,6 +54,23 @@ func TestDispatchListSessions_OwnerScopedAndOrdered(t *testing.T) {
 	assert.Less(t, strings.Index(body, "s-new"), strings.Index(body, "s-old"))
 }
 
+func TestDispatchListSessionsRedactsHistoricalAuthorizationTitle(t *testing.T) {
+	const secret = "historical-list-title-secret-0123456789"
+	title := "Authorization: Bearer " + secret
+	ms := &mockSessions{byID: map[string]store.Session{
+		"s-secret": {
+			ID: "s-secret", TopOrganizationID: 1, OrganizationID: 2,
+			Title: &title, UpdatedAt: time.Now(),
+		},
+	}}
+	h := newListTestHandlers(ms)
+	rec := performGateway(h, `{"Action":"ListCSAgentSessions","top_organization_id":1,"organization_id":2}`)
+
+	require.Equal(t, http.StatusOK, rec.Code)
+	assert.NotContains(t, rec.Body.String(), secret)
+	assert.Contains(t, rec.Body.String(), "Authorization")
+}
+
 // TestListSessionsLimitClamp asserts the handler clamps Limit to [1, max] with a
 // default, rather than rejecting out-of-range values like GetSession does — the
 // sidebar is a UI auto-call that should not fail on a stray Limit.
@@ -98,8 +115,8 @@ func TestListSessionsEmptyState(t *testing.T) {
 
 // TestDeriveSessionTitle covers the title derivation used by the chat write path
 // to label history rows: empty input is skipped, CJK survives intact, whitespace
-// collapses, long input truncates by rune, and PII is redacted so the sidebar
-// never shows a phone number the message body itself would have redacted.
+// collapses, long input truncates by rune, and credentials/PII are redacted so
+// the sidebar never shows values the message body itself would have redacted.
 func TestDeriveSessionTitle(t *testing.T) {
 	t.Run("empty and whitespace yield empty", func(t *testing.T) {
 		assert.Equal(t, "", deriveSessionTitle(""))
@@ -120,6 +137,14 @@ func TestDeriveSessionTitle(t *testing.T) {
 		got := deriveSessionTitle("我的手机13800138000")
 		assert.NotContains(t, got, "13800138000")
 		assert.Contains(t, got, guardrails.PhoneRedacted)
+	})
+	t.Run("authorization header value never reaches the sidebar", func(t *testing.T) {
+		const secret = "title-auth-secret-0123456789"
+		got := deriveSessionTitle("Authorization: " + secret)
+		assert.NotContains(t, got, secret)
+		assert.Contains(t, got, "Authorization")
+		assert.Contains(t, got, "[",
+			"the rune cap may truncate the marker, but must leave visible evidence of redaction: %q", got)
 	})
 }
 

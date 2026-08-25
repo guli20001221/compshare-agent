@@ -1,9 +1,11 @@
 package guardrails
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestRedactOutputLeak_IPv4IsPreserved is the inverse of the test it replaces.
@@ -174,6 +176,247 @@ func TestRedactOutputLeak_BearerToken(t *testing.T) {
 			got := RedactOutputLeak(tc.in)
 			assert.Equal(t, tc.want, got)
 		})
+	}
+}
+
+func TestReferenceAuthorizationHeaderValuesUsesTheRedactionParser(t *testing.T) {
+	const (
+		bearer = "Bear" + "er auth-canary-0123456789"
+		basic  = "Basic YWxhZGRpbjpvcGVuc2VzYW1l"
+		custom = "Signature custom-token-0123456789"
+	)
+	input := "curl -H 'Authorization: " + bearer + "' /health\n" +
+		`{"Authorization": "` + basic + `"}` + "\n" +
+		"Authorization：" + custom + "，请验证\n" +
+		"Authorization: " + bearer
+	safe, refs := ReferenceAuthorizationHeaderValues(input)
+	require.Equal(t, []AuthorizationHeaderReference{
+		{Reference: "current-user-authorization-1", Value: bearer},
+		{Reference: "current-user-authorization-2", Value: basic},
+		{Reference: "current-user-authorization-3", Value: custom},
+	}, refs)
+	for _, secret := range []string{bearer, basic, custom} {
+		assert.NotContains(t, safe, secret)
+		assert.NotContains(t, RedactCredentials(input), secret,
+			"anything extractable for the private channel must also be persistence-redactable")
+	}
+	assert.Equal(t, 2, strings.Count(safe, "[AUTHORIZATION_REF:current-user-authorization-1]"),
+		"a duplicate exact value reuses the same request-local reference")
+	assert.Contains(t, safe, "[AUTHORIZATION_REF:current-user-authorization-2]")
+	assert.Contains(t, safe, "[AUTHORIZATION_REF:current-user-authorization-3]")
+}
+
+func TestReferenceAuthorizationHeaderValuesRejectsUnusableValues(t *testing.T) {
+	overlong := "Bearer " + strings.Repeat("x", maxAuthorizationHeaderBytes+1)
+	safe, refs := ReferenceAuthorizationHeaderValues("Authorization: " + overlong)
+	assert.Empty(t, refs)
+	assert.NotContains(t, safe, overlong, "an unusable header must still be removed from live model text")
+	assert.Contains(t, safe, "[AUTHORIZATION_REDACTED]")
+
+	for _, input := range []string{
+		"Authorization: [REDACTED]",
+		"Authorization: x",
+		"Authorization: Bearer xy",
+		"ordinary prose mentioning authorization",
+		"https://example.test/check?authorization=Bearer-secret-0123456789",
+		"X-Amz-Authorization=Signature-secret-0123456789",
+	} {
+		_, refs = ReferenceAuthorizationHeaderValues(input)
+		assert.Empty(t, refs, input)
+	}
+}
+
+func TestReferenceAuthorizationHeaderValuesKeepsCompleteExtensibleHeaders(t *testing.T) {
+	cases := []struct {
+		name      string
+		input     string
+		value     string
+		forbidden string
+	}{
+		{
+			name:      "raw CRLF digest",
+			input:     "Authorization: Digest username=\"Mufasa\", realm=\"test\", nonce=\"abc\", response=\"xyz\"\r\nnext",
+			value:     "Digest username=\"Mufasa\", realm=\"test\", nonce=\"abc\", response=\"xyz\"",
+			forbidden: `response="xyz"`,
+		},
+		{
+			name:      "curl attached short option",
+			input:     `curl -H'Authorization: Signature keyId="key-1",algorithm="hmac-sha256",signature="abc"' /v1`,
+			value:     `Signature keyId="key-1",algorithm="hmac-sha256",signature="abc"`,
+			forbidden: `signature="abc"`,
+		},
+		{
+			name:      "curl long option assignment",
+			input:     "curl --header='Authorization: " + "Bear" + "er opaque-token-0123456789' /health",
+			value:     "Bear" + "er opaque-token-0123456789",
+			forbidden: "opaque-token-0123456789",
+		},
+		{
+			name:      "AWS4 multi parameter",
+			input:     "Authorization: AWS4-HMAC-SHA256 Creden" + "tial=AKID/20260826/cn/service/aws4_request, SignedHeaders=host;x-date, Signature=abcdef0123456789",
+			value:     "AWS4-HMAC-SHA256 Creden" + "tial=AKID/20260826/cn/service/aws4_request, SignedHeaders=host;x-date, Signature=abcdef0123456789",
+			forbidden: "Signature=abcdef0123456789",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			safe, refs := ReferenceAuthorizationHeaderValues(tc.input)
+			require.Equal(t, []AuthorizationHeaderReference{{
+				Reference: "current-user-authorization-1", Value: tc.value,
+			}}, refs)
+			assert.NotContains(t, safe, tc.value)
+			assert.NotContains(t, safe, tc.forbidden)
+			assert.Contains(t, safe, "[AUTHORIZATION_REF:current-user-authorization-1]")
+			persisted := RedactCredentials(tc.input)
+			assert.NotContains(t, persisted, tc.value)
+			assert.NotContains(t, persisted, tc.forbidden)
+		})
+	}
+}
+
+func TestReferenceAuthorizationHeaderValuesSeparatesAssignmentsFromHeaders(t *testing.T) {
+	for _, input := range []string{
+		"Authorization=assignment-secret-0123456789",
+		`curl --data-urlencode 'Authorization=body-secret-0123456789' /submit`,
+		"Authorization: Bearer 密钥不可执行",
+		"curl -H 'Authorization: " + "Bear" + "er unterminated-secret-0123456789",
+	} {
+		safe, refs := ReferenceAuthorizationHeaderValues(input)
+		assert.Empty(t, refs, input)
+		assert.NotEqual(t, input, safe, "credential-shaped non-capabilities must still leave the live model redacted")
+		assert.NotContains(t, safe, "secret-0123456789")
+		assert.NotEqual(t, input, RedactCredentials(input), "the durable boundary must redact the same syntax")
+	}
+
+	for _, input := range []string{
+		"https://example.test/check?Authorization=signed-url-0123456789&x=1",
+		"https://example.test/check?X-Amz-Authorization=signature-query-0123456789",
+		"https://example.test/check?Authorization=Bearer%20encoded-secret-0123456789&x=1",
+	} {
+		safe, refs := ReferenceAuthorizationHeaderValues(input)
+		assert.Empty(t, refs, input)
+		assert.Equal(t, input, safe, "signed URL query parameters keep the established live flow")
+		assert.NotEqual(t, input, RedactCredentials(input), "durable storage must still redact URL credentials")
+		assert.NotContains(t, RedactCredentials(input), "encoded-secret-0123456789")
+	}
+}
+
+func TestReferenceAuthorizationHeaderValuesRedactsCompleteBoundaryAssignment(t *testing.T) {
+	const secret = "assignment-token-0123456789"
+	for _, tc := range []struct {
+		input  string
+		suffix string
+	}{
+		{"Authorization=Bearer " + secret + " 后续中文仍保留", "后续中文仍保留"},
+		{"设置Authorization=Bearer " + secret + " 后续中文仍保留", "后续中文仍保留"},
+		{"请用 **Authorization=Bearer " + secret + "** 验证", "** 验证"},
+	} {
+		safe, refs := ReferenceAuthorizationHeaderValues(tc.input)
+		assert.Empty(t, refs, "an assignment must never mint an HTTP-header capability")
+		assert.NotContains(t, safe, secret)
+		assert.Contains(t, safe, tc.suffix)
+
+		persisted := RedactCredentials(tc.input)
+		assert.NotContains(t, persisted, secret)
+		assert.Contains(t, persisted, tc.suffix)
+	}
+}
+
+func TestReferenceAuthorizationHeaderValuesDoesNotConsumeFollowingProse(t *testing.T) {
+	const value = "Bear" + "er prose-boundary-token-0123456789"
+	input := "排查接口；Authorization: " + value + " 请继续排查实例 uhost-1"
+	safe, refs := ReferenceAuthorizationHeaderValues(input)
+	require.Equal(t, []AuthorizationHeaderReference{{
+		Reference: "current-user-authorization-1", Value: value,
+	}}, refs)
+	assert.Contains(t, safe, "请继续排查实例 uhost-1")
+	persisted := RedactCredentials(input)
+	assert.Contains(t, persisted, "请继续排查实例 uhost-1")
+	assert.NotContains(t, persisted, "prose-boundary-token")
+}
+
+func TestReferenceAuthorizationHeaderValuesRedactsNonExecutableInlineHeaders(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		input  string
+		secret string
+		suffix string
+	}{
+		{
+			name:   "Chinese prose without a boundary",
+			input:  "请使用Authorization: Bearer secret-token-012345进行验证",
+			secret: "secret-token-012345",
+			suffix: "进行验证",
+		},
+		{
+			name:   "Markdown bold field",
+			input:  "请用 **Authorization: Bearer bold-token-012345** 验证",
+			secret: "bold-token-012345",
+			suffix: "** 验证",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			safe, refs := ReferenceAuthorizationHeaderValues(tc.input)
+			assert.Empty(t, refs, "inline prose is not an executable header capability")
+			assert.NotContains(t, safe, tc.secret)
+			assert.Contains(t, safe, tc.suffix)
+			persisted := RedactCredentials(tc.input)
+			assert.NotContains(t, persisted, tc.secret)
+			assert.Contains(t, persisted, tc.suffix)
+		})
+	}
+}
+
+func TestReferenceAuthorizationHeaderValuesBoundsMultiParameterAndShellForms(t *testing.T) {
+	cases := []struct {
+		name   string
+		input  string
+		value  string
+		suffix string
+	}{
+		{
+			name:   "AWS4 before prose",
+			value:  "AWS4-HMAC-SHA256 Creden" + "tial=AKID/scope, SignedHeaders=host;x-date, Signature=abcdef0123456789",
+			suffix: "请验证实例 uhost-1",
+		},
+		{
+			name:   "Digest before prose",
+			value:  `Digest username="Mufasa", realm="test", nonce="abc", response="xyz012345"`,
+			suffix: "继续排查接口",
+		},
+		{
+			name:   "Basic padding before prose",
+			value:  "Basic YWJjZA==",
+			suffix: "继续验证",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			input := "Authorization: " + tc.value + " " + tc.suffix
+			safe, refs := ReferenceAuthorizationHeaderValues(input)
+			require.Equal(t, []AuthorizationHeaderReference{{
+				Reference: "current-user-authorization-1", Value: tc.value,
+			}}, refs)
+			assert.Contains(t, safe, tc.suffix)
+			assert.Contains(t, RedactCredentials(input), tc.suffix)
+		})
+	}
+
+	for _, tc := range []struct {
+		input string
+		value string
+	}{
+		{`curl -HAuthorization:Bearer-attached-token-0123456789 https://example.test/health`, "Bearer-attached-token-0123456789"},
+		{`curl --header=Authorization:Basic-attached-token-0123456789 https://example.test/health`, "Basic-attached-token-0123456789"},
+		{"请用 `Authorization: " + "Bear" + "er markdown-token-0123456789` 验证", "Bear" + "er markdown-token-0123456789"},
+		{"请用 **Authorization**: " + "Bear" + "er bold-key-token-0123456789 验证", "Bear" + "er bold-key-token-0123456789"},
+		{"请用 **Authorization:** " + "Bear" + "er bold-colon-token-0123456789 验证", "Bear" + "er bold-colon-token-0123456789"},
+	} {
+		safe, refs := ReferenceAuthorizationHeaderValues(tc.input)
+		require.Equal(t, []AuthorizationHeaderReference{{
+			Reference: "current-user-authorization-1", Value: tc.value,
+		}}, refs)
+		assert.NotContains(t, safe, tc.value)
 	}
 }
 

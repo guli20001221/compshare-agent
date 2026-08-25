@@ -235,27 +235,47 @@ def _read_if_present(sftp, path, limit):
         return b"", False, exc
 
 
-def _read_optional_since(sftp, path, limit, offset):
-    """Read a bounded tail on first observation, then only bytes appended after ``offset``."""
+def _read_optional_since(sftp, path, limit, offset, overlap=0):
+    """Read a bounded tail plus private prefix context; return the core start within data."""
     try:
         size = int(sftp.lstat(path).st_size)
         if offset is None or not isinstance(offset, int) or offset < 0 or offset > size:
-            data, cut = _read(sftp, path, limit, tail=True)
-            return data, cut, size
-        start = offset
-        cut = size - start > limit
+            start = max(0, size - limit)
+            cut = size > limit
+        else:
+            start = offset
+            cut = size - start > limit
         if cut:
             start = size - limit
+        read_start = max(0, start - max(0, overlap))
         with sftp.file(path, "rb") as handle:
-            handle.seek(start)
-            return handle.read(limit), cut, size
+            handle.seek(read_start)
+            return handle.read(size - read_start), cut, size, start - read_start
     except Exception:  # noqa: BLE001 — absent/unreadable is represented without remote detail
-        return b"", False, 0
+        return b"", False, 0, 0
 
 
 def _bounded_text(data, secrets):
     text = data.decode("utf-8", "replace")
     return guardrails.scrub_output(text, secrets)
+
+
+def _secret_overlap(secrets):
+    lengths = [len(value.encode("utf-8")) for value in secrets
+               if isinstance(value, str) and len(value) >= 3]
+    return max(lengths, default=1) - 1
+
+
+def _mask_known_secret_bytes(data, secrets):
+    """Equal-length masking keeps the core byte window stable after overlap reads."""
+    masked = data
+    for value in secrets:
+        if not isinstance(value, str) or len(value) < 3:
+            continue
+        raw = value.encode("utf-8")
+        if raw:
+            masked = masked.replace(raw, b"*" * len(raw))
+    return masked
 
 
 def poll(conn, job_id, secrets=(), wait_seconds=0, offsets=None,
@@ -321,10 +341,15 @@ def poll(conn, job_id, secrets=(), wait_seconds=0, offsets=None,
 
         # Split the bounded response evenly between both streams; logs themselves remain on-box.
         offsets = offsets if isinstance(offsets, dict) else {}
-        stdout_b, stdout_cut, stdout_total = _read_optional_since(
-            sftp, directory + "/stdout.log", _RETURN_LOG_BYTES // 2, offsets.get("stdout"))
-        stderr_b, stderr_cut, stderr_total = _read_optional_since(
-            sftp, directory + "/stderr.log", _RETURN_LOG_BYTES // 2, offsets.get("stderr"))
+        overlap = _secret_overlap(secrets)
+        stdout_b, stdout_cut, stdout_total, stdout_prefix = _read_optional_since(
+            sftp, directory + "/stdout.log", _RETURN_LOG_BYTES // 2,
+            offsets.get("stdout"), overlap)
+        stderr_b, stderr_cut, stderr_total, stderr_prefix = _read_optional_since(
+            sftp, directory + "/stderr.log", _RETURN_LOG_BYTES // 2,
+            offsets.get("stderr"), overlap)
+        stdout_b = _mask_known_secret_bytes(stdout_b, secrets)[stdout_prefix:]
+        stderr_b = _mask_known_secret_bytes(stderr_b, secrets)[stderr_prefix:]
         log_progress = (stdout_total != offsets.get("stdout") or
                         stderr_total != offsets.get("stderr"))
         result = {"ok": True, "job_id": job_id, "state": state,

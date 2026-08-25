@@ -211,7 +211,11 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 		// Private destinations for the structured endpoint probe. Context itself omits these fields,
 		// so URLs carrying console tokens and raw hosts never enter the model prompt or audit record.
 		// The harness exposes only opaque IDs and resolves them against this stdin-only list.
-		"endpoint_targets":         modelContext.EndpointTargets,
+		"endpoint_targets": modelContext.EndpointTargets,
+		// Current-request HTTP Authorization values follow the same stdin-only
+		// private channel as SSH credentials and endpoint URLs. The model sees only
+		// each opaque ref through the harness tool schema.
+		"probe_authorizations":     modelContext.ProbeAuthorizations,
 		"pending_background_job":   modelContext.PendingBackgroundJob,
 		"background_job_slot_busy": modelContext.BackgroundJobSlotBusy,
 	})

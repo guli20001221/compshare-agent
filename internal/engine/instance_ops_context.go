@@ -8,9 +8,10 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-// These limits bound only the independent contextual reference block. The
-// planner Task remains byte-for-byte untouched: it is the audited/replay-hashed
-// request, not a mutable prompt assembly buffer.
+// These limits bound only the independent contextual reference block. It is
+// never appended to the planner Task and therefore cannot change task hashing
+// or replay identity. The separate request boundary may redact a known current-
+// turn Authorization value before the Task reaches confirmation/audit/prompt.
 const (
 	instanceOpsCurrentReportLimit = 4096
 	instanceOpsPriorReportLimit   = 2048
@@ -31,7 +32,21 @@ func (e *Engine) instanceOpsModelContext() opscontext.Context {
 	if e == nil {
 		return ctx
 	}
-	if report := instanceOpsRedactedTurnReport(e.lastUserMsg, e.imageContextThisTurn, instanceOpsCurrentReportLimit); report != "" {
+	// Only the current USER-TYPED text may mint an ephemeral Authorization
+	// capability. OCR and prior turns remain reference evidence and are redacted
+	// below, never promoted into executable credentials.
+	currentText, authorizationRefs := security.CaptureUserAuthorizationHeaders(userAuthoredText(e.lastUserMsg))
+	// An HTTP request has one Authorization header. Multiple different values in
+	// one user turn have no deterministic target association, so expose none and
+	// let the agent request one unambiguous value instead of guessing.
+	if len(authorizationRefs) == 1 {
+		item := authorizationRefs[0]
+		ctx.ProbeAuthorizations = []opscontext.ProbeAuthorization{{
+			Reference: item.Reference,
+			Value:     item.Value,
+		}}
+	}
+	if report := instanceOpsRedactedTurnReport(currentText, e.imageContextThisTurn, instanceOpsCurrentReportLimit); report != "" {
 		ctx.CurrentUserReport = &opscontext.UserReport{
 			Text:       report,
 			Source:     "chat.current_user",

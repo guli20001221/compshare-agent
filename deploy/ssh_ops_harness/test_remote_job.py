@@ -196,6 +196,19 @@ tailed = remote_job.poll({}, started["job_id"], opener=lambda _c: (_Client(_SFTP
 check("poll-returns-log-tail-not-stale-prefix",
       tailed["stdout_truncated"] is True and tailed["stdout"].endswith("new-line\n") and
       "old-line" not in tailed["stdout"])
+boundary_secret = "remote-job-boundary-secret-012345"
+boundary_prefix_bytes = 7
+boundary_suffix = b"z" * (
+    remote_job._RETURN_LOG_BYTES // 2 - (len(boundary_secret) - boundary_prefix_bytes))
+boundary_files = dict(files)
+boundary_files[base + "/stdout.log"] = (
+    b"old-prefix" + boundary_secret.encode() + boundary_suffix)
+boundary_poll = remote_job.poll(
+    {}, started["job_id"], secrets=(boundary_secret,),
+    opener=lambda _c: (_Client(_SFTP(boundary_files)), None))
+check("poll-scrubs-known-secret-across-tail-window-start",
+      boundary_secret[boundary_prefix_bytes:] not in boundary_poll["stdout"]
+      and boundary_secret not in boundary_poll["stdout"])
 check("poll-rejects-path-instead-of-job-id",
       remote_job.poll({}, "../../etc/shadow", opener=lambda _c: (None, {}))["error_class"] == "invalid_job_id")
 

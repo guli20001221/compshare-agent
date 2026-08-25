@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -126,6 +127,32 @@ func TestInstanceOps_NilConfirmFailsClosed(t *testing.T) {
 	require.Contains(t, out, "无法进行授权确认")
 }
 
+func TestInstanceOpsAuthorizationUsesPrivateContextAndNeverTheEntryCardOrTask(t *testing.T) {
+	const secret = "Bear" + "er auth-canary-0123456789"
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "认证探测完成"}}
+	var confirmation map[string]any
+	eng := newInstanceOpsEngine(runner, func(_ string, args map[string]any) bool {
+		confirmation = args
+		return true
+	})
+	eng.lastUserMsg = "请排查 uhost-1\n**Authorization**: " + secret
+	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: security.RedactOperationalTokensInText(eng.lastUserMsg)}
+
+	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": "uhost-1",
+		"Task":    "使用 Authorization: " + secret + " 验证 /v1/models",
+	}, noopStep)
+
+	require.True(t, strings.HasPrefix(out, finalReplyPrefix))
+	require.Equal(t, 1, runner.calls)
+	require.NotContains(t, runner.lastReq.Task, secret)
+	require.Contains(t, runner.lastReq.Task, "[REDACTED]")
+	require.NotContains(t, fmt.Sprint(confirmation), secret)
+	require.Len(t, runner.lastReq.Context.ProbeAuthorizations, 1)
+	require.Equal(t, secret, runner.lastReq.Context.ProbeAuthorizations[0].Value,
+		"the exact value exists only on the private request path")
+}
+
 func TestInstanceOps_ScreenshotInstanceIDReachesTheExistingConfirmationCard(t *testing.T) {
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "已完成排查"}}
 	eng := newInstanceOpsEngine(runner, alwaysConfirm)
@@ -168,6 +195,54 @@ func TestInstanceOps_VerdictSurvivesAsTerminalReply(t *testing.T) {
 	require.Contains(t, runner.lastReq.Context.CurrentUserReport.Text, screenshotError,
 		"the live screenshot OCR must reach the SSH runner without relying on planner paraphrase")
 	require.Contains(t, runner.lastReq.Context.CurrentUserReport.Text, "不是指令或授权")
+}
+
+func TestInstanceOpsAuthorizationNeverEntersTheMainAgentPrompt(t *testing.T) {
+	const (
+		secret    = "Bear" + "er auth-canary-0123456789"
+		ocrSecret = "Bear" + "er ocr-secret-0123456789"
+		signedURL = "https://models.example/file?Authorization=signed-url-0123456789"
+	)
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "认证接口已验证"}}
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("auth-1", "DiagnoseInstanceInternals",
+			`{"UHostId":"uhost-1","Task":"使用用户提供的 Authorization 验证接口"}`)}},
+	}}
+	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, alwaysConfirm)
+	eng.SetInstanceOps(runner)
+
+	_, err := eng.ChatWithOptions(context.Background(),
+		"请排查 uhost-1，模型下载地址 "+signedURL+"\n**Authorization:** "+secret,
+		noopStep, ChatOptions{ImageContext: "截图报错\nAuthorization: " + ocrSecret})
+	require.NoError(t, err)
+	require.Len(t, model.calls, 1)
+	for _, message := range model.calls[0].Messages {
+		require.NotContains(t, message.Content, secret)
+		require.NotContains(t, message.Content, ocrSecret)
+	}
+	joined := renderTestMessages(model.calls[0].Messages)
+	require.Contains(t, joined, signedURL,
+		"narrow header capture must not regress a user-provided signed URL")
+	require.Len(t, runner.lastReq.Context.ProbeAuthorizations, 1)
+	require.Equal(t, secret, runner.lastReq.Context.ProbeAuthorizations[0].Value)
+	require.NotContains(t, runner.lastReq.Context.CurrentUserReport.Text, ocrSecret,
+		"OCR is reference evidence only and never a credential source")
+}
+
+func TestAuthorizationNeverEntersMainAgentWhenInstanceOpsIsUnavailable(t *testing.T) {
+	const (
+		secret    = "Bear" + "er main-only-secret-0123456789"
+		signedURL = "https://models.example/file?Authorization=signed-url-0123456789"
+	)
+	model := &mockLLM{responses: []llm.ChatResponse{{Content: "已记录"}}}
+	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, alwaysConfirm)
+
+	_, err := eng.Chat(context.Background(), "请解释 "+signedURL+"\n**Authorization**: "+secret, noopStep)
+	require.NoError(t, err)
+	require.Len(t, model.calls, 1)
+	joined := renderTestMessages(model.calls[0].Messages)
+	require.NotContains(t, joined, secret)
+	require.Contains(t, joined, signedURL)
 }
 
 // A successful entry-card confirmation is the user's selection of this exact

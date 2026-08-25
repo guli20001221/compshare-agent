@@ -753,6 +753,9 @@ func sanitizeConfirmArgs(args map[string]any) map[string]any {
 		case "Password", "password", "Token", "token", "SecurityToken":
 			continue
 		}
+		if guardrails.IsCredentialKey(k) {
+			continue
+		}
 		safe[k] = v
 	}
 	return safe

@@ -38,6 +38,7 @@ import ssh_transport
 # --- the consented connection, delivered via stdin handshake. Module memory only. ---
 _CONN = None          # {"host","user","port","password"|"key"}  (+ optional "instance_id","model")
 _ENDPOINT_TARGETS = {}  # opaque id -> private server-selected HTTP/TCP target; never rendered
+_PROBE_AUTHORIZATIONS = {}  # opaque current-request ref -> private Authorization value; stdin only
 AUDIT = []            # per-command: {command, tier, executed, exit_code, disposition}
 _DYNAMIC_SECRETS = [] # caller API auth used by structured probes; process-memory only, never audited
 _JOB_POLL_OFFSETS = {}  # job_id -> bounded stdout/stderr cursors for this one model run
@@ -462,11 +463,75 @@ def render_prompt(task, reference_context):
     return render_prepared_prompt(task, prepare_reference_context(reference_context))
 
 
+_AUTHORIZATION_REF_RE = re.compile(r"[A-Za-z0-9._-]{1,64}\Z")
+_AUTH_PARAM_RE = re.compile(
+    r'''\b[A-Za-z][A-Za-z0-9._~-]*\s*=\s*(?:"((?:\\.|[^"\\])*)"|'''
+    r"'((?:\\.|[^'\\])*)'|([^,\s]+))")
+_MAX_PROBE_AUTHORIZATIONS = 4
+_MAX_AUTHORIZATION_BYTES = 2048
+_MAX_DYNAMIC_AUTH_FRAGMENTS = 128
+
+
+def _normalize_probe_authorizations(value):
+    """Accept only the typed private handshake shape; return ref->exact value."""
+    if not isinstance(value, list):
+        return {}
+    normalized = {}
+    for item in value[:_MAX_PROBE_AUTHORIZATIONS]:
+        if not isinstance(item, dict) or set(item) - {"ref", "value"}:
+            continue
+        ref, authorization = item.get("ref"), item.get("value")
+        if (not isinstance(ref, str) or not _AUTHORIZATION_REF_RE.fullmatch(ref)
+                or ref in normalized):
+            continue
+        if (not isinstance(authorization, str) or not authorization
+                or len(authorization) > _MAX_AUTHORIZATION_BYTES
+                or authorization != authorization.strip()
+                or any(ord(ch) < 0x20 or ord(ch) >= 0x7f for ch in authorization)):
+            continue
+        parts = authorization.split(None, 1)
+        credential = parts[1] if len(parts) == 2 else parts[0]
+        if len(credential) < 3:
+            continue
+        normalized[ref] = authorization
+    return normalized
+
+
+def _authorization_refs():
+    return list(_PROBE_AUTHORIZATIONS)
+
+
+def _resolve_probe_authorization(args):
+    """Resolve one model-visible ref without ever reflecting a supplied value."""
+    if isinstance(args, dict) and "authorization" in args:
+        return "", {"ok": False, "error_class": "raw_authorization_not_accepted",
+                    "invalid_fields": ["authorization_ref"]}
+    ref = args.get("authorization_ref") if isinstance(args, dict) else None
+    if ref in (None, ""):
+        return "", None
+    if not isinstance(ref, str) or ref not in _PROBE_AUTHORIZATIONS:
+        return "", {"ok": False, "error_class": "unknown_authorization_ref",
+                    "invalid_fields": ["authorization_ref"]}
+    authorization = _PROBE_AUTHORIZATIONS[ref]
+    # Add both the full header and credential token before any network I/O can
+    # produce an echo through the guest or model verdict.
+    _remember_authorization(authorization)
+    return authorization, None
+
+
 def set_conn(conn: dict) -> None:
     """Latch the connection and private endpoint targets from the one-shot handshake."""
-    global _CONN, _ENDPOINT_TARGETS
+    global _CONN, _ENDPOINT_TARGETS, _PROBE_AUTHORIZATIONS
     _CONN = conn
     _ENDPOINT_TARGETS = endpoint_probe.normalize_targets(conn.get("endpoint_targets"))
+    _PROBE_AUTHORIZATIONS = _normalize_probe_authorizations(conn.get("probe_authorizations"))
+    # Register every private value at handshake time, before the model can run a
+    # different SSH/read/search tool that happens to observe the same credential
+    # in a guest log. A new handshake also invalidates the previous request's
+    # scrub set; refs and secret memory have the same lifetime.
+    del _DYNAMIC_SECRETS[:]
+    for authorization in _PROBE_AUTHORIZATIONS.values():
+        _remember_authorization(authorization)
 
 
 def _secrets():
@@ -482,8 +547,22 @@ def _remember_authorization(value):
     if not isinstance(value, str) or not value or value != value.strip():
         return
     parts = value.split(None, 1)
-    for secret in (value, parts[-1] if parts else ""):
-        if len(secret) >= 3 and secret not in _DYNAMIC_SECRETS:
+    candidates = [value, parts[-1] if parts else ""]
+    # A guest may echo only one Digest/Signature/AWS4 auth-param instead of the
+    # complete header. Retain each exact assignment and sufficiently distinctive
+    # value for output scrubbing; schemes remain generic and bounded.
+    parameter_text = parts[-1] if len(parts) > 1 else value
+    for match in list(_AUTH_PARAM_RE.finditer(parameter_text))[:32]:
+        candidates.append(match.group(0).strip())
+        raw_value = next((group for group in match.groups() if group is not None), "")
+        if len(raw_value) >= 6:
+            candidates.append(raw_value)
+            unescaped = re.sub(r'''\\(["'\\])''', r"\1", raw_value)
+            if unescaped != raw_value:
+                candidates.append(unescaped)
+    for secret in candidates:
+        if (len(secret) >= 3 and secret not in _DYNAMIC_SECRETS
+                and len(_DYNAMIC_SECRETS) < _MAX_DYNAMIC_AUTH_FRAGMENTS):
             _DYNAMIC_SECRETS.append(secret)
 
 
@@ -1352,7 +1431,7 @@ async def main():
                                       readOnlyHint=True, destructiveHint=False,
                                       idempotentHint=True, openWorldHint=True))
     async def find_paths(args):
-        result = await asyncio.to_thread(remote_search.find_paths, _CONN, args)
+        result = await asyncio.to_thread(remote_search.find_paths, _CONN, args, _secrets())
         rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         disposition = _structured_read_disposition(result)
         display = "find_paths root=" + str(result.get("root") or "invalid")[:512]
@@ -1386,16 +1465,24 @@ async def main():
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
                 **({"is_error": True} if disposition != "ran_read_only" else {})}
 
-    @tool("endpoint_probe", endpoint_probe.tool_description(_ENDPOINT_TARGETS),
-          endpoint_probe.input_schema(_ENDPOINT_TARGETS),
+    @tool("endpoint_probe", endpoint_probe.tool_description(_ENDPOINT_TARGETS, _authorization_refs()),
+          endpoint_probe.input_schema(_ENDPOINT_TARGETS, _authorization_refs()),
           annotations=ToolAnnotations(title="Probe a platform endpoint", readOnlyHint=True,
                                       destructiveHint=False, idempotentHint=True, openWorldHint=True))
     async def probe_endpoint(args):
-        _remember_authorization(args.get("authorization"))
+        authorization, auth_error = _resolve_probe_authorization(args)
+        if auth_error is not None:
+            result = dict(auth_error)
+            result.update({"transport_reachable": False, "stage": "request_validation"})
+            rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+            _record_structured_step("endpoint_probe target=invalid", "read_only",
+                                    "refused_precondition", len(rendered.encode("utf-8")))
+            return {"content": [{"type": "text", "text": rendered}],
+                    "structuredContent": result, "is_error": True}
         # Network I/O is bounded but blocking in the stdlib; keep it off the SDK event loop.
         result = await asyncio.to_thread(
             endpoint_probe.probe, _ENDPOINT_TARGETS, args.get("target_id") or "",
-            args.get("path") or "", args.get("method") or "GET", args.get("authorization") or "")
+            args.get("path") or "", args.get("method") or "GET", authorization)
         rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         # A completed connection/HTTP attempt is diagnostic evidence even when it observes a
         # refusal, timeout or 5xx. Only target/options validation is a precondition refusal.
@@ -1408,13 +1495,28 @@ async def main():
                 **({"is_error": True} if disposition != "ran_read_only" else {})}
 
     @tool("guest_endpoint_probe", guest_endpoint_probe.TOOL_DESCRIPTION,
-          guest_endpoint_probe.input_schema(),
+          guest_endpoint_probe.input_schema(_authorization_refs()),
           annotations=ToolAnnotations(title="Probe guest loopback", readOnlyHint=True,
                                       destructiveHint=False, idempotentHint=True, openWorldHint=False))
     async def probe_guest_endpoint(args):
-        _remember_authorization(args.get("authorization"))
+        authorization, auth_error = _resolve_probe_authorization(args)
+        if auth_error is not None:
+            result = dict(auth_error)
+            rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+            _record_structured_step("guest_endpoint_probe protocol=invalid port=invalid",
+                                    "read_only", "refused_precondition",
+                                    len(rendered.encode("utf-8")))
+            return {"content": [{"type": "text", "text": rendered}],
+                    "structuredContent": result, "is_error": True}
+        # Build the internal probe arguments from an allowlist. A model-supplied
+        # raw authorization/headers/body field is never forwarded even if an SDK
+        # version were to skip JSON-schema validation.
+        probe_args = {key: args[key] for key in (
+            "protocol", "port", "method", "path", "host_header", "timeout_seconds") if key in args}
+        if authorization:
+            probe_args["authorization"] = authorization
         result = await asyncio.to_thread(
-            guest_endpoint_probe.probe, _CONN, args, _secrets())
+            guest_endpoint_probe.probe, _CONN, probe_args, _secrets())
         rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         protocol = str(result.get("protocol") or "invalid")[:8]
         port = str(result.get("port") or "invalid")[:8]

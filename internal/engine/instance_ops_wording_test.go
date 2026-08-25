@@ -43,6 +43,10 @@ func TestInstanceOpsDescriptionOffersConfirmationGatedRepair(t *testing.T) {
 	if !strings.Contains(*desc, "始终会被拒绝") {
 		t.Fatalf("description omits the destructive refusal: %q", *desc)
 	}
+	if !strings.Contains(*desc, "本轮消息中明确给出 Authorization") ||
+		!strings.Contains(*desc, "不要索要、复制或猜测凭据值") {
+		t.Fatalf("description does not tell the planner about the request-local auth capability: %q", *desc)
+	}
 }
 
 // With the lane off the tool is absent entirely (INV-10).
