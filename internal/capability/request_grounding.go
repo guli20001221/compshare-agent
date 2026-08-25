@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/platform"
 )
 
@@ -14,6 +15,9 @@ import (
 // follow-ups without trusting assistant prose or tool output. The typed handler
 // still never receives chat text: this runs at the engine boundary.
 func ValidateCurrentTurnGrounding(request platform.ReadRequest, currentUserText string, priorUserTexts ...string) error {
+	if err := validateUserLiteralInstanceIDs(targetRefsForGrounding(request), currentUserText, priorUserTexts...); err != nil {
+		return err
+	}
 	switch req := request.(type) {
 	case ImageListRequest:
 		query := strings.TrimSpace(req.Query)
@@ -77,6 +81,56 @@ func ValidateCurrentTurnGrounding(request platform.ReadRequest, currentUserText 
 		}
 	}
 	return nil
+}
+
+func targetRefsForGrounding(request platform.ReadRequest) []platform.TargetRef {
+	switch req := request.(type) {
+	case ResourceInfoRequest:
+		return req.Targets
+	case InstanceAccessRequest:
+		return req.Targets
+	case MonitorCurrentRequest:
+		return req.Targets
+	case MonitorHistoryRequest:
+		return req.Targets
+	case RefundEstimateRequest:
+		return req.Targets
+	default:
+		return nil
+	}
+}
+
+func validateUserLiteralInstanceIDs(refs []platform.TargetRef, currentUserText string, priorUserTexts ...string) error {
+	// Current and recent user messages are both literal evidence. Source is
+	// model-provided metadata, so the check intentionally ignores it.
+	grounded := foldedInstanceIDs(currentUserText)
+	for _, text := range priorUserTexts {
+		for id := range foldedInstanceIDs(text) {
+			grounded[id] = struct{}{}
+		}
+	}
+	if len(grounded) == 0 {
+		return nil
+	}
+	for _, ref := range refs {
+		if ref.Type != platform.TargetRefUHostIDUserInput {
+			continue
+		}
+		value := strings.ToLower(strings.TrimSpace(ref.Value))
+		if _, ok := grounded[value]; !ok {
+			return fmt.Errorf("targets: 实例 ID %q 不是当前或近期用户原文中的完整 ID", strings.TrimSpace(ref.Value))
+		}
+	}
+	return nil
+}
+
+func foldedInstanceIDs(text string) map[string]struct{} {
+	ids := (entity.RegistrySnapshot{}).InstanceIDTokensInText(text)
+	out := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		out[strings.ToLower(id)] = struct{}{}
+	}
+	return out
 }
 
 func requireLiteralSpan(userText, span, field string) error {

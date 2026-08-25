@@ -73,6 +73,16 @@ func TestCFSListHandle_UpstreamError(t *testing.T) {
 	assert.Equal(t, cfsFailureLabel+": "+FriendlyReadFailureReply, result.Reply)
 }
 
+func TestCFSListRejectsANonCFSResourceBeforeUpstream(t *testing.T) {
+	exec := &mapReadExec{}
+	reg := NewReadCapability(cfsListReadSpec())
+	result := reg.Run(context.Background(), CFSListRequest{CFS: &platform.CFSRef{ID: "cvolume-123"}}, ReadRuntime{Executor: exec})
+
+	require.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)
+	require.Contains(t, result.Reply, "只查询 CFS")
+	require.Empty(t, exec.calls)
+}
+
 // --- CFS create price -----------------------------------------------------------
 
 func TestCFSCreatePriceHandle_PodZone(t *testing.T) {

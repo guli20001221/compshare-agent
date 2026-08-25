@@ -58,7 +58,7 @@ HTTP 状态码与 `Code` 一一对应：
 | 500 | `InternalError` | 后端未预期错误 |
 | 502 | `ModelError` | LLM 上游错误 |
 | 504 | `ModelTimeout` | LLM 调用超时 |
-| —   | `Aborted` | 客户端主动断开（仅 SendCSAgentChat SSE 流，**没有对应的 HTTP 状态**：此时 SSE 响应已是 200，服务端只把对应 assistant 消息的 `Status` 置为 `aborted`，下次 `GetCSAgentSession` 才能看到） |
+| —   | `Aborted` | 客户端主动断开（仅 SendCSAgentChat SSE 流，**没有对应的 HTTP 状态**：此时 SSE 响应已是 200，服务端会把对应 assistant 消息标为 `aborted` 并写入中性中断说明，下次 `GetCSAgentSession` 才能看到） |
 
 ---
 
@@ -340,7 +340,7 @@ event: error  ← 任意时刻出现，表示终止
 
 ### 客户端中断
 
-前端关闭连接（EventSource.close / 切路由 / 关 tab）后服务端会把当前 assistant 消息标记为 `aborted`，下次 `GetCSAgentSession` 会看到这条消息的 `Status = "aborted"`。
+前端关闭连接（EventSource.close / 切路由 / 关 tab）后服务端会把当前 assistant 消息标记为 `aborted`，并写入中性的“本次回复已中止”说明；下次 `GetCSAgentSession` 会看到这条非空消息。
 
 > 中断**不会**额外发 `event: error` 或改 HTTP 状态码（SSE 已经回 200），前端只能依赖自己的连接关闭事件和后续 `GetCSAgentSession` 校对。
 

@@ -280,6 +280,11 @@ type Definition struct {
 	// operations. BuildCatalog enforces that each name is a real field of this
 	// guided workflow and is optional, non-target and non-secret.
 	UserSuppliedOptionalFields []string
+	// CurrentUserEvidenceFields names proposal fields whose value may change the
+	// operation's meaning enough that current-turn user evidence is required.
+	// The action resolver rejects inferred or carried values for these fields;
+	// ordinary workflow confirmation remains unchanged.
+	CurrentUserEvidenceFields []string
 }
 
 // FailureReason classifies a failure for callers that must DO something different

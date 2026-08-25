@@ -93,18 +93,16 @@ func TestResolverDoesNotTrustInstanceNamesWithoutServerEvidence(t *testing.T) {
 	}
 }
 
-func TestOperationSpecificStructuredValidatorRejectsAmbiguity(t *testing.T) {
+func TestOperationSpecificStructuredValidatorUsesScheduleModeAsDiscriminator(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
-	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
-	resolved := resolver.Resolve(ActionProposal{Operation: "SetStopSchedulerWorkflow", Slots: []SlotCandidate{
-		{Name: "UHostId", Value: "uhost-1", Source: SourceToolObservation, Evidence: &SourceEvidence{ContextField: "recent_observations"}},
-		{Name: "Schedule", Value: map[string]any{
+	spec, ok := catalog.Lookup("SetStopSchedulerWorkflow")
+	require.True(t, ok)
+	require.NoError(t, spec.ValidateResolved(map[string]any{
+		"Schedule": map[string]any{
 			"mode": "today", "local_time": "23:00", "minutes": float64(30),
-		}, Source: SourceAgentInference},
-	}})
-	require.False(t, resolved.ReadyForConfirmation)
-	require.Contains(t, resolved.Rejected, "mode=today 不允许 minutes 或 at")
+		},
+	}))
 }
 
 func TestCatalogMarksSensitiveAndResourceFields(t *testing.T) {

@@ -93,7 +93,7 @@ func TestConfirmedSelfElectedTargetExecutesExactID(t *testing.T) {
 	out := eng.executeActionProposal(context.Background(),
 		stopInstanceProposal("turn-selfelect", "uhost-a"), noopStep)
 
-	require.Contains(t, out, "执行关机")
+	require.Contains(t, out, "提交关机请求")
 	require.Contains(t, exec.calls, "StopCompShareInstance")
 	require.Equal(t, "uhost-a", stopArgs["UHostId"], "the workflow executes exactly the card's id")
 }

@@ -63,7 +63,7 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 		agentResult := modelOwnedReadArgumentError(
 			action,
 			"read_argument_grounding",
-			"工具参数包含用户本轮或近期对话未明确表达的筛选条件。请删除或改为用户已明确表达的条件后，重发同一次调用；不要向用户追问。",
+			"工具参数包含用户本轮或近期对话未明确表达的筛选条件或资源 ID。请按用户原文修正后重发同一次调用；不要向用户重复提问。",
 		)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: err.Error(), ErrorCode: agentResult.Error.Code})
 		return tools.MarshalAgentToolResult(agentResult)

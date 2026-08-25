@@ -50,9 +50,6 @@ func resolveShutdownTime(params map[string]any) (unix int64, display string, err
 	var target time.Time
 	switch mode {
 	case "after_minutes":
-		if scheduleFieldPresent(schedule, "local_time", "at") {
-			return 0, "", fmt.Errorf("mode=after_minutes 不允许 local_time 或 at")
-		}
 		minutesValue, ok := numericValue(schedule["minutes"])
 		if !ok || minutesValue != math.Trunc(minutesValue) {
 			return 0, "", fmt.Errorf("Schedule.minutes 必须是正整数")
@@ -63,9 +60,6 @@ func resolveShutdownTime(params map[string]any) (unix int64, display string, err
 		}
 		target = now.Add(time.Duration(minutes) * time.Minute)
 	case "today", "tomorrow":
-		if scheduleFieldPresent(schedule, "minutes", "at") {
-			return 0, "", fmt.Errorf("mode=%s 不允许 minutes 或 at", mode)
-		}
 		clock, _ := schedule["local_time"].(string)
 		parsedClock, parseErr := time.ParseInLocation("15:04", strings.TrimSpace(clock), loc)
 		if parseErr != nil {
@@ -78,9 +72,6 @@ func resolveShutdownTime(params map[string]any) (unix int64, display string, err
 			target = target.AddDate(0, 0, 1)
 		}
 	case "absolute":
-		if scheduleFieldPresent(schedule, "minutes", "local_time") {
-			return 0, "", fmt.Errorf("mode=absolute 不允许 minutes 或 local_time")
-		}
 		at, _ := schedule["at"].(string)
 		if parsed, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(at)); parseErr == nil {
 			target = parsed
@@ -96,15 +87,6 @@ func resolveShutdownTime(params map[string]any) (unix int64, display string, err
 		return 0, "", fmt.Errorf("关机时间必须至少在当前时间的 5 分钟之后")
 	}
 	return target.Unix(), formatShutdownDisplay(target, now), nil
-}
-
-func scheduleFieldPresent(schedule map[string]any, names ...string) bool {
-	for _, name := range names {
-		if _, exists := schedule[name]; exists {
-			return true
-		}
-	}
-	return false
 }
 
 func shutdownScheduleLocation(schedule map[string]any) (*time.Location, error) {

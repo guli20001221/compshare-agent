@@ -86,6 +86,11 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 			reject(name, RejectUnknownField, fmt.Sprintf("unknown slot %s", name))
 			continue
 		}
+		if field.CurrentUserEvidence && candidate.Source != SourceUserExplicit {
+			reject(name, RejectUnverifiedSource, fmt.Sprintf("%s: 该可选值未出现在用户当前消息中；普通操作请删除该字段后重试，若用户确实需要该选项，请先让用户明确具体值", name))
+			adjudicated[name] = struct{}{}
+			continue
+		}
 		// Guided forms cannot re-confirm fields outside their controls. For the
 		// explicitly declared optional exceptions, keep a value only when it came
 		// from the user's own current-message evidence; otherwise let the workflow

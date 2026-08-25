@@ -186,7 +186,7 @@ func TestIntakeSpecRejectsUnsafeUserSuppliedDeclarations(t *testing.T) {
 	})
 }
 
-func TestOnlyCreateDeclaresUserSuppliedOptionalFields(t *testing.T) {
+func TestWorkflowFieldSourcePoliciesAreDeclared(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
 	for _, operation := range catalog.Operations() {
@@ -194,10 +194,31 @@ func TestOnlyCreateDeclaresUserSuppliedOptionalFields(t *testing.T) {
 		require.True(t, ok)
 		if operation == "CreateInstanceWorkflow" {
 			require.Equal(t, []string{"DataDiskSize", "SystemDiskSize"}, spec.Intake.UserSuppliedOptionalFields)
-			continue
+		} else {
+			require.Empty(t, spec.Intake.UserSuppliedOptionalFields)
 		}
-		require.Empty(t, spec.Intake.UserSuppliedOptionalFields)
+		if field, exists := spec.Fields["WithoutGpuSpec"]; exists {
+			require.Equal(t, operation == "StartInstanceWorkflow", field.CurrentUserEvidence)
+		}
 	}
+}
+
+func TestWithoutGpuStartRequiresCurrentUserEvidence(t *testing.T) {
+	catalog, err := BuildCatalog()
+	require.NoError(t, err)
+	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
+
+	inferred := resolver.Resolve(ActionProposal{Operation: "StartInstanceWorkflow", Slots: []SlotCandidate{
+		{Name: "WithoutGpuSpec", Value: "A", Source: SourceAgentInference},
+	}})
+	require.NotContains(t, inferred.Arguments, "WithoutGpuSpec")
+	require.NotEmpty(t, inferred.Rejected)
+	require.Contains(t, inferred.Rejected[0], "普通操作请删除该字段后重试")
+
+	explicit := resolver.Resolve(ActionProposal{Operation: "StartInstanceWorkflow", Slots: []SlotCandidate{
+		{Name: "WithoutGpuSpec", Value: "A", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "A"}},
+	}})
+	require.Equal(t, "A", explicit.Arguments["WithoutGpuSpec"])
 }
 
 func TestUngroundedOptionalCreateFieldsDoNotBecomeContractValues(t *testing.T) {
