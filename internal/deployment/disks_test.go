@@ -30,3 +30,22 @@ func TestResolveBootDiskHonoursEveryMinimum(t *testing.T) {
 		})
 	}
 }
+
+func TestCatalogDataDiskRangeUsesTheExactGPUAndZone(t *testing.T) {
+	catalog := map[string]any{"AvailableInstanceTypes": []any{
+		map[string]any{"Name": "H20", "Zone": "cn-wlcb-01", "Disks": []any{map[string]any{
+			"DataDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(10), "MaximalSize": float64(8000)}},
+		}}},
+		map[string]any{"Name": "H20", "Zone": "cn-sh2-02", "Disks": []any{map[string]any{
+			"DataDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(20), "MaximalSize": float64(4000)}},
+		}}},
+	}}
+
+	rangeSpec, ok := CatalogDataDiskRange(catalog, "H20", "cn-wlcb-01", DiskTypeCloudSSD)
+	require.True(t, ok)
+	require.Equal(t, uint32(10), rangeSpec.MinimumGB)
+	require.Equal(t, uint32(8000), rangeSpec.MaximumGB)
+
+	_, ok = CatalogDataDiskRange(catalog, "H20", "cn-bj2-03", DiskTypeCloudSSD)
+	require.False(t, ok, "data-disk support must not fall back to another zone")
+}

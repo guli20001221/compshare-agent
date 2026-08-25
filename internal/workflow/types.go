@@ -264,7 +264,7 @@ type Definition struct {
 	// form can collect AND correct — the only fields whose missing/invalid/
 	// conflicting values may open the form instead of bouncing to prose. It must
 	// be declared (not auto-derived from every non-secret schema field): a create
-	// schema carries fields the form has no input for (e.g. SystemDiskSize), and a
+	// schema carries fields the form has no input for (for example explicit disk sizes), and a
 	// resolver problem on such a field is NOT form-correctable. Required when
 	// GuidedIntake is true. Every name must be a real field of this workflow
 	// (BuildCatalog enforces it).

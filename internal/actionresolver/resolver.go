@@ -414,7 +414,7 @@ func (r *Resolver) normalizeValue(field FieldSpec, value any) (any, error) {
 		}
 		return number, nil
 	case CodecCapacity:
-		number, ok := asCapacityGB(value)
+		number, ok := NormalizeCapacityGB(value)
 		if !ok || number <= 0 || math.Trunc(number) != number {
 			return nil, fmt.Errorf("must be a positive integer capacity in GB")
 		}
@@ -464,10 +464,9 @@ func asNumber(value any) (float64, bool) {
 	}
 }
 
-// asCapacityGB is the shared capacity codec. It parses a value, not a user
-// sentence: the Agent must pass the exact sourced span (for example "200G")
-// and the resolver performs the unit conversion at this boundary.
-func asCapacityGB(value any) (float64, bool) {
+// NormalizeCapacityGB is the shared capacity codec. It parses one value (for
+// example "200G" or "200GiB") and performs unit conversion at this boundary.
+func NormalizeCapacityGB(value any) (float64, bool) {
 	if number, ok := asNumber(value); ok {
 		return number, true
 	}
@@ -483,6 +482,58 @@ func asCapacityGB(value any) (float64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// CapacityLiteral is one explicit G/GB/GiB value in user text. Offsets are rune
+// offsets so they can be copied directly into SourceEvidence.
+type CapacityLiteral struct {
+	Text       string
+	Start, End int
+}
+
+// CapacityLiterals tokenizes capacity values without assigning them to a
+// business field. The Agent decides whether a value describes a system disk or
+// a data disk; the resolver only supplies the same unit grammar used by
+// NormalizeCapacityGB so provenance and validation cannot disagree.
+func CapacityLiterals(text string) []CapacityLiteral {
+	runes := []rune(text)
+	var out []CapacityLiteral
+	for start := 0; start < len(runes); start++ {
+		if !unicode.IsDigit(runes[start]) {
+			continue
+		}
+		end := start
+		for end < len(runes) && unicode.IsDigit(runes[end]) {
+			end++
+		}
+		if end < len(runes) && runes[end] == '.' {
+			fraction := end + 1
+			for fraction < len(runes) && unicode.IsDigit(runes[fraction]) {
+				fraction++
+			}
+			if fraction > end+1 {
+				end = fraction
+			}
+		}
+		for end < len(runes) && (runes[end] == ' ' || runes[end] == '\t') {
+			end++
+		}
+		if end >= len(runes) || unicode.ToLower(runes[end]) != 'g' {
+			continue
+		}
+		end++
+		if end < len(runes) && unicode.ToLower(runes[end]) == 'i' {
+			if end+1 >= len(runes) || unicode.ToLower(runes[end+1]) != 'b' {
+				continue
+			}
+			end += 2
+		} else if end < len(runes) && unicode.ToLower(runes[end]) == 'b' {
+			end++
+		}
+		out = append(out, CapacityLiteral{Text: string(runes[start:end]), Start: start, End: end})
+		start = end - 1
+	}
+	return out
 }
 
 func sameValue(left, right any) bool {

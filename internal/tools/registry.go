@@ -622,6 +622,10 @@ var Registry = []openai.Tool{
 						"type":        "string",
 						"description": "系统盘容量原文（如 190GB）；用户未指定则省略。",
 					},
+					"DataDiskSize": map[string]any{
+						"type":        "string",
+						"description": "随实例创建的 SSD 数据盘容量（如 100GB）；用户未指定则省略。",
+					},
 					"ImageSource": map[string]any{
 						"type":        "string",
 						"description": "镜像来源：platform（平台镜像，默认）/ community（社区镜像）/ custom（当前账户的自制镜像）。仅在用户明确说出来源，或 ID 来自近期已展示的镜像推荐且来源已知时填写。用户直接给出精确 CompShareImageId 但未说来源时，填写 ID 并省略本字段；服务端会通过实时目录确定其实际来源。",

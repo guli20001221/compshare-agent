@@ -193,6 +193,70 @@ func TestRequestedSystemDiskSizeFlowsThroughTheCreateContract(t *testing.T) {
 	}
 }
 
+func TestRequestedDataDiskFlowsThroughTheSingleCreateContract(t *testing.T) {
+	executor := draftMockExecutor("cn-sh2-02")
+	var card map[string]any
+	eng := NewEngine(executor, func(_ string, args map[string]any) bool {
+		card = deepCopyParams(args)
+		return true
+	}, nil)
+
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
+		"GpuType":        "4090",
+		"SystemDiskSize": float64(200),
+		"DataDiskSize":   float64(100),
+	})
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Equal(t, "SSD 云盘 200GB", card["SystemDisk"])
+	require.Equal(t, "SSD 云数据盘 100GB（实例进入运行状态后异步创建并挂载）", card["DataDisk"])
+
+	stored, ok := result.Contract.BusinessParams[createDraftKey].(map[string]any)
+	require.True(t, ok)
+	snapshot, err := ParseCreateConfirmationSnapshot(stored)
+	require.NoError(t, err)
+	require.Len(t, snapshot.Execution.Args.Disks, 2)
+
+	for _, action := range []string{
+		"CheckCompShareResourceCapacity",
+		"GetCompShareInstanceUserPrice",
+		"CreateCompShareInstance",
+	} {
+		call, found := findExecutorCall(executor.calls, action)
+		require.True(t, found, "%s was not called", action)
+		disks, ok := call.args["Disks"].([]any)
+		require.True(t, ok, "%s did not receive the confirmed disks", action)
+		require.Len(t, disks, 2, action)
+		data := disks[1].(map[string]any)
+		require.Equal(t, false, data["IsBoot"], action)
+		require.Equal(t, "CLOUD_SSD", data["Type"], action)
+		require.Equal(t, uint32(100), data["Size"], action)
+	}
+}
+
+func TestCreatePriceIncludesDataDiskWithoutDoubleCountingSystemDisk(t *testing.T) {
+	raw := map[string]any{"PriceDetails": []any{map[string]any{
+		"ChargeType":     "Postpay",
+		"Instance":       float64(7),
+		"Disks":          float64(0.5),
+		"SystemDisks":    float64(0.2),
+		"CompShareImage": float64(0.1),
+	}}}
+
+	amount, ok := priceAmountFor(raw, "PriceDetails", "Postpay")
+	require.True(t, ok)
+	require.InDelta(t, 7.6, amount, 0.0001)
+}
+
+func TestPodCreateRejectsARequestedDataDiskBeforeConfirmation(t *testing.T) {
+	wfCtx := draftContext("cn-bj2-03")
+	wfCtx.Params["DataDiskSize"] = float64(100)
+	wfCtx.StepResults["查询镜像"]["ImageSet"].([]any)[0].(map[string]any)["Container"] = true
+
+	_, err := materializeCreateDraft(wfCtx)
+	require.ErrorContains(t, err, "容器区不支持随实例创建普通数据盘")
+}
+
 // TestTheSealRecordsThePriceTheUserWasShown is the point of the snapshot.
 //
 // The contract could already prove what the user configured. It could not prove

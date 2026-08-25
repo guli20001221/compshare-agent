@@ -333,10 +333,6 @@ type Engine struct {
 	// pre-query registry snapshot does NOT, so an observed-but-unverified id can never
 	// serve as a write ExistenceProof. It never persists.
 	verifiedInstanceEvidenceThisTurn map[string]struct{}
-	// actionProposalRanThisTurn distinguishes a mixed write turn from a pure
-	// knowledge answer. Knowledge evidence may support an action, but must not
-	// claim ownership of the final clarification or confirmation text.
-	actionProposalRanThisTurn bool
 	// actionProposalDispositionThisTurn is a compact, value-free classification of
 	// what the resolver did with this turn's write proposal — "confirmation" /
 	// "intake_form" when it reached a card, else the reason it did not
@@ -1222,7 +1218,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.sensitiveRepliesThisTurn = nil
 	e.committedWriteRepliesThisTurn = nil
 	e.toolResultsByCallThisTurn = map[string]string{}
-	e.actionProposalRanThisTurn = false
 	e.actionProposalDispositionThisTurn = ""
 	e.knowledgeQAAgentLoopThisTurn = false
 	e.instanceOpsRanThisTurn = false

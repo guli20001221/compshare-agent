@@ -352,13 +352,13 @@ func CreateInstanceDef() *Definition {
 		// The exact fields the guided form collects/corrects (GPU / zone / count /
 		// CPU-memory / image source+selection / charge type).
 		GuidedIntakeFields: []string{"GpuType", "Zone", "Gpu", "Cpu", "Memory", "ImageSource", "ImageName", "ChargeType"},
-		// SystemDiskSize has no guided-form control. Keep it only when grounded in
+		// Disk sizes have no guided-form controls. Keep them only when grounded in
 		// the user's current message; otherwise the live image/machine catalog
-		// derives the boot disk.
+		// derives the boot disk and no data disk is added.
 		// CompShareImageId is intentionally not user-supplied-only: once a
 		// request names an exact image, silently replacing a stale/wrong-source id
 		// with an unrelated browse result changes the requested object.
-		UserSuppliedOptionalFields: []string{"SystemDiskSize"},
+		UserSuppliedOptionalFields: []string{"DataDiskSize", "SystemDiskSize"},
 	}
 }
 
@@ -1102,12 +1102,16 @@ func guidedCapacityArgsFor(wfCtx *Context, gpuType, zone string) (map[string]any
 	if err != nil {
 		return nil, false
 	}
+	disks, err := workflowCreateDisks(wfCtx, imageID, zone, gpuType, placement)
+	if err != nil {
+		return nil, false
+	}
 	args := deployment.BuildCapacityArgs(deployment.DeploymentDraft{
 		Zone:               zone,
 		GPUType:            gpuType,
 		CompShareImageID:   imageID,
 		ChargeType:         createChargeType(wfCtx.Params),
-		Disks:              workflowSystemDisks(wfCtx, imageID, zone, gpuType),
+		Disks:              disks,
 		MinimalCPUPlatform: workflowMinimalCPUPlatform(wfCtx, gpuType, zone),
 	})
 	return deployment.ApplyCapacityPlacementArgs(args, placement), true
@@ -2024,9 +2028,35 @@ func validateSelectedImageCompatibility(wfCtx *Context, imageID string, placemen
 	return fmt.Errorf("%s 不支持当前 GPU %s，请更换镜像或卡型", name, gpuType)
 }
 
-func workflowSystemDisks(wfCtx *Context, imageID, zone, gpuType string) []any {
-	requestedSize, _ := parseUint32Any(wfCtx.Params["SystemDiskSize"])
-	return deployment.ResolveBootDisk(createImageResult(wfCtx), wfCtx.Result("查询可用配比"), imageID, gpuType, zone, requestedSize)
+func workflowCreateDisks(wfCtx *Context, imageID, zone, gpuType string, placement deployment.ZonePlacement) ([]any, error) {
+	requestedSystemSize, _ := parseUint32Any(wfCtx.Params["SystemDiskSize"])
+	disks := deployment.ResolveBootDisk(
+		createImageResult(wfCtx), wfCtx.Result("查询可用配比"), imageID, gpuType, zone, requestedSystemSize,
+	)
+	requestedDataSize, hasDataDisk := parseUint32Any(wfCtx.Params["DataDiskSize"])
+	if !hasDataDisk {
+		return disks, nil
+	}
+	if placement.IsPod {
+		return nil, fmt.Errorf("容器区不支持随实例创建普通数据盘，请改选虚机区或取消数据盘")
+	}
+	rangeSpec, ok := deployment.CatalogDataDiskRange(
+		wfCtx.Result("查询可用配比"), gpuType, zone, deployment.DiskTypeCloudSSD,
+	)
+	if !ok {
+		return nil, fmt.Errorf("当前可用区和机型不支持 SSD 云数据盘")
+	}
+	if rangeSpec.MinimumGB > 0 && requestedDataSize < rangeSpec.MinimumGB {
+		return nil, fmt.Errorf("数据盘容量不能小于 %dGB", rangeSpec.MinimumGB)
+	}
+	if rangeSpec.MaximumGB > 0 && requestedDataSize > rangeSpec.MaximumGB {
+		return nil, fmt.Errorf("数据盘容量不能大于 %dGB", rangeSpec.MaximumGB)
+	}
+	return append(disks, map[string]any{
+		"IsBoot": false,
+		"Type":   rangeSpec.Type,
+		"Size":   requestedDataSize,
+	}), nil
 }
 
 func workflowMinimalCPUPlatform(wfCtx *Context, gpuType, zone string) string {
@@ -2133,8 +2163,9 @@ func imageMapByID(images map[string]any, id string) map[string]any {
 // priceAmountFor reads the amount quoted for one charge type out of one of the
 // price arrays.
 //
-// It accepts upstream's "Instance" field and the compatible "Price" shape used
-// by existing fixtures.
+// Upstream reports compute, disks and paid image as separate components. Disks
+// already includes SystemDisks, so the latter is used only as a compatibility
+// fallback when Disks is absent. Price is the legacy all-in fallback.
 func priceAmountFor(raw map[string]any, arrKey, chargeType string) (float64, bool) {
 	arr, ok := raw[arrKey].([]any)
 	if !ok {
@@ -2148,8 +2179,23 @@ func priceAmountFor(raw map[string]any, arrKey, chargeType string) (float64, boo
 		if ct, _ := m["ChargeType"].(string); ct != chargeType {
 			continue
 		}
-		if n, ok := priceNumber(m["Instance"]); ok {
-			return n, true
+		total := float64(0)
+		hasComponent := false
+		for _, key := range []string{"Instance", "CompShareImage"} {
+			if n, ok := priceNumber(m[key]); ok {
+				total += n
+				hasComponent = true
+			}
+		}
+		if n, ok := priceNumber(m["Disks"]); ok {
+			total += n
+			hasComponent = true
+		} else if n, ok := priceNumber(m["SystemDisks"]); ok {
+			total += n
+			hasComponent = true
+		}
+		if hasComponent {
+			return total, true
 		}
 		if n, ok := priceNumber(m["Price"]); ok {
 			return n, true
@@ -2359,6 +2405,10 @@ func materializeCreateDraft(wfCtx *Context) (map[string]any, error) {
 	if err := validateSelectedImageCompatibility(wfCtx, imageId, placement); err != nil {
 		return nil, err
 	}
+	disks, err := workflowCreateDisks(wfCtx, imageId, zone, gt, placement)
+	if err != nil {
+		return nil, err
+	}
 
 	// The typed decision. The selection is carried WHOLE, not re-derived for
 	// display: the card renders Image.Name, the create sends Args.CompShareImageID,
@@ -2375,7 +2425,7 @@ func materializeCreateDraft(wfCtx *Context) (map[string]any, error) {
 			MachineType:        deployment.MachineTypeGPU,
 			MinimalCPUPlatform: workflowMinimalCPUPlatform(wfCtx, gt, zone),
 			LoginMode:          deployment.LoginModeConsole,
-			Disks:              workflowSystemDisks(wfCtx, imageId, zone, gt),
+			Disks:              disks,
 			Name:               instanceName,
 		},
 		Image:     image,
@@ -2565,6 +2615,9 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 	if disk := createSystemDiskSummary(draft.Args.Disks); disk != "" {
 		summary["SystemDisk"] = disk
 	}
+	if disk := createDataDiskSummary(draft.Args.Disks); disk != "" {
+		summary["DataDisk"] = disk + "（实例进入运行状态后异步创建并挂载）"
+	}
 	return summary, nil
 }
 
@@ -2572,14 +2625,26 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 // create draft. It never consults the catalog again: the card and the eventual
 // request therefore describe the same disk contract.
 func createSystemDiskSummary(disks []any) string {
+	return createDiskSummary(disks, true)
+}
+
+func createDataDiskSummary(disks []any) string {
+	return createDiskSummary(disks, false)
+}
+
+func createDiskSummary(disks []any, boot bool) string {
 	for _, raw := range disks {
 		disk, _ := raw.(map[string]any)
-		if disk == nil || !paramBool(disk, "IsBoot", false) {
+		if disk == nil || paramBool(disk, "IsBoot", false) != boot {
 			continue
 		}
 		diskType := strings.TrimSpace(paramStr(disk, "Type", ""))
 		if strings.EqualFold(diskType, deployment.DiskTypeCloudSSD) {
-			diskType = "SSD 云盘"
+			if boot {
+				diskType = "SSD 云盘"
+			} else {
+				diskType = "SSD 云数据盘"
+			}
 		}
 		size, hasSize := createDiskSizeGB(disk["Size"])
 		switch {

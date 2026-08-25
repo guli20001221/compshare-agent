@@ -193,7 +193,7 @@ func TestOnlyCreateDeclaresUserSuppliedOptionalFields(t *testing.T) {
 		spec, ok := catalog.Lookup(operation)
 		require.True(t, ok)
 		if operation == "CreateInstanceWorkflow" {
-			require.Equal(t, []string{"SystemDiskSize"}, spec.Intake.UserSuppliedOptionalFields)
+			require.Equal(t, []string{"DataDiskSize", "SystemDiskSize"}, spec.Intake.UserSuppliedOptionalFields)
 			continue
 		}
 		require.Empty(t, spec.Intake.UserSuppliedOptionalFields)

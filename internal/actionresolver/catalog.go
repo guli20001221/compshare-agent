@@ -108,7 +108,7 @@ func codecFromSchema(name string, schema map[string]any, sensitive bool) SlotCod
 	if name == "CompShareImageId" {
 		return CodecImage
 	}
-	if name == "Size" || name == "Memory" || name == "SystemDiskSize" {
+	if name == "Size" || name == "Memory" || name == "SystemDiskSize" || name == "DataDiskSize" {
 		return CodecCapacity
 	}
 	if len(stringSlice(schema["enum"])) > 0 {
@@ -183,7 +183,7 @@ func operationValidator(operation string) func(map[string]any) error {
 // both properties the workflow declares on its Definition, NOT a workflow-name
 // switch or an auto-derivation here. CollectableFields must be the EXPLICIT
 // declared set — never every non-secret/non-target field: a create schema
-// carries fields the form has no input for (e.g. SystemDiskSize), and a resolver
+// carries fields the form has no input for (for example explicit disk sizes), and a resolver
 // problem on such a field is not form-correctable. Errors when a declared field
 // is not a real field of the operation (a typo would silently disable correction)
 // or when a guided workflow declares no fields.
