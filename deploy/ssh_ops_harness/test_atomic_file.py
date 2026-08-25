@@ -398,10 +398,10 @@ try:
         {}, dict(create_args, path=rename_race_path, content="agent-value\n"), opener=_open)
     rename_race_result = atomic_file.apply_edit(
         {}, rename_race_plan, opener=_open_rename_race)
-    check("create-rename-race-is-detected-without-overwrite",
+    check("create-rename-race-is-reported-as-an-ambiguous-post-approval-change",
           rename_race_result["ok"] is False
-          and rename_race_result["error_class"] == "target_created_after_approval"
-          and rename_race_result["box_may_be_changed"] is False)
+          and rename_race_result["error_class"] == "atomic_create_outcome_unknown"
+          and rename_race_result["box_may_be_changed"] is True)
     check("create-rename-race-leaves-the-winner-intact",
           open(_SFTP._local(rename_race_path), "rb").read() == b"won-race\n")
 

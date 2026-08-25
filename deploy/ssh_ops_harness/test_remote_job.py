@@ -200,6 +200,12 @@ truncated_environment = remote_job.poll(
     {}, started["job_id"], opener=lambda _c: (_Client(_SFTP(truncated_environment_files)), None))
 check("truncated-private-identity-never-falsely-releases-the-slot",
       truncated_environment["ok"] and truncated_environment["state"] == "unknown")
+unreadable_identity_files = dict(running_files)
+unreadable_identity_files.pop("/proc/123/environ")
+unreadable_identity = remote_job.poll(
+    {}, started["job_id"], opener=lambda _c: (_Client(_SFTP(unreadable_identity_files)), None))
+check("unreadable-existing-process-identity-never-falsely-releases-the-slot",
+      unreadable_identity["ok"] and unreadable_identity["state"] == "unknown")
 waited = []
 remote_job.poll({}, started["job_id"], wait_seconds=7,
                 opener=lambda _c: (_Client(_SFTP(running_files)), None), sleeper=waited.append)

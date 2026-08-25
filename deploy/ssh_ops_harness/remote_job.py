@@ -274,15 +274,20 @@ def poll(conn, job_id, secrets=(), wait_seconds=0, offsets=None,
         elif re.fullmatch(r"\d+", pid_text):
             try:
                 sftp.lstat("/proc/%s/stat" % pid_text)
-                environ_b, environ_cut = _read_optional(
-                    sftp, "/proc/%s/environ" % pid_text, _PROCESS_IDENTITY_BYTES)
-                marker = ("COMPSHARE_OPS_JOB_ID=" + job_id).encode("ascii")
-                if marker in environ_b.split(b"\0"):
-                    state = "running"
-                else:
-                    state = "unknown" if environ_cut else "interrupted"
             except Exception:  # noqa: BLE001
                 state = "interrupted"
+            else:
+                try:
+                    environ_b, environ_cut = _read(
+                        sftp, "/proc/%s/environ" % pid_text, _PROCESS_IDENTITY_BYTES)
+                except Exception:  # noqa: BLE001 — PID exists but identity is not observable
+                    state = "unknown"
+                else:
+                    marker = ("COMPSHARE_OPS_JOB_ID=" + job_id).encode("ascii")
+                    if marker in environ_b.split(b"\0"):
+                        state = "running"
+                    else:
+                        state = "unknown" if environ_cut else "interrupted"
         else:
             state = "interrupted"
 

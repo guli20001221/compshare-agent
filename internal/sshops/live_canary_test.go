@@ -166,7 +166,8 @@ func TestLiveOpsWriteCanary(t *testing.T) {
 				const marker = " command="
 				index := strings.LastIndex(request.Command, marker)
 				matches = strings.HasPrefix(request.Command, "ssh_exec run_in_background=true purpose=") &&
-					index >= 0 && request.Command[index+len(marker):] == approveShellExact
+					strings.Count(request.Command, marker) == 1 && index >= 0 &&
+					request.Command[index+len(marker):] == approveShellExact
 			}
 			if !matches {
 				t.Logf("DENIED_UNEXPECTED_OPERATION=%s", request.Command)

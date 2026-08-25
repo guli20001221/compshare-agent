@@ -361,8 +361,9 @@ def _apply_create(sftp, plan):
                         "result_bytes": len(verified), "atomic": True,
                         "rename_outcome_recovered": True,
                     }
-                return _error("target_created_after_approval", path=path,
-                              detail=type(exc).__name__, box_may_be_changed=False)
+                return _error("atomic_create_outcome_unknown", path=path,
+                              detail=type(exc).__name__, actual_sha256=actual,
+                              actual_mode="0%03o" % actual_mode, box_may_be_changed=True)
             except ValueError:
                 return _error("target_created_after_approval", path=path,
                               detail=type(exc).__name__, box_may_be_changed=False)
