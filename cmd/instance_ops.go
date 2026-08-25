@@ -194,6 +194,10 @@ func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback, apiKeyFallback st
 	if apiKey == "" {
 		return nil, fmt.Errorf("agent.ssh_ops.api_key is required when agent.llm.api_key is empty")
 	}
+	promptVariant, err := config.NormalizeSSHOpsPromptVariant(sc.PromptVariant)
+	if err != nil {
+		return nil, err
+	}
 	// Both checks fail the boot instead of warning, because either way the setting would be
 	// present in the config and doing nothing — and the whole reason it exists is to answer a
 	// question by running. A prefix that never got used, or a typo that only surfaces as a
@@ -207,12 +211,13 @@ func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback, apiKeyFallback st
 		}
 	}
 	sup := sshops.Supervisor{
-		Python:      sc.Python,
-		HarnessPath: sc.HarnessPath,
-		BaseURL:     sc.BaseURL,
-		APIKey:      apiKey,
-		Model:       model,
-		Timeout:     sc.Timeout,
+		Python:        sc.Python,
+		HarnessPath:   sc.HarnessPath,
+		BaseURL:       sc.BaseURL,
+		APIKey:        apiKey,
+		Model:         model,
+		PromptVariant: promptVariant,
+		Timeout:       sc.Timeout,
 	}
 	// PublicIPv6Prefix rides along here rather than at the call sites for the same reason: it is
 	// an addressing decision that belongs to the deployment, and threading it separately would let
@@ -287,6 +292,7 @@ func serverInstanceOpsRunner(cfg *config.Config, describer sshops.Describer, db 
 	if hostResolver != nil {
 		route = "internal IPv6 via " + cfg.Agent.STS.IAMURL
 	}
-	log.Printf("ssh-ops enabled: consent-gated in-instance diagnosis with per-command repair confirmation (per-tenant STS, fail-closed audit, dialling the %s; a client disconnect ends the run and the user retries)", route)
+	promptVariant, _ := config.NormalizeSSHOpsPromptVariant(cfg.Agent.SSHOps.PromptVariant)
+	log.Printf("ssh-ops enabled: consent-gated in-instance diagnosis with per-command repair confirmation (prompt canary=%s; per-tenant STS, fail-closed audit, dialling the %s; a client disconnect ends the run and the user retries)", promptVariant, route)
 	return newInstanceOpsRunner(svc, describer, limiter), nil
 }

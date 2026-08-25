@@ -26,6 +26,7 @@ func TestDeployConfigPinsContainerSSHOpsRuntime(t *testing.T) {
 		cfg.Agent.SSHOps.HarnessPath,
 	)
 	assert.Equal(t, "/opt/miniforge3/envs/py313/bin/python", cfg.Agent.SSHOps.Python)
+	assert.Equal(t, SSHOpsPromptCurrentCustom, cfg.Agent.SSHOps.PromptVariant)
 }
 
 func TestProductionConfigUsesProductionKnowledgeService(t *testing.T) {
@@ -214,6 +215,7 @@ func TestLoad_SSHOpsConfigParses(t *testing.T) {
     api_key: ssh-ops-test-key
     python: python3
     model: gpt-5.6-terra
+    prompt_variant: official_claude_code_remote
     timeout: "5m"
 `))
 
@@ -224,7 +226,29 @@ func TestLoad_SSHOpsConfigParses(t *testing.T) {
 	assert.Equal(t, "https://api.modelverse.cn", cfg.Agent.SSHOps.BaseURL)
 	assert.Equal(t, "ssh-ops-test-key", cfg.Agent.SSHOps.APIKey)
 	assert.Equal(t, "gpt-5.6-terra", cfg.Agent.SSHOps.Model)
+	assert.Equal(t, SSHOpsPromptOfficialRemote, cfg.Agent.SSHOps.PromptVariant)
 	assert.Equal(t, 5*time.Minute, cfg.Agent.SSHOps.Timeout)
+}
+
+func TestLoad_SSHOpsPromptVariantDefaultsAndRejectsUnknown(t *testing.T) {
+	setRequiredSecretEnv(t)
+	defaultPath := writeConfig(t, baseConfig(`
+  ssh_ops:
+    harness_path: /opt/harness.py
+    base_url: https://api.modelverse.cn
+`))
+	cfg, err := Load(defaultPath)
+	require.NoError(t, err)
+	assert.Equal(t, SSHOpsPromptCurrentCustom, cfg.Agent.SSHOps.PromptVariant)
+
+	invalidPath := writeConfig(t, baseConfig(`
+  ssh_ops:
+    harness_path: /opt/harness.py
+    base_url: https://api.modelverse.cn
+    prompt_variant: copied-official-prompt
+`))
+	_, err = Load(invalidPath)
+	require.ErrorContains(t, err, "agent.ssh_ops.prompt_variant")
 }
 
 func TestLoad_SSHOpsOmittedLeavesLaneUnconfigured(t *testing.T) {

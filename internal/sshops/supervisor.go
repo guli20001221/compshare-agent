@@ -26,12 +26,13 @@ import (
 //     the heap-resident credential dies with it. No reuse, no caching.
 //   - only the harness's already-scrubbed stdout is returned; the credential is never in it.
 type Supervisor struct {
-	Python      string        // interpreter; default "python3"
-	HarnessPath string        // absolute path to harness.py
-	BaseURL     string        // ANTHROPIC_BASE_URL (for production: https://api.modelverse.cn)
-	APIKey      string        // ModelVerse token passed only to the Claude CLI child
-	Model       string        // ModelVerse model id (e.g. gpt-5.6-terra)
-	Timeout     time.Duration // hard wall-clock per task; default 5m
+	Python        string        // interpreter; default "python3"
+	HarnessPath   string        // absolute path to harness.py
+	BaseURL       string        // ANTHROPIC_BASE_URL (for production: https://api.modelverse.cn)
+	APIKey        string        // ModelVerse token passed only to the Claude CLI child
+	Model         string        // ModelVerse model id (e.g. gpt-5.6-terra)
+	PromptVariant string        // temporary prompt canary arm; stdin-only handshake metadata
+	Timeout       time.Duration // hard wall-clock per task; default 5m
 }
 
 // Keep the core service contract compiler-enforced. Run remains a public compatibility wrapper,
@@ -199,14 +200,15 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 	cmd.WaitDelay = 5 * time.Second                         // bound the post-kill wait if a pipe lingers
 
 	handshake, err := json.Marshal(map[string]any{
-		"host":        cred.Host,
-		"user":        cred.User,
-		"port":        cred.Port,
-		"password":    cred.password, // plaintext -> stdin only, never logged/returned
-		"instance_id": cred.InstanceID,
-		"model":       s.Model,
-		"task":        task, // NL request -> stdin, off the host process table
-		"context":     modelContext,
+		"host":           cred.Host,
+		"user":           cred.User,
+		"port":           cred.Port,
+		"password":       cred.password, // plaintext -> stdin only, never logged/returned
+		"instance_id":    cred.InstanceID,
+		"model":          s.Model,
+		"prompt_variant": s.PromptVariant,
+		"task":           task, // NL request -> stdin, off the host process table
+		"context":        modelContext,
 		// Private destinations for the structured endpoint probe. Context itself omits these fields,
 		// so URLs carrying console tokens and raw hosts never enter the model prompt or audit record.
 		// The harness exposes only opaque IDs and resolves them against this stdin-only list.

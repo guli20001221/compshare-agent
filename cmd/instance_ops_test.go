@@ -438,6 +438,32 @@ func TestBuildSSHOpsService_ValidatesAndDefaults(t *testing.T) {
 	)
 	require.NoError(t, err)
 	require.NotNil(t, svc)
+
+	_, err = buildSSHOpsService(
+		config.SSHOpsConfig{
+			HarnessPath: "/h.py", BaseURL: "https://api.example",
+			PromptVariant: "copied-official-prompt",
+		},
+		"m", "fallback-key", &sshops.MemAuditWriter{},
+	)
+	require.ErrorContains(t, err, "agent.ssh_ops.prompt_variant")
+	for _, variant := range []string{
+		config.SSHOpsPromptCurrentCustom,
+		config.SSHOpsPromptOfficialClaudeCode,
+		config.SSHOpsPromptOfficialRemote,
+	} {
+		t.Run(variant, func(t *testing.T) {
+			svc, err := buildSSHOpsService(
+				config.SSHOpsConfig{
+					HarnessPath: "/h.py", BaseURL: "https://api.example",
+					PromptVariant: variant,
+				},
+				"m", "fallback-key", &sshops.MemAuditWriter{},
+			)
+			require.NoError(t, err)
+			require.NotNil(t, svc)
+		})
+	}
 }
 
 // fakeConnector yields a non-nil *sql.DB whose every query returns zero rows — enough for the boot

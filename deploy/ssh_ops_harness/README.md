@@ -50,7 +50,17 @@ sudoers.d drop-in 都是可确认操作。只有不可恢复的数据/启动/登
     api_key: ""                                                  # 空 = 复用 agent.llm.api_key
     python: "/opt/miniforge3/envs/py313/bin/python"              # 生产环境固定解释器
     model: "gpt-5.6-terra"
+    prompt_variant: "current_custom"                              # 临时三臂 canary
 ```
+
+`prompt_variant` 是行为对照期间的临时配置，只接受：
+
+- `current_custom`：保持改动前的完整自定义系统提示；
+- `official_claude_code`：使用 CLI 2.1.218 自带的版本化 Claude Code 提示；
+- `official_claude_code_remote`：同一个官方提示，仅追加远端实例、证据分层、确认和验收差异。
+
+三臂的模型、task、`tools=[]`、`skills=[]`、`setting_sources=[]` 和 MCP 工具完全相同。官方提示
+通过 SDK preset 引用，不把其文本复制进仓库；对照结束后删除选择器和落败分支，只保留一个生产行为。
 
 `harness_path` / `base_url` 留空，或 `api_key` 和 `agent.llm.api_key` 同时为空，**服务起不来**。
 `python` 留空**不报错**，会悄悄回退到系统 `python3` —— 那上面没有 `claude_agent_sdk`，

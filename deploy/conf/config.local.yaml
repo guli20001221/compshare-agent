@@ -72,6 +72,9 @@ agent:
     api_key: ""                        # empty = inherit agent.llm.api_key (the production Terra key)
     python: "/opt/miniforge3/envs/py313/bin/python" # production Python 3.13 env with requirements.txt installed
     model: "gpt-5.6-terra"
+    # Temporary behavior canary: current_custom | official_claude_code |
+    # official_claude_code_remote. Remove this selector after choosing one prompt path.
+    prompt_variant: "current_custom"
     timeout: "12m"
     # Mutating commands require per-command confirmation. Irrecoverable or
     # tenant/control-plane boundary violations remain refused.

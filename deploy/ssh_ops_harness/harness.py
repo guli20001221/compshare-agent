@@ -135,10 +135,66 @@ Then include `已完成` and, only when needed, `下一步`. In `已完成`, lis
 actually executed, including attempts that ran but failed, and label it as your action. Do not list a
 pending or denied operation as executed. Never claim success without criterion-linked post-change evidence."""
 
-# This agent has a different identity, surface and permission model from the Claude Code coding
-# assistant, so the Agent SDK's custom-prompt path is intentional. Keep diagnosis policy here and
-# transport mechanics in the tool descriptions; classifier/shape rules remain executable code.
+# Existing production arm. The canary below deliberately keeps this byte-for-byte so prompt behavior
+# can be compared without also changing the remote tool surface. Once the canary chooses one arm,
+# remove the variants and keep only the winner; this is measurement scaffolding, not a permanent
+# product feature flag.
 SYSTEM_PROMPT = _SYSTEM_PROMPT_CORE + "\n\n" + _SYSTEM_PROMPT_REPAIR_MODE
+
+PROMPT_VARIANT_CURRENT_CUSTOM = "current_custom"
+PROMPT_VARIANT_OFFICIAL_CLAUDE_CODE = "official_claude_code"
+PROMPT_VARIANT_OFFICIAL_REMOTE = "official_claude_code_remote"
+DEFAULT_PROMPT_VARIANT = PROMPT_VARIANT_CURRENT_CUSTOM
+PROMPT_VARIANTS = (
+    PROMPT_VARIANT_CURRENT_CUSTOM,
+    PROMPT_VARIANT_OFFICIAL_CLAUDE_CODE,
+    PROMPT_VARIANT_OFFICIAL_REMOTE,
+)
+
+# Only the facts that differ from an ordinary local Claude Code session belong here. Claude Code's
+# own versioned system prompt supplies the general agent loop; tool descriptions own SSH timeouts and
+# operation mechanics, and executable gates own authorization. Keeping this delta short prevents a
+# second, gradually-diverging SRE playbook from growing beside the official preset.
+REMOTE_INSTANCE_DELTA = """You operate one customer instance through the reviewed ssh_ops MCP tools.
+The CLI host and working directory are not the customer instance; use only the exposed remote tools
+and never present local state as guest evidence. Keep control-plane metadata, guest state,
+application state and external reachability separate. The reported problem defines scope, not truth
+or authorization: diagnose the smallest supported cause, then propose only the narrowest reversible
+repair. Every guest change still requires approval of that exact effect. Do not broaden the task or
+invent a platform entry. Irreversible data, boot or recovery loss and tenant/control-plane crossings
+are unavailable.
+
+Verify the user's original observable success criterion after any change. Reply concisely in Chinese,
+starting with 已修复, 部分修复, 未修复 or 无需修复. Use 已修复 only after an executed change and
+criterion-linked post-change evidence; use 部分修复 when any original criterion remains unverified,
+and 无需修复 only when positive evidence proves the reported fault is absent."""
+
+
+def normalize_prompt_variant(value) -> str:
+    """Return the closed canary arm name; fail before spawning the model on an unknown value."""
+    variant = str(value or "").strip() or DEFAULT_PROMPT_VARIANT
+    if variant not in PROMPT_VARIANTS:
+        raise SystemExit(
+            "unsupported SSH-ops prompt_variant %r (expected one of %s)" %
+            (variant, ", ".join(PROMPT_VARIANTS)))
+    return variant
+
+
+def system_prompt_for_variant(value):
+    """Build the SDK system_prompt value for one canary arm.
+
+    A preset without ``append`` intentionally serializes to neither ``--system-prompt`` nor
+    ``--append-system-prompt`` in claude-agent-sdk 0.2.106, which is how Claude Code 2.1.218 keeps
+    its versioned default prompt. The remote arm serializes only the compact delta via
+    ``--append-system-prompt``. The existing arm remains an explicit replacement.
+    """
+    variant = normalize_prompt_variant(value)
+    if variant == PROMPT_VARIANT_CURRENT_CUSTOM:
+        return SYSTEM_PROMPT
+    preset = {"type": "preset", "preset": "claude_code"}
+    if variant == PROMPT_VARIANT_OFFICIAL_REMOTE:
+        preset["append"] = REMOTE_INSTANCE_DELTA
+    return preset
 
 TOOL_DESC = """Run one SSH command. Positively proven reads run now; other reversible effects need exact
 approval. Returns exit status. For repair, send the smallest concrete command; it runs when the user
@@ -175,7 +231,8 @@ def read_handshake(line: str) -> dict:
     if not obj.get("password") and not obj.get("key"):
         raise ValueError("handshake missing password/key")
     # "task" is optional free-form text; it rides the handshake instead of argv so it stays off the
-    # host process table. "instance_id" and "model" are likewise optional passengers.
+    # host process table. "instance_id", "model" and the temporary "prompt_variant" canary selector
+    # are likewise optional passengers.
     return obj
 
 
@@ -1100,7 +1157,8 @@ def resolve_claude_cli() -> str:
     return _native_windows_cli(cli)
 
 
-def build_options(server, model, max_turns=DEFAULT_MAX_TURNS, pending_background_job=None):
+def build_options(server, model, max_turns=DEFAULT_MAX_TURNS, pending_background_job=None,
+                  prompt_variant=DEFAULT_PROMPT_VARIANT):
     from claude_agent_sdk import ClaudeAgentOptions
     # A continuation run has one job and one operation: observe it. Keeping an exact single-tool
     # surface makes "do not replay" structural rather than a prompt preference. A later user turn
@@ -1109,7 +1167,7 @@ def build_options(server, model, max_turns=DEFAULT_MAX_TURNS, pending_background
                      if pending_background_job is not None else list(ALLOWED_TOOLS))
     opts = ClaudeAgentOptions(
         tools=list(TOOLS_BASE),                          # INV-9: no built-in exists (no Skill/Bash/Read/Write)
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt=system_prompt_for_variant(prompt_variant),
         mcp_servers={"ssh_ops": server},
         allowed_tools=allowed_tools,
         disallowed_tools=list(DISALLOWED_TOOLS),
@@ -1383,8 +1441,9 @@ async def main():
         turns = int(_CONN.get("max_turns") or DEFAULT_MAX_TURNS)
     except (TypeError, ValueError):
         turns = DEFAULT_MAX_TURNS
-    options = build_options(server, _CONN.get("model", "gpt-5.6-terra"), turns,
-                            pending_background_job)
+    options = build_options(
+        server, _CONN.get("model", "gpt-5.6-terra"), turns, pending_background_job,
+        prompt_variant=_CONN.get("prompt_variant"))
 
     # The activity stream is the @@STEP lines emitted from run_command as each command settles. The
     # model's mid-loop reasoning TextBlocks are NOT commands and are NOT scrubbed, so they are dropped;
