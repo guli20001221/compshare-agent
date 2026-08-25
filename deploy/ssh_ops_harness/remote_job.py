@@ -1,4 +1,5 @@
 """Structured start/poll protocol for remote work that exceeds one SSH call's time bound."""
+import errno
 import re
 import shlex
 import time
@@ -216,6 +217,21 @@ def _read_optional(sftp, path, limit, tail=False):
         return b"", False
 
 
+def _is_missing(exc):
+    return isinstance(exc, FileNotFoundError) or getattr(exc, "errno", None) == errno.ENOENT
+
+
+def _read_if_present(sftp, path, limit):
+    """Return absent as empty, but preserve every non-ENOENT observation failure."""
+    try:
+        data, cut = _read(sftp, path, limit)
+        return data, cut, None
+    except Exception as exc:  # noqa: BLE001 — SFTP uses several ENOENT exception shapes
+        if _is_missing(exc):
+            return b"", False, None
+        return b"", False, exc
+
+
 def _read_optional_since(sftp, path, limit, offset):
     """Read a bounded tail on first observation, then only bytes appended after ``offset``."""
     try:
@@ -260,22 +276,27 @@ def poll(conn, job_id, secrets=(), wait_seconds=0, offsets=None,
             attrs = sftp.lstat(directory)
             if not attrs:
                 raise FileNotFoundError()
-        except Exception:  # noqa: BLE001
-            return {"ok": False, "job_id": job_id, "error_class": "job_not_found"}
+        except Exception as exc:  # noqa: BLE001
+            if _is_missing(exc):
+                return {"ok": False, "job_id": job_id, "error_class": "job_not_found"}
+            return {"ok": False, "job_id": job_id, "error_class": "job_status_failed",
+                    "detail": type(exc).__name__}
 
-        status_b, _ = _read_optional(sftp, directory + "/status", 32)
-        pid_b, _ = _read_optional(sftp, directory + "/pid", 32)
+        status_b, _, status_error = _read_if_present(sftp, directory + "/status", 32)
+        pid_b, _, pid_error = _read_if_present(sftp, directory + "/pid", 32)
         status_text = status_b.decode("ascii", "ignore").strip()
         pid_text = pid_b.decode("ascii", "ignore").strip()
         exit_code = None
         if re.fullmatch(r"-?\d+", status_text):
             exit_code = int(status_text)
             state = "succeeded" if exit_code == 0 else "failed"
+        elif status_error is not None or pid_error is not None:
+            state = "unknown"
         elif re.fullmatch(r"\d+", pid_text):
             try:
                 sftp.lstat("/proc/%s/stat" % pid_text)
-            except Exception:  # noqa: BLE001
-                state = "interrupted"
+            except Exception as exc:  # noqa: BLE001
+                state = "interrupted" if _is_missing(exc) else "unknown"
             else:
                 try:
                     environ_b, environ_cut = _read(
@@ -289,7 +310,11 @@ def poll(conn, job_id, secrets=(), wait_seconds=0, offsets=None,
                     else:
                         state = "unknown" if environ_cut else "interrupted"
         else:
-            state = "interrupted"
+            # The launcher creates the directory before the detached wrapper has
+            # written its PID.  An interrupted SSH response in that narrow window
+            # leaves no safe evidence that the payload did not start, so retain
+            # the cursor and refuse to launch a duplicate.
+            state = "unknown"
 
         # Split the bounded response evenly between both streams; logs themselves remain on-box.
         offsets = offsets if isinstance(offsets, dict) else {}

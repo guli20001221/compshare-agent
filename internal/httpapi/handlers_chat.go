@@ -333,7 +333,11 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	}
 	if sess.MessageCount >= maxTurns*2 {
 		continuationTurns := (sess.MessageCount - maxTurns*2) / 2
-		activeJob := parseErr == nil && !pc.AgentSessionState.PersistedInstanceOpsJob.IsZero()
+		// SetSessionState is the authority for schema-version gating and cursor
+		// normalization.  Inspect that hydrated value rather than the raw JSON, or
+		// a pre-V8/partial cursor could buy continuation turns without a pollable job.
+		normalizedState, _, hydrated := agent.SessionStateSnapshot()
+		activeJob := hydrated && !normalizedState.PersistedInstanceOpsJob.IsZero()
 		if !activeJob || continuationTurns >= maxSessionBackgroundJobContinuationTurns {
 			release()
 			return nil, ErrSessionTurnLimit

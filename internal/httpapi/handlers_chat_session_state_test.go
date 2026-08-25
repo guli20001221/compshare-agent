@@ -168,20 +168,25 @@ func TestTurnLimitAllowsOnlyBoundedActiveJobContinuation(t *testing.T) {
 		SchemaVersion: engine.SessionStateSchemaV8, PersistedInstanceOpsJob: job,
 	}})
 	require.NoError(t, err)
+	v7Smuggled := json.RawMessage(`{"agent_session_state":{"schema_version":"7.0","persisted_instance_ops_job":{"instance_id":"uhost-active","job_id":"job-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state":"running"}}}`)
+	v8Incomplete := json.RawMessage(`{"agent_session_state":{"schema_version":"8.0","persisted_instance_ops_job":{"instance_id":"uhost-active"}}}`)
 	for _, tc := range []struct {
 		name         string
+		context      json.RawMessage
 		messageCount int
 		wantAllowed  bool
 	}{
-		{name: "first continuation at ordinary cap", messageCount: 6, wantAllowed: true},
-		{name: "six continuation attempts exhausted", messageCount: 18, wantAllowed: false},
+		{name: "first continuation at ordinary cap", context: raw, messageCount: 6, wantAllowed: true},
+		{name: "six continuation attempts exhausted", context: raw, messageCount: 18, wantAllowed: false},
+		{name: "pre-V8 field cannot grant continuation", context: v7Smuggled, messageCount: 6, wantAllowed: false},
+		{name: "partial V8 cursor cannot grant continuation", context: v8Incomplete, messageCount: 6, wantAllowed: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			eng := engine.NewWithDeps(terminalChatLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
 			eng.RehydrateHistory(nil)
 			sess := store.Session{
 				ID: "sess-job-cap", TopOrganizationID: 1, OrganizationID: 2,
-				Context: raw, ContextVersion: 2, MessageCount: tc.messageCount,
+				Context: tc.context, ContextVersion: 2, MessageCount: tc.messageCount,
 				CreatedAt: time.Now(), UpdatedAt: time.Now(),
 			}
 			h := NewHandlers(

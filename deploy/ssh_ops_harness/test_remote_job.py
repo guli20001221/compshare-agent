@@ -159,6 +159,24 @@ class _Client:
         pass
 
 
+class _StatusObservationErrorSFTP(_SFTP):
+    def __init__(self, files, fail_kind):
+        super().__init__(files)
+        self.fail_kind = fail_kind
+
+    def lstat(self, path):
+        if self.fail_kind == "directory" and path == base:
+            raise ConnectionError("directory observation failed")
+        if self.fail_kind == "proc" and path == "/proc/123/stat":
+            raise PermissionError("proc identity denied")
+        return super().lstat(path)
+
+    def file(self, path, mode):
+        if self.fail_kind == "pid" and path == base + "/pid":
+            raise PermissionError("pid observation denied")
+        return super().file(path, mode)
+
+
 base = "/tmp/compshare-ops-jobs/" + started["job_id"]
 files = {base + "/status": b"0\n", base + "/pid": b"123\n",
          base + "/stdout.log": b"installed\n", base + "/stderr.log": b""}
@@ -206,6 +224,26 @@ unreadable_identity = remote_job.poll(
     {}, started["job_id"], opener=lambda _c: (_Client(_SFTP(unreadable_identity_files)), None))
 check("unreadable-existing-process-identity-never-falsely-releases-the-slot",
       unreadable_identity["ok"] and unreadable_identity["state"] == "unknown")
+directory_error = remote_job.poll(
+    {}, started["job_id"],
+    opener=lambda _c: (_Client(_StatusObservationErrorSFTP(running_files, "directory")), None))
+check("directory-observation-error-is-not-job-not-found",
+      directory_error["ok"] is False and directory_error["error_class"] == "job_status_failed")
+proc_error = remote_job.poll(
+    {}, started["job_id"],
+    opener=lambda _c: (_Client(_StatusObservationErrorSFTP(running_files, "proc")), None))
+check("proc-observation-error-never-falsely-releases-the-slot",
+      proc_error["ok"] and proc_error["state"] == "unknown")
+pid_error = remote_job.poll(
+    {}, started["job_id"],
+    opener=lambda _c: (_Client(_StatusObservationErrorSFTP(running_files, "pid")), None))
+check("pid-observation-error-never-falsely-releases-the-slot",
+      pid_error["ok"] and pid_error["state"] == "unknown")
+empty_launch_window = remote_job.poll(
+    {}, started["job_id"],
+    opener=lambda _c: (_Client(_SFTP({})), None))
+check("directory-without-status-or-pid-is-an-ambiguous-launch-not-interrupted",
+      empty_launch_window["ok"] and empty_launch_window["state"] == "unknown")
 waited = []
 remote_job.poll({}, started["job_id"], wait_seconds=7,
                 opener=lambda _c: (_Client(_SFTP(running_files)), None), sleeper=waited.append)
