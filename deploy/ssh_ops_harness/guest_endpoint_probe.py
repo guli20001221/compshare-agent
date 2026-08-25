@@ -10,6 +10,10 @@ _PATH = re.compile(r"/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]*")
 _MAX_RESPONSE_BYTES = 32768
 _MAX_BODY_BYTES = 8192
 _MAX_AUTHORIZATION_LENGTH = 2048
+_INPUT_FIELDS = {
+    "protocol", "port", "method", "path", "host_header", "authorization", "timeout_seconds",
+}
+_HTTP_CALL_EXAMPLE = {"protocol": "http", "port": 8000, "path": "/health"}
 
 TOOL_DESCRIPTION = (
     "Probe a TCP listener or HTTP GET/HEAD on loopback inside the selected remote guest, through "
@@ -18,15 +22,22 @@ TOOL_DESCRIPTION = (
     "host is fixed to 127.0.0.1; the tool accepts only a port, bounded path, and optional literal "
     "Host header for virtual-host diagnostics. For a caller-requested API check it can send one "
     "exact user-provided Authorization value; that value is never returned or shown in activity. "
-    "It cannot reach public/private network hosts, send request bodies, write files, or change the guest.")
+    "It cannot reach public/private network hosts, send request bodies, write files, or change the guest. "
+    "For HTTP pass separate fields like protocol=http, port=8000, path=/health; never pass a URL.")
 
 
 def input_schema():
     return {
         "type": "object",
         "properties": {
-            "protocol": {"type": "string", "enum": ["tcp", "http"]},
-            "port": {"type": "integer", "minimum": 1, "maximum": 65535},
+            "protocol": {
+                "type": "string", "enum": ["tcp", "http"],
+                "description": "Lowercase http for GET/HEAD, or tcp for connect-only.",
+            },
+            "port": {
+                "type": "integer", "minimum": 1, "maximum": 65535,
+                "description": "Guest loopback TCP port as an integer, not a URL or string.",
+            },
             "method": {"type": "string", "enum": ["GET", "HEAD"], "default": "GET"},
             "path": {"type": "string", "minLength": 1, "maxLength": 512, "default": "/"},
             "host_header": {"type": "string", "minLength": 1, "maxLength": 253,
@@ -45,33 +56,56 @@ def input_schema():
     }
 
 
+def _invalid_arguments(args, invalid_fields):
+    """Return actionable schema feedback without reflecting any caller-provided value."""
+    result = {
+        "ok": False,
+        "error_class": "invalid_arguments",
+        "invalid_fields": sorted(set(invalid_fields)),
+        "expected_http_call": dict(_HTTP_CALL_EXAMPLE),
+    }
+    if isinstance(args, dict):
+        unknown_count = len(set(args) - _INPUT_FIELDS)
+        if unknown_count:
+            result["unknown_field_count"] = unknown_count
+    return result
+
+
 def _validated(args):
     if not isinstance(args, dict):
-        return None
+        return None, _invalid_arguments(args, ["arguments"])
     protocol, port = args.get("protocol"), args.get("port")
     method, path = args.get("method", "GET"), args.get("path", "/")
     host_header = args.get("host_header", "")
     authorization = args.get("authorization", "")
     timeout = args.get("timeout_seconds", 5)
+    invalid = []
     if protocol not in ("tcp", "http"):
-        return None
+        invalid.append("protocol")
     if not isinstance(port, int) or isinstance(port, bool) or not 1 <= port <= 65535:
-        return None
+        invalid.append("port")
     if method not in ("GET", "HEAD") or not isinstance(path, str) or not _PATH.fullmatch(path):
-        return None
+        invalid.extend(name for name, bad in (
+            ("method", method not in ("GET", "HEAD")),
+            ("path", not isinstance(path, str) or not _PATH.fullmatch(path)),
+        ) if bad)
     if (host_header and
             (not isinstance(host_header, str) or not _HOST_HEADER.fullmatch(host_header))):
-        return None
+        invalid.append("host_header")
     if (authorization and
             (not isinstance(authorization, str) or len(authorization) > _MAX_AUTHORIZATION_LENGTH
              or authorization != authorization.strip()
              or any(ord(ch) < 0x20 or ord(ch) >= 0x7f for ch in authorization))):
-        return None
+        invalid.append("authorization")
     if protocol == "tcp" and authorization:
-        return None
+        invalid.append("authorization")
     if not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 10:
-        return None
-    return protocol, port, method, path, host_header, authorization, timeout
+        invalid.append("timeout_seconds")
+    if set(args) - _INPUT_FIELDS:
+        invalid.append("unknown_fields")
+    if invalid:
+        return None, _invalid_arguments(args, invalid)
+    return (protocol, port, method, path, host_header, authorization, timeout), None
 
 
 def _read_response(channel):
@@ -89,9 +123,9 @@ def _read_response(channel):
 
 
 def probe(conn, args, secrets=(), opener=ssh_transport.open_client):
-    checked = _validated(args)
-    if checked is None:
-        return {"ok": False, "error_class": "invalid_arguments"}
+    checked, validation_error = _validated(args)
+    if validation_error is not None:
+        return validation_error
     protocol, port, method, path, host_header, authorization, timeout = checked
     client, connect_error = opener(conn)
     if connect_error:

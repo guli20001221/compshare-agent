@@ -150,6 +150,23 @@ for name, args in [
           bad["error_class"] == "invalid_arguments")
 check("invalid-never-opens-ssh", opened == [])
 
+invalid_shape = guest_endpoint_probe.probe(
+    {}, {"url": "http://127.0.0.1:8000/health", "authorization": "Bearer never-return-me"},
+    opener=lambda _c: (opened.append(True), None))
+check("invalid-shape-explains-fields-without-reflecting-values",
+      invalid_shape["invalid_fields"] == ["port", "protocol", "unknown_fields"]
+      and invalid_shape["unknown_field_count"] == 1
+      and invalid_shape["expected_http_call"] == {
+          "protocol": "http", "port": 8000, "path": "/health",
+      }
+      and "never-return-me" not in repr(invalid_shape)
+      and "127.0.0.1" not in repr(invalid_shape))
+schema = guest_endpoint_probe.input_schema()
+check("schema-makes-protocol-and-integer-port-explicit",
+      "Lowercase" in schema["properties"]["protocol"]["description"]
+      and "integer" in schema["properties"]["port"]["description"]
+      and "never pass a URL" in guest_endpoint_probe.TOOL_DESCRIPTION)
+
 secret_client, _, _ = _open(b"HTTP/1.1 200 OK\r\n\r\nknown-secret")
 scrubbed = guest_endpoint_probe.probe(
     {}, {"protocol": "http", "port": 80}, secrets=("known-secret",),
