@@ -17,8 +17,12 @@ import (
 //
 // images is a DescribeCompShareImages result (ImageSet or CompshareImageGroup
 // shape); catalog is a DescribeAvailableCompShareInstanceTypes result.
-func ResolveBootDisk(images, catalog map[string]any, imageID, gpuType, zone string) []any {
-	sizeGB := imageSizeGB(images, imageID)
+// requestedSizeGB is the user's explicit size, or zero to derive the default.
+func ResolveBootDisk(images, catalog map[string]any, imageID, gpuType, zone string, requestedSizeGB uint32) []any {
+	sizeGB := requestedSizeGB
+	if sizeGB == 0 {
+		sizeGB = imageSizeGB(images, imageID)
+	}
 	if sizeGB == 0 {
 		sizeGB = catalogBootDiskMinGB(catalog, gpuType, zone)
 	}

@@ -2025,7 +2025,8 @@ func validateSelectedImageCompatibility(wfCtx *Context, imageID string, placemen
 }
 
 func workflowSystemDisks(wfCtx *Context, imageID, zone, gpuType string) []any {
-	return deployment.ResolveBootDisk(createImageResult(wfCtx), wfCtx.Result("查询可用配比"), imageID, gpuType, zone)
+	requestedSize, _ := parseUint32Any(wfCtx.Params["SystemDiskSize"])
+	return deployment.ResolveBootDisk(createImageResult(wfCtx), wfCtx.Result("查询可用配比"), imageID, gpuType, zone, requestedSize)
 }
 
 func workflowMinimalCPUPlatform(wfCtx *Context, gpuType, zone string) string {

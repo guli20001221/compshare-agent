@@ -753,7 +753,7 @@ func capacityPrecheckArgs(entry stockInstanceTypeEntry, imageID string, supportZ
 		GPUType:          entry.Name,
 		CompShareImageID: imageID,
 		ChargeType:       chargeType,
-		Disks:            deployment.ResolveBootDisk(images, catalog, imageID, entry.Name, entry.Zone),
+		Disks:            deployment.ResolveBootDisk(images, catalog, imageID, entry.Name, entry.Zone, 0),
 	})
 	placement := deployment.ZonePlacement{
 		Zone:   entry.Zone,

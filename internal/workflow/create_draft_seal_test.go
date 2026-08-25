@@ -155,6 +155,44 @@ func TestCreateDraftPutsAutoDerivedValuesInsideTheSeal(t *testing.T) {
 	assert.Equal(t, "img-001", created["CompShareImageId"])
 }
 
+func TestRequestedSystemDiskSizeFlowsThroughTheCreateContract(t *testing.T) {
+	executor := draftMockExecutor("cn-sh2-02")
+	var card map[string]any
+	eng := NewEngine(executor, func(_ string, args map[string]any) bool {
+		card = deepCopyParams(args)
+		return true
+	}, nil)
+
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
+		"GpuType":        "4090",
+		"SystemDiskSize": float64(190),
+	})
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.NotNil(t, result.Contract)
+	require.Equal(t, "SSD 云盘 190GB", card["SystemDisk"])
+
+	stored, ok := result.Contract.BusinessParams[createDraftKey].(map[string]any)
+	require.True(t, ok)
+	snapshot, err := ParseCreateConfirmationSnapshot(stored)
+	require.NoError(t, err)
+	require.Len(t, snapshot.Execution.Args.Disks, 1)
+	require.Equal(t, uint32(190), snapshot.Execution.Args.Disks[0].(map[string]any)["Size"])
+
+	for _, action := range []string{
+		"CheckCompShareResourceCapacity",
+		"GetCompShareInstanceUserPrice",
+		"CreateCompShareInstance",
+	} {
+		call, found := findExecutorCall(executor.calls, action)
+		require.True(t, found, "%s was not called", action)
+		disks, ok := call.args["Disks"].([]any)
+		require.True(t, ok, "%s did not receive the resolved system disk", action)
+		require.Len(t, disks, 1)
+		require.Equal(t, uint32(190), disks[0].(map[string]any)["Size"], action)
+	}
+}
+
 // TestTheSealRecordsThePriceTheUserWasShown is the point of the snapshot.
 //
 // The contract could already prove what the user configured. It could not prove
