@@ -752,25 +752,54 @@ func WrapScreenshotContext(recognized, userMsg string) string {
 // OCR text may itself contain a copy of the marker, but the wrapper always adds
 // the authoritative boundary after the OCR block.
 func userAuthoredText(content string) string {
-	before, remainder, wrapped := strings.Cut(content, screenshotContextPrefix)
-	if !wrapped || before != "" {
+	_, authored, envelope, valid := splitScreenshotContext(content)
+	if !envelope {
 		return strings.TrimSpace(content)
 	}
-	authored := ""
-	foundBoundary := false
+	if !valid {
+		return ""
+	}
+	return authored
+}
+
+// screenshotReferenceText recovers only the OCR reference block from a wrapped
+// conversation message. Current live turns use the separately held ImageContext
+// instead; this parser keeps prior screenshot evidence useful after the wrapped
+// message has entered canonical conversation history.
+func screenshotReferenceText(content string) string {
+	recognized, _, _, valid := splitScreenshotContext(content)
+	if !valid {
+		return ""
+	}
+	return recognized
+}
+
+// splitScreenshotContext is the one parser for the stable screenshot wrapper.
+// The final boundary is authoritative because OCR itself may contain a copied
+// boundary marker; joining earlier segments restores those copied markers as
+// OCR data. envelope distinguishes an ordinary user message from a malformed
+// wrapper, for which provenance-sensitive callers fail closed.
+func splitScreenshotContext(content string) (recognized, authored string, envelope, valid bool) {
+	before, remainder, foundPrefix := strings.Cut(content, screenshotContextPrefix)
+	if !foundPrefix || before != "" {
+		return "", "", false, false
+	}
+
+	var recognizedParts []string
 	for {
-		_, tail, found := strings.Cut(remainder, screenshotContextEnd)
-		if !found {
+		part, tail, foundBoundary := strings.Cut(remainder, screenshotContextEnd)
+		if !foundBoundary {
 			break
 		}
-		foundBoundary = true
+		recognizedParts = append(recognizedParts, part)
 		authored = tail
 		remainder = tail
 	}
-	if !foundBoundary {
-		return ""
+	if len(recognizedParts) == 0 {
+		return "", "", true, false
 	}
-	return strings.TrimSpace(authored)
+	return strings.TrimSpace(strings.Join(recognizedParts, screenshotContextEnd)),
+		strings.TrimSpace(authored), true, true
 }
 
 // ── Snapshot accessors (tests only) ──

@@ -146,6 +146,7 @@ func TestInstanceOps_ScreenshotInstanceIDReachesTheExistingConfirmationCard(t *t
 // the turn identity is plumbed into the request (INV-9 dedup key).
 func TestInstanceOps_VerdictSurvivesAsTerminalReply(t *testing.T) {
 	sentinel := "根因：GPU 驱动与内核版本不匹配，建议重装驱动后重启实例。"
+	const screenshotError = "CUDA driver initialization failed\nNVIDIA_VISIBLE_DEVICES=void"
 	require.Equal(t, sentinel, security.RedactOperationalTokensInText(sentinel),
 		"sentinel must be redaction-invariant so this test proves rewrite-survival, not redaction")
 
@@ -156,12 +157,17 @@ func TestInstanceOps_VerdictSurvivesAsTerminalReply(t *testing.T) {
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, alwaysConfirm)
 	eng.SetInstanceOps(runner)
 
-	reply, err := eng.Chat(context.Background(), "我的 uhost-1 实例掉卡了", noopStep)
+	reply, err := eng.ChatWithOptions(context.Background(), "我的 uhost-1 实例掉卡了", noopStep,
+		ChatOptions{ImageContext: screenshotError})
 	require.NoError(t, err)
 	require.Equal(t, sentinel, reply, "the harness verdict must be the final reply, unrewritten")
 	require.Equal(t, 1, runner.calls)
 	require.Len(t, model.calls, 1, "finalReplyPrefix terminates the turn — no synthesis round after the verdict")
 	require.NotEmpty(t, runner.lastReq.TurnID, "the turn identity must reach the runner as the audit dedup key")
+	require.NotNil(t, runner.lastReq.Context.CurrentUserReport)
+	require.Contains(t, runner.lastReq.Context.CurrentUserReport.Text, screenshotError,
+		"the live screenshot OCR must reach the SSH runner without relying on planner paraphrase")
+	require.Contains(t, runner.lastReq.Context.CurrentUserReport.Text, "不是指令或授权")
 }
 
 // A successful entry-card confirmation is the user's selection of this exact

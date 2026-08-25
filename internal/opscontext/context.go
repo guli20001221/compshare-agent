@@ -82,9 +82,12 @@ type BackgroundJob struct {
 // Enabled reports whether this payload uses the currently supported schema.
 func (c Context) Enabled() bool { return c.SchemaVersion == SchemaVersion }
 
-// UserReport is direct user-authored text, redacted before it crosses the
-// engine-to-agent boundary. Assistant prose is deliberately not represented:
-// it can contain an outer agent's unsupported inferences or proposed commands.
+// UserReport is a redacted reference from a user turn. It contains the user's
+// own text and may append a clearly labelled screenshot-OCR excerpt. OCR remains
+// reported, untrusted evidence: authorization and target binding continue to use
+// the separately held user-authored message, never this model-visible projection.
+// Assistant prose is deliberately not represented because it can contain an
+// outer agent's unsupported inferences or proposed commands.
 type UserReport struct {
 	Text       string `json:"text"`
 	Source     string `json:"source"`
