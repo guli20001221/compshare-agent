@@ -140,19 +140,17 @@ pending or denied operation as executed. Never claim success without criterion-l
 # transport mechanics in the tool descriptions; classifier/shape rules remain executable code.
 SYSTEM_PROMPT = _SYSTEM_PROMPT_CORE + "\n\n" + _SYSTEM_PROMPT_REPAIR_MODE
 
-TOOL_DESC = """Run one SSH command. Positively proven reads run now; other reversible effects need exact
-approval. Returns exit status. For repair, send the smallest concrete command; it runs when the user
-approves that exact command. Repair the diagnosed fault only; re-downloading an application or disabling
-an unrelated service needs separate user intent unless the task requests it. Irreversible
-data/boot/recovery loss, control-plane crossings,
-reboot, accounts/passwords, SSH/network disabling and substitution are refused. Pipes, chains, globs,
+TOOL_DESC = """Run one SSH command and return its exit status. Positively proven reads run now; reversible
+changes run after the user approves that exact command. For repair, send the smallest concrete command. Repair the diagnosed
+fault only; re-downloading an application or disabling an unrelated service needs separate user intent unless
+the task requests it. Irreversible data/boot/recovery loss, control-plane crossings, reboot,
+accounts/passwords, SSH/network disabling and substitution are refused. Pipes, chains, globs,
 redirection and multi-line scripts work. Use the application's actual interpreter. Rewrite only a rejected
-form; never bypass policy/approval. Each call is classified as one effect; keep independently useful probes
-in separate calls.
+form; never bypass policy/approval. Each call is one effect; split independent probes.
 
 Each call is a fresh, non-interactive SSH session capped at 25 seconds. For long work set
 run_in_background=true and give an evidence-backed purpose. ssh_exec owns detachment, logs and the opaque
-ID. At most one background job may be active; a terminal poll frees that slot. Reads and separately
+ID. At most one background job may be active; a terminal poll frees the slot. Reads and separately
 approved foreground changes remain available while it runs.
 Do not hand-roll detachment or resend a timed-out foreground command.
 

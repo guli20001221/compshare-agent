@@ -145,12 +145,12 @@ func liveRealDescriber(t *testing.T) (Describer, context.Context) {
 
 func liveSupervisor() Supervisor {
 	return Supervisor{
-		Python:        envOr("SSHH_PYTHON", "python"),
-		HarnessPath:   os.Getenv("SSHH_HARNESS"),
-		BaseURL:       envOr("SSHH_BASE_URL", "https://api.modelverse.cn"),
-		APIKey:        os.Getenv("SSHH_API_KEY"),
-		Model:         envOr("SSHH_MODEL", "gpt-5.6-terra"),
-		Timeout:       12 * time.Minute, // sized for the whole command sequence, see Supervisor.Run
+		Python:      envOr("SSHH_PYTHON", "python"),
+		HarnessPath: os.Getenv("SSHH_HARNESS"),
+		BaseURL:     envOr("SSHH_BASE_URL", "https://api.modelverse.cn"),
+		APIKey:      os.Getenv("SSHH_API_KEY"),
+		Model:       envOr("SSHH_MODEL", "gpt-5.6-terra"),
+		Timeout:     12 * time.Minute, // sized for the whole command sequence, see Supervisor.Run
 	}
 }
 

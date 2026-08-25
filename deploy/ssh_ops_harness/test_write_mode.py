@@ -189,7 +189,7 @@ check("tool-desc-drops-false-shape-clause",
 # the lifecycle contract and must not teach a hand-rolled protocol that can drift from it.
 check("tool-desc-routes-long-work-to-ssh-exec-background-mode",
       "run_in_background=true" in flat(_WRITE_DESC) and "do not hand-roll" in _WRITE_DESC.lower() and
-      "At most one job may be active" in flat(_WRITE_DESC))
+      "At most one background job may be active" in flat(_WRITE_DESC))
 check("surface-has-one-shell-tool-plus-a-read-only-poll",
       "mcp__ssh_ops__ssh_exec" in harness.ALLOWED_TOOLS and
       "mcp__ssh_ops__poll_background_job" in harness.ALLOWED_TOOLS and
@@ -299,8 +299,8 @@ check("write-prompts::distinguish-service-restart-from-instance-reboot",
       "guest-local restart cannot recover" in _WRITE_PROMPT_FLAT and
       "guest-local restart cannot recover" in _WRITE_DESC)
 check("write-tool-desc::separates-independent-probes",
-      "Each call is classified as one effect" in _WRITE_DESC and
-      "independently useful probes in separate calls" in _WRITE_DESC)
+      "Each call is one effect" in _WRITE_DESC and
+      "split independent probes" in _WRITE_DESC)
 # The verdict is Chinese, so the sentence the user actually reads is pinned too.
 check("write-system-prompt::states-the-boundary-in-the-verdict-language",
       "需要重启实例才能继续" in _WRITE_PROMPT)
