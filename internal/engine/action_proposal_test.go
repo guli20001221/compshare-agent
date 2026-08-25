@@ -793,6 +793,59 @@ func TestBlankOptionalSlotDoesNotSuppressTheCreateCard(t *testing.T) {
 	require.NotContains(t, resolved.action.Arguments, "CompShareImageId")
 }
 
+func TestModelPlaceholdersDoNotOverrideCreateDefaults(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{map[string]any{"Name": "H20"}},
+		},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "帮我开台 H20"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+		eng, eng.lastUserMsg, "turn-model-placeholders", time.Now(),
+	)
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposal(context.Background(), proposalArgsForOperation(
+		"CreateInstanceWorkflow", map[string]any{
+			"GpuType":        "H20",
+			"Name":           ".",
+			"SystemDiskSize": float64(1),
+		},
+	))
+
+	require.NoError(t, err)
+	require.Empty(t, resolved.action.Rejected)
+	require.NotContains(t, resolved.action.Arguments, "Name")
+	require.NotContains(t, resolved.action.Arguments, "SystemDiskSize")
+}
+
+func TestUserSpecifiedSystemDiskCapacityIsGroundedAndPreserved(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{map[string]any{"Name": "H20"}},
+		},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "帮我开台 H20，系统盘 190GB"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+		eng, eng.lastUserMsg, "turn-explicit-system-disk", time.Now(),
+	)
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposal(context.Background(), proposalArgsForOperation(
+		"CreateInstanceWorkflow", map[string]any{
+			"GpuType":        "H20",
+			"SystemDiskSize": "190GB",
+		},
+	))
+
+	require.NoError(t, err)
+	require.Equal(t, float64(190), resolved.action.Arguments["SystemDiskSize"])
+	require.Equal(t, actionresolver.SourceUserExplicit,
+		resolved.action.Provenance["SystemDiskSize"].Source)
+}
+
 // The prune is deliberately narrow: only JSON null and whitespace-only strings.
 // Zero, false and empty collections are real values for their codecs and must
 // keep reaching adjudication — silently dropping a 0 would turn "no GPUs" into

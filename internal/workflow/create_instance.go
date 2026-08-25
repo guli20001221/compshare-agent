@@ -354,11 +354,13 @@ func CreateInstanceDef() *Definition {
 		// an explicit user proposal and sealed below, but remains optional rather
 		// than turning the guided flow into an extra question for most users.
 		GuidedIntakeFields: []string{"GpuType", "Zone", "Gpu", "Cpu", "Memory", "ImageSource", "ImageName", "ChargeType"},
-		// Name is cosmetic and the platform can generate one, so an invalid value
-		// may be dropped. CompShareImageId is intentionally NOT discardable: once a
+		// Name and SystemDiskSize have no guided-form controls. Keep them only when
+		// grounded in the user's current message; otherwise the platform generates
+		// the name and the live image/machine catalog derives the boot disk.
+		// CompShareImageId is intentionally not user-supplied-only: once a
 		// request names an exact image, silently replacing a stale/wrong-source id
 		// with an unrelated browse result changes the requested object.
-		DiscardableOnRejectFields: []string{"Name"},
+		UserSuppliedOptionalFields: []string{"Name", "SystemDiskSize"},
 	}
 }
 

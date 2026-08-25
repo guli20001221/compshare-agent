@@ -7,9 +7,8 @@ import (
 
 // ResolveBootDisk derives the boot disk to send on a create/capacity-check
 // request from live catalog + image data, instead of a hardcoded size/type:
-// the image's own declared size wins when known (a large custom image needs
-// a bigger boot disk than the catalog minimum), falling back to the
-// gpuType+zone catalog entry's minimum boot disk size/type. Returns nil when
+// its size is the largest of the user's request, the image's declared size and
+// the gpuType+zone catalog minimum. Returns nil when
 // neither source yields a usable size or the catalog has no boot disk type
 // for this gpuType+zone — callers should omit the Disks arg entirely rather
 // than guess, exactly like the pre-existing zero-value/omitempty contract on
@@ -20,11 +19,11 @@ import (
 // requestedSizeGB is the user's explicit size, or zero to derive the default.
 func ResolveBootDisk(images, catalog map[string]any, imageID, gpuType, zone string, requestedSizeGB uint32) []any {
 	sizeGB := requestedSizeGB
-	if sizeGB == 0 {
-		sizeGB = imageSizeGB(images, imageID)
+	if imageGB := imageSizeGB(images, imageID); imageGB > sizeGB {
+		sizeGB = imageGB
 	}
-	if sizeGB == 0 {
-		sizeGB = catalogBootDiskMinGB(catalog, gpuType, zone)
+	if minimumGB := catalogBootDiskMinGB(catalog, gpuType, zone); minimumGB > sizeGB {
+		sizeGB = minimumGB
 	}
 	if sizeGB == 0 {
 		return nil

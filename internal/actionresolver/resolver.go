@@ -86,6 +86,15 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 			reject(name, RejectUnknownField, fmt.Sprintf("unknown slot %s", name))
 			continue
 		}
+		// Guided forms cannot re-confirm fields outside their controls. For the
+		// explicitly declared optional exceptions, keep a value only when it came
+		// from the user's own current-message evidence; otherwise let the workflow
+		// derive its live platform default. This prevents model placeholder values
+		// from silently becoming part of a sealed create contract.
+		if candidate.Source == SourceAgentInference &&
+			containsField(spec.Intake.UserSuppliedOptionalFields, name) {
+			continue
+		}
 		// Non-target user_explicit fields are span-verified here; TARGET fields defer
 		// entirely to the target adjudicator below, which weighs selection AND
 		// existence and routes an outage / conflict to the right channel rather than
@@ -193,7 +202,7 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 		len(result.DependencyFailures) == 0 &&
 		(len(result.Missing)+len(result.Rejected)+len(result.Conflicts)) > 0 &&
 		everyMissingCollectable(result.Missing, spec.Intake.CollectableFields) &&
-		everyRejectionFormCorrectable(result.RejectedProblems, spec.Intake.CollectableFields, spec.Intake.DiscardableOnRejectFields) &&
+		everyRejectionFormCorrectable(result.RejectedProblems, spec.Intake.CollectableFields) &&
 		everyConflictCollectable(result.Conflicts, spec.Intake.CollectableFields)
 	if result.ReadyForConfirmation {
 		arguments := make(map[string]any, len(result.Arguments))
@@ -207,6 +216,15 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 		result.Confirmation = &ConfirmationPreview{Operation: result.Operation, Arguments: arguments}
 	}
 	return result
+}
+
+func containsField(fields []string, name string) bool {
+	for _, field := range fields {
+		if field == name {
+			return true
+		}
+	}
+	return false
 }
 
 func collectableSet(collectable []string) map[string]struct{} {
@@ -232,24 +250,16 @@ func everyMissingCollectable(missing, collectable []string) bool {
 
 // everyRejectionFormCorrectable reports whether every rejection is a
 // RejectInvalidValue the form can move past — the only Kind it can, since the
-// bad value is already dropped from Arguments. Two declarations qualify a field,
-// and they answer different questions: a COLLECTABLE field is one the form
-// re-collects, and a DISCARDABLE one is a field the form has no input for but
-// whose value is safe to lose (workflow.Definition documents both). Reading the
-// collectable list alone for both questions is what made an optional Name the
-// resolver could not re-collect suppress the whole create card. Any other Kind,
-// or a field in neither list, is not correctable. Vacuously true when there are
-// no rejections.
-func everyRejectionFormCorrectable(problems []RejectedProblem, collectable, discardable []string) bool {
-	collectables, discardables := collectableSet(collectable), collectableSet(discardable)
+// bad value is already dropped from Arguments. Only a COLLECTABLE field qualifies:
+// the form must actually be able to re-collect the value. Any other Kind or field
+// is not correctable. Vacuously true when there are no rejections.
+func everyRejectionFormCorrectable(problems []RejectedProblem, collectable []string) bool {
+	collectables := collectableSet(collectable)
 	for _, p := range problems {
 		if p.Kind != RejectInvalidValue {
 			return false
 		}
-		if _, ok := collectables[p.Slot]; ok {
-			continue
-		}
-		if _, ok := discardables[p.Slot]; !ok {
+		if _, ok := collectables[p.Slot]; !ok {
 			return false
 		}
 	}
