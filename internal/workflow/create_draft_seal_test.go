@@ -136,6 +136,8 @@ func TestCreateDraftPutsAutoDerivedValuesInsideTheSeal(t *testing.T) {
 	assert.Equal(t, draft.Args.CPU, card["CPU"])
 	assert.Equal(t, draft.Args.Memory, card["Memory"])
 	assert.Equal(t, draft.Args.GPU, card["Gpu"])
+	assert.Equal(t, "CLOUD_SSD 100GB", card["SystemDisk"],
+		"the card must summarize the system disk from the same sealed draft the create executes")
 	// The name on the card and the id in the request are ONE selection.
 	assert.Equal(t, "Ubuntu 22.04 CUDA 12", card["image"])
 	assert.Equal(t, card["image"], draft.Image.Name)

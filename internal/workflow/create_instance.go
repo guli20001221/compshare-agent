@@ -1387,6 +1387,13 @@ func stepGuidedChooseGPU() Step {
 		BuildForm:         buildGuidedGPUForm,
 		ApplyOverrides:    applyGuidedGPUOverrides,
 		ConfirmSubmitMode: ConfirmSubmitContinue,
+		PromoteOnConfirm: func(wfCtx *Context) error {
+			gpuType, err := ensureGuidedGPUType(wfCtx)
+			if err != nil {
+				return err
+			}
+			return applyGuidedGPUOverrides(wfCtx, map[string]string{"GpuType": gpuType})
+		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			gpuType, err := ensureGuidedGPUType(wfCtx)
 			if err != nil {
@@ -2554,7 +2561,48 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 	if name := strings.TrimSpace(draft.Args.Name); name != "" {
 		summary["Name"] = name
 	}
+	if disk := createSystemDiskSummary(draft.Args.Disks); disk != "" {
+		summary["SystemDisk"] = disk
+	}
 	return summary, nil
+}
+
+// createSystemDiskSummary renders the system disk already present in the sealed
+// create draft. It never consults the catalog again: the card and the eventual
+// request therefore describe the same disk contract.
+func createSystemDiskSummary(disks []any) string {
+	for _, raw := range disks {
+		disk, _ := raw.(map[string]any)
+		if disk == nil || !paramBool(disk, "IsBoot", false) {
+			continue
+		}
+		diskType := strings.TrimSpace(paramStr(disk, "Type", ""))
+		size, hasSize := createDiskSizeGB(disk["Size"])
+		switch {
+		case diskType != "" && hasSize:
+			return fmt.Sprintf("%s %.0fGB", diskType, size)
+		case diskType != "":
+			return diskType
+		case hasSize:
+			return fmt.Sprintf("%.0fGB", size)
+		default:
+			return ""
+		}
+	}
+	return ""
+}
+
+func createDiskSizeGB(raw any) (float64, bool) {
+	switch size := raw.(type) {
+	case uint32:
+		return float64(size), size > 0
+	case int:
+		return float64(size), size > 0
+	case float64:
+		return size, size > 0
+	default:
+		return 0, false
+	}
 }
 
 // stepCreateInstance executes the sealed draft and nothing else.
@@ -3441,6 +3489,16 @@ func shouldSkipGuidedGPUStep(wfCtx *Context) (bool, error) {
 		return false, nil
 	}
 	supported := currentImageSupportedGPUs(wfCtx.Params, createImageResult(wfCtx))
+	selected, opts := guidedGPUFormOptions(wfCtx, wfCtx.Result("查询可用配比"), supported,
+		current, true, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+	// A complete pre-filled request may skip the GPU card only while the exact
+	// GPU it carries is still a selectable server option. If the catalog or an
+	// authoritative capacity probe has disabled it, reopen the existing GPU
+	// step: the user either chooses an offered alternative or receives the GPU's
+	// concrete unavailable reason there, before zone/spec/price work begins.
+	if !strings.EqualFold(selected, current) || !enabledOptionExists(opts, current) {
+		return false, nil
+	}
 	if len(supported) > 0 && containsFold(supported, current) && hasExplicitImageIntent(wfCtx.Params) &&
 		initialParamSet(wfCtx, "Zone") && initialParamSet(wfCtx, "Gpu") &&
 		initialParamSet(wfCtx, "Cpu") && initialParamSet(wfCtx, "Memory") {
@@ -3900,13 +3958,17 @@ func buildGuidedGPUForm(wfCtx *Context) (*ConfirmForm, error) {
 	if len(opts) == 0 {
 		return nil, fmt.Errorf("暂无可选 GPU 型号")
 	}
+	lockedUnavailable := locked && !enabledOptionExists(opts, gpuType)
 	if selected == "" {
 		return nil, fmt.Errorf("暂无有库存的 GPU 型号，请换一个型号或稍后再试")
 	}
 	index, total := guidedStepPosition(wfCtx, guidedStepGPU)
 	title := guidedStepTitle(index, "请选择 GPU 参数")
 	desc := "GPU 型号决定可用显存与算力：显存越大，越能支撑更大的模型与更高的批量。不确定时可先用默认项。"
-	if locked {
+	if lockedUnavailable {
+		title = guidedStepTitle(index, "原配置当前不可用，请重新选择 GPU")
+		desc = fmt.Sprintf("原配置中的 %s 与当前镜像、计费方式或库存条件不匹配。请选择下方可用型号；系统会重新检查可用区、卡数、CPU/内存、库存和价格，并再次请你确认。", gpuType)
+	} else if locked {
 		title = guidedStepTitle(index, "请确认 GPU 参数")
 		desc = "已按你的需求推荐合适的 GPU 显存规格，可直接确认，也可在下方调整。显存越大，可支撑的模型与批量越大。"
 	} else if recommended {
@@ -4961,6 +5023,23 @@ func ensureGuidedGPUType(wfCtx *Context) (string, error) {
 	supported := currentImageSupportedGPUs(wfCtx.Params, createImageResult(wfCtx))
 	locked := paramBool(wfCtx.Params, "GuidedGpuLocked", false) && current != ""
 	selected, opts := guidedGPUFormOptions(wfCtx, wfCtx.Result("查询可用配比"), supported, current, locked, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+	// A catalog-unavailable current model is kept visible in the option list so
+	// the form can explain why it changed. When no enabled replacement exists,
+	// stop in BuildArgs; a BuildForm error alone would degrade to a plain card.
+	// Other disabled reasons (for example image incompatibility) still reach the
+	// existing explanatory card instead of being collapsed into a stock failure.
+	if locked && firstEnabledValue(opts) == "" {
+		for _, opt := range opts {
+			if !strings.EqualFold(opt.Value, current) || opt.Meta["Sellable"] != "false" {
+				continue
+			}
+			reason := strings.TrimSpace(opt.Reason)
+			if reason == "" {
+				reason = "当前不可用"
+			}
+			return "", fmt.Errorf("%s %s，请换一个 GPU 型号或稍后再试", current, reason)
+		}
+	}
 	if selected == "" {
 		for _, opt := range opts {
 			if !opt.Disabled {

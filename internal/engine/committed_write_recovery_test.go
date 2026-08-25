@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/workflow"
 )
 
 // A create that reaches the platform is irreversible and billable. Everything
@@ -23,8 +24,9 @@ import (
 func TestCommittedCreateIsRecordedWhenTheWorkflowCommits(t *testing.T) {
 	exec := &recoveryMockExecutor{}
 	eng := NewWithDeps(&mockLLM{}, exec, func(string, map[string]any) bool { return true })
+	eng.SetSessionState(SessionState{}, 1)
 
-	eng.executeResolvedWorkflow(context.Background(),
+	reply := eng.executeResolvedWorkflow(context.Background(),
 		mustConfirmable("CreateInstanceWorkflow",
 			map[string]any{"GpuType": "4090", "ImageName": "cuda128_torch291_py312"},
 			zoneRefData(eng.zoneCatalogSnapshot(context.Background()))), noopStep)
@@ -33,6 +35,151 @@ func TestCommittedCreateIsRecordedWhenTheWorkflowCommits(t *testing.T) {
 		"a committed create must leave a model-free record; without it no later exit can report the write")
 	assert.Contains(t, eng.committedWriteRepliesThisTurn[0], "uhost-good1",
 		"the record must carry the id the workflow returned, not a generic success")
+	assert.Contains(t, reply, "尚未取得完整的创建后状态",
+		"an optional readback miss must not be narrated as a fully delivered instance")
+	assert.Contains(t, reply, "请勿重复创建")
+	state, _, hydrated := eng.SessionStateSnapshot()
+	require.True(t, hydrated)
+	assert.Equal(t, "uhost-good1", state.SelectedInstanceID,
+		"the sole result of the confirmed create must become the existing current-instance referent")
+	assert.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
+}
+
+func TestCreateInstanceDeliveryReplyDistinguishesWriteFromUsableDelivery(t *testing.T) {
+	tests := []struct {
+		name       string
+		data       map[string]any
+		mustDirect bool
+		contains   []string
+		notContain []string
+	}{
+		{
+			name:       "successful response omitted instance ids",
+			data:       map[string]any{},
+			mustDirect: true,
+			contains:   []string{"没有返回实例 ID", "无法确认创建结果", "请勿重复创建"},
+			notContain: []string{"✅ 已创建"},
+		},
+		{
+			name:       "readback unavailable",
+			data:       map[string]any{"UHostIds": []any{"uhost-1"}, "ActualReadbackAvailable": false},
+			mustDirect: true,
+			contains:   []string{"uhost-1", "尚未取得完整的创建后状态", "请勿重复创建"},
+			notContain: []string{"✅ 已创建"},
+		},
+		{
+			name: "initializing",
+			data: map[string]any{
+				"UHostIds": []any{"uhost-1"}, "ActualReadbackAvailable": true,
+				"Observed": []map[string]any{{"UHostId": "uhost-1", "State": "Install"}},
+			},
+			mustDirect: true,
+			contains:   []string{"当前状态为 Install", "尚未确认可用", "请勿重复创建"},
+			notContain: []string{"交付成功"},
+		},
+		{
+			name: "initialization failed",
+			data: map[string]any{
+				"UHostIds": []any{"uhost-1"}, "ActualReadbackAvailable": true,
+				"Observed": []map[string]any{{"UHostId": "uhost-1", "State": "Install Fail"}},
+			},
+			mustDirect: true,
+			contains:   []string{"初始化失败", "不能视为交付成功", "请勿重复创建"},
+			notContain: []string{"✅ 已创建"},
+		},
+		{
+			name: "served spec differs from confirmed card",
+			data: map[string]any{
+				"UHostIds": []any{"uhost-1"}, "ActualReadbackAvailable": true,
+				"Observed": []map[string]any{{"UHostId": "uhost-1", "State": "Running"}},
+				"SpecMismatch": []map[string]any{
+					{"UHostId": "uhost-1", "Field": "CPU", "Intended": 14, "Observed": 16},
+					{"UHostId": "uhost-1", "Field": "Memory", "Intended": 122880, "Observed": 98304},
+				},
+			},
+			mustDirect: true,
+			contains:   []string{"规格与确认内容不一致", "CPU 确认 14、实际 16", "内存 确认 120GB、实际 96GB", "请勿重复创建"},
+			notContain: []string{"✅ 已创建"},
+		},
+		{
+			name: "only part of a multi-create was read back",
+			data: map[string]any{
+				"UHostIds": []any{"uhost-1", "uhost-2"}, "ActualReadbackAvailable": true,
+				"Observed": []map[string]any{{"UHostId": "uhost-1", "State": "Running"}},
+			},
+			mustDirect: true,
+			contains:   []string{"uhost-1、uhost-2", "尚未取得完整的创建后状态"},
+		},
+		{
+			name: "running with incomplete spec readback",
+			data: map[string]any{
+				"UHostIds": []any{"uhost-1"}, "ActualReadbackAvailable": true,
+				"Intended": map[string]any{"CPU": 16, "Memory": 65536, "GPU": 1, "GpuType": "5090", "Zone": "cn-wlcb-01"},
+				"Observed": []map[string]any{{
+					"UHostId": "uhost-1", "State": "Running", "CPU": 16, "Memory": 65536,
+					"GPU": 1, "GpuType": "", "Zone": "cn-wlcb-01",
+				}},
+			},
+			mustDirect: true,
+			contains:   []string{"实例已创建并处于运行中", "规格回读不完整", "请勿重复创建"},
+			notContain: []string{"✅ 已创建"},
+		},
+		{
+			name: "running and matched",
+			data: map[string]any{
+				"UHostIds": []any{"uhost-1"}, "ActualReadbackAvailable": true,
+				"Intended": map[string]any{"CPU": 16, "Memory": 65536, "GPU": 1, "GpuType": "5090", "Zone": "cn-wlcb-01"},
+				"Observed": []map[string]any{{
+					"UHostId": "uhost-1", "State": "Running", "CPU": 16, "Memory": 65536,
+					"GPU": 1, "GpuType": "5090", "Zone": "cn-wlcb-01",
+				}},
+			},
+			mustDirect: false,
+			contains:   []string{"✅ 已创建实例 uhost-1"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			reply, mustDirect := createInstanceDeliveryReply(&workflow.Result{Success: true, Data: tt.data})
+			require.Equal(t, tt.mustDirect, mustDirect)
+			for _, want := range tt.contains {
+				assert.Contains(t, reply, want)
+			}
+			for _, forbidden := range tt.notContain {
+				assert.NotContains(t, reply, forbidden)
+			}
+		})
+	}
+}
+
+func TestConfirmedSingleCreateBecomesTheCurrentInstanceReferent(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetSessionState(SessionState{}, 1)
+	result := &workflow.Result{Success: true, Data: map[string]any{
+		"UHostIds": []any{"uhost-new-1"},
+		"Observed": []map[string]any{{"UHostId": "uhost-new-1", "Name": "new-trainer", "State": "Install Fail"}},
+	}}
+
+	eng.recordCreatedInstanceReferent("CreateInstanceWorkflow", map[string]any{"Name": "requested-name"}, result)
+	state, _, hydrated := eng.SessionStateSnapshot()
+
+	require.True(t, hydrated)
+	assert.Equal(t, "uhost-new-1", state.SelectedInstanceID)
+	assert.Equal(t, "new-trainer", state.SelectedInstanceName)
+	assert.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
+	assert.Equal(t, ContinuityFreshnessFresh, state.SelectedInstanceFreshness)
+}
+
+func TestMultiInstanceCreateDoesNotChooseAReferent(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetSessionState(SessionState{}, 1)
+	eng.recordCreatedInstanceReferent("CreateInstanceWorkflow", nil, &workflow.Result{Success: true, Data: map[string]any{
+		"UHostIds": []any{"uhost-new-1", "uhost-new-2"},
+	}})
+
+	state, _, _ := eng.SessionStateSnapshot()
+	assert.Empty(t, state.SelectedInstanceID)
 }
 
 // The recovery text has two jobs: name the instance (so the console's id probe

@@ -120,5 +120,6 @@ func messageContents(messages []openai.ChatCompletionMessage) []string {
 
 func TestHumanAgentTransferReplyContainsSupportQR(t *testing.T) {
 	require.Contains(t, refusal.HumanAgentTransfer, "ucompshare-picture.cn-wlcb.ufileos.com/QRCode/qrcode.png")
-	require.True(t, strings.HasPrefix(refusal.HumanAgentTransfer, "好的，已为您转接人工客服"))
+	require.True(t, strings.HasPrefix(refusal.HumanAgentTransfer, "如需人工客服协助，请扫描"))
+	require.NotContains(t, refusal.HumanAgentTransfer, "已为您转接")
 }
