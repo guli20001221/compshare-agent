@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -593,7 +594,8 @@ func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal
 		// or comparative mention such as "不要 community" would bypass the model's
 		// required positive-selection quote and be promoted automatically.
 		if candidate.Name != "ImageSource" && isString && strings.TrimSpace(value) != "" {
-			if start, end, ok := uniqueQuoteForCodec([]rune(view.CurrentQuestion), []rune(value), field.Codec); ok {
+			question := []rune(view.CurrentQuestion)
+			if start, end, ok := uniqueQuoteForCodec(question, []rune(value), field.Codec); ok {
 				candidate.Source = actionresolver.SourceUserExplicit
 				candidate.Evidence = &actionresolver.SourceEvidence{
 					MessageID: view.TurnID,
@@ -602,6 +604,26 @@ func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal
 					Quote:     value,
 				}
 				continue
+			}
+			// Guided forms cannot re-confirm user-only optional capacities. The
+			// Agent may normalize a literal such as "200g" to "200GB" before it
+			// reaches this boundary, so accept the normalization only when exactly
+			// one capacity literal in the current message has the same GB value.
+			// The actual user span is restored before the ordinary verifier runs.
+			if field.Codec == actionresolver.CodecCapacity &&
+				slices.Contains(spec.Intake.UserSuppliedOptionalFields, candidate.Name) {
+				if start, end, ok := uniqueEquivalentCapacityLiteral(question, value); ok {
+					actual := string(question[start:end])
+					candidate.Value = actual
+					candidate.Source = actionresolver.SourceUserExplicit
+					candidate.Evidence = &actionresolver.SourceEvidence{
+						MessageID: view.TurnID,
+						Start:     start,
+						End:       end,
+						Quote:     actual,
+					}
+					continue
+				}
 			}
 		}
 		// Some enum fields accept localized user phrases that differ from their
@@ -865,6 +887,36 @@ func uniqueQuoteForCodec(text, quote []rune, codec actionresolver.SlotCodecKind)
 	return start, start + len(quote), true
 }
 
+// uniqueEquivalentCapacityLiteral finds the one current-message capacity whose
+// normalized GB value equals proposed. It does not decide whether that capacity
+// is a system disk, data disk, or another business field; the Agent owns that
+// semantic choice and the confirmation card remains the final contract.
+func uniqueEquivalentCapacityLiteral(text []rune, proposed string) (int, int, bool) {
+	want, ok := actionresolver.NormalizeCapacityGB(proposed)
+	if !ok {
+		return 0, 0, false
+	}
+	start := -1
+	end := -1
+	for _, literal := range actionresolver.CapacityLiterals(string(text)) {
+		if !evidenceSpanForCodec(text, literal.Start, literal.End, actionresolver.CodecCapacity) {
+			continue
+		}
+		got, parsed := actionresolver.NormalizeCapacityGB(literal.Text)
+		if !parsed || got != want {
+			continue
+		}
+		if start >= 0 {
+			return 0, 0, false
+		}
+		start, end = literal.Start, literal.End
+	}
+	if start < 0 {
+		return 0, 0, false
+	}
+	return start, end, true
+}
+
 func uniqueStandaloneQuote(text, quote []rune) (int, int, bool) {
 	if len(quote) == 0 || len(quote) > len(text) {
 		return 0, 0, false
@@ -943,11 +995,16 @@ func uniqueNormalizedEnumQuote(text, quote []rune) (int, int, bool) {
 }
 
 func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any, onStep func(StepEvent)) string {
-	if e.actionProposalRanThisTurn {
-		e.actionProposalDispositionThisTurn = "duplicate_write_proposal"
-		return finalReplyPrefix + "本轮已经处理过一个写操作请求，没有执行模型随后提出的其他操作。请根据上面的结果确认下一步，再单独发送新的操作指令。"
+	if len(e.committedWriteRepliesThisTurn) > 0 {
+		e.actionProposalDispositionThisTurn = "additional_write_after_commit"
+		operation, _ := args["operation"].(string)
+		label := friendlyActionName(operation)
+		if label == "" {
+			label = "后续写操作"
+		}
+		return finalReplyPrefix + strings.Join(e.committedWriteRepliesThisTurn, "\n") +
+			"\n\n随后提出的“" + label + "”操作没有执行。请在下一条消息中单独提出。"
 	}
-	e.actionProposalRanThisTurn = true
 	resolved, err := e.resolveActionProposal(ctx, args)
 	if err != nil {
 		e.actionProposalDispositionThisTurn = "resolve_error"

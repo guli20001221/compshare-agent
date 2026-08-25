@@ -25,7 +25,9 @@ func TestCentralAgentPromptHasOneRuntimeContract(t *testing.T) {
 		"next_step=correct_tool_call 时用户无需补充",
 		"实时平台事实（目录、状态、价格、库存、实例详情等）必须查询对应只读工具",
 		"知识库仅用于稳定规则和用法，不作为当前值依据",
-		"实例及盘内数据均无法找回",
+		"普通实例回收",
+		"随之回收的盘内数据无法找回",
+		"抢占式实例的系统回收按其专属规则回答",
 	} {
 		require.Contains(t, text, required)
 	}

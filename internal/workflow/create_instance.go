@@ -350,15 +350,15 @@ func CreateInstanceDef() *Definition {
 		// this to expose IntakeGuided instead of the engine switching on the name.
 		GuidedIntake: true,
 		// The exact fields the guided form collects/corrects (GPU / zone / count /
-		// CPU-memory / image source+selection / charge type). Name is accepted from
-		// an explicit user proposal and sealed below, but remains optional rather
-		// than turning the guided flow into an extra question for most users.
+		// CPU-memory / image source+selection / charge type).
 		GuidedIntakeFields: []string{"GpuType", "Zone", "Gpu", "Cpu", "Memory", "ImageSource", "ImageName", "ChargeType"},
-		// Name is cosmetic and the platform can generate one, so an invalid value
-		// may be dropped. CompShareImageId is intentionally NOT discardable: once a
+		// Disk sizes have no guided-form controls. Keep them only when grounded in
+		// the user's current message; otherwise the live image/machine catalog
+		// derives the boot disk and no data disk is added.
+		// CompShareImageId is intentionally not user-supplied-only: once a
 		// request names an exact image, silently replacing a stale/wrong-source id
 		// with an unrelated browse result changes the requested object.
-		DiscardableOnRejectFields: []string{"Name"},
+		UserSuppliedOptionalFields: []string{"DataDiskSize", "SystemDiskSize"},
 	}
 }
 
@@ -1102,12 +1102,16 @@ func guidedCapacityArgsFor(wfCtx *Context, gpuType, zone string) (map[string]any
 	if err != nil {
 		return nil, false
 	}
+	disks, err := workflowCreateDisks(wfCtx, imageID, zone, gpuType, placement)
+	if err != nil {
+		return nil, false
+	}
 	args := deployment.BuildCapacityArgs(deployment.DeploymentDraft{
 		Zone:               zone,
 		GPUType:            gpuType,
 		CompShareImageID:   imageID,
 		ChargeType:         createChargeType(wfCtx.Params),
-		Disks:              workflowSystemDisks(wfCtx, imageID, zone, gpuType),
+		Disks:              disks,
 		MinimalCPUPlatform: workflowMinimalCPUPlatform(wfCtx, gpuType, zone),
 	})
 	return deployment.ApplyCapacityPlacementArgs(args, placement), true
@@ -1387,6 +1391,13 @@ func stepGuidedChooseGPU() Step {
 		BuildForm:         buildGuidedGPUForm,
 		ApplyOverrides:    applyGuidedGPUOverrides,
 		ConfirmSubmitMode: ConfirmSubmitContinue,
+		PromoteOnConfirm: func(wfCtx *Context) error {
+			gpuType, err := ensureGuidedGPUType(wfCtx)
+			if err != nil {
+				return err
+			}
+			return applyGuidedGPUOverrides(wfCtx, map[string]string{"GpuType": gpuType})
+		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			gpuType, err := ensureGuidedGPUType(wfCtx)
 			if err != nil {
@@ -2017,8 +2028,35 @@ func validateSelectedImageCompatibility(wfCtx *Context, imageID string, placemen
 	return fmt.Errorf("%s 不支持当前 GPU %s，请更换镜像或卡型", name, gpuType)
 }
 
-func workflowSystemDisks(wfCtx *Context, imageID, zone, gpuType string) []any {
-	return deployment.ResolveBootDisk(createImageResult(wfCtx), wfCtx.Result("查询可用配比"), imageID, gpuType, zone)
+func workflowCreateDisks(wfCtx *Context, imageID, zone, gpuType string, placement deployment.ZonePlacement) ([]any, error) {
+	requestedSystemSize, _ := parseUint32Any(wfCtx.Params["SystemDiskSize"])
+	disks := deployment.ResolveBootDisk(
+		createImageResult(wfCtx), wfCtx.Result("查询可用配比"), imageID, gpuType, zone, requestedSystemSize,
+	)
+	requestedDataSize, hasDataDisk := parseUint32Any(wfCtx.Params["DataDiskSize"])
+	if !hasDataDisk {
+		return disks, nil
+	}
+	if placement.IsPod {
+		return nil, fmt.Errorf("容器区不支持随实例创建普通数据盘，请改选虚机区或取消数据盘")
+	}
+	rangeSpec, ok := deployment.CatalogDataDiskRange(
+		wfCtx.Result("查询可用配比"), gpuType, zone, deployment.DiskTypeCloudSSD,
+	)
+	if !ok {
+		return nil, fmt.Errorf("当前可用区和机型不支持 SSD 云数据盘")
+	}
+	if rangeSpec.MinimumGB > 0 && requestedDataSize < rangeSpec.MinimumGB {
+		return nil, fmt.Errorf("数据盘容量不能小于 %dGB", rangeSpec.MinimumGB)
+	}
+	if rangeSpec.MaximumGB > 0 && requestedDataSize > rangeSpec.MaximumGB {
+		return nil, fmt.Errorf("数据盘容量不能大于 %dGB", rangeSpec.MaximumGB)
+	}
+	return append(disks, map[string]any{
+		"IsBoot": false,
+		"Type":   rangeSpec.Type,
+		"Size":   requestedDataSize,
+	}), nil
 }
 
 func workflowMinimalCPUPlatform(wfCtx *Context, gpuType, zone string) string {
@@ -2125,8 +2163,9 @@ func imageMapByID(images map[string]any, id string) map[string]any {
 // priceAmountFor reads the amount quoted for one charge type out of one of the
 // price arrays.
 //
-// It accepts upstream's "Instance" field and the compatible "Price" shape used
-// by existing fixtures.
+// Upstream reports compute, disks and paid image as separate components. Disks
+// already includes SystemDisks, so the latter is used only as a compatibility
+// fallback when Disks is absent. Price is the legacy all-in fallback.
 func priceAmountFor(raw map[string]any, arrKey, chargeType string) (float64, bool) {
 	arr, ok := raw[arrKey].([]any)
 	if !ok {
@@ -2140,8 +2179,23 @@ func priceAmountFor(raw map[string]any, arrKey, chargeType string) (float64, boo
 		if ct, _ := m["ChargeType"].(string); ct != chargeType {
 			continue
 		}
-		if n, ok := priceNumber(m["Instance"]); ok {
-			return n, true
+		total := float64(0)
+		hasComponent := false
+		for _, key := range []string{"Instance", "CompShareImage"} {
+			if n, ok := priceNumber(m[key]); ok {
+				total += n
+				hasComponent = true
+			}
+		}
+		if n, ok := priceNumber(m["Disks"]); ok {
+			total += n
+			hasComponent = true
+		} else if n, ok := priceNumber(m["SystemDisks"]); ok {
+			total += n
+			hasComponent = true
+		}
+		if hasComponent {
+			return total, true
 		}
 		if n, ok := priceNumber(m["Price"]); ok {
 			return n, true
@@ -2351,6 +2405,10 @@ func materializeCreateDraft(wfCtx *Context) (map[string]any, error) {
 	if err := validateSelectedImageCompatibility(wfCtx, imageId, placement); err != nil {
 		return nil, err
 	}
+	disks, err := workflowCreateDisks(wfCtx, imageId, zone, gt, placement)
+	if err != nil {
+		return nil, err
+	}
 
 	// The typed decision. The selection is carried WHOLE, not re-derived for
 	// display: the card renders Image.Name, the create sends Args.CompShareImageID,
@@ -2367,7 +2425,7 @@ func materializeCreateDraft(wfCtx *Context) (map[string]any, error) {
 			MachineType:        deployment.MachineTypeGPU,
 			MinimalCPUPlatform: workflowMinimalCPUPlatform(wfCtx, gt, zone),
 			LoginMode:          deployment.LoginModeConsole,
-			Disks:              workflowSystemDisks(wfCtx, imageId, zone, gt),
+			Disks:              disks,
 			Name:               instanceName,
 		},
 		Image:     image,
@@ -2554,7 +2612,66 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 	if name := strings.TrimSpace(draft.Args.Name); name != "" {
 		summary["Name"] = name
 	}
+	if disk := createSystemDiskSummary(draft.Args.Disks); disk != "" {
+		summary["SystemDisk"] = disk
+	}
+	if disk := createDataDiskSummary(draft.Args.Disks); disk != "" {
+		summary["DataDisk"] = disk + "（实例进入运行状态后异步创建并挂载）"
+	}
 	return summary, nil
+}
+
+// createSystemDiskSummary renders the system disk already present in the sealed
+// create draft. It never consults the catalog again: the card and the eventual
+// request therefore describe the same disk contract.
+func createSystemDiskSummary(disks []any) string {
+	return createDiskSummary(disks, true)
+}
+
+func createDataDiskSummary(disks []any) string {
+	return createDiskSummary(disks, false)
+}
+
+func createDiskSummary(disks []any, boot bool) string {
+	for _, raw := range disks {
+		disk, _ := raw.(map[string]any)
+		if disk == nil || paramBool(disk, "IsBoot", false) != boot {
+			continue
+		}
+		diskType := strings.TrimSpace(paramStr(disk, "Type", ""))
+		if strings.EqualFold(diskType, deployment.DiskTypeCloudSSD) {
+			if boot {
+				diskType = "SSD 云盘"
+			} else {
+				diskType = "SSD 云数据盘"
+			}
+		}
+		size, hasSize := createDiskSizeGB(disk["Size"])
+		switch {
+		case diskType != "" && hasSize:
+			return fmt.Sprintf("%s %.0fGB", diskType, size)
+		case diskType != "":
+			return diskType
+		case hasSize:
+			return fmt.Sprintf("%.0fGB", size)
+		default:
+			return ""
+		}
+	}
+	return ""
+}
+
+func createDiskSizeGB(raw any) (float64, bool) {
+	switch size := raw.(type) {
+	case uint32:
+		return float64(size), size > 0
+	case int:
+		return float64(size), size > 0
+	case float64:
+		return size, size > 0
+	default:
+		return 0, false
+	}
 }
 
 // stepCreateInstance executes the sealed draft and nothing else.
@@ -3441,6 +3558,16 @@ func shouldSkipGuidedGPUStep(wfCtx *Context) (bool, error) {
 		return false, nil
 	}
 	supported := currentImageSupportedGPUs(wfCtx.Params, createImageResult(wfCtx))
+	selected, opts := guidedGPUFormOptions(wfCtx, wfCtx.Result("查询可用配比"), supported,
+		current, true, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+	// A complete pre-filled request may skip the GPU card only while the exact
+	// GPU it carries is still a selectable server option. If the catalog or an
+	// authoritative capacity probe has disabled it, reopen the existing GPU
+	// step: the user either chooses an offered alternative or receives the GPU's
+	// concrete unavailable reason there, before zone/spec/price work begins.
+	if !strings.EqualFold(selected, current) || !enabledOptionExists(opts, current) {
+		return false, nil
+	}
 	if len(supported) > 0 && containsFold(supported, current) && hasExplicitImageIntent(wfCtx.Params) &&
 		initialParamSet(wfCtx, "Zone") && initialParamSet(wfCtx, "Gpu") &&
 		initialParamSet(wfCtx, "Cpu") && initialParamSet(wfCtx, "Memory") {
@@ -3900,13 +4027,17 @@ func buildGuidedGPUForm(wfCtx *Context) (*ConfirmForm, error) {
 	if len(opts) == 0 {
 		return nil, fmt.Errorf("暂无可选 GPU 型号")
 	}
+	lockedUnavailable := locked && !enabledOptionExists(opts, gpuType)
 	if selected == "" {
 		return nil, fmt.Errorf("暂无有库存的 GPU 型号，请换一个型号或稍后再试")
 	}
 	index, total := guidedStepPosition(wfCtx, guidedStepGPU)
 	title := guidedStepTitle(index, "请选择 GPU 参数")
 	desc := "GPU 型号决定可用显存与算力：显存越大，越能支撑更大的模型与更高的批量。不确定时可先用默认项。"
-	if locked {
+	if lockedUnavailable {
+		title = guidedStepTitle(index, "原配置当前不可用，请重新选择 GPU")
+		desc = fmt.Sprintf("原配置中的 %s 与当前镜像、计费方式或库存条件不匹配。请选择下方可用型号；系统会重新检查可用区、卡数、CPU/内存、库存和价格，并再次请你确认。", gpuType)
+	} else if locked {
 		title = guidedStepTitle(index, "请确认 GPU 参数")
 		desc = "已按你的需求推荐合适的 GPU 显存规格，可直接确认，也可在下方调整。显存越大，可支撑的模型与批量越大。"
 	} else if recommended {
@@ -4961,6 +5092,23 @@ func ensureGuidedGPUType(wfCtx *Context) (string, error) {
 	supported := currentImageSupportedGPUs(wfCtx.Params, createImageResult(wfCtx))
 	locked := paramBool(wfCtx.Params, "GuidedGpuLocked", false) && current != ""
 	selected, opts := guidedGPUFormOptions(wfCtx, wfCtx.Result("查询可用配比"), supported, current, locked, wfCtx.Params, wfCtx.Result("查询GPU库存"))
+	// A catalog-unavailable current model is kept visible in the option list so
+	// the form can explain why it changed. When no enabled replacement exists,
+	// stop in BuildArgs; a BuildForm error alone would degrade to a plain card.
+	// Other disabled reasons (for example image incompatibility) still reach the
+	// existing explanatory card instead of being collapsed into a stock failure.
+	if locked && firstEnabledValue(opts) == "" {
+		for _, opt := range opts {
+			if !strings.EqualFold(opt.Value, current) || opt.Meta["Sellable"] != "false" {
+				continue
+			}
+			reason := strings.TrimSpace(opt.Reason)
+			if reason == "" {
+				reason = "当前不可用"
+			}
+			return "", fmt.Errorf("%s %s，请换一个 GPU 型号或稍后再试", current, reason)
+		}
+	}
 	if selected == "" {
 		for _, opt := range opts {
 			if !opt.Disabled {

@@ -1520,6 +1520,108 @@ func TestCreateInstanceGuided_ExplicitGPUVariantStaysExact(t *testing.T) {
 	assert.Equal(t, []string{"4090_48G"}, optionValues(gpu))
 }
 
+func TestCreateInstanceGuided_UnavailableLockedGPUReopensTheExistingGPUCard(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{
+		"GpuType": "4090", "GuidedGpuLocked": true,
+		"CompShareImageId": "img-002", "ImageName": "PyTorch 2.4",
+		"Zone": "cn-wlcb-01", "Gpu": float64(1), "Cpu": float64(16), "Memory": float64(65536),
+	})
+	wfCtx.StepResults["查询可用配比"] = map[string]any{"AvailableInstanceTypes": []any{
+		map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Soldout"},
+		map[string]any{"Name": "A800", "Zone": "cn-wlcb-01", "Status": "Normal"},
+	}}
+
+	skip, err := shouldSkipGuidedGPUStep(wfCtx)
+	require.NoError(t, err)
+	require.False(t, skip, "an unavailable pre-filled GPU must not skip the card that can correct it")
+
+	form, err := buildGuidedGPUForm(wfCtx)
+	require.NoError(t, err)
+	require.Contains(t, form.Step.Title, "原配置当前不可用")
+	gpu := fieldByKey(t, form, "GpuType")
+	assert.Equal(t, "A800", gpu.Value)
+	assert.True(t, optionByValue(t, gpu, "4090").Disabled)
+	assert.False(t, optionByValue(t, gpu, "A800").Disabled)
+}
+
+func TestCreateInstanceGuided_LegacyConfirmationPromotesTheDisplayedReplacementGPU(t *testing.T) {
+	executor := formMockExecutor()
+	catalog := formCatalogFixture()
+	for _, raw := range catalog["AvailableInstanceTypes"].([]any) {
+		row := raw.(map[string]any)
+		if row["Name"] == "4090" {
+			row["Status"] = "Soldout"
+		}
+	}
+	executor.results["DescribeAvailableCompShareInstanceTypes"] = catalog
+
+	var confirmedGPUs []string
+	eng := NewEngine(executor, func(_ string, args map[string]any) bool {
+		if gpuType, _ := args["GpuType"].(string); gpuType != "" {
+			confirmedGPUs = append(confirmedGPUs, gpuType)
+		}
+		return true
+	}, nil)
+	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{
+		"GpuType": "4090", "GuidedGpuLocked": true,
+		"CompShareImageId": "img-002", "ImageName": "PyTorch 2.4", "GuidedImageLocked": true,
+		"Zone": "cn-wlcb-01", "Gpu": float64(1), "Cpu": float64(16), "Memory": float64(65536),
+	})
+
+	require.NoError(t, err)
+	require.True(t, result.Success, result.Message)
+	require.NotEmpty(t, confirmedGPUs)
+	assert.Equal(t, "A800", confirmedGPUs[0], "the plain confirmation must display the available replacement")
+	var createdGPU string
+	for _, call := range executor.calls {
+		if call.action == "CreateCompShareInstance" {
+			createdGPU, _ = call.args["GpuType"].(string)
+		}
+	}
+	assert.Equal(t, "A800", createdGPU, "the create must use exactly what the plain card confirmed")
+}
+
+func TestCreateInstanceGuided_UnavailableLockedGPUStopsBeforeItsConfirmationOrCreate(t *testing.T) {
+	executor := formMockExecutor()
+	executor.results["DescribeAvailableCompShareInstanceTypes"] = map[string]any{"AvailableInstanceTypes": []any{
+		map[string]any{
+			"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Soldout",
+			"MachineSizes": []any{map[string]any{"Gpu": float64(1), "Collection": []any{
+				map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+			}}},
+			"Disks": []any{map[string]any{"BootDisk": []any{
+				map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(100)},
+			}}},
+		},
+	}}
+
+	gpuConfirmCalls := 0
+	eng := NewEngine(executor, func(string, map[string]any) bool {
+		return true
+	}, nil)
+	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
+		if form.Field("GpuType") != nil {
+			gpuConfirmCalls++
+		}
+		return ConfirmResolution{Confirmed: true}
+	})
+	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{
+		"GpuType": "4090", "GuidedGpuLocked": true,
+		"CompShareImageId": "img-004", "ImageName": "ComfyUI",
+		"Zone": "cn-wlcb-01", "Gpu": float64(1), "Cpu": float64(16), "Memory": float64(65536),
+	})
+
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	assert.Equal(t, "选择 GPU", result.StoppedAt)
+	assert.Contains(t, result.Message, "4090")
+	assert.Contains(t, result.Message, "暂不可售")
+	assert.Zero(t, gpuConfirmCalls, "an unavailable locked GPU must fail before asking the user to approve that GPU")
+	for _, call := range executor.calls {
+		assert.NotEqual(t, "CreateCompShareInstance", call.action)
+	}
+}
+
 func TestCreateInstanceGuided_ZoneCardSnapshotZeroShowsPendingNotDisabled(t *testing.T) {
 	wfCtx := formWfCtx(t, map[string]any{
 		"GpuType": "4090",

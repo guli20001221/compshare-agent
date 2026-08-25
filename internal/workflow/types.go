@@ -264,26 +264,22 @@ type Definition struct {
 	// form can collect AND correct — the only fields whose missing/invalid/
 	// conflicting values may open the form instead of bouncing to prose. It must
 	// be declared (not auto-derived from every non-secret schema field): a create
-	// schema carries fields the form has no input for (e.g. Name), and a resolver
-	// problem on such a field is NOT form-correctable. Required when GuidedIntake
-	// is true. Every name must be a real field of this workflow (BuildCatalog
-	// enforces it).
+	// schema carries fields the form has no input for (for example explicit disk sizes), and a
+	// resolver problem on such a field is NOT form-correctable. Required when
+	// GuidedIntake is true. Every name must be a real field of this workflow
+	// (BuildCatalog enforces it).
 	GuidedIntakeFields []string
-	// DiscardableOnRejectFields answers a DIFFERENT question from
+	// UserSuppliedOptionalFields answers a DIFFERENT question from
 	// GuidedIntakeFields, which is why it is a second list rather than a reuse of
-	// the first: not "can the form collect this?" but "if the Agent supplies an
-	// invalid value here, may the resolver drop it and open the form anyway?".
-	// Name answers no to the first and yes to the second — reading one list for
-	// both questions is what suppressed the create card outright.
+	// the first: not "can the form collect this?" but "may the Agent infer this
+	// value when the form cannot re-confirm it?". A valid current-message value is
+	// preserved; an Agent-inferred value is omitted so the platform derives it.
 	//
 	// EXPLICIT, never derived. The obvious derivation (every optional non-target
-	// field) was measured against the registry and would silently discard bad
-	// Cpu/Gpu/Memory on resize (and previously exposed ignored reinstall fields) —
-	// a discarded value must be one no user can be harmed by losing. Only meaningful alongside
-	// GuidedIntake, since the form is what re-collects. BuildCatalog enforces that
-	// each name is a real field of this workflow and is optional, non-target and
-	// non-secret.
-	DiscardableOnRejectFields []string
+	// field) would silently omit meaningful Agent-assisted fields across other
+	// operations. BuildCatalog enforces that each name is a real field of this
+	// guided workflow and is optional, non-target and non-secret.
+	UserSuppliedOptionalFields []string
 }
 
 // FailureReason classifies a failure for callers that must DO something different

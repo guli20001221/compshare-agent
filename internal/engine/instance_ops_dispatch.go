@@ -213,10 +213,11 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 			return finalReplyPrefix + msg
 		}
-		// Address derivation is a deployment failure, not evidence that the user's
-		// instance or security group is broken.
+		// Address derivation failed before the lane entered the instance. Report only
+		// that observable boundary: it does not identify the underlying cause or prove
+		// whether the instance itself is healthy.
 		if errors.Is(err, ErrInstanceOpsAddressUnavailable) {
-			msg := "无法换算该实例的内网地址，本次没有进入实例。这是运行环境侧的问题（内网网关或其配置），与实例本身无关，请联系部署同学查看服务日志。"
+			msg := "无法换算该实例的内网地址，本次没有进入实例，也没有执行任何实例内命令。当前只能确认诊断入口未建立，尚无法判断根因，也不能据此判断实例本身是否异常。请稍后重试；如需立即验证，可按控制台显示的登录地址、端口和用户名尝试登录。"
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 			return finalReplyPrefix + msg
 		}
@@ -313,7 +314,7 @@ func (e *Engine) instanceOpsTargetMayReachConfirmation(instanceID string) bool {
 	// A cold rehydrated session may not have a complete registry yet. An exact ID
 	// visibly authored by the user is still a choice, unlike an ID invented from a
 	// prior list; account membership is verified by the runner's point describe.
-	return e.userNamedInstanceThisTurn(instanceID)
+	return e.userNamedInstanceThisTurn(instanceID) || e.userScreenshotNamesInstanceThisTurn(instanceID)
 }
 
 // userNamedInstanceThisTurn verifies the model-supplied ID against the user's
@@ -323,6 +324,21 @@ func (e *Engine) userNamedInstanceThisTurn(instanceID string) bool {
 		return false
 	}
 	return entity.TextExplicitlyMentionsName(e.turnContextViewThisTurn.CurrentQuestion, instanceID)
+}
+
+// userScreenshotNamesInstanceThisTurn accepts one exact instance ID from the
+// current screenshot only as a candidate for the existing authorization card.
+// OCR remains outside CurrentQuestion, routing and write provenance; the runner
+// still verifies account ownership and state after the user confirms the card.
+func (e *Engine) userScreenshotNamesInstanceThisTurn(instanceID string) bool {
+	if e == nil || strings.TrimSpace(instanceID) == "" {
+		return false
+	}
+	tokens := e.registry.Snapshot().InstanceIDTokensInText(e.imageContextThisTurn)
+	if len(tokens) != 1 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(tokens[0]), strings.TrimSpace(instanceID))
 }
 
 // expiredUserSelectionMatches is deliberately narrower than a carried selection:

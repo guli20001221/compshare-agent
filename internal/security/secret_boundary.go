@@ -25,6 +25,16 @@ func RedactForLLM(v any) any {
 	return redactValue(v, redactModeLLM, "")
 }
 
+// SSHLoginCommandForLLM returns the upstream login command only when it matches
+// the same narrow, credential-free shape accepted by RedactForLLM.
+func SSHLoginCommandForLLM(raw string) (string, bool) {
+	projected, _ := redactField("SshLoginCommand", raw, redactModeLLM).(string)
+	if projected == redactedValue || strings.TrimSpace(projected) == "" {
+		return "", false
+	}
+	return strings.TrimSpace(projected), true
+}
+
 // RedactForTrace removes credentials and masks/hash-stabilizes sensitive
 // telemetry before writing traces or audit logs. It returns a deep-redacted copy
 // and never mutates the input value.

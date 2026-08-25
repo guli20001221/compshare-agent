@@ -7,9 +7,8 @@ import (
 
 // ResolveBootDisk derives the boot disk to send on a create/capacity-check
 // request from live catalog + image data, instead of a hardcoded size/type:
-// the image's own declared size wins when known (a large custom image needs
-// a bigger boot disk than the catalog minimum), falling back to the
-// gpuType+zone catalog entry's minimum boot disk size/type. Returns nil when
+// its size is the largest of the user's request, the image's declared size and
+// the gpuType+zone catalog minimum. Returns nil when
 // neither source yields a usable size or the catalog has no boot disk type
 // for this gpuType+zone — callers should omit the Disks arg entirely rather
 // than guess, exactly like the pre-existing zero-value/omitempty contract on
@@ -17,10 +16,14 @@ import (
 //
 // images is a DescribeCompShareImages result (ImageSet or CompshareImageGroup
 // shape); catalog is a DescribeAvailableCompShareInstanceTypes result.
-func ResolveBootDisk(images, catalog map[string]any, imageID, gpuType, zone string) []any {
-	sizeGB := imageSizeGB(images, imageID)
-	if sizeGB == 0 {
-		sizeGB = catalogBootDiskMinGB(catalog, gpuType, zone)
+// requestedSizeGB is the user's explicit size, or zero to derive the default.
+func ResolveBootDisk(images, catalog map[string]any, imageID, gpuType, zone string, requestedSizeGB uint32) []any {
+	sizeGB := requestedSizeGB
+	if imageGB := imageSizeGB(images, imageID); imageGB > sizeGB {
+		sizeGB = imageGB
+	}
+	if minimumGB := catalogBootDiskMinGB(catalog, gpuType, zone); minimumGB > sizeGB {
+		sizeGB = minimumGB
 	}
 	if sizeGB == 0 {
 		return nil
@@ -34,6 +37,48 @@ func ResolveBootDisk(images, catalog map[string]any, imageID, gpuType, zone stri
 		"Type":   diskType,
 		"Size":   sizeGB,
 	}}
+}
+
+// DataDiskRange is the live size contract for one catalog data-disk type.
+type DataDiskRange struct {
+	Type      string
+	MinimumGB uint32
+	MaximumGB uint32
+}
+
+// CatalogDataDiskRange reads the data-disk contract for the exact GPU and zone.
+// Unlike the boot-disk fallback used for defaults, data-disk support must never
+// borrow a row from another zone: this value decides whether a paid disk may be
+// included in the user's create contract.
+func CatalogDataDiskRange(catalog map[string]any, gpuType, zone, diskType string) (DataDiskRange, bool) {
+	if catalog == nil || gpuType == "" || zone == "" || diskType == "" {
+		return DataDiskRange{}, false
+	}
+	types, _ := catalog["AvailableInstanceTypes"].([]any)
+	for _, item := range types {
+		entry, _ := item.(map[string]any)
+		if entry == nil || !strings.EqualFold(stringFieldAny(entry["Name"]), gpuType) ||
+			!strings.EqualFold(stringFieldAny(entry["Zone"]), zone) {
+			continue
+		}
+		for _, disks := range diskMaps(entry["Disks"]) {
+			for _, dataDisk := range diskMaps(disks["DataDisk"]) {
+				name := strings.TrimSpace(stringFieldAny(dataDisk["Name"]))
+				if !strings.EqualFold(name, diskType) {
+					continue
+				}
+				minimum, _ := positiveFloatAny(dataDisk["MinimalSize"])
+				maximum, _ := positiveFloatAny(dataDisk["MaximalSize"])
+				return DataDiskRange{
+					Type:      name,
+					MinimumGB: uint32(minimum),
+					MaximumGB: uint32(maximum),
+				}, true
+			}
+		}
+		return DataDiskRange{}, false
+	}
+	return DataDiskRange{}, false
 }
 
 func imageSizeGB(images map[string]any, imageID string) uint32 {

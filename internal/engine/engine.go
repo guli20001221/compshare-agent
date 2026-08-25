@@ -333,10 +333,6 @@ type Engine struct {
 	// pre-query registry snapshot does NOT, so an observed-but-unverified id can never
 	// serve as a write ExistenceProof. It never persists.
 	verifiedInstanceEvidenceThisTurn map[string]struct{}
-	// actionProposalRanThisTurn distinguishes a mixed write turn from a pure
-	// knowledge answer. Knowledge evidence may support an action, but must not
-	// claim ownership of the final clarification or confirmation text.
-	actionProposalRanThisTurn bool
 	// actionProposalDispositionThisTurn is a compact, value-free classification of
 	// what the resolver did with this turn's write proposal — "confirmation" /
 	// "intake_form" when it reached a card, else the reason it did not
@@ -1222,7 +1218,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.sensitiveRepliesThisTurn = nil
 	e.committedWriteRepliesThisTurn = nil
 	e.toolResultsByCallThisTurn = map[string]string{}
-	e.actionProposalRanThisTurn = false
 	e.actionProposalDispositionThisTurn = ""
 	e.knowledgeQAAgentLoopThisTurn = false
 	e.instanceOpsRanThisTurn = false
@@ -3115,6 +3110,41 @@ func (e *Engine) recordObservedInstanceID(id, name string) {
 	e.recordSelectedInstanceIDWithSource(id, name, SelectedInstanceSourceObserved)
 }
 
+// recordCreatedInstanceReferent makes the sole result of a confirmed create the
+// conversation's current instance. It reuses the existing user-selected
+// continuity record: this is a referent for "刚创建的那台", not permission to
+// enter or mutate it — those paths still revalidate the target and show their
+// own confirmation card. A multi-instance result remains unselected because the
+// server has no basis for choosing one of them.
+func (e *Engine) recordCreatedInstanceReferent(action string, params map[string]any, result *workflow.Result) {
+	if action != "CreateInstanceWorkflow" || result == nil || !result.Success {
+		return
+	}
+	ids := committedInstanceIDs(result)
+	if len(ids) != 1 {
+		return
+	}
+	id := ids[0]
+	name := ""
+	observed, _ := result.Data["Observed"].([]map[string]any)
+	for _, row := range observed {
+		if strings.EqualFold(strings.TrimSpace(fmt.Sprint(row["UHostId"])), id) {
+			name = strings.TrimSpace(fmt.Sprint(row["Name"]))
+			if name == "<nil>" {
+				name = ""
+			}
+			break
+		}
+	}
+	if name == "" {
+		name = strings.TrimSpace(fmt.Sprint(params["Name"]))
+		if name == "<nil>" {
+			name = ""
+		}
+	}
+	e.recordSelectedInstanceIDWithSource(id, name, SelectedInstanceSourceUser)
+}
+
 func (e *Engine) recordSelectedInstanceIDWithSource(id, name, source string) {
 	if !e.sessionStateHydrated || id == "" {
 		return
@@ -3662,11 +3692,22 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 
 	if result.Success {
 		e.markRegistryInvalidated(action)
+		e.recordCreatedInstanceReferent(action, finalParams, result)
 		// Record the commit BEFORE choosing how to narrate it. From here the write
 		// is irreversible upstream, so every later exit — including one where the
 		// model never speaks again — has to be able to say so.
 		e.committedWriteRepliesThisTurn = append(e.committedWriteRepliesThisTurn,
 			committedWriteFallbackReply(action, finalParams, result))
+		// A create may have committed upstream without matching the confirmed
+		// contract: the readback can be missing, initialization can fail, or the
+		// served spec can differ from the sealed card. Return those exceptional
+		// states deterministically. Normal asynchronous initialization remains a
+		// successful creation and can continue through the ordinary narration.
+		if action == "CreateInstanceWorkflow" {
+			if reply, mustReturnDeterministically := createInstanceDeliveryReply(result); mustReturnDeterministically {
+				return finalReplyPrefix + reply
+			}
+		}
 		// Creating a custom image is asynchronous upstream: Create returns the
 		// image id after the record enters Making, not after it becomes usable.
 		// Keep this deterministic so a narration round cannot turn "started" into
@@ -3781,10 +3822,153 @@ func committedWriteFallbackReply(action string, params map[string]any, result *w
 	if action == "CreateCustomImageWorkflow" {
 		return customImageWorkflowReply(result)
 	}
+	if action == "CreateInstanceWorkflow" {
+		if reply, _ := createInstanceDeliveryReply(result); reply != "" {
+			return reply
+		}
+	}
 	if ids := committedInstanceIDs(result); len(ids) > 0 {
 		return fmt.Sprintf("✅ 已创建实例 %s。", strings.Join(ids, "、"))
 	}
 	return fmt.Sprintf("✅ %s已执行成功。", friendlyActionName(action))
+}
+
+// createInstanceDeliveryReply describes what the platform has actually
+// delivered after a confirmed create. Result.Success remains the write outcome:
+// once UHostIds exist, changing it to false would invite a duplicate billable
+// create. The bool instead says whether an incomplete, failed or mismatched
+// delivery must bypass model narration. Normal post-create initialization is
+// successful and keeps the ordinary narration path.
+func createInstanceDeliveryReply(result *workflow.Result) (string, bool) {
+	ids := committedInstanceIDs(result)
+	if len(ids) == 0 {
+		if result != nil && result.Success {
+			return "创建请求已由平台处理，但没有返回实例 ID，当前无法确认创建结果。请勿重复创建，请稍后在控制台核对实例列表。", true
+		}
+		return "", false
+	}
+	idText := strings.Join(ids, "、")
+	data := result.Data
+	readback, _ := data["ActualReadbackAvailable"].(bool)
+	observed, _ := data["Observed"].([]map[string]any)
+	if !readback || len(observed) != len(ids) {
+		return fmt.Sprintf("创建接口已返回实例 ID：%s，但尚未取得完整的创建后状态，暂不能确认实例是否可用。请勿重复创建，请稍后在控制台查看实例状态。", idText), true
+	}
+
+	hasInstallFail := false
+	hasInitializing := false
+	hasStarting := false
+	unexpectedState := ""
+	for _, row := range observed {
+		state := strings.TrimSpace(fmt.Sprint(row["State"]))
+		if state == "<nil>" {
+			state = ""
+		}
+		switch strings.ToLower(state) {
+		case "running":
+		case "initializing", "installing", "install":
+			hasInitializing = true
+		case "starting":
+			hasStarting = true
+		case "install fail":
+			hasInstallFail = true
+		default:
+			if unexpectedState == "" {
+				unexpectedState = state
+			}
+		}
+	}
+
+	mismatchText := createSpecMismatchText(data["SpecMismatch"])
+	if hasInstallFail {
+		reply := fmt.Sprintf("实例记录已创建（ID：%s），但初始化失败（Install Fail），目前不可用", idText)
+		if mismatchText != "" {
+			reply += "；创建后规格也与确认内容不一致：" + mismatchText
+		}
+		return reply + "。本次不能视为交付成功，请勿重复创建。", true
+	}
+	if mismatchText != "" {
+		return fmt.Sprintf("实例已创建（ID：%s），但创建后规格与确认内容不一致：%s。本次不能视为按确认规格交付，请勿重复创建。", idText, mismatchText), true
+	}
+	if !createSpecReadbackComplete(data, observed) {
+		return fmt.Sprintf("实例已创建（ID：%s），但创建后规格回读不完整，暂不能确认是否按确认内容交付。请勿重复创建，请稍后在控制台核对实例规格。", idText), true
+	}
+	if unexpectedState != "" {
+		return fmt.Sprintf("实例记录已创建（ID：%s），当前状态为%s，尚未确认可用。请勿重复创建，请稍后查看实例状态。",
+			idText, readprojection.ResourceStateLabel(unexpectedState)), true
+	}
+	if hasInitializing || hasStarting {
+		phase := "正在初始化"
+		if hasStarting && !hasInitializing {
+			phase = "正在启动"
+		} else if hasStarting {
+			phase = "正在初始化或启动"
+		}
+		return fmt.Sprintf("✅ 已创建实例 %s，%s，进入运行状态后即可使用。", idText, phase), false
+	}
+	return fmt.Sprintf("✅ 已创建实例 %s。", idText), false
+}
+
+func createSpecReadbackComplete(data map[string]any, observed []map[string]any) bool {
+	intended, ok := data["Intended"].(map[string]any)
+	if !ok {
+		return false
+	}
+	for _, row := range observed {
+		for _, field := range []string{"CPU", "Memory", "GPU", "GpuType", "Zone"} {
+			if !createSpecValuePresent(intended[field]) || !createSpecValuePresent(row[field]) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func createSpecValuePresent(value any) bool {
+	if value == nil {
+		return false
+	}
+	if text, ok := value.(string); ok {
+		return strings.TrimSpace(text) != ""
+	}
+	if number, ok := numberAny(value); ok {
+		return number != 0
+	}
+	return true
+}
+
+func createSpecMismatchText(raw any) string {
+	rows, _ := raw.([]map[string]any)
+	parts := make([]string, 0, len(rows))
+	for _, row := range rows {
+		field := strings.TrimSpace(fmt.Sprint(row["Field"]))
+		if field == "" || field == "<nil>" {
+			continue
+		}
+		label := field
+		switch field {
+		case "Memory":
+			label = "内存"
+		case "GpuType":
+			label = "GPU 型号"
+		case "GPU":
+			label = "GPU 卡数"
+		case "Zone":
+			label = "可用区"
+		}
+		parts = append(parts, fmt.Sprintf("%s 确认 %s、实际 %s",
+			label, createSpecDisplayValue(field, row["Intended"]), createSpecDisplayValue(field, row["Observed"])))
+	}
+	return strings.Join(parts, "；")
+}
+
+func createSpecDisplayValue(field string, value any) string {
+	if field == "Memory" {
+		if mb, ok := numberAny(value); ok && mb > 0 && mb == float64(int64(mb)) && int64(mb)%1024 == 0 {
+			return fmt.Sprintf("%.0fGB", mb/1024)
+		}
+	}
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 // customImageWorkflowReply describes the server-side state transition actually
@@ -3812,7 +3996,7 @@ func customImageWorkflowReply(result *workflow.Result) string {
 // Without it the reply reads like a complete answer that simply chose to say
 // very little, and the user cannot tell that the next-steps guidance they
 // normally get was lost rather than withheld.
-const committedWriteNarrationFailedNote = "（本次未能生成完整说明，但上述操作已经执行完成，请勿重复提交。）"
+const committedWriteNarrationFailedNote = "（本次未能生成完整说明；上述写操作已由平台处理，请勿重复提交。）"
 
 // committedWriteRecoveryReply renders this turn's committed writes as a final
 // answer, or reports that there were none. Callers use the bool: an empty

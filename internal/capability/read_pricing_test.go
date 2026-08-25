@@ -136,7 +136,7 @@ func TestPricingHandle_QuotesSupportedDiskComponentsWithoutInventingQuota(t *tes
 	exec := &fakeReadExec{result: pricingFixture(map[string]any{
 		"PriceDetails": []any{map[string]any{
 			"ChargeType": "Postpay", "Instance": float64(1.58),
-			"SystemDisks": float64(0), "Disks": float64(0.14),
+			"SystemDisks": float64(0.10), "Disks": float64(0.24),
 		}},
 	})}
 
@@ -150,9 +150,10 @@ func TestPricingHandle_QuotesSupportedDiskComponentsWithoutInventingQuota(t *tes
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
 	assert.Contains(t, result.Reply, "算力 ¥1.58")
-	assert.Contains(t, result.Reply, "系统盘 ¥0.00")
+	assert.Contains(t, result.Reply, "系统盘 ¥0.10")
 	assert.Contains(t, result.Reply, "数据盘合计 ¥0.14")
-	assert.Contains(t, result.Reply, "合计 ¥1.72")
+	assert.NotContains(t, result.Reply, "数据盘合计 ¥0.24")
+	assert.Contains(t, result.Reply, "合计 ¥1.82")
 	assert.Contains(t, result.Reply, "不能从 ¥0 反推免费额度")
 	var priceCall *fakeReadExecCall
 	for i := range exec.calls {
@@ -170,6 +171,25 @@ func TestPricingHandle_QuotesSupportedDiskComponentsWithoutInventingQuota(t *tes
 		map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": 100},
 		map[string]any{"IsBoot": false, "Type": "CLOUD_SSD", "Size": 200},
 	}, priceCall.args["Disks"])
+}
+
+func TestPricingHandle_SystemDiskIsNotCountedOrRenderedAsData(t *testing.T) {
+	exec := &fakeReadExec{result: pricingFixture(map[string]any{
+		"PriceDetails": []any{map[string]any{
+			"ChargeType": "Postpay", "Instance": float64(1.58),
+			"SystemDisks": float64(0.10), "Disks": float64(0.10),
+		}},
+	})}
+
+	result := runPricing(t, exec, PricingRequest{
+		GPUType: "4090", ChargeTypes: []string{"Postpay"},
+		Disks: []PricingDisk{{Role: "system", Type: "CLOUD_SSD", SizeGB: 100}},
+	})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Contains(t, result.Reply, "系统盘 ¥0.10")
+	assert.NotContains(t, result.Reply, "数据盘")
+	assert.Contains(t, result.Reply, "合计 ¥1.68")
 }
 
 func TestPricingHandle_RejectsDiskTypeOrSizeAbsentFromZoneCatalog(t *testing.T) {

@@ -126,6 +126,21 @@ func TestInstanceOps_NilConfirmFailsClosed(t *testing.T) {
 	require.Contains(t, out, "无法进行授权确认")
 }
 
+func TestInstanceOps_ScreenshotInstanceIDReachesTheExistingConfirmationCard(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "已完成排查"}}
+	eng := newInstanceOpsEngine(runner, alwaysConfirm)
+	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: "请排查截图里的实例"}
+	eng.imageContextThisTurn = "实例详情 cpod-ocr-1 运行中"
+
+	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": "cpod-ocr-1", "Task": "排查 ComfyUI",
+	}, noopStep)
+
+	require.Equal(t, 1, runner.calls)
+	require.True(t, strings.HasPrefix(out, finalReplyPrefix))
+	require.Equal(t, "cpod-ocr-1", runner.lastReq.InstanceID)
+}
+
 // 门 5 — on success the verdict is the deterministic final reply: it survives the
 // loop byte-for-byte (after the prefix strip), the model is NOT called again, and
 // the turn identity is plumbed into the request (INV-9 dedup key).

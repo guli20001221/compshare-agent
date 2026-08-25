@@ -52,7 +52,10 @@ func mockInstanceTypesInZone(zone, gpuType string, sizes ...struct{ Gpu, Cpu, Me
 				"Zone":         zone,
 				"MachineSizes": machineSizes,
 				"CpuPlatforms": map[string]any{"Amd": map[string]any{}},
-				"Disks":        []any{map[string]any{"BootDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(100)}}}},
+				"Disks": []any{map[string]any{
+					"BootDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(100)}},
+					"DataDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(10), "MaximalSize": float64(8000)}},
+				}},
 			},
 		},
 	}
@@ -959,7 +962,10 @@ func zoneTaggedTypes(entries ...struct {
 					map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
 				},
 			}},
-			"Disks": []any{map[string]any{"BootDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(100)}}}},
+			"Disks": []any{map[string]any{
+				"BootDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(100)}},
+				"DataDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(10), "MaximalSize": float64(8000)}},
+			}},
 		})
 	}
 	return map[string]any{"AvailableInstanceTypes": types}

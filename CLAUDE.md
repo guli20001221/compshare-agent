@@ -104,6 +104,12 @@ The server advertises `confirm_form_v1` and `guided_create_v1`; a client must op
 in on the turn before it receives those shapes. They are not server rollout
 flags.
 
+The create confirmation is a projection of one sealed draft, including system
+disk and price. After the write, readback mismatch, initialization failure or an
+incomplete readback is reported deterministically rather than narrated as a
+successful delivery; a sole returned instance becomes the existing current
+instance referent without bypassing later confirmation gates.
+
 Model-owned read-tool arguments rejected by schema, grounding, or live-catalog
 validation use
 `status=needs_input,next_step=correct_tool_call` only with

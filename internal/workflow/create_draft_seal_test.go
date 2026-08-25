@@ -136,6 +136,8 @@ func TestCreateDraftPutsAutoDerivedValuesInsideTheSeal(t *testing.T) {
 	assert.Equal(t, draft.Args.CPU, card["CPU"])
 	assert.Equal(t, draft.Args.Memory, card["Memory"])
 	assert.Equal(t, draft.Args.GPU, card["Gpu"])
+	assert.Equal(t, "SSD 云盘 100GB", card["SystemDisk"],
+		"the card must summarize the system disk from the same sealed draft the create executes")
 	// The name on the card and the id in the request are ONE selection.
 	assert.Equal(t, "Ubuntu 22.04 CUDA 12", card["image"])
 	assert.Equal(t, card["image"], draft.Image.Name)
@@ -151,6 +153,108 @@ func TestCreateDraftPutsAutoDerivedValuesInsideTheSeal(t *testing.T) {
 	require.NotNil(t, created)
 	assert.Equal(t, "cn-sh2-02", created["Zone"])
 	assert.Equal(t, "img-001", created["CompShareImageId"])
+}
+
+func TestRequestedSystemDiskSizeFlowsThroughTheCreateContract(t *testing.T) {
+	executor := draftMockExecutor("cn-sh2-02")
+	var card map[string]any
+	eng := NewEngine(executor, func(_ string, args map[string]any) bool {
+		card = deepCopyParams(args)
+		return true
+	}, nil)
+
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
+		"GpuType":        "4090",
+		"SystemDiskSize": float64(190),
+	})
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.NotNil(t, result.Contract)
+	require.Equal(t, "SSD 云盘 190GB", card["SystemDisk"])
+
+	stored, ok := result.Contract.BusinessParams[createDraftKey].(map[string]any)
+	require.True(t, ok)
+	snapshot, err := ParseCreateConfirmationSnapshot(stored)
+	require.NoError(t, err)
+	require.Len(t, snapshot.Execution.Args.Disks, 1)
+	require.Equal(t, uint32(190), snapshot.Execution.Args.Disks[0].(map[string]any)["Size"])
+
+	for _, action := range []string{
+		"CheckCompShareResourceCapacity",
+		"GetCompShareInstanceUserPrice",
+		"CreateCompShareInstance",
+	} {
+		call, found := findExecutorCall(executor.calls, action)
+		require.True(t, found, "%s was not called", action)
+		disks, ok := call.args["Disks"].([]any)
+		require.True(t, ok, "%s did not receive the resolved system disk", action)
+		require.Len(t, disks, 1)
+		require.Equal(t, uint32(190), disks[0].(map[string]any)["Size"], action)
+	}
+}
+
+func TestRequestedDataDiskFlowsThroughTheSingleCreateContract(t *testing.T) {
+	executor := draftMockExecutor("cn-sh2-02")
+	var card map[string]any
+	eng := NewEngine(executor, func(_ string, args map[string]any) bool {
+		card = deepCopyParams(args)
+		return true
+	}, nil)
+
+	result, err := eng.runCreateTest(CreateInstanceDef(), map[string]any{
+		"GpuType":        "4090",
+		"SystemDiskSize": float64(200),
+		"DataDiskSize":   float64(100),
+	})
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Equal(t, "SSD 云盘 200GB", card["SystemDisk"])
+	require.Equal(t, "SSD 云数据盘 100GB（实例进入运行状态后异步创建并挂载）", card["DataDisk"])
+
+	stored, ok := result.Contract.BusinessParams[createDraftKey].(map[string]any)
+	require.True(t, ok)
+	snapshot, err := ParseCreateConfirmationSnapshot(stored)
+	require.NoError(t, err)
+	require.Len(t, snapshot.Execution.Args.Disks, 2)
+
+	for _, action := range []string{
+		"CheckCompShareResourceCapacity",
+		"GetCompShareInstanceUserPrice",
+		"CreateCompShareInstance",
+	} {
+		call, found := findExecutorCall(executor.calls, action)
+		require.True(t, found, "%s was not called", action)
+		disks, ok := call.args["Disks"].([]any)
+		require.True(t, ok, "%s did not receive the confirmed disks", action)
+		require.Len(t, disks, 2, action)
+		data := disks[1].(map[string]any)
+		require.Equal(t, false, data["IsBoot"], action)
+		require.Equal(t, "CLOUD_SSD", data["Type"], action)
+		require.Equal(t, uint32(100), data["Size"], action)
+	}
+}
+
+func TestCreatePriceIncludesDataDiskWithoutDoubleCountingSystemDisk(t *testing.T) {
+	raw := map[string]any{"PriceDetails": []any{map[string]any{
+		"ChargeType":     "Postpay",
+		"Instance":       float64(7),
+		"Disks":          float64(0.5),
+		"SystemDisks":    float64(0.2),
+		"CompShareImage": float64(0.1),
+	}}}
+
+	amount, ok := priceAmountFor(raw, "PriceDetails", "Postpay")
+	require.True(t, ok)
+	require.InDelta(t, 7.6, amount, 0.0001)
+}
+
+func TestPodCreateRejectsARequestedDataDiskBeforeConfirmation(t *testing.T) {
+	wfCtx := draftContext("cn-bj2-03")
+	wfCtx.Params["DataDiskSize"] = float64(100)
+	wfCtx.StepResults["查询镜像"]["ImageSet"].([]any)[0].(map[string]any)["Container"] = true
+
+	_, err := materializeCreateDraft(wfCtx)
+	require.ErrorContains(t, err, "容器区不支持随实例创建普通数据盘")
 }
 
 // TestTheSealRecordsThePriceTheUserWasShown is the point of the snapshot.

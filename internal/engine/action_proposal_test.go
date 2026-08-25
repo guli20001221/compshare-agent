@@ -616,17 +616,31 @@ func TestDeterministicResizeCFSReplyCannotBeRestatedAsReadOnlyEstimate(t *testin
 	require.NotContains(t, reply, "不会直接扩容")
 }
 
-func TestSecondWriteProposalInOneTurnIsRejected(t *testing.T) {
+func TestAdditionalWriteAfterACommittedWritePreservesTheCommittedResult(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.actionProposalRanThisTurn = true
+	eng.committedWriteRepliesThisTurn = []string{"✅ 已创建实例 uhost-good1，正在初始化。"}
 
 	reply := eng.executeActionProposal(context.Background(), map[string]any{
 		"operation": "StartInstanceWorkflow",
 	}, noopStep)
 
 	require.True(t, strings.HasPrefix(reply, finalReplyPrefix))
-	require.Contains(t, reply, "本轮已经处理过一个写操作请求")
-	require.Equal(t, "duplicate_write_proposal", eng.actionProposalDispositionThisTurn)
+	require.Contains(t, reply, "已创建实例 uhost-good1")
+	require.Contains(t, reply, "开机")
+	require.Contains(t, reply, "没有执行")
+	require.Equal(t, "additional_write_after_commit", eng.actionProposalDispositionThisTurn)
+}
+
+func TestAnUncommittedProposalDoesNotConsumeTheTurnWriteSlot(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+
+	for range 2 {
+		reply := eng.executeActionProposal(context.Background(), map[string]any{
+			"operation": "NoSuchWorkflow",
+		}, noopStep)
+		require.NotContains(t, reply, "随后提出")
+		require.Equal(t, "rejected:_op=unknown_operation", eng.actionProposalDispositionThisTurn)
+	}
 }
 
 func TestCurrentTurnCapacityQuoteIsVerifiedAndConvertedBySharedCodec(t *testing.T) {
@@ -760,27 +774,22 @@ func TestBlankWriteTargetStillBlocksTheCard(t *testing.T) {
 	require.NotContains(t, resolved.Arguments, "UHostId")
 }
 
-// The create regression this prune fixes. The system prompt tells the Agent to
-// submit as soon as the operation is clear and leave the rest blank, so terra
-// emitted an empty Name; a blank optional field was adjudicated as an invalid
-// VALUE, and any rejection blocks the guided form outright — so one empty Name
-// suppressed the entire create card (0/20 on a live four-arm WS run) while the
-// model narrated that a draft had been submitted.
+// Blank optional slots mean the Agent supplied no value. They must not be
+// adjudicated as invalid values that suppress an otherwise valid guided card.
 func TestBlankOptionalSlotDoesNotSuppressTheCreateCard(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{map[string]any{"Name": "4090"}}},
 	}}
 	eng := NewWithDeps(&mockLLM{}, executor, nil)
 	eng.lastUserMsg = "创建一台 4090"
-	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-blank-name", time.Now())
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-blank-optional", time.Now())
 	eng.turnContextViewReady = true
 
 	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
-		"turn_id": "turn-blank-name", "operation": "CreateInstanceWorkflow",
+		"turn_id": "turn-blank-optional", "operation": "CreateInstanceWorkflow",
 		"slots": []any{
 			map[string]any{"name": "GpuType", "value": "4090", "source": "user_explicit",
 				"evidence": map[string]any{"quote": "4090"}},
-			map[string]any{"name": "Name", "value": "", "source": "agent_inference"},
 			map[string]any{"name": "CompShareImageId", "value": nil, "source": "agent_inference"},
 		},
 	})
@@ -789,8 +798,95 @@ func TestBlankOptionalSlotDoesNotSuppressTheCreateCard(t *testing.T) {
 	require.Empty(t, resolved.action.Rejected,
 		"a blank slot is the Agent saying nothing, not a value the user got wrong")
 	require.True(t, resolved.action.ReadyForConfirmation, "the create must still reach a card")
-	require.NotContains(t, resolved.action.Arguments, "Name", "a blank name is dropped, never invented")
 	require.NotContains(t, resolved.action.Arguments, "CompShareImageId")
+}
+
+func TestModelPlaceholdersDoNotOverrideCreateDefaults(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{map[string]any{"Name": "H20"}},
+		},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "帮我开台 H20"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+		eng, eng.lastUserMsg, "turn-model-placeholders", time.Now(),
+	)
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposal(context.Background(), proposalArgsForOperation(
+		"CreateInstanceWorkflow", map[string]any{
+			"GpuType":        "H20",
+			"SystemDiskSize": float64(1),
+		},
+	))
+
+	require.NoError(t, err)
+	require.Empty(t, resolved.action.Rejected)
+	require.NotContains(t, resolved.action.Arguments, "SystemDiskSize")
+}
+
+func TestUserSpecifiedSystemDiskCapacityIsGroundedAndPreserved(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{map[string]any{"Name": "H20"}},
+		},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "帮我开台 H20，系统盘 190GB"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+		eng, eng.lastUserMsg, "turn-explicit-system-disk", time.Now(),
+	)
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposal(context.Background(), proposalArgsForOperation(
+		"CreateInstanceWorkflow", map[string]any{
+			"GpuType":        "H20",
+			"SystemDiskSize": "190GB",
+		},
+	))
+
+	require.NoError(t, err)
+	require.Equal(t, float64(190), resolved.action.Arguments["SystemDiskSize"])
+	require.Equal(t, actionresolver.SourceUserExplicit,
+		resolved.action.Provenance["SystemDiskSize"].Source)
+}
+
+func TestCreateDiskCapacitiesAcceptEquivalentUserUnits(t *testing.T) {
+	for _, unit := range []string{"g", "G", "GB", "GiB"} {
+		t.Run(unit, func(t *testing.T) {
+			executor := &mockExecutor{results: map[string]map[string]any{
+				"DescribeAvailableCompShareInstanceTypes": {
+					"AvailableInstanceTypes": []any{map[string]any{"Name": "H20"}},
+				},
+			}}
+			eng := NewWithDeps(&mockLLM{}, executor, nil)
+			eng.lastUserMsg = "帮我开台 H20，系统盘200" + unit + "，数据盘100G"
+			eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+				eng, eng.lastUserMsg, "turn-equivalent-capacity", time.Now(),
+			)
+			eng.turnContextViewReady = true
+
+			resolved, err := eng.resolveActionProposal(context.Background(), proposalArgsForOperation(
+				"CreateInstanceWorkflow", map[string]any{
+					"GpuType":        "H20",
+					"SystemDiskSize": "200GB",
+					"DataDiskSize":   "100GB",
+				},
+			))
+
+			require.NoError(t, err)
+			require.Equal(t, float64(200), resolved.action.Arguments["SystemDiskSize"])
+			require.Equal(t, float64(100), resolved.action.Arguments["DataDiskSize"])
+		})
+	}
+}
+
+func TestEquivalentCapacityMustIdentifyOneUserLiteral(t *testing.T) {
+	start, end, ok := uniqueEquivalentCapacityLiteral([]rune("系统盘200g，另一个也是200GB"), "200GiB")
+	require.False(t, ok)
+	require.Zero(t, start)
+	require.Zero(t, end)
 }
 
 // The prune is deliberately narrow: only JSON null and whitespace-only strings.

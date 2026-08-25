@@ -67,16 +67,15 @@ func TestInstanceAccessRequestMissingFields(t *testing.T) {
 	}.MissingFields())
 }
 
-func TestInstanceAccessSSHUsesCloudMetadataWithoutLeakingCommand(t *testing.T) {
-	const command = "ssh -p 2222 root@203.0.113.9"
+func TestInstanceAccessSSHReturnsTheLiveLoginCommand(t *testing.T) {
+	const command = "ssh -p 25694 root@cpod-a.podtcp.compshare.cn"
 	exec := &accessReadExec{results: map[string]map[string]any{
-		instanceAccessDescribeAction: describeFixture(accessHost("uhost-a", "UHost", map[string]any{
+		instanceAccessDescribeAction: describeFixture(accessHost("cpod-a", "Container", map[string]any{
 			"SshLoginCommand": command,
-			"IPSet":           []any{map[string]any{"IP": "203.0.113.9", "Type": "International"}},
 		})),
 		"GetCompShareInstanceMonitor": {
 			"Data": map[string]any{"List": []any{map[string]any{
-				"UHostId": "uhost-a",
+				"UHostId": "cpod-a",
 				"Metrics": []any{
 					accessMonitorMetric("uhost_cpu_used", 15),
 					accessMonitorMetric("cloudwatch_memory_usage", 20),
@@ -86,13 +85,12 @@ func TestInstanceAccessSSHUsesCloudMetadataWithoutLeakingCommand(t *testing.T) {
 	}}
 
 	result := runInstanceAccess(t, exec, InstanceAccessRequest{
-		Targets: accessTarget("uhost-a"), AccessType: accessTypeSSH,
+		Targets: accessTarget("cpod-a"), AccessType: accessTypeSSH,
 	})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
 	assert.Contains(t, result.Reply, "云侧配置已登记")
-	assert.NotContains(t, result.Reply, command)
-	assert.NotContains(t, result.Reply, "203.0.113.9")
+	assert.Contains(t, result.Reply, command)
 	require.Len(t, exec.calls, 2)
 	assert.Equal(t, instanceAccessDescribeAction, exec.calls[0].action)
 	assert.Equal(t, "GetCompShareInstanceMonitor", exec.calls[1].action)
@@ -102,6 +100,7 @@ func TestInstanceAccessSSHUsesCloudMetadataWithoutLeakingCommand(t *testing.T) {
 	assert.Equal(t, false, factValue(result.Envelope, "endpoint_reachability_checked"))
 	assert.Equal(t, false, factValue(result.Envelope, "instance_process_checked"))
 	assert.Equal(t, false, factValue(result.Envelope, "system_firewall_checked"))
+	assert.Equal(t, command, factValue(result.Envelope, "ssh_login_command"))
 }
 
 func TestInstanceAccessJupyterUsesInstanceAndRealPortCatalog(t *testing.T) {

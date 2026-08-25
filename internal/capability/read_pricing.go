@@ -590,22 +590,28 @@ func pricingDetailedPrice(raw map[string]any, kind, chargeType, instanceText str
 			continue
 		}
 		parts := []string{"算力 " + instanceText}
-		systemPrice := pricingFormatNumber(row["SystemDisks"])
-		dataPrice := pricingFormatNumber(row["Disks"])
-		if systemPrice != "" {
-			parts = append(parts, "系统盘 "+systemPrice)
-		}
-		if dataPrice != "" {
-			parts = append(parts, "数据盘合计 "+dataPrice)
-		}
-		for _, disk := range requested {
-			if disk.Role == "system" && systemPrice == "" {
+		needSystem, needData := pricingDiskRoles(requested)
+		systemAmount, hasSystemAmount := numericFloat(row["SystemDisks"])
+		diskAmount, hasDiskAmount := numericFloat(row["Disks"])
+		if needSystem {
+			if hasSystemAmount {
+				parts = append(parts, "系统盘 "+pricingFormatNumber(systemAmount))
+			} else {
 				parts = append(parts, "系统盘金额未返回")
-				systemPrice = "missing"
 			}
-			if disk.Role == "data" && dataPrice == "" {
+		}
+		if needData {
+			dataAmount, hasDataAmount := diskAmount, hasDiskAmount
+			if hasDataAmount && hasSystemAmount {
+				dataAmount -= systemAmount
+				hasDataAmount = dataAmount >= 0
+			} else if needSystem {
+				hasDataAmount = false
+			}
+			if hasDataAmount {
+				parts = append(parts, "数据盘合计 "+pricingFormatNumber(dataAmount))
+			} else {
 				parts = append(parts, "数据盘金额未返回")
-				dataPrice = "missing"
 			}
 		}
 		if value := pricingFormatNumber(row["CompShareImage"]); value != "" {
@@ -625,25 +631,28 @@ func pricingTotal(row map[string]any, requested []PricingDisk) (float64, bool) {
 		return 0, false
 	}
 	total := instance
-	needSystem, needData := false, false
-	for _, disk := range requested {
-		needSystem = needSystem || disk.Role == "system"
-		needData = needData || disk.Role == "data"
-	}
-	if value, present := numericFloat(row["SystemDisks"]); present {
-		total += value
-	} else if needSystem {
-		return 0, false
-	}
+	needSystem, needData := pricingDiskRoles(requested)
 	if value, present := numericFloat(row["Disks"]); present {
 		total += value
 	} else if needData {
+		return 0, false
+	} else if value, present := numericFloat(row["SystemDisks"]); present {
+		total += value
+	} else if needSystem {
 		return 0, false
 	}
 	if value, present := numericFloat(row["CompShareImage"]); present {
 		total += value
 	}
 	return total, true
+}
+
+func pricingDiskRoles(disks []PricingDisk) (system, data bool) {
+	for _, disk := range disks {
+		system = system || disk.Role == "system"
+		data = data || disk.Role == "data"
+	}
+	return system, data
 }
 
 func containsExact(values []string, want string) bool {

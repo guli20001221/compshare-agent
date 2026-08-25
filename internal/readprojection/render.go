@@ -55,7 +55,7 @@ func RenderResourceSummaryWithZoneCatalog(instances []entity.InstanceSnapshot, m
 		if id != "" {
 			title += "（" + id + "）"
 		}
-		parts := []string{resourceStateLabel(inst.State)}
+		parts := []string{ResourceStateLabel(inst.State)}
 		if inst.GPU == 0 {
 			parts = append(parts, "无 GPU")
 		} else {
@@ -146,7 +146,10 @@ func resourceTimeLabel(timestamp int64) string {
 	return time.Unix(timestamp, 0).In(monitorHistoryLoc).Format("2006-01-02 15:04")
 }
 
-func resourceStateLabel(state string) string {
+// ResourceStateLabel renders the upstream instance state for user-facing text.
+// Creation delivery and resource reads share it so raw wire values such as
+// "Install" do not acquire different meanings in two replies.
+func ResourceStateLabel(state string) string {
 	switch strings.ToLower(strings.TrimSpace(state)) {
 	case "running":
 		return "运行中"

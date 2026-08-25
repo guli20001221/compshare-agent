@@ -30,7 +30,7 @@ func BuildCatalog() (*Catalog, error) {
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q: %w", operation, err)
 		}
-		intake, err := intakeSpecForOperation(definition.GuidedIntake, definition.GuidedIntakeFields, definition.DiscardableOnRejectFields, fields)
+		intake, err := intakeSpecForOperation(definition.GuidedIntake, definition.GuidedIntakeFields, definition.UserSuppliedOptionalFields, fields)
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q: %w", operation, err)
 		}
@@ -108,6 +108,9 @@ func codecFromSchema(name string, schema map[string]any, sensitive bool) SlotCod
 	if name == "CompShareImageId" {
 		return CodecImage
 	}
+	if name == "Size" || name == "Memory" || name == "SystemDiskSize" || name == "DataDiskSize" {
+		return CodecCapacity
+	}
 	if len(stringSlice(schema["enum"])) > 0 {
 		return CodecEnum
 	}
@@ -115,9 +118,6 @@ func codecFromSchema(name string, schema map[string]any, sensitive bool) SlotCod
 	case "integer":
 		return CodecInteger
 	case "number":
-		if name == "Size" || name == "Memory" {
-			return CodecCapacity
-		}
 		return CodecNumber
 	case "boolean":
 		return CodecBoolean
@@ -183,23 +183,19 @@ func operationValidator(operation string) func(map[string]any) error {
 // both properties the workflow declares on its Definition, NOT a workflow-name
 // switch or an auto-derivation here. CollectableFields must be the EXPLICIT
 // declared set — never every non-secret/non-target field: a create schema
-// carries fields the form has no input for (e.g. Name), and a resolver problem on
-// such a field is not form-correctable. Errors when a declared field is not a
-// real field of the operation (a typo would silently disable correction) or when
-// a guided workflow declares no fields.
+// carries fields the form has no input for (for example explicit disk sizes), and a resolver
+// problem on such a field is not form-correctable. Errors when a declared field
+// is not a real field of the operation (a typo would silently disable correction)
+// or when a guided workflow declares no fields.
 //
-// DiscardableOnRejectFields is the second, narrower declaration: fields the form
-// cannot collect but whose invalid value may be dropped so the form still opens.
-// Its guards are stricter than the collectable set's, because a discarded value
-// is one nobody ever re-supplies. A REQUIRED field may not be declared: the
-// resolver marks a rejected slot as adjudicated, so it never reaches Missing,
-// and discarding a required value would execute the operation without it. A
-// target may not be declared (it would silence a write's addressee) and neither
-// may a secret (it would silence a password the user typed).
-func intakeSpecForOperation(guidedIntake bool, collectable, discardable []string, fields map[string]FieldSpec) (IntakeSpec, error) {
+// UserSuppliedOptionalFields is the second, narrower declaration: optional
+// fields the form cannot collect and therefore must not be inferred by the
+// Agent. A REQUIRED field may not be declared, nor may a target (it would omit a
+// write's addressee) or secret (it would omit a password the user typed).
+func intakeSpecForOperation(guidedIntake bool, collectable, userSupplied []string, fields map[string]FieldSpec) (IntakeSpec, error) {
 	if !guidedIntake {
-		if len(discardable) > 0 {
-			return IntakeSpec{}, fmt.Errorf("DiscardableOnRejectFields declared without GuidedIntake (nothing would re-collect)")
+		if len(userSupplied) > 0 {
+			return IntakeSpec{}, fmt.Errorf("UserSuppliedOptionalFields declared without GuidedIntake")
 		}
 		return IntakeSpec{}, nil
 	}
@@ -215,23 +211,23 @@ func intakeSpecForOperation(guidedIntake bool, collectable, discardable []string
 			return IntakeSpec{}, fmt.Errorf("GuidedIntakeFields names a non-collectable field %q (target or secret)", name)
 		}
 	}
-	for _, name := range discardable {
+	for _, name := range userSupplied {
 		field, ok := fields[name]
 		if !ok {
-			return IntakeSpec{}, fmt.Errorf("DiscardableOnRejectFields names unknown field %q", name)
+			return IntakeSpec{}, fmt.Errorf("UserSuppliedOptionalFields names unknown field %q", name)
 		}
 		if field.Required {
-			return IntakeSpec{}, fmt.Errorf("DiscardableOnRejectFields names required field %q (discarding it would run the operation without it)", name)
+			return IntakeSpec{}, fmt.Errorf("UserSuppliedOptionalFields names required field %q", name)
 		}
 		if field.Target || field.Codec == CodecSensitiveText {
-			return IntakeSpec{}, fmt.Errorf("DiscardableOnRejectFields names a field %q that must never be silently dropped (target or secret)", name)
+			return IntakeSpec{}, fmt.Errorf("UserSuppliedOptionalFields names a field %q that must never be omitted (target or secret)", name)
 		}
 	}
 	out := append([]string(nil), collectable...)
 	sort.Strings(out)
-	dropped := append([]string(nil), discardable...)
-	sort.Strings(dropped)
-	return IntakeSpec{Mode: IntakeGuided, CollectableFields: out, DiscardableOnRejectFields: dropped}, nil
+	explicit := append([]string(nil), userSupplied...)
+	sort.Strings(explicit)
+	return IntakeSpec{Mode: IntakeGuided, CollectableFields: out, UserSuppliedOptionalFields: explicit}, nil
 }
 
 func stringSet(value any) map[string]bool {

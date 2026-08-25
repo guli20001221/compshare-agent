@@ -618,11 +618,13 @@ var Registry = []openai.Tool{
 						"type":        "number",
 						"description": "内存大小，单位 MB（可选）。不指定时使用平台默认值。如 64GB = 65536。需与 Cpu 一起构成合法配比。",
 					},
-					"Name": map[string]any{
+					"SystemDiskSize": map[string]any{
 						"type":        "string",
-						"description": "实例名称（可选，最多 63 个字符）。只在用户明确指定名称时填写并保持原文；仅允许中文、英文字母、数字以及 _ , . : -。未指定则省略，由平台生成。",
-						"maxLength":   63,
-						"pattern":     `^[\u4E00-\u9FA5A-Za-z0-9_,.:-]+$`,
+						"description": "系统盘容量原文（如 190GB）；用户未指定则省略。",
+					},
+					"DataDiskSize": map[string]any{
+						"type":        "string",
+						"description": "随实例创建的 SSD 数据盘容量（如 100GB）；用户未指定则省略。",
 					},
 					"ImageSource": map[string]any{
 						"type":        "string",

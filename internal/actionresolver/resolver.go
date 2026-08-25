@@ -86,6 +86,15 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 			reject(name, RejectUnknownField, fmt.Sprintf("unknown slot %s", name))
 			continue
 		}
+		// Guided forms cannot re-confirm fields outside their controls. For the
+		// explicitly declared optional exceptions, keep a value only when it came
+		// from the user's own current-message evidence; otherwise let the workflow
+		// derive its live platform default. This prevents model placeholder values
+		// from silently becoming part of a sealed create contract.
+		if candidate.Source == SourceAgentInference &&
+			containsField(spec.Intake.UserSuppliedOptionalFields, name) {
+			continue
+		}
 		// Non-target user_explicit fields are span-verified here; TARGET fields defer
 		// entirely to the target adjudicator below, which weighs selection AND
 		// existence and routes an outage / conflict to the right channel rather than
@@ -193,7 +202,7 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 		len(result.DependencyFailures) == 0 &&
 		(len(result.Missing)+len(result.Rejected)+len(result.Conflicts)) > 0 &&
 		everyMissingCollectable(result.Missing, spec.Intake.CollectableFields) &&
-		everyRejectionFormCorrectable(result.RejectedProblems, spec.Intake.CollectableFields, spec.Intake.DiscardableOnRejectFields) &&
+		everyRejectionFormCorrectable(result.RejectedProblems, spec.Intake.CollectableFields) &&
 		everyConflictCollectable(result.Conflicts, spec.Intake.CollectableFields)
 	if result.ReadyForConfirmation {
 		arguments := make(map[string]any, len(result.Arguments))
@@ -207,6 +216,15 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 		result.Confirmation = &ConfirmationPreview{Operation: result.Operation, Arguments: arguments}
 	}
 	return result
+}
+
+func containsField(fields []string, name string) bool {
+	for _, field := range fields {
+		if field == name {
+			return true
+		}
+	}
+	return false
 }
 
 func collectableSet(collectable []string) map[string]struct{} {
@@ -232,24 +250,16 @@ func everyMissingCollectable(missing, collectable []string) bool {
 
 // everyRejectionFormCorrectable reports whether every rejection is a
 // RejectInvalidValue the form can move past — the only Kind it can, since the
-// bad value is already dropped from Arguments. Two declarations qualify a field,
-// and they answer different questions: a COLLECTABLE field is one the form
-// re-collects, and a DISCARDABLE one is a field the form has no input for but
-// whose value is safe to lose (workflow.Definition documents both). Reading the
-// collectable list alone for both questions is what made an optional Name the
-// resolver could not re-collect suppress the whole create card. Any other Kind,
-// or a field in neither list, is not correctable. Vacuously true when there are
-// no rejections.
-func everyRejectionFormCorrectable(problems []RejectedProblem, collectable, discardable []string) bool {
-	collectables, discardables := collectableSet(collectable), collectableSet(discardable)
+// bad value is already dropped from Arguments. Only a COLLECTABLE field qualifies:
+// the form must actually be able to re-collect the value. Any other Kind or field
+// is not correctable. Vacuously true when there are no rejections.
+func everyRejectionFormCorrectable(problems []RejectedProblem, collectable []string) bool {
+	collectables := collectableSet(collectable)
 	for _, p := range problems {
 		if p.Kind != RejectInvalidValue {
 			return false
 		}
-		if _, ok := collectables[p.Slot]; ok {
-			continue
-		}
-		if _, ok := discardables[p.Slot]; !ok {
+		if _, ok := collectables[p.Slot]; !ok {
 			return false
 		}
 	}
@@ -404,7 +414,7 @@ func (r *Resolver) normalizeValue(field FieldSpec, value any) (any, error) {
 		}
 		return number, nil
 	case CodecCapacity:
-		number, ok := asCapacityGB(value)
+		number, ok := NormalizeCapacityGB(value)
 		if !ok || number <= 0 || math.Trunc(number) != number {
 			return nil, fmt.Errorf("must be a positive integer capacity in GB")
 		}
@@ -454,10 +464,9 @@ func asNumber(value any) (float64, bool) {
 	}
 }
 
-// asCapacityGB is the shared capacity codec. It parses a value, not a user
-// sentence: the Agent must pass the exact sourced span (for example "200G")
-// and the resolver performs the unit conversion at this boundary.
-func asCapacityGB(value any) (float64, bool) {
+// NormalizeCapacityGB is the shared capacity codec. It parses one value (for
+// example "200G" or "200GiB") and performs unit conversion at this boundary.
+func NormalizeCapacityGB(value any) (float64, bool) {
 	if number, ok := asNumber(value); ok {
 		return number, true
 	}
@@ -473,6 +482,58 @@ func asCapacityGB(value any) (float64, bool) {
 		}
 	}
 	return 0, false
+}
+
+// CapacityLiteral is one explicit G/GB/GiB value in user text. Offsets are rune
+// offsets so they can be copied directly into SourceEvidence.
+type CapacityLiteral struct {
+	Text       string
+	Start, End int
+}
+
+// CapacityLiterals tokenizes capacity values without assigning them to a
+// business field. The Agent decides whether a value describes a system disk or
+// a data disk; the resolver only supplies the same unit grammar used by
+// NormalizeCapacityGB so provenance and validation cannot disagree.
+func CapacityLiterals(text string) []CapacityLiteral {
+	runes := []rune(text)
+	var out []CapacityLiteral
+	for start := 0; start < len(runes); start++ {
+		if !unicode.IsDigit(runes[start]) {
+			continue
+		}
+		end := start
+		for end < len(runes) && unicode.IsDigit(runes[end]) {
+			end++
+		}
+		if end < len(runes) && runes[end] == '.' {
+			fraction := end + 1
+			for fraction < len(runes) && unicode.IsDigit(runes[fraction]) {
+				fraction++
+			}
+			if fraction > end+1 {
+				end = fraction
+			}
+		}
+		for end < len(runes) && (runes[end] == ' ' || runes[end] == '\t') {
+			end++
+		}
+		if end >= len(runes) || unicode.ToLower(runes[end]) != 'g' {
+			continue
+		}
+		end++
+		if end < len(runes) && unicode.ToLower(runes[end]) == 'i' {
+			if end+1 >= len(runes) || unicode.ToLower(runes[end+1]) != 'b' {
+				continue
+			}
+			end += 2
+		} else if end < len(runes) && unicode.ToLower(runes[end]) == 'b' {
+			end++
+		}
+		out = append(out, CapacityLiteral{Text: string(runes[start:end]), Start: start, End: end})
+		start = end - 1
+	}
+	return out
 }
 
 func sameValue(left, right any) bool {
