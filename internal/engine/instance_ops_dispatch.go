@@ -140,7 +140,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		switch p.Kind {
 		case InstanceOpsProgressBackgroundJob:
 			// Side-band session continuity only: not a command, UI step, trace event or audit row.
-			e.observeInstanceOpsBackgroundJob(instanceID, p.JobID, p.JobState)
+			e.observeInstanceOpsBackgroundJob(instanceID, p.JobID, p.JobState, p.JobPurpose)
 		case InstanceOpsProgressConnected:
 			onStep(StepEvent{
 				Type:    StepToolCall,
@@ -149,7 +149,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 				Message: fmt.Sprintf("已连接到实例 %s，开始%s", instanceID, instanceOpsPhaseNoun()),
 			})
 		case InstanceOpsProgressCommand:
-			e.observeInstanceOpsBackgroundJob(instanceID, p.JobID, p.JobState)
+			e.observeInstanceOpsBackgroundJob(instanceID, p.JobID, p.JobState, p.JobPurpose)
 			settled = append(settled, instanceOpsSettledStep{
 				Command:     p.Command,
 				Tier:        p.Tier,

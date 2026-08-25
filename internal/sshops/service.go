@@ -40,7 +40,7 @@ const DefaultDiagnosisTask = "用户报告这台 GPU 实例\"掉卡\"（nvidia-s
 // silently discarding it and making the audit claim facts reached the model when they did not.
 // A Supervisor value satisfies it; tests inject a fake so they never spawn the real Python harness.
 // onStep fires for settled commands and the opaque pre-launch background-job handle. The latter is
-// marked JobLifecycleOnly so callers retain it in live session memory without surfacing or auditing
+// marked JobLifecycleOnly so callers retain its opaque cursor without surfacing or auditing
 // it as a command; it may be nil.
 type harnessRunner interface {
 	RunWithContext(ctx context.Context, cred Credential, task string, modelContext opscontext.Context, onStep func(Step), onConfirm ConfirmFunc) (Result, error)

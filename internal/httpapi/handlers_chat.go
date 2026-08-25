@@ -549,6 +549,11 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 
 	// Signal keepalive goroutine to exit.
 	close(done)
+	// Every terminal path below (client disconnect, LLM error, success) must
+	// persist execution continuity observed before the turn ended. The helper is
+	// detached from streamCtx, bounded, best-effort, and still fail-closed when
+	// prepareChat could not parse/recognize the stored envelope.
+	defer h.persistSessionStateBestEffort(base.Owner, sessionID, agent, prep)
 
 	// -----------------------------------------------------------------------
 	// Post-stream branching
@@ -611,42 +616,46 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		TtftMs:    ttftMs,
 	})
 
-	// Persist SessionState envelope AFTER the done frame so the client is
-	// not blocked on a DB write. Guarded by sessionStatePersistable, which
-	// is false on parse failure / unknown schema version (see prepareChat).
-	// Persistence failures are warning-only — the assistant reply is already
-	// delivered, the worst case is "previous instance" memory loss on the
-	// next turn.
-	if prep.sessionStatePersistable {
-		newState, expectedVer, hydrated := agent.SessionStateSnapshot()
-		if hydrated {
-			envelope := engine.PersistedContext{
-				AgentSessionState: newState,
-				ClientContext:     prep.clientCtxPreserve,
-			}
-			if raw, mErr := json.Marshal(envelope); mErr == nil {
-				persistCtx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-				_, upErr := h.sessions.UpdateContext(persistCtx, base.Owner, sessionID, raw, expectedVer)
-				cancel()
-				switch {
-				case upErr == nil:
-					// ok
-				case errors.Is(upErr, store.ErrStaleWrite):
-					log.Printf("warning: session %s stale context_version on persist (expected=%d)",
-						sessionID, expectedVer)
-					h.retryPersistSessionContext(base.Owner, sessionID, newState, prep.clientCtxPreserve)
-				default:
-					log.Printf("warning: session %s UpdateContext failed: %v", sessionID, upErr)
-				}
-			} else {
-				log.Printf("warning: session %s marshal envelope failed: %v", sessionID, mErr)
-			}
-		}
-	}
-
-	// Persist replay metadata after the reply and SessionState. It is bounded and
+	// Persist replay metadata after the reply. SessionState persistence is the
+	// shared deferred terminal action above. Transcript persistence is bounded and
 	// skipped when the assistant row itself did not land.
 	h.persistTurnTranscript(base.Owner, assistantMsgID, agent, replyPersistErr)
+}
+
+// persistSessionStateBestEffort writes the current execution snapshot from a
+// detached, bounded context. It is shared by every chatStream terminus so an
+// approved background launch is not forgotten merely because the browser or
+// model stream ended before a normal reply. Parse/unknown-schema turns remain
+// non-persistable and therefore cannot overwrite their original row.
+func (h *Handlers) persistSessionStateBestEffort(owner store.Owner, sessionID string, agent *engine.Engine, prep *chatPrep) {
+	if h == nil || h.sessions == nil || agent == nil || prep == nil || !prep.sessionStatePersistable {
+		return
+	}
+	newState, expectedVer, hydrated := agent.SessionStateSnapshot()
+	if !hydrated {
+		return
+	}
+	envelope := engine.PersistedContext{
+		AgentSessionState: newState,
+		ClientContext:     prep.clientCtxPreserve,
+	}
+	raw, mErr := json.Marshal(envelope)
+	if mErr != nil {
+		log.Printf("warning: session %s marshal envelope failed: %v", sessionID, mErr)
+		return
+	}
+	persistCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	_, upErr := h.sessions.UpdateContext(persistCtx, owner, sessionID, raw, expectedVer)
+	cancel()
+	switch {
+	case upErr == nil:
+		return
+	case errors.Is(upErr, store.ErrStaleWrite):
+		log.Printf("warning: session %s stale context_version on persist (expected=%d)", sessionID, expectedVer)
+		h.retryPersistSessionContext(owner, sessionID, newState)
+	default:
+		log.Printf("warning: session %s UpdateContext failed: %v", sessionID, upErr)
+	}
 }
 
 // assistantPersistTimeout prevents a stalled database write from withholding the
@@ -668,7 +677,7 @@ func (h *Handlers) persistAssistant(owner store.Owner, msgID string, patch store
 	return err
 }
 
-func (h *Handlers) retryPersistSessionContext(owner store.Owner, sessionID string, newState engine.SessionState, fallbackClientCtx json.RawMessage) {
+func (h *Handlers) retryPersistSessionContext(owner store.Owner, sessionID string, newState engine.SessionState) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 	current, err := h.sessions.GetByID(ctx, owner, sessionID)
@@ -676,10 +685,15 @@ func (h *Handlers) retryPersistSessionContext(owner store.Owner, sessionID strin
 		log.Printf("warning: session %s refetch after stale context persist failed: %v", sessionID, err)
 		return
 	}
-	clientCtx := fallbackClientCtx
-	if pc, parseErr := engine.ParsePersistedContext(current.Context); parseErr == nil {
-		clientCtx = pc.ClientContext
+	pc, parseErr := engine.ParsePersistedContext(current.Context)
+	if parseErr != nil {
+		// The row may have advanced to a future schema between the failed CAS and
+		// this refetch. Never replace a malformed/unknown envelope with our stale
+		// snapshot. This is the same forward-rollout protection as prepareChat.
+		log.Printf("warning: session %s refetched context cannot be safely retried: %v", sessionID, parseErr)
+		return
 	}
+	clientCtx := pc.ClientContext
 	raw, err := json.Marshal(engine.PersistedContext{
 		AgentSessionState: newState,
 		ClientContext:     clientCtx,

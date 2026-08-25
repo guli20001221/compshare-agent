@@ -77,6 +77,7 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 		if st.JobLifecycleOnly {
 			onProgress(engine.InstanceOpsProgress{
 				Kind: engine.InstanceOpsProgressBackgroundJob, JobID: st.JobID, JobState: st.JobState,
+				JobPurpose: st.JobPurpose,
 			})
 			return
 		}
@@ -96,6 +97,7 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 			Bytes:       st.Bytes,
 			JobID:       st.JobID,
 			JobState:    st.JobState,
+			JobPurpose:  st.JobPurpose,
 		})
 	}
 

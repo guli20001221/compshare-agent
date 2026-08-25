@@ -1,17 +1,29 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type terminalChatLLM struct{ err error }
+
+func (c terminalChatLLM) Chat(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	return &llm.ChatResponse{Content: "ok"}, nil
+}
 
 // ---------------------------------------------------------------------------
 // M1 SessionState persistence — handler integration tests.
@@ -242,4 +254,133 @@ func TestDispatchChat_StaleWriteOnPersist_StillEmitsDone(t *testing.T) {
 	assert.False(t, sink.has("error"),
 		"ErrStaleWrite is a warning-only condition, not a stream error")
 	require.Equal(t, 2, sessions.updateContextCalls)
+}
+
+func TestChatStreamEveryTerminusPersistsExistingBackgroundJob(t *testing.T) {
+	job := engine.PersistedInstanceOpsJob{
+		InstanceID: "uhost-job",
+		JobID:      "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		State:      "running",
+		Purpose:    "download model weights",
+		UpdatedAt:  "2026-08-25T12:00:00Z",
+	}
+	for _, tc := range []struct {
+		name     string
+		llmErr   error
+		cancel   bool
+		wantDone bool
+	}{
+		{name: "success", wantDone: true},
+		{name: "llm_error", llmErr: errors.New("model unavailable")},
+		{name: "client_disconnect", llmErr: context.Canceled, cancel: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(engine.PersistedContext{
+				AgentSessionState: engine.SessionState{
+					SchemaVersion:           engine.SessionStateSchemaV8,
+					PersistedInstanceOpsJob: job,
+				},
+				ClientContext: json.RawMessage(`{"page":"instance"}`),
+			})
+			require.NoError(t, err)
+			sess := store.Session{
+				ID: "sess-" + tc.name, TopOrganizationID: 1, OrganizationID: 2,
+				Context: raw, ContextVersion: 4, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			}
+			eng := engine.NewWithDeps(terminalChatLLM{err: tc.llmErr}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+			eng.RehydrateHistory(nil)
+			sessions := &mockSessions{byID: map[string]store.Session{sess.ID: sess}}
+			h := NewHandlers(
+				&config.Config{Agent: config.AgentConfig{
+					LLM:  config.LLMConfig{Model: "model-x"},
+					HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+					STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+				}},
+				sessions, &recordingMessages{}, mockFeedback{}, fakePool{eng: eng}, nil,
+			)
+			base := BaseRequest{Action: "SendCSAgentChat", RequestUUID: "req-" + tc.name}
+			base.Owner = store.Owner{TopOrganizationID: 1, OrganizationID: 2}
+			prep, apiErr := h.prepareChat(context.Background(), base, sess.ID, "continue", "")
+			require.Nil(t, apiErr)
+			defer prep.release()
+
+			streamCtx := context.Background()
+			if tc.cancel {
+				cancelled, cancel := context.WithCancel(context.Background())
+				cancel()
+				streamCtx = cancelled
+			}
+			sink := &recordingSink{}
+			h.chatStream(streamCtx, sink, base, prep)
+
+			require.Equal(t, tc.wantDone, sink.has("done"))
+			require.Equal(t, 1, sessions.updateContextCalls,
+				"the detached SessionState write must run once on every terminus")
+			persisted, err := engine.ParsePersistedContext(sessions.byID[sess.ID].Context)
+			require.NoError(t, err)
+			require.Equal(t, job, persisted.AgentSessionState.PersistedInstanceOpsJob)
+			require.JSONEq(t, `{"page":"instance"}`, string(persisted.ClientContext))
+		})
+	}
+}
+
+func TestSessionStateStaleRetryPreservesRefetchedClientContext(t *testing.T) {
+	h, sessions, _ := newChatTestHandlers(t, store.Session{
+		ID: "sess-stale-client", TopOrganizationID: 1, OrganizationID: 2,
+		Context: json.RawMessage(`{"source":"old"}`), ContextVersion: 0,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	calls := 0
+	sessions.updateContextOverride = func(sessionID string, ctxJSON json.RawMessage, expectedVersion int) (int, error) {
+		calls++
+		if calls == 1 {
+			concurrent, err := json.Marshal(engine.PersistedContext{
+				AgentSessionState: engine.SessionState{SchemaVersion: engine.SessionStateSchemaCurrent},
+				ClientContext:     json.RawMessage(`{"source":"new"}`),
+			})
+			require.NoError(t, err)
+			row := sessions.byID[sessionID]
+			row.Context = concurrent
+			row.ContextVersion = expectedVersion + 1
+			sessions.byID[sessionID] = row
+			return 0, store.ErrStaleWrite
+		}
+		var retried engine.PersistedContext
+		require.NoError(t, json.Unmarshal(ctxJSON, &retried))
+		require.JSONEq(t, `{"source":"new"}`, string(retried.ClientContext))
+		row := sessions.byID[sessionID]
+		require.Equal(t, row.ContextVersion, expectedVersion)
+		row.Context = append(json.RawMessage(nil), ctxJSON...)
+		row.ContextVersion++
+		sessions.byID[sessionID] = row
+		return row.ContextVersion, nil
+	}
+
+	sink, _ := dispatchChatTurn(t, h, "sess-stale-client", "hi")
+	require.True(t, sink.has("done"))
+	require.Equal(t, 2, sessions.updateContextCalls)
+	parsed, err := engine.ParsePersistedContext(sessions.byID["sess-stale-client"].Context)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"source":"new"}`, string(parsed.ClientContext))
+}
+
+func TestSessionStateStaleRetryDoesNotOverwriteNewUnknownSchema(t *testing.T) {
+	h, sessions, _ := newChatTestHandlers(t, store.Session{
+		ID: "sess-stale-future", TopOrganizationID: 1, OrganizationID: 2,
+		ContextVersion: 0, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	future := json.RawMessage(`{"agent_session_state":{"schema_version":"99.0","future":true},"client_context":{"source":"future"}}`)
+	sessions.updateContextOverride = func(sessionID string, _ json.RawMessage, expectedVersion int) (int, error) {
+		row := sessions.byID[sessionID]
+		row.Context = append(json.RawMessage(nil), future...)
+		row.ContextVersion = expectedVersion + 1
+		sessions.byID[sessionID] = row
+		return 0, store.ErrStaleWrite
+	}
+
+	sink, _ := dispatchChatTurn(t, h, "sess-stale-future", "hi")
+	require.True(t, sink.has("done"))
+	require.Equal(t, 1, sessions.updateContextCalls,
+		"the retry must stop after refetch discovers an unknown schema")
+	require.JSONEq(t, string(future), string(sessions.byID["sess-stale-future"].Context))
 }

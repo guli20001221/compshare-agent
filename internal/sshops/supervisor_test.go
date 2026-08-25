@@ -230,8 +230,8 @@ func TestSupervisorRequiresSecretAndPath(t *testing.T) {
 func TestParseHarnessStream(t *testing.T) {
 	in := strings.Join([]string{
 		"claude cli starting...", // chatter -> ignored
-		`@@JOB {"job_id":"job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","job_state":"unknown"}`,
-		`@@STEP {"command":"poll_background_job","tier":"read_only","disposition":"ran","exit":0,"bytes":42,"job_id":"job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","job_state":"running"}`,
+		`@@JOB {"job_id":"job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","job_state":"unknown","purpose":"download model weights"}`,
+		`@@STEP {"command":"poll_background_job","tier":"read_only","disposition":"ran","exit":0,"bytes":42,"job_id":"job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","job_state":"running","purpose":"download model weights"}`,
 		`@@STEP {"command":"rm -rf /","tier":"destructive","disposition":"refused","exit":null,"bytes":0}`,
 		"more chatter",
 		"<<<VERDICT>>>",
@@ -255,6 +255,7 @@ func TestParseHarnessStream(t *testing.T) {
 	// command/audit step. Then each @@STEP streams in order and matches the returned Steps.
 	if len(streamed) != 3 || !streamed[0].JobLifecycleOnly ||
 		streamed[0].JobID != "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ||
+		streamed[0].JobPurpose != "download model weights" ||
 		streamed[1].Command != "poll_background_job" || streamed[2].Disposition != "refused" {
 		t.Fatalf("onStep did not stream steps live in order: %+v", streamed)
 	}
@@ -264,6 +265,9 @@ func TestParseHarnessStream(t *testing.T) {
 	}
 	if steps[0].JobID != "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || steps[0].JobState != "running" {
 		t.Fatalf("background-job continuation metadata was dropped: %+v", steps[0])
+	}
+	if steps[0].JobPurpose != "download model weights" {
+		t.Fatalf("background-job purpose was dropped: %+v", steps[0])
 	}
 	// refused command carried a null exit -> ExitCode must be nil, not 0 (0 would read as "ran clean")
 	if steps[1].Disposition != "refused" || steps[1].ExitCode != nil {

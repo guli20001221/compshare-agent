@@ -37,6 +37,7 @@ print("ENDPOINT_TARGETS=%r" % len(targets))
 print("ENDPOINT_FIRST=%r" % ((targets[0].get("id") if targets else None),))
 print("CONTEXT_HAS_PENDING_JOB=%r" % ("pending_background_job" in context,))
 print("PENDING_JOB=%r" % pending.get("job_id"))
+print("PENDING_JOB_PURPOSE=%r" % pending.get("purpose"))
 print("<<<END>>>")
 `
 
@@ -60,7 +61,7 @@ func TestSupervisorSendsReferenceContextOnHandshake(t *testing.T) {
 			Source: "DescribeCompShareInstance.Softwares.URL", URL: "https://example.invalid/?token=private",
 		}},
 		PendingBackgroundJob: &opscontext.BackgroundJob{
-			JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", State: "running",
+			JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", State: "running", Purpose: "download model weights",
 		},
 	}
 	res, err := sup.RunWithContext(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 23, "S3cr3tPw"), "task", modelContext, nil, nil)
@@ -74,6 +75,7 @@ func TestSupervisorSendsReferenceContextOnHandshake(t *testing.T) {
 	require.Contains(t, res.Output, "ENDPOINT_FIRST='platform-http-1'")
 	require.Contains(t, res.Output, "CONTEXT_HAS_PENDING_JOB=False")
 	require.Contains(t, res.Output, "PENDING_JOB='job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'")
+	require.Contains(t, res.Output, "PENDING_JOB_PURPOSE='download model weights'")
 	require.NotContains(t, res.Output, "private")
 	require.True(t, res.ContextApplied)
 }

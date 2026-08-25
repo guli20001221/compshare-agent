@@ -3,9 +3,11 @@ package engine
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/opscontext"
+	"github.com/compshare-agent/internal/security"
 )
 
 // An interrupted diagnosis may already have changed the instance. The next turn
@@ -36,13 +38,11 @@ type instanceOpsInterruption struct {
 	BackgroundJob *opscontext.BackgroundJob
 }
 
-// instanceOpsBackgroundJob binds an opaque guest handle to the box that produced it. It is kept
-// outside SessionState on purpose: this is continuity for one still-live process/session, not a
-// retired durable turn or a command replay record.
-type instanceOpsBackgroundJob struct {
-	InstanceID string
-	Job        opscontext.BackgroundJob
-}
+const (
+	maxPersistedInstanceOpsJobPurposeRunes    = 200
+	maxPersistedInstanceOpsJobInstanceIDRunes = 128
+	maxPersistedInstanceOpsJobUpdatedAtBytes  = 64
+)
 
 func validInstanceOpsJobID(id string) bool {
 	id = strings.TrimSpace(id)
@@ -75,38 +75,99 @@ func terminalInstanceOpsJobState(state string) bool {
 	}
 }
 
-// observeInstanceOpsBackgroundJob updates the live-session continuation handle from one settled
-// structured-tool event. Terminal observations clear the matching handle. Malformed lifecycle
-// values are ignored, and no command text is retained.
-func (e *Engine) observeInstanceOpsBackgroundJob(instanceID, jobID, state string) {
+// normalizePersistedInstanceOpsJobPurpose applies the conversation persistence
+// secret/PII boundary, collapses whitespace and bounds by runes. The lifecycle
+// protocol never supplies command text to this function.
+func normalizePersistedInstanceOpsJobPurpose(purpose string) string {
+	purpose = strings.Join(strings.Fields(security.RedactUserConversationText(purpose)), " ")
+	runes := []rune(purpose)
+	if len(runes) > maxPersistedInstanceOpsJobPurposeRunes {
+		purpose = string(runes[:maxPersistedInstanceOpsJobPurposeRunes])
+	}
+	return purpose
+}
+
+func validPersistedInstanceOpsJob(job PersistedInstanceOpsJob) bool {
+	instanceID := strings.TrimSpace(job.InstanceID)
+	return instanceID != "" && len([]rune(instanceID)) <= maxPersistedInstanceOpsJobInstanceIDRunes &&
+		validInstanceOpsJobID(job.JobID) &&
+		activeInstanceOpsJobState(job.State)
+}
+
+func normalizePersistedInstanceOpsJob(job PersistedInstanceOpsJob) PersistedInstanceOpsJob {
+	job.InstanceID = strings.TrimSpace(job.InstanceID)
+	job.JobID = strings.TrimSpace(job.JobID)
+	job.State = strings.TrimSpace(job.State)
+	if !validPersistedInstanceOpsJob(job) {
+		return PersistedInstanceOpsJob{}
+	}
+	job.Purpose = normalizePersistedInstanceOpsJobPurpose(job.Purpose)
+	job.UpdatedAt = strings.TrimSpace(job.UpdatedAt)
+	if len(job.UpdatedAt) > maxPersistedInstanceOpsJobUpdatedAtBytes {
+		job.UpdatedAt = ""
+	} else if job.UpdatedAt != "" {
+		if _, err := time.Parse(time.RFC3339Nano, job.UpdatedAt); err != nil {
+			job.UpdatedAt = ""
+		}
+	}
+	return job
+}
+
+// observeInstanceOpsBackgroundJob updates the durable continuation cursor from
+// one structured-tool event. Terminal observations clear the matching handle.
+// Malformed lifecycle values are ignored, and no command text is retained.
+// While A has an active cursor, a different job (including one on B) cannot
+// silently replace it.
+func (e *Engine) observeInstanceOpsBackgroundJob(instanceID, jobID, state, purpose string) {
 	if e == nil || !validInstanceOpsJobID(jobID) {
 		return
 	}
 	instanceID = strings.TrimSpace(instanceID)
 	jobID = strings.TrimSpace(jobID)
 	state = strings.TrimSpace(state)
+	if instanceID == "" {
+		return
+	}
+	current := e.sessionState.PersistedInstanceOpsJob
 	if activeInstanceOpsJobState(state) {
-		e.pendingInstanceOpsBackgroundJob = &instanceOpsBackgroundJob{
-			InstanceID: instanceID,
-			Job:        opscontext.BackgroundJob{JobID: jobID, State: state},
+		if validPersistedInstanceOpsJob(current) &&
+			(!strings.EqualFold(current.InstanceID, instanceID) || current.JobID != jobID) {
+			return
 		}
+		purpose = normalizePersistedInstanceOpsJobPurpose(purpose)
+		if purpose == "" && strings.EqualFold(current.InstanceID, instanceID) && current.JobID == jobID {
+			purpose = current.Purpose
+		}
+		e.sessionState.PersistedInstanceOpsJob = PersistedInstanceOpsJob{
+			InstanceID: instanceID,
+			JobID:      jobID,
+			State:      state,
+			Purpose:    purpose,
+			UpdatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+		}
+		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 		return
 	}
 	if !terminalInstanceOpsJobState(state) {
 		return
 	}
-	if current := e.pendingInstanceOpsBackgroundJob; current != nil &&
-		strings.EqualFold(current.InstanceID, instanceID) && current.Job.JobID == jobID {
-		e.pendingInstanceOpsBackgroundJob = nil
+	if validPersistedInstanceOpsJob(current) && strings.EqualFold(current.InstanceID, instanceID) && current.JobID == jobID {
+		e.sessionState.PersistedInstanceOpsJob = PersistedInstanceOpsJob{}
+		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 	}
 }
 
 func (e *Engine) backgroundJobForInstance(instanceID string) *opscontext.BackgroundJob {
-	current := e.pendingInstanceOpsBackgroundJob
-	if current == nil || !strings.EqualFold(strings.TrimSpace(current.InstanceID), strings.TrimSpace(instanceID)) {
+	current := e.sessionState.PersistedInstanceOpsJob
+	if !validPersistedInstanceOpsJob(current) ||
+		!strings.EqualFold(strings.TrimSpace(current.InstanceID), strings.TrimSpace(instanceID)) {
 		return nil
 	}
-	job := current.Job
+	job := opscontext.BackgroundJob{
+		JobID:   current.JobID,
+		State:   current.State,
+		Purpose: normalizePersistedInstanceOpsJobPurpose(current.Purpose),
+	}
 	return &job
 }
 

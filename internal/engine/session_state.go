@@ -35,11 +35,17 @@ const SessionStateSchemaV5 = "5.0"
 // or forcing another retrieval.
 const SessionStateSchemaV6 = "6.0"
 
-// SessionStateSchemaV7 is the current envelope version. Older summary
-// fields are deliberately ignored when old rows are decoded.
+// SessionStateSchemaV7 retired older summary fields. Those fields are
+// deliberately ignored when old rows are decoded.
 const SessionStateSchemaV7 = "7.0"
 
-const SessionStateSchemaCurrent = SessionStateSchemaV7
+// SessionStateSchemaV8 persists one opaque in-instance background-job handle.
+// It deliberately stores no command or output: the handle is sufficient to poll
+// the reviewed guest job after an Engine rebuild, while the original operation
+// remains outside conversation/session persistence.
+const SessionStateSchemaV8 = "8.0"
+
+const SessionStateSchemaCurrent = SessionStateSchemaV8
 
 // ErrUnknownSessionStateSchema is returned by ParsePersistedContext when a
 // row looks like an agent envelope (top-level object with an
@@ -67,6 +73,7 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 	SessionStateSchemaV5: {},
 	SessionStateSchemaV6: {},
 	SessionStateSchemaV7: {},
+	SessionStateSchemaV8: {},
 }
 
 // SessionState is the per-session, JSON-serializable, multi-replica-safe
@@ -85,17 +92,39 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 // Older rows can contain retired semantic fields. Normal JSON decoding ignores
 // them, and a later write omits them without a migration.
 type SessionState struct {
-	SchemaVersion                  string                 `json:"schema_version"`
-	SelectedInstanceID             string                 `json:"selected_instance_id,omitempty"`
-	SelectedInstanceName           string                 `json:"selected_instance_name,omitempty"`
-	SelectedInstanceSource         string                 `json:"selected_instance_source,omitempty"`
-	SelectedInstanceAtUnix         int64                  `json:"selected_instance_at_unix,omitempty"`
-	SelectedInstanceFreshness      string                 `json:"selected_instance_freshness,omitempty"`
-	PendingSelectionKind           string                 `json:"pending_selection_kind,omitempty"`
-	PendingSelectionProducedAtUnix int64                  `json:"pending_selection_produced_at_unix,omitempty"`
-	PendingSelectionTTLSeconds     int                    `json:"pending_selection_ttl_seconds,omitempty"`
-	PendingSelectionItems          []PendingSelectionItem `json:"pending_selection_items,omitempty"`
-	VerifiedEvidence               []VerifiedEvidenceTurn `json:"verified_knowledge,omitempty"`
+	SchemaVersion                  string                  `json:"schema_version"`
+	SelectedInstanceID             string                  `json:"selected_instance_id,omitempty"`
+	SelectedInstanceName           string                  `json:"selected_instance_name,omitempty"`
+	SelectedInstanceSource         string                  `json:"selected_instance_source,omitempty"`
+	SelectedInstanceAtUnix         int64                   `json:"selected_instance_at_unix,omitempty"`
+	SelectedInstanceFreshness      string                  `json:"selected_instance_freshness,omitempty"`
+	PendingSelectionKind           string                  `json:"pending_selection_kind,omitempty"`
+	PendingSelectionProducedAtUnix int64                   `json:"pending_selection_produced_at_unix,omitempty"`
+	PendingSelectionTTLSeconds     int                     `json:"pending_selection_ttl_seconds,omitempty"`
+	PendingSelectionItems          []PendingSelectionItem  `json:"pending_selection_items,omitempty"`
+	VerifiedEvidence               []VerifiedEvidenceTurn  `json:"verified_knowledge,omitempty"`
+	PersistedInstanceOpsJob        PersistedInstanceOpsJob `json:"persisted_instance_ops_job,omitzero"`
+}
+
+// PersistedInstanceOpsJob is the single durable observation cursor for a
+// reviewed background job in a tenant guest. Purpose is a redacted, bounded
+// human description; it is not executable. Command text and command output are
+// intentionally absent from this type and therefore cannot enter SessionState.
+//
+// One slot is intentional. While it contains an active job, an event for a
+// different instance/job cannot replace it; terminal state for the matching job
+// clears the slot.
+type PersistedInstanceOpsJob struct {
+	InstanceID string `json:"instance_id,omitempty"`
+	JobID      string `json:"job_id,omitempty"`
+	State      string `json:"state,omitempty"`
+	Purpose    string `json:"purpose,omitempty"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+}
+
+// IsZero lets encoding/json's omitzero omit the inactive job slot.
+func (j PersistedInstanceOpsJob) IsZero() bool {
+	return j == (PersistedInstanceOpsJob{})
 }
 
 // VerifiedEvidenceTurn is compact, persisted provenance for an answer that

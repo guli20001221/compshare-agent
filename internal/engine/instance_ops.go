@@ -74,7 +74,7 @@ type InstanceOpsRequest struct {
 }
 
 // Progress kinds emitted by a runner. Connected and command become live StepEvents; background_job
-// is internal live-session continuity and is never surfaced as a command. The terminal summary line
+// is internal session continuity and is never surfaced as a command. The terminal summary line
 // is emitted by the engine itself from the verdict tallies, not by the runner.
 const (
 	// InstanceOpsProgressConnected fires once when the SSH session is established.
@@ -107,6 +107,9 @@ type InstanceOpsProgress struct {
 	Bytes    int    // output byte count (metadata only; the output itself never crosses here)
 	JobID    string // opaque background-job handle; never the command that created it
 	JobState string // started | running | unknown | succeeded | failed | interrupted | not_found
+	// JobPurpose is a short non-executable description emitted by the structured
+	// job tool. The engine redacts and bounds it before SessionState persistence.
+	JobPurpose string
 }
 
 // InstanceOpsVerdict is the terminal root-cause conclusion. Text is the harness's

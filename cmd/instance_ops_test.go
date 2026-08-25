@@ -153,9 +153,9 @@ func TestInstanceOpsRunner_TranslatesActivityStream(t *testing.T) {
 	diag := &fakeDiagnoser{
 		output: "结论",
 		steps: []sshops.Step{
-			{JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", JobState: "unknown", JobLifecycleOnly: true},
+			{JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", JobState: "unknown", JobPurpose: "download model", JobLifecycleOnly: true},
 			{Command: "poll_background_job", Tier: "read_only", Disposition: "ran", ExitCode: intp(0), Bytes: 42,
-				JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", JobState: "running"},
+				JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", JobState: "running", JobPurpose: "download model"},
 			{Command: "modprobe nvidia", Tier: "mutating", Disposition: "refused"},
 			{Command: "df -h", Tier: "read_only", Disposition: "ran", ExitCode: intp(0), Bytes: 10},
 		},
@@ -170,6 +170,7 @@ func TestInstanceOpsRunner_TranslatesActivityStream(t *testing.T) {
 	require.Len(t, got, 5, "1 internal job handle + 1 connected + 3 commands")
 	require.Equal(t, engine.InstanceOpsProgressBackgroundJob, got[0].Kind)
 	require.Equal(t, "unknown", got[0].JobState)
+	require.Equal(t, "download model", got[0].JobPurpose)
 	require.Equal(t, engine.InstanceOpsProgressConnected, got[1].Kind,
 		"publishing a handle is not proof that the SSH command reached the box")
 	require.Equal(t, engine.InstanceOpsProgressCommand, got[2].Kind)
@@ -178,6 +179,7 @@ func TestInstanceOpsRunner_TranslatesActivityStream(t *testing.T) {
 	require.Equal(t, 42, got[2].Bytes)
 	require.Equal(t, "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", got[2].JobID)
 	require.Equal(t, "running", got[2].JobState)
+	require.Equal(t, "download model", got[2].JobPurpose)
 	require.Equal(t, "refused", got[3].Disposition)
 	require.Nil(t, got[3].ExitCode, "a refused command has no exit code")
 	// The TIER has to cross this boundary too. The audit row has carried it since 0014, but the
