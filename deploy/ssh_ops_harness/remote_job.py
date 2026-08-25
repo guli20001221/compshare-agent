@@ -11,6 +11,10 @@ _JOB_ROOT = "/tmp/compshare-ops-jobs"
 _JOB_ID = re.compile(r"^job-[0-9a-f]{32}$")
 _RETURN_LOG_BYTES = 16000
 _SHELLS = {"sh", "bash", "dash", "zsh", "ksh"}
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+_ENV_OPTIONS_WITH_VALUE = {"-u", "--unset", "-C", "--chdir", "--argv0"}
+_ENV_OPTIONS_WITHOUT_VALUE = {"-i", "--ignore-environment", "-0", "--null",
+                              "-v", "--debug"}
 
 POLL_DESCRIPTION = (
     "Read the state and bounded stdout/stderr tail of a background job previously returned by "
@@ -46,6 +50,46 @@ def confirmation_display(command, purpose):
     return "ssh_exec run_in_background=true purpose=%s command=%s" % (purpose, command)
 
 
+def _unwrap_command_prefix(tokens):
+    """Return the executable and argv after ordinary assignment/``env`` prefixes."""
+    tokens = list(tokens)
+    while tokens and _ASSIGNMENT.fullmatch(tokens[0]):
+        tokens.pop(0)
+    if not tokens or tokens[0].rsplit("/", 1)[-1] != "env":
+        return tokens
+
+    tokens.pop(0)
+    while tokens:
+        token = tokens[0]
+        if token == "--":
+            return tokens[1:]
+        if _ASSIGNMENT.fullmatch(token) or token in _ENV_OPTIONS_WITHOUT_VALUE:
+            tokens.pop(0)
+            continue
+        if token in _ENV_OPTIONS_WITH_VALUE:
+            if len(tokens) < 2:
+                return []
+            del tokens[:2]
+            continue
+        if any(token.startswith(option + "=") for option in
+               ("--unset", "--chdir", "--argv0")):
+            tokens.pop(0)
+            continue
+        # GNU env -S changes tokenization. Re-tokenize its value so a shell hidden behind it is
+        # judged by the same rule; malformed input is rejected by the caller's normal execution.
+        if token in ("-S", "--split-string"):
+            if len(tokens) < 2:
+                return []
+            try:
+                return shlex.split(tokens[1], posix=True) + tokens[2:]
+            except ValueError:
+                return []
+        if token.startswith("-"):
+            return []
+        break
+    return tokens
+
+
 def command_is_self_backgrounding(command):
     """Reject a payload that tries to detach itself inside the managed job wrapper.
 
@@ -62,9 +106,13 @@ def command_is_self_backgrounding(command):
         return True
     if "&" in tokens:
         return True
-    if tokens and tokens[0].rsplit("/", 1)[-1] in _SHELLS:
-        for i, token in enumerate(tokens[:-1]):
-            if token == "-c" and command_is_self_backgrounding(tokens[i + 1]):
+    command_tokens = _unwrap_command_prefix(tokens)
+    if command_tokens and command_tokens[0].rsplit("/", 1)[-1] in _SHELLS:
+        for i, token in enumerate(command_tokens[:-1]):
+            # POSIX shells permit combined short options (`-lc`, `-ec`, ...). Long options such
+            # as `--norc` are not command-string switches even though their spelling contains c.
+            if token.startswith("-") and not token.startswith("--") and "c" in token[1:] and \
+                    command_is_self_backgrounding(command_tokens[i + 1]):
                 return True
     return False
 
