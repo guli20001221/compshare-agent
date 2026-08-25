@@ -233,7 +233,11 @@ check("remote-text-tool-routes-known-files-away-from-shell-readers",
 check("remote-search-tool-is-bounded-and-routes-to-exact-read",
       all(term in harness.remote_search.TOOL_DESCRIPTION
           for term in ("literal text fragment", "never follows symlinks", "8 MiB",
-                       "read_text_file")))
+                       "read_text_file", "not recursive grep through ssh_exec",
+                       "validates every descendant")))
+check("prompt-routes-recursive-content-search-to-structured-tool",
+      "search_text_tree (not recursive shell grep)" in harness.SYSTEM_PROMPT
+      and "use search_text_tree, not" in flat(harness.TOOL_DESC))
 check("remote-glob-tool-is-bounded-and-does-not-run-a-shell",
       all(term in harness.remote_search.FIND_DESCRIPTION
           for term in ("basename glob", "invokes no remote shell", "never follows symlinks",

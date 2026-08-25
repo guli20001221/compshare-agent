@@ -187,6 +187,7 @@ CLASSIFY_CASES = [
      "read_only"),                                      # recursive, names-only application search
     ("grep -RI 'NodeA' /workspace/App", "mutating"),    # matching content would cross the file gate
     ("grep -RIl 'NodeA' /workspace/App/.env", "mutating"),
+    ("grep -R -n -E 'listen|port' /usr/supervisor 2>/dev/null | head -40", "mutating"),
     ("git -C /workspace/App config --get remote.origin.url", "read_only"),
     ("git -C /workspace/App config --local --get-regexp 'remote\\..*\\.url'", "read_only"),
     ("git -C /root/ComfyUI/custom_nodes/Node status --short --branch", "read_only"),

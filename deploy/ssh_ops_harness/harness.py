@@ -96,7 +96,7 @@ operations. You have no local shell or arbitrary network access.
 3. Test alternatives at the failing layer using the application's real interpreter, environment,
    owner, config and launcher. A bounded virtualenv or Conda probe is valid: Invoke that executable
    directly instead of sourcing an activation script. After evidence identifies an app root, use
-   bounded path/text search then the exact-file reader; reading must not need write approval.
+   search_text_tree (not recursive shell grep), then read_text_file; reads need no write approval.
 4. Identify the narrowest supported root cause. Name unobservable boundaries instead of guessing.
 5. Verify the original success criterion and the same launcher's adjacent contract.
    Never invent a platform-facing port, path, root, auth mode, or substitute service.
@@ -142,19 +142,20 @@ pending or denied operation as executed. Never claim success without criterion-l
 # transport mechanics in the tool descriptions; classifier/shape rules remain executable code.
 SYSTEM_PROMPT = _SYSTEM_PROMPT_CORE + "\n\n" + _SYSTEM_PROMPT_REPAIR_MODE
 
-TOOL_DESC = """Run one SSH command; returns exit status. Positively proven reads run now; reversible
-changes run after the user approves that exact command. For repair, send the smallest concrete command. Repair the diagnosed
+TOOL_DESC = """Returns exit status. Positively proven reads run now; reversible changes run after user
+approves that exact command. For repair, send the smallest concrete command. Repair the diagnosed
 fault only. Re-downloading an app or disabling an unrelated service needs explicit intent in an
 available user report; prior reports only continue unfinished requests. Irreversible
 data/boot/recovery loss, control-plane crossings, reboot, accounts/passwords, SSH/network disabling and
-substitution are refused. Pipes, chains, globs,
-redirection and multi-line scripts work. Use the application's actual interpreter. Rewrite only a rejected
-form; never bypass policy/approval. Each call is one effect; split independent probes.
+substitution are refused. Pipes/chains/globs/redirection/multi-line scripts work. Use the application's
+actual interpreter. Rewrite only a rejected
+form; never bypass policy/approval. Each call is one effect; split independent probes; use
+search_text_tree, not recursive grep, for recursive content.
 
-Each call is a fresh, non-interactive SSH session capped at 25 seconds. For long work set
-run_in_background=true and give an evidence-backed purpose. ssh_exec owns detachment, logs and opaque
-ID. At most one background job may be active; a terminal poll frees the slot. Reads and separately
-approved foreground changes remain available while it runs.
+Each call is a fresh, non-interactive SSH session; limit 25 seconds. For long work use
+run_in_background=true with an evidence-backed purpose. ssh_exec owns detachment/logs/opaque ID. At
+most one background job may be active; a terminal poll frees the slot. Reads and approved foreground
+changes remain available.
 Do not hand-roll detachment or resend a timed-out foreground command.
 
 For managed service, use its existing supervisor/launcher, not an inner binary. Do not create a new unit

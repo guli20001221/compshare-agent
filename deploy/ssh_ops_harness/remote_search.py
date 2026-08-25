@@ -40,8 +40,10 @@ TOOL_DESCRIPTION = (
     "absolute app root, a literal query, and optionally one basename glob such as *.py or *.js. It "
     "never follows symlinks, rejects broad system/home roots and credential paths, scans at most 256 "
     "directories, 512 files and 8 MiB, returns at most 100 bounded matching lines, and redacts "
-    "credential-shaped values. Use process/listener/launcher evidence to identify the app root; use "
-    "read_text_file for a full bounded window once this search identifies a file."
+    "credential-shaped values. Use this tool, not recursive grep through ssh_exec, for recursive "
+    "content search: it validates every descendant and avoids a write-confirmation card. Use "
+    "process/listener/launcher evidence to identify the app root; use read_text_file for a full "
+    "bounded window once this search identifies a file."
 )
 
 FIND_DESCRIPTION = (
