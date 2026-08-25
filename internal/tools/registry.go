@@ -621,7 +621,7 @@ var Registry = []openai.Tool{
 					"SystemDiskSize": map[string]any{
 						"type":        "integer",
 						"minimum":     1,
-						"description": "系统盘容量，单位 GB（可选）。仅在用户明确指定容量时填写；未指定时由工作流按镜像和实时规格目录决定。",
+						"description": "系统盘容量（GB）；仅在用户指定时填写，否则省略。",
 					},
 					"Name": map[string]any{
 						"type":        "string",
