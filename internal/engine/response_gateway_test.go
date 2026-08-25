@@ -57,6 +57,7 @@ func TestResponseGatewayDoesNotOverrideConversationOnlyAnswer(t *testing.T) {
 
 func TestResponseGatewayKeepsThePromptedConsoleMarker(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.feishuConsoleHandoffThisTurn = true
 	eng.searchKnowledgeRanThisTurn = true
 	eng.knowledgeQAAgentLoopThisTurn = true
 
@@ -64,6 +65,14 @@ func TestResponseGatewayKeepsThePromptedConsoleMarker(t *testing.T) {
 
 	require.Equal(t, agentprotocol.FeishuConsoleHandoffMarker, reply,
 		"the prompted console marker is a legal completion, not an unknown [[chunk_id]]")
+}
+
+func TestResponseGatewayNeverShipsTheConsoleMarkerToOrdinaryWeb(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	reply := eng.finalizeResponse(context.Background(), "谁能帮忙处理？", agentprotocol.FeishuConsoleHandoffMarker)
+
+	require.NotContains(t, reply, agentprotocol.FeishuConsoleHandoffMarker)
+	require.Equal(t, emptyReplyFallbackMessage, reply)
 }
 
 func TestResponseGatewayDoesNotAcceptAModelAuthoredCustomerSupportMarker(t *testing.T) {

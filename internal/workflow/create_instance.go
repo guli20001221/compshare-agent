@@ -2577,6 +2577,9 @@ func createSystemDiskSummary(disks []any) string {
 			continue
 		}
 		diskType := strings.TrimSpace(paramStr(disk, "Type", ""))
+		if strings.EqualFold(diskType, deployment.DiskTypeCloudSSD) {
+			diskType = "SSD 云盘"
+		}
 		size, hasSize := createDiskSizeGB(disk["Size"])
 		switch {
 		case diskType != "" && hasSize:

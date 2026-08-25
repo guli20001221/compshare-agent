@@ -68,14 +68,32 @@ func TestCreateInstanceDeliveryReplyDistinguishesWriteFromUsableDelivery(t *test
 			notContain: []string{"✅ 已创建"},
 		},
 		{
-			name: "initializing",
+			name:       "initializing",
+			data:       completeCreateReadback("Install"),
+			mustDirect: false,
+			contains:   []string{"✅ 已创建实例 uhost-1", "正在初始化", "进入运行状态后即可使用"},
+			notContain: []string{"Install", "尚未确认可用"},
+		},
+		{
+			name:       "starting",
+			data:       completeCreateReadback("Starting"),
+			mustDirect: false,
+			contains:   []string{"✅ 已创建实例 uhost-1", "正在启动"},
+			notContain: []string{"Starting", "尚未确认可用"},
+		},
+		{
+			name: "initializing with incomplete spec readback",
 			data: map[string]any{
 				"UHostIds": []any{"uhost-1"}, "ActualReadbackAvailable": true,
-				"Observed": []map[string]any{{"UHostId": "uhost-1", "State": "Install"}},
+				"Intended": map[string]any{"CPU": 16, "Memory": 65536, "GPU": 1, "GpuType": "5090", "Zone": "cn-wlcb-01"},
+				"Observed": []map[string]any{{
+					"UHostId": "uhost-1", "State": "Install", "CPU": 16, "Memory": 65536,
+					"GPU": 1, "GpuType": "", "Zone": "cn-wlcb-01",
+				}},
 			},
 			mustDirect: true,
-			contains:   []string{"当前状态为 Install", "尚未确认可用", "请勿重复创建"},
-			notContain: []string{"交付成功"},
+			contains:   []string{"规格回读不完整", "请勿重复创建"},
+			notContain: []string{"✅ 已创建"},
 		},
 		{
 			name: "initialization failed",
@@ -121,19 +139,12 @@ func TestCreateInstanceDeliveryReplyDistinguishesWriteFromUsableDelivery(t *test
 				}},
 			},
 			mustDirect: true,
-			contains:   []string{"实例已创建并处于运行中", "规格回读不完整", "请勿重复创建"},
+			contains:   []string{"实例已创建", "规格回读不完整", "请勿重复创建"},
 			notContain: []string{"✅ 已创建"},
 		},
 		{
-			name: "running and matched",
-			data: map[string]any{
-				"UHostIds": []any{"uhost-1"}, "ActualReadbackAvailable": true,
-				"Intended": map[string]any{"CPU": 16, "Memory": 65536, "GPU": 1, "GpuType": "5090", "Zone": "cn-wlcb-01"},
-				"Observed": []map[string]any{{
-					"UHostId": "uhost-1", "State": "Running", "CPU": 16, "Memory": 65536,
-					"GPU": 1, "GpuType": "5090", "Zone": "cn-wlcb-01",
-				}},
-			},
+			name:       "running and matched",
+			data:       completeCreateReadback("Running"),
 			mustDirect: false,
 			contains:   []string{"✅ 已创建实例 uhost-1"},
 		},
@@ -150,6 +161,20 @@ func TestCreateInstanceDeliveryReplyDistinguishesWriteFromUsableDelivery(t *test
 				assert.NotContains(t, reply, forbidden)
 			}
 		})
+	}
+}
+
+func completeCreateReadback(state string) map[string]any {
+	return map[string]any{
+		"UHostIds":                []any{"uhost-1"},
+		"ActualReadbackAvailable": true,
+		"Intended": map[string]any{
+			"CPU": 16, "Memory": 65536, "GPU": 1, "GpuType": "5090", "Zone": "cn-wlcb-01",
+		},
+		"Observed": []map[string]any{{
+			"UHostId": "uhost-1", "State": state, "CPU": 16, "Memory": 65536,
+			"GPU": 1, "GpuType": "5090", "Zone": "cn-wlcb-01",
+		}},
 	}
 }
 

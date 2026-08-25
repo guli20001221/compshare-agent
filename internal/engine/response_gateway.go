@@ -21,6 +21,12 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 	// HandoffToCustomerSupport. A model-authored copy of the private marker must
 	// not trigger the adapter without the tool call and its trace.
 	draft = strings.ReplaceAll(draft, agentprotocol.FeishuCustomerSupportMarker, "")
+	// The console marker is a Feishu-adapter completion contract, not ordinary
+	// answer text. Keep it only for a turn that explicitly enabled that adapter;
+	// a normal Web turn must never persist or display the private marker.
+	if !e.feishuConsoleHandoffThisTurn {
+		draft = strings.ReplaceAll(draft, agentprotocol.FeishuConsoleHandoffMarker, "")
+	}
 	content := e.guardMonitorNoDataFinalReply(draft)
 	content = security.RedactOperationalTokensInText(content)
 

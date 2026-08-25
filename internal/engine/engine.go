@@ -3703,11 +3703,11 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		// model never speaks again — has to be able to say so.
 		e.committedWriteRepliesThisTurn = append(e.committedWriteRepliesThisTurn,
 			committedWriteFallbackReply(action, finalParams, result))
-		// A create may have committed upstream without being usable as confirmed:
-		// the readback can be missing, initialization can still be pending or have
-		// failed, or the served spec can differ from the sealed card. Return those
-		// states deterministically so a narration round cannot collapse them into
-		// an unqualified "created successfully" claim.
+		// A create may have committed upstream without matching the confirmed
+		// contract: the readback can be missing, initialization can fail, or the
+		// served spec can differ from the sealed card. Return those exceptional
+		// states deterministically. Normal asynchronous initialization remains a
+		// successful creation and can continue through the ordinary narration.
 		if action == "CreateInstanceWorkflow" {
 			if reply, mustReturnDeterministically := createInstanceDeliveryReply(result); mustReturnDeterministically {
 				return finalReplyPrefix + reply
@@ -3841,8 +3841,9 @@ func committedWriteFallbackReply(action string, params map[string]any, result *w
 // createInstanceDeliveryReply describes what the platform has actually
 // delivered after a confirmed create. Result.Success remains the write outcome:
 // once UHostIds exist, changing it to false would invite a duplicate billable
-// create. The bool instead says whether this reply must bypass model narration
-// because the instance is not yet proven usable as confirmed.
+// create. The bool instead says whether an incomplete, failed or mismatched
+// delivery must bypass model narration. Normal post-create initialization is
+// successful and keeps the ordinary narration path.
 func createInstanceDeliveryReply(result *workflow.Result) (string, bool) {
 	ids := committedInstanceIDs(result)
 	if len(ids) == 0 {
@@ -3859,22 +3860,27 @@ func createInstanceDeliveryReply(result *workflow.Result) (string, bool) {
 		return fmt.Sprintf("创建接口已返回实例 ID：%s，但尚未取得完整的创建后状态，暂不能确认实例是否可用。请勿重复创建，请稍后在控制台查看实例状态。", idText), true
 	}
 
-	allRunning := true
 	hasInstallFail := false
-	firstNonRunningState := ""
+	hasInitializing := false
+	hasStarting := false
+	unexpectedState := ""
 	for _, row := range observed {
 		state := strings.TrimSpace(fmt.Sprint(row["State"]))
 		if state == "<nil>" {
 			state = ""
 		}
-		if !strings.EqualFold(state, "Running") {
-			allRunning = false
-			if firstNonRunningState == "" {
-				firstNonRunningState = state
-			}
-		}
-		if strings.EqualFold(state, "Install Fail") {
+		switch strings.ToLower(state) {
+		case "running":
+		case "initializing", "installing", "install":
+			hasInitializing = true
+		case "starting":
+			hasStarting = true
+		case "install fail":
 			hasInstallFail = true
+		default:
+			if unexpectedState == "" {
+				unexpectedState = state
+			}
 		}
 	}
 
@@ -3889,15 +3895,21 @@ func createInstanceDeliveryReply(result *workflow.Result) (string, bool) {
 	if mismatchText != "" {
 		return fmt.Sprintf("实例已创建（ID：%s），但创建后规格与确认内容不一致：%s。本次不能视为按确认规格交付，请勿重复创建。", idText, mismatchText), true
 	}
-	if !allRunning {
-		stateText := "状态尚未明确"
-		if firstNonRunningState != "" {
-			stateText = "当前状态为 " + firstNonRunningState
-		}
-		return fmt.Sprintf("实例记录已创建（ID：%s），%s，尚未确认可用。请勿重复创建，请稍后查看实例状态。", idText, stateText), true
-	}
 	if !createSpecReadbackComplete(data, observed) {
-		return fmt.Sprintf("实例已创建并处于运行中（ID：%s），但创建后规格回读不完整，暂不能确认是否按确认内容交付。请勿重复创建，请稍后在控制台核对实例规格。", idText), true
+		return fmt.Sprintf("实例已创建（ID：%s），但创建后规格回读不完整，暂不能确认是否按确认内容交付。请勿重复创建，请稍后在控制台核对实例规格。", idText), true
+	}
+	if unexpectedState != "" {
+		return fmt.Sprintf("实例记录已创建（ID：%s），当前状态为%s，尚未确认可用。请勿重复创建，请稍后查看实例状态。",
+			idText, readprojection.ResourceStateLabel(unexpectedState)), true
+	}
+	if hasInitializing || hasStarting {
+		phase := "正在初始化"
+		if hasStarting && !hasInitializing {
+			phase = "正在启动"
+		} else if hasStarting {
+			phase = "正在初始化或启动"
+		}
+		return fmt.Sprintf("✅ 已创建实例 %s，%s，进入运行状态后即可使用。", idText, phase), false
 	}
 	return fmt.Sprintf("✅ 已创建实例 %s。", idText), false
 }

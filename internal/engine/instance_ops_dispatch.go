@@ -314,7 +314,7 @@ func (e *Engine) instanceOpsTargetMayReachConfirmation(instanceID string) bool {
 	// A cold rehydrated session may not have a complete registry yet. An exact ID
 	// visibly authored by the user is still a choice, unlike an ID invented from a
 	// prior list; account membership is verified by the runner's point describe.
-	return e.userNamedInstanceThisTurn(instanceID)
+	return e.userNamedInstanceThisTurn(instanceID) || e.userScreenshotNamesInstanceThisTurn(instanceID)
 }
 
 // userNamedInstanceThisTurn verifies the model-supplied ID against the user's
@@ -324,6 +324,21 @@ func (e *Engine) userNamedInstanceThisTurn(instanceID string) bool {
 		return false
 	}
 	return entity.TextExplicitlyMentionsName(e.turnContextViewThisTurn.CurrentQuestion, instanceID)
+}
+
+// userScreenshotNamesInstanceThisTurn accepts one exact instance ID from the
+// current screenshot only as a candidate for the existing authorization card.
+// OCR remains outside CurrentQuestion, routing and write provenance; the runner
+// still verifies account ownership and state after the user confirms the card.
+func (e *Engine) userScreenshotNamesInstanceThisTurn(instanceID string) bool {
+	if e == nil || strings.TrimSpace(instanceID) == "" {
+		return false
+	}
+	tokens := e.registry.Snapshot().InstanceIDTokensInText(e.imageContextThisTurn)
+	if len(tokens) != 1 {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(tokens[0]), strings.TrimSpace(instanceID))
 }
 
 // expiredUserSelectionMatches is deliberately narrower than a carried selection:

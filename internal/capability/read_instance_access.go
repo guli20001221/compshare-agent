@@ -8,6 +8,7 @@ import (
 	"github.com/compshare-agent/internal/diagnosis"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/platform"
+	"github.com/compshare-agent/internal/security"
 )
 
 const (
@@ -58,18 +59,19 @@ func (r InstanceAccessRequest) MissingFields() []platform.MissingField {
 }
 
 type InstanceAccessResponse struct {
-	InstanceID    string
-	InstanceName  string
-	State         string
-	InstanceKind  string
-	AccessType    string
-	Protocol      string
-	Port          int
-	Status        string
-	Reason        string
-	KnownSoftware string
-	JupyterToken  string
-	SourceActions []string
+	InstanceID      string
+	InstanceName    string
+	State           string
+	InstanceKind    string
+	AccessType      string
+	Protocol        string
+	Port            int
+	Status          string
+	Reason          string
+	KnownSoftware   string
+	SSHLoginCommand string
+	JupyterToken    string
+	SourceActions   []string
 }
 
 func instanceAccessReadSpec() ReadCapabilitySpec[InstanceAccessRequest, InstanceAccessResponse] {
@@ -77,6 +79,7 @@ func instanceAccessReadSpec() ReadCapabilitySpec[InstanceAccessRequest, Instance
 		Label: instanceAccessCapabilityLabel,
 		Description: "检查已有实例的 SSH、Jupyter 或自定义端口的云侧配置，也可在用户明确要求时获取该实例的 Jupyter Token。" +
 			"它不会连接公网端口、不会进入实例，也不会修改防火墙或端口。需要明确一个实例；自定义端口还要给出协议和端口号。" +
+			"回答 SSH 登录方式时以实时实例详情的 SshLoginCommand 为准，不按实例类型猜用户名、主机或端口。" +
 			"只有用户明确索要 Token 时才使用 jupyter_token；普通 Jupyter 故障检查使用 jupyter。",
 		Params: objectParam(map[string]schemaNode{
 			"targets":     targetRefsParam(),
@@ -144,6 +147,7 @@ func instanceAccessHandle(ctx context.Context, req InstanceAccessRequest, rt Rea
 	}
 
 	if req.AccessType == accessTypeSSH {
+		resp.SSHLoginCommand, _ = security.SSHLoginCommandForLLM(stringField(host, "SshLoginCommand"))
 		diag, diagErr := diagnosis.NewEngine(rt.Executor, nil).Run(
 			ctx,
 			diagnosis.SSHFailureChainWithDescribeResult(raw),
@@ -205,6 +209,9 @@ func instanceAccessRender(resp InstanceAccessResponse) ReadResult {
 		verdict = "云侧信息不足，无法确认"
 	}
 	detail := resp.Reason
+	if resp.SSHLoginCommand != "" {
+		detail += " 实时登录命令：" + resp.SSHLoginCommand + "。"
+	}
 	if resp.KnownSoftware != "" {
 		detail += " 平台端口目录将该端口标记为 " + resp.KnownSoftware + "。"
 	}
@@ -231,6 +238,11 @@ func instanceAccessRender(resp InstanceAccessResponse) ReadResult {
 		{SubjectID: resp.InstanceID, Key: "endpoint_reachability_checked", Label: "是否实际探测访问入口", Value: false, Source: envelope.FactSourceComputed},
 		{SubjectID: resp.InstanceID, Key: "instance_process_checked", Label: "是否检查实例内服务进程", Value: false, Source: envelope.FactSourceComputed},
 		{SubjectID: resp.InstanceID, Key: "system_firewall_checked", Label: "是否检查实例内防火墙", Value: false, Source: envelope.FactSourceComputed},
+	}
+	if resp.SSHLoginCommand != "" {
+		facts = append(facts, envelope.Fact{
+			SubjectID: resp.InstanceID, Key: "ssh_login_command", Label: "SSH 登录命令", Value: resp.SSHLoginCommand, Source: envelope.FactSourceAPI,
+		})
 	}
 	if resp.Port > 0 {
 		facts = append(facts, envelope.Fact{

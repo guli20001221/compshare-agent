@@ -36,9 +36,9 @@ func TestMemoryConversionIsMonotonic(t *testing.T) {
 // compatibility, and an unmapped state falls through to the raw value.
 func TestLegacyInitializingStateIsTranslated(t *testing.T) {
 	for _, state := range []string{"Initializing", "Installing", "Install"} {
-		assert.Equal(t, "初始化中", resourceStateLabel(state), "state %q", state)
+		assert.Equal(t, "初始化中", ResourceStateLabel(state), "state %q", state)
 	}
-	assert.Equal(t, "SomethingNew", resourceStateLabel("SomethingNew"),
+	assert.Equal(t, "SomethingNew", ResourceStateLabel("SomethingNew"),
 		"an unknown state shows itself rather than being guessed at")
 }
 
