@@ -110,6 +110,9 @@ func liveRealDescriber(t *testing.T) (Describer, context.Context) {
 	if project := os.Getenv("SSHH_PROJECT"); project != "" {
 		cfg.Agent.ProjectId = project
 	}
+	if region := os.Getenv("SSHH_REGION"); region != "" {
+		cfg.Agent.Region = region
+	}
 	top, err := strconv.ParseUint(topOrg, 10, 32)
 	if err != nil {
 		t.Fatalf("SSHH_TOP_ORG: %v", err)
@@ -142,12 +145,13 @@ func liveRealDescriber(t *testing.T) (Describer, context.Context) {
 
 func liveSupervisor() Supervisor {
 	return Supervisor{
-		Python:      envOr("SSHH_PYTHON", "python"),
-		HarnessPath: os.Getenv("SSHH_HARNESS"),
-		BaseURL:     envOr("SSHH_BASE_URL", "https://api.modelverse.cn"),
-		APIKey:      os.Getenv("SSHH_API_KEY"),
-		Model:       envOr("SSHH_MODEL", "gpt-5.6-terra"),
-		Timeout:     12 * time.Minute, // sized for the whole command sequence, see Supervisor.Run
+		Python:        envOr("SSHH_PYTHON", "python"),
+		HarnessPath:   os.Getenv("SSHH_HARNESS"),
+		BaseURL:       envOr("SSHH_BASE_URL", "https://api.modelverse.cn"),
+		APIKey:        os.Getenv("SSHH_API_KEY"),
+		Model:         envOr("SSHH_MODEL", "gpt-5.6-terra"),
+		PromptVariant: os.Getenv("SSHH_PROMPT_VARIANT"),
+		Timeout:       12 * time.Minute, // sized for the whole command sequence, see Supervisor.Run
 	}
 }
 
