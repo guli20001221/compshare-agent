@@ -722,8 +722,9 @@ def _emit_outcome(outcome: str, err_class: str = "", context_applied: bool = Fal
     """Declare the preflight outcome and whether context reached the model prompt.
 
     Carries only bounded metadata — never reason prose, task/context data, host or credential — so it
-    is safe in the same places @@STEP is. Emitted before query()/the verdict so a supervisor can finish
-    the audit with a truthful prompt-delivery receipt.
+    is safe in the same places @@STEP is. A context-applied receipt is emitted only after the SDK
+    produces an event that proves a model turn began; preflight/SDK failures retain false. The
+    terminal outcome still lets the supervisor finish the audit without inspecting verdict prose.
     """
     sys.stdout.write("@@OUTCOME " + json.dumps(
         {"outcome": outcome, "err_class": err_class, "context_applied": bool(context_applied)}, ensure_ascii=False) + "\n")
