@@ -211,8 +211,9 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 		// Private destinations for the structured endpoint probe. Context itself omits these fields,
 		// so URLs carrying console tokens and raw hosts never enter the model prompt or audit record.
 		// The harness exposes only opaque IDs and resolves them against this stdin-only list.
-		"endpoint_targets":       modelContext.EndpointTargets,
-		"pending_background_job": modelContext.PendingBackgroundJob,
+		"endpoint_targets":         modelContext.EndpointTargets,
+		"pending_background_job":   modelContext.PendingBackgroundJob,
+		"background_job_slot_busy": modelContext.BackgroundJobSlotBusy,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("sshops: marshal handshake: %w", err)
@@ -303,6 +304,9 @@ const (
 	// a cap below it silently truncates the tail of the activity stream, so the audit tally under-counts
 	// and the user stops seeing commands while the agent is still running.
 	maxHarnessSteps = 120
+	// One model turn can finish one background job and start the next. Keep the pre-launch cursor for
+	// each distinct job while bounding side-band events independently from command/audit rows.
+	maxHarnessJobUpdates = 32
 )
 
 // parseHarnessStream consumes the harness stdout line protocol and returns the terminal VERDICT body
@@ -334,7 +338,7 @@ func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRe
 	sc.Buffer(make([]byte, 0, 64<<10), maxHarnessStepLine)
 	var total int
 	var inVerdict bool
-	var jobSeen bool
+	jobsSeen := make(map[string]struct{})
 	var vb strings.Builder
 	for sc.Scan() {
 		line := sc.Text()
@@ -376,8 +380,11 @@ func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRe
 				}
 			}
 		case isJobLine:
-			if st, ok := parseJobUpdate(jobPayload); ok && !jobSeen {
-				jobSeen = true
+			if st, ok := parseJobUpdate(jobPayload); ok && len(jobsSeen) < maxHarnessJobUpdates {
+				if _, duplicate := jobsSeen[st.JobID]; duplicate {
+					continue
+				}
+				jobsSeen[st.JobID] = struct{}{}
 				if onStep != nil {
 					onStep(st)
 				}

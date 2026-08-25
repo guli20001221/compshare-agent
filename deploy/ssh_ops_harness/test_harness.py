@@ -216,10 +216,14 @@ check("context-boolean-schema-version-is-not-v1",
       harness.normalize_reference_context(dict(_reference_context, schema_version=True)) is None)
 
 # The background-job cursor is a separate live-session handshake value, not a reference fact. It is
-# deliberately tiny: an opaque ID plus lifecycle hint, with no command or output to replay.
+# deliberately tiny: an opaque ID, lifecycle hint and bounded redacted purpose, with no command or
+# output to replay.
 _JOB_ID = "job-" + "a" * 32
-_pending_job = harness.normalize_pending_background_job({"job_id": _JOB_ID, "state": "running"})
-check("pending-job-valid-handle-is-accepted", _pending_job == {"job_id": _JOB_ID, "state": "running"})
+_pending_job = harness.normalize_pending_background_job({
+    "job_id": _JOB_ID, "state": "running", "purpose": " download model weights ",
+})
+check("pending-job-valid-handle-and-purpose-are-accepted",
+      _pending_job == {"job_id": _JOB_ID, "state": "running", "purpose": "download model weights"})
 check("pending-job-command-bearing-shape-is-reduced-to-the-safe-handle",
       harness.normalize_pending_background_job({
           "job_id": _JOB_ID, "state": "started", "command": "pip install package",
@@ -230,8 +234,15 @@ check("pending-job-invalid-or-terminal-handle-is-not-resumed",
 _continuation_prompt = harness.render_prepared_prompt("继续排查", None, _pending_job)
 check("pending-job-prompt-requires-exact-poll-and-allows-read-only-work",
       _JOB_ID in _continuation_prompt and "Read-only diagnosis and separately approved" in _continuation_prompt
+      and "download model weights" in _continuation_prompt
       and "refuse a second background job" in _continuation_prompt
       and "Do not reconstruct or rerun" in _continuation_prompt)
+_busy_elsewhere_prompt = harness.render_prepared_prompt(
+    "检查另一台实例", None, background_job_slot_busy=True)
+check("session-wide-job-slot-blocks-only-a-second-background-launch",
+      "unresolved background job on another instance" in _busy_elsewhere_prompt
+      and "diagnose, read" in _busy_elsewhere_prompt
+      and "exact-approved foreground changes" in _busy_elsewhere_prompt)
 
 # A server rolled back below this harness still sends v1, and that must keep working — but against
 # the V1 allowlist, not the union. Two directions, because "accepts both" silently becoming "accepts
@@ -993,6 +1004,12 @@ try:
         "pending_background_job": {"job_id": _JOB_ID, "state": "running"},
     }) + "\n")
     _main_pending_output = _capture(lambda: _asyncio.run(harness.main()))
+    sys.stdin = _io.StringIO(_json.dumps({
+        "host": "10.0.0.9", "user": "root", "port": 22, "password": "context-test-password",
+        "task": "排查另一台实例", "context": _reference_context,
+        "background_job_slot_busy": True,
+    }) + "\n")
+    _main_busy_output = _capture(lambda: _asyncio.run(harness.main()))
 finally:
     sys.stdin = _saved_stdin
     harness._CONN = _saved_conn
@@ -1004,7 +1021,7 @@ finally:
         sys.modules["claude_agent_sdk"] = _saved_sdk
 
 check("context-main-passes-labelled-prompt-to-sdk",
-      len(_captured_sdk_prompts) == 3 and "<planner_task>" in _captured_sdk_prompts[0] and
+      len(_captured_sdk_prompts) == 4 and "<planner_task>" in _captured_sdk_prompts[0] and
       "<current_user_report>" in _captured_sdk_prompts[0] and "8188" in _captured_sdk_prompts[0])
 check("context-main-receipt-matches-sdk-prompt",
       '"context_applied": true' in _main_output.replace('"context_applied":true', '"context_applied": true'))
@@ -1012,6 +1029,7 @@ check("context-main-verdict-still-emits", "mocked contextual diagnosis" in _main
 _first_tools = _captured_sdk_servers[0]["tools"]
 _legacy_flag_tools = _captured_sdk_servers[1]["tools"]
 _pending_tools = _captured_sdk_servers[2]["tools"]
+_busy_tools = _captured_sdk_servers[3]["tools"]
 check("mcp-surface-version-covers-endpoint-method-and-background-lifecycle",
       _captured_sdk_servers[0]["version"] == "2.6.0")
 check("main-registers-exact-single-repair-tool-surface",
@@ -1022,6 +1040,9 @@ check("removed-mode-flag-cannot-change-the-tool-surface",
 check("pending-job-main-keeps-the-reviewed-surface-for-read-only-and-post-terminal-work",
       [tool._test_tool_name for tool in _pending_tools] ==
       [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
+check("other-instance-busy-slot-keeps-the-reviewed-surface",
+      [tool._test_tool_name for tool in _busy_tools] ==
+      [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
 check("pending-job-main-prompt-carries-the-opaque-handle-not-a-command",
       _JOB_ID in _captured_sdk_prompts[2] and "Read-only diagnosis and separately approved" in _captured_sdk_prompts[2] and
       "pip install package" not in _captured_sdk_prompts[2])
@@ -1031,6 +1052,7 @@ _pending_ssh_tool = next(tool for tool in _pending_tools if tool._test_tool_name
 _pending_atomic_tool = next(tool for tool in _pending_tools
                             if tool._test_tool_name == "atomic_text_edit")
 _first_ssh_tool = next(tool for tool in _first_tools if tool._test_tool_name == "ssh_exec")
+_busy_ssh_tool = next(tool for tool in _busy_tools if tool._test_tool_name == "ssh_exec")
 _first_atomic_tool = next(tool for tool in _first_tools
                           if tool._test_tool_name == "atomic_text_edit")
 check("ssh-exec-schema-owns-the-optional-background-mode",
@@ -1088,6 +1110,25 @@ check("pending-job-rejects-every-unknown-job-id",
       "refused_precondition" in _unknown_poll_wire and not _unknown_poll_calls)
 check("first-run-cannot-poll-an-untracked-opaque-job-id",
       "refused_precondition" in _no_active_poll_wire and not _unknown_poll_calls)
+
+_saved_start_for_busy = harness.remote_job.start
+_busy_start_calls = []
+try:
+    harness.remote_job.start = lambda *_args, **_kwargs: _busy_start_calls.append(True) or {"ok": True}
+    _busy_background_wire = _capture(lambda: _asyncio.run(_busy_ssh_tool({
+        "command": "python3 build.py", "run_in_background": True, "purpose": "build runtime",
+    })))
+finally:
+    harness.remote_job.start = _saved_start_for_busy
+check("other-instance-active-job-refuses-a-second-untrackable-background-launch",
+      "refused_precondition" in _busy_background_wire and not _busy_start_calls)
+
+_self_background_results = []
+_self_background_wire = _capture(lambda: _self_background_results.append(_asyncio.run(
+    _first_ssh_tool({"command": "nohup python3 app.py > /tmp/app.log 2>&1 &"}))))
+check("foreground-self-backgrounding-is-routed-to-the-managed-job-mode",
+      "refused_form" in _self_background_wire
+      and "run_in_background=true" in _json.dumps(_self_background_results[0]))
 
 # One active background job does not turn exact approval into a hard refusal for unrelated foreground
 # work. It only prevents a second untrackable background launch.

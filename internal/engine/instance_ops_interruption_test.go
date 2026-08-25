@@ -380,6 +380,27 @@ func TestBackgroundJobUnknownStateIsPolledButMalformedStateCannotClearIt(t *test
 	require.Nil(t, eng.backgroundJobForInstance("uhost-2"))
 }
 
+func TestBackgroundJobOnAnotherInstanceMakesTheSingleDurableSlotBusy(t *testing.T) {
+	jobID := "job-" + strings.Repeat("a", 32)
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "只读排查完成"}}
+	eng := newInstanceOpsEngine(runner, alwaysConfirm)
+	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "running", "下载模型")
+	eng.lastUserMsg = "请排查 uhost-2"
+	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: eng.lastUserMsg}
+	eng.turnContextViewReady = true
+
+	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": "uhost-2", "Task": "排查服务",
+	}, func(StepEvent) {})
+
+	require.Equal(t, 1, runner.calls)
+	require.Nil(t, runner.lastReq.Context.PendingBackgroundJob,
+		"another instance must never receive the opaque handle")
+	require.True(t, runner.lastReq.Context.BackgroundJobSlotBusy,
+		"the harness must refuse a second background launch instead of executing an untrackable job")
+	require.Equal(t, jobID, eng.sessionState.PersistedInstanceOpsJob.JobID)
+}
+
 func TestBackgroundJobPurposeIsRedactedAndRuneBounded(t *testing.T) {
 	jobID := "job-" + strings.Repeat("e", 32)
 	eng := &Engine{}

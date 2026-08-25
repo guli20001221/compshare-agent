@@ -141,17 +141,17 @@ pending or denied operation as executed. Never claim success without criterion-l
 # transport mechanics in the tool descriptions; classifier/shape rules remain executable code.
 SYSTEM_PROMPT = _SYSTEM_PROMPT_CORE + "\n\n" + _SYSTEM_PROMPT_REPAIR_MODE
 
-TOOL_DESC = """Run one SSH command and return its exit status. Positively proven reads run now; reversible
+TOOL_DESC = """Run one SSH command; returns exit status. Positively proven reads run now; reversible
 changes run after the user approves that exact command. For repair, send the smallest concrete command. Repair the diagnosed
-fault only. Re-downloading an application or disabling an unrelated service needs explicit intent in an
-available user report; bounded prior reports only continue unfinished requests. Irreversible
+fault only. Re-downloading an app or disabling an unrelated service needs explicit intent in an
+available user report; prior reports only continue unfinished requests. Irreversible
 data/boot/recovery loss, control-plane crossings, reboot, accounts/passwords, SSH/network disabling and
 substitution are refused. Pipes, chains, globs,
 redirection and multi-line scripts work. Use the application's actual interpreter. Rewrite only a rejected
 form; never bypass policy/approval. Each call is one effect; split independent probes.
 
 Each call is a fresh, non-interactive SSH session capped at 25 seconds. For long work set
-run_in_background=true and give an evidence-backed purpose. ssh_exec owns detachment, logs and the opaque
+run_in_background=true and give an evidence-backed purpose. ssh_exec owns detachment, logs and opaque
 ID. At most one background job may be active; a terminal poll frees the slot. Reads and separately
 approved foreground changes remain available while it runs.
 Do not hand-roll detachment or resend a timed-out foreground command.
@@ -344,8 +344,9 @@ def normalize_pending_background_job(value):
     """Validate the server-owned, opaque continuation handle.
 
     This is deliberately not part of the versioned reference context: it is an executable-tool
-    cursor for this live session, not a platform fact or conversation summary. Only the opaque ID
-    and an active lifecycle value cross the boundary; the command that created it is unavailable.
+    cursor for this live session, not a platform fact or conversation summary. Only the opaque ID,
+    active lifecycle value and a bounded server-redacted purpose cross the boundary; the command
+    that created it is unavailable.
     """
     if not isinstance(value, dict):
         return None
@@ -354,7 +355,11 @@ def normalize_pending_background_job(value):
         return None
     if state not in _ACTIVE_BACKGROUND_JOB_STATES:
         return None
-    return {"job_id": job_id, "state": state}
+    purpose = " ".join(str(value.get("purpose") or "").split())[:200]
+    result = {"job_id": job_id, "state": state}
+    if purpose:
+        result["purpose"] = purpose
+    return result
 
 
 # State exactly what each port-shaped fact proves; catalog expectation,
@@ -401,7 +406,8 @@ def _model_turn_began(msg, kind) -> bool:
     return False
 
 
-def render_prepared_prompt(task, context, pending_background_job=None):
+def render_prepared_prompt(task, context, pending_background_job=None,
+                           background_job_slot_busy=False):
     """Render a previously validated context without changing task semantics."""
     task = str(task or "").strip()
     continuation = ""
@@ -414,6 +420,12 @@ def render_prepared_prompt(task, context, pending_background_job=None):
             "this one is active. Do not reconstruct or rerun the command that created it. Once a poll "
             "observes a terminal state, continue the "
             "smallest necessary repair and verification normally."
+        )
+    elif background_job_slot_busy:
+        continuation = (
+            "\n\nThis conversation already tracks an unresolved background job on another instance. "
+            "This run may diagnose, read, and perform separately exact-approved foreground changes, "
+            "but it cannot start another background job until the tracked job reaches a terminal state."
         )
     if context is None:
         return task + continuation
@@ -1195,7 +1207,9 @@ async def main():
         "判断是否健康并指出任何异常。先诊断出根因，再修复并验证。")
     reference_context = prepare_reference_context(_CONN.get("context"))
     pending_background_job = normalize_pending_background_job(_CONN.get("pending_background_job"))
-    prompt = render_prepared_prompt(task, reference_context, pending_background_job)
+    background_job_slot_busy = bool(_CONN.get("background_job_slot_busy"))
+    prompt = render_prepared_prompt(
+        task, reference_context, pending_background_job, background_job_slot_busy)
 
     # F2: fast-fail if the instance is unreachable, before spawning the agent (which would otherwise
     # spend its whole budget retrying commands that each hang at the SSH connect timeout). No command
@@ -1231,6 +1245,10 @@ async def main():
             if active_background_job_id:
                 refusal, message = "refused_precondition", (
                     "a background job is still active; poll it to a terminal state before another change")
+            elif background_job_slot_busy:
+                refusal, message = "refused_precondition", (
+                    "this conversation already tracks a background job on another instance; "
+                    "a second background launch would have no durable resume cursor")
             elif not command or len(command) > 1500 or not purpose:
                 refusal, message = "refused_precondition", (
                     "background execution requires a bounded command and a non-empty purpose")
@@ -1274,6 +1292,13 @@ async def main():
             return {"content": [{"type": "text", "text": rendered}],
                     "structuredContent": result,
                     **({"is_error": True} if not result.get("ok") else {})}
+
+        if remote_job.command_is_self_backgrounding(command):
+            message = ("backgrounding must use ssh_exec with run_in_background=true so its opaque "
+                       "job remains observable across SSH and model turns")
+            _record_structured_step(command[:_MAX_CONFIRMABLE_COMMAND], "mutating", "refused_form")
+            return {"content": [{"type": "text", "text": "⛔ NOT EXECUTED — " + message}],
+                    "is_error": True}
 
         r = run_command(command)
         return {"content": [{"type": "text", "text": r["text"]}],

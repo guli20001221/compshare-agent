@@ -179,6 +179,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 
 	modelContext := e.instanceOpsModelContext()
 	modelContext.PendingBackgroundJob = e.backgroundJobForInstance(instanceID)
+	modelContext.BackgroundJobSlotBusy = e.backgroundJobSlotBusyForOtherInstance(instanceID)
 	verdict, err := e.instanceOps.Run(ctx, InstanceOpsRequest{
 		TurnID:       e.currentTurnID,
 		InstanceID:   instanceID,

@@ -192,6 +192,23 @@ def _target_absent(sftp, path):
     return False, "target_already_exists"
 
 
+def _resolved_target(sftp, path, target_exists):
+    """Resolve ancestor symlinks and re-apply the recovery-boundary policy.
+
+    Stable application symlinks remain usable. What is refused is a logical allowed path that
+    resolves into a denied boot/login/SSH/network path. The resolved value is retained only in the
+    private approval plan and compared again after approval to close the ancestor-symlink race.
+    """
+    if target_exists:
+        resolved = sftp.normalize(path)
+    else:
+        directory, name = posixpath.split(path)
+        resolved = posixpath.join(sftp.normalize(directory), name)
+    if not isinstance(resolved, str) or not _valid_path(resolved):
+        raise ValueError("resolved_path_not_allowed")
+    return resolved
+
+
 def _open_sftp(conn, opener):
     client, connect_error = opener(conn)
     if connect_error:
@@ -210,6 +227,7 @@ def _prepare_create(sftp, spec):
         return _error(existing_error, path=spec["path"])
     directory = posixpath.dirname(spec["path"])
     parent = _read_directory(sftp, directory)
+    resolved = _resolved_target(sftp, spec["path"], False)
     return {
         "ok": True, "operation": "create", "path": spec["path"],
         "change_summary": spec["summary"], "after_sha256": spec["after_sha256"],
@@ -217,11 +235,13 @@ def _prepare_create(sftp, spec):
         "_data": spec["data"], "_mode": spec["mode"],
         "_parent_mode": stat.S_IMODE(parent.st_mode),
         "_parent_uid": parent.st_uid, "_parent_gid": parent.st_gid,
+        "_resolved_path": resolved,
     }
 
 
 def _prepare_replace(sftp, spec):
     attrs, data = _read_regular(sftp, spec["path"])
+    resolved = _resolved_target(sftp, spec["path"], True)
     before = _sha(data)
     if before != spec["expected"]:
         return _error("stale_precondition", path=spec["path"], actual_sha256=before)
@@ -243,6 +263,7 @@ def _prepare_replace(sftp, spec):
         "new_text_sha256": spec["new_sha256"], "replacement_count": 1,
         "result_bytes": len(new_data), "_data": new_data,
         "_mode": stat.S_IMODE(attrs.st_mode), "_uid": attrs.st_uid, "_gid": attrs.st_gid,
+        "_resolved_path": resolved,
     }
 
 
@@ -315,6 +336,8 @@ def _apply_create(sftp, plan):
         parent = _read_directory(sftp, directory)
         if not _parent_metadata_matches(parent, plan):
             return _error("parent_changed_after_approval", path=path)
+        if _resolved_target(sftp, path, False) != plan["_resolved_path"]:
+            return _error("resolved_path_changed_after_approval", path=path)
         _write_new_file(sftp, temporary, plan["_data"], plan["_mode"])
         try:
             # Standard SFTP rename requires the destination not to exist. Do not use posix_rename:
@@ -362,6 +385,8 @@ def _apply_replace(sftp, plan):
     backup_written = False
     try:
         attrs, current = _read_regular(sftp, path)
+        if _resolved_target(sftp, path, True) != plan["_resolved_path"]:
+            return _error("resolved_path_changed_after_approval", path=path)
         if _sha(current) != plan["before_sha256"]:
             return _error("stale_after_approval", path=path, actual_sha256=_sha(current))
         mode = stat.S_IMODE(attrs.st_mode)

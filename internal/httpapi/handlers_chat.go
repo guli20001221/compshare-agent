@@ -651,8 +651,10 @@ func (h *Handlers) persistSessionStateBestEffort(owner store.Owner, sessionID st
 	case upErr == nil:
 		return
 	case errors.Is(upErr, store.ErrStaleWrite):
-		log.Printf("warning: session %s stale context_version on persist (expected=%d)", sessionID, expectedVer)
-		h.retryPersistSessionContext(owner, sessionID, newState)
+		// Another writer already advanced this envelope. Retrying our whole stale SessionState would
+		// overwrite its active background-job cursor and could make a second job appear trackable.
+		// Continuity is best-effort: preserve the winning row and let a later turn rehydrate it.
+		log.Printf("warning: session %s stale context_version on persist (expected=%d; latest row preserved)", sessionID, expectedVer)
 	default:
 		log.Printf("warning: session %s UpdateContext failed: %v", sessionID, upErr)
 	}
@@ -675,38 +677,6 @@ func (h *Handlers) persistAssistant(owner store.Owner, msgID string, patch store
 		log.Printf("warning: assistant row %s persist failed (reply still delivered): %v", msgID, err)
 	}
 	return err
-}
-
-func (h *Handlers) retryPersistSessionContext(owner store.Owner, sessionID string, newState engine.SessionState) {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-	current, err := h.sessions.GetByID(ctx, owner, sessionID)
-	if err != nil {
-		log.Printf("warning: session %s refetch after stale context persist failed: %v", sessionID, err)
-		return
-	}
-	pc, parseErr := engine.ParsePersistedContext(current.Context)
-	if parseErr != nil {
-		// The row may have advanced to a future schema between the failed CAS and
-		// this refetch. Never replace a malformed/unknown envelope with our stale
-		// snapshot. This is the same forward-rollout protection as prepareChat.
-		log.Printf("warning: session %s refetched context cannot be safely retried: %v", sessionID, parseErr)
-		return
-	}
-	clientCtx := pc.ClientContext
-	raw, err := json.Marshal(engine.PersistedContext{
-		AgentSessionState: newState,
-		ClientContext:     clientCtx,
-	})
-	if err != nil {
-		log.Printf("warning: session %s marshal retry envelope failed: %v", sessionID, err)
-		return
-	}
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel2()
-	if _, err := h.sessions.UpdateContext(ctx2, owner, sessionID, raw, current.ContextVersion); err != nil {
-		log.Printf("warning: session %s retry UpdateContext failed: %v", sessionID, err)
-	}
 }
 
 // mustUserContext rebuilds the UserContext for the streaming context. prepareChat

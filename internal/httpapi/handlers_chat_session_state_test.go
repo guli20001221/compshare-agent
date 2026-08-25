@@ -253,7 +253,7 @@ func TestDispatchChat_StaleWriteOnPersist_StillEmitsDone(t *testing.T) {
 		"stream must emit done even when CAS loses on persist — reply was already streamed")
 	assert.False(t, sink.has("error"),
 		"ErrStaleWrite is a warning-only condition, not a stream error")
-	require.Equal(t, 2, sessions.updateContextCalls)
+	require.Equal(t, 1, sessions.updateContextCalls)
 }
 
 func TestChatStreamEveryTerminusPersistsExistingBackgroundJob(t *testing.T) {
@@ -324,7 +324,7 @@ func TestChatStreamEveryTerminusPersistsExistingBackgroundJob(t *testing.T) {
 	}
 }
 
-func TestSessionStateStaleRetryPreservesRefetchedClientContext(t *testing.T) {
+func TestSessionStateStaleWritePreservesTheWinningEnvelope(t *testing.T) {
 	h, sessions, _ := newChatTestHandlers(t, store.Session{
 		ID: "sess-stale-client", TopOrganizationID: 1, OrganizationID: 2,
 		Context: json.RawMessage(`{"source":"old"}`), ContextVersion: 0,
@@ -345,26 +345,19 @@ func TestSessionStateStaleRetryPreservesRefetchedClientContext(t *testing.T) {
 			sessions.byID[sessionID] = row
 			return 0, store.ErrStaleWrite
 		}
-		var retried engine.PersistedContext
-		require.NoError(t, json.Unmarshal(ctxJSON, &retried))
-		require.JSONEq(t, `{"source":"new"}`, string(retried.ClientContext))
-		row := sessions.byID[sessionID]
-		require.Equal(t, row.ContextVersion, expectedVersion)
-		row.Context = append(json.RawMessage(nil), ctxJSON...)
-		row.ContextVersion++
-		sessions.byID[sessionID] = row
-		return row.ContextVersion, nil
+		t.Fatal("stale session state must never be retried as a whole-envelope overwrite")
+		return 0, nil
 	}
 
 	sink, _ := dispatchChatTurn(t, h, "sess-stale-client", "hi")
 	require.True(t, sink.has("done"))
-	require.Equal(t, 2, sessions.updateContextCalls)
+	require.Equal(t, 1, sessions.updateContextCalls)
 	parsed, err := engine.ParsePersistedContext(sessions.byID["sess-stale-client"].Context)
 	require.NoError(t, err)
 	require.JSONEq(t, `{"source":"new"}`, string(parsed.ClientContext))
 }
 
-func TestSessionStateStaleRetryDoesNotOverwriteNewUnknownSchema(t *testing.T) {
+func TestSessionStateStaleWriteDoesNotOverwriteNewUnknownSchema(t *testing.T) {
 	h, sessions, _ := newChatTestHandlers(t, store.Session{
 		ID: "sess-stale-future", TopOrganizationID: 1, OrganizationID: 2,
 		ContextVersion: 0, CreatedAt: time.Now(), UpdatedAt: time.Now(),
@@ -380,7 +373,6 @@ func TestSessionStateStaleRetryDoesNotOverwriteNewUnknownSchema(t *testing.T) {
 
 	sink, _ := dispatchChatTurn(t, h, "sess-stale-future", "hi")
 	require.True(t, sink.has("done"))
-	require.Equal(t, 1, sessions.updateContextCalls,
-		"the retry must stop after refetch discovers an unknown schema")
+	require.Equal(t, 1, sessions.updateContextCalls)
 	require.JSONEq(t, string(future), string(sessions.byID["sess-stale-future"].Context))
 }

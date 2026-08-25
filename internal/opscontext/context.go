@@ -69,6 +69,11 @@ type Context struct {
 	// on a separate handshake field so it cannot change the versioned reference-context schema.
 	// A resumed harness may only poll this handle; it never receives the original command.
 	PendingBackgroundJob *BackgroundJob `json:"-"`
+	// BackgroundJobSlotBusy is true when this conversation already tracks an unresolved job on a
+	// different instance. The harness receives only this boolean, never that instance's ID or handle,
+	// and uses it solely to refuse a second untrackable background launch. Reads and separately
+	// approved foreground repairs remain available.
+	BackgroundJobSlotBusy bool `json:"-"`
 }
 
 // BackgroundJob is the minimum state needed to continue observing a long guest operation after

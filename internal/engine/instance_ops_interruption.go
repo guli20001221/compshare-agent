@@ -171,6 +171,15 @@ func (e *Engine) backgroundJobForInstance(instanceID string) *opscontext.Backgro
 	return &job
 }
 
+func (e *Engine) backgroundJobSlotBusyForOtherInstance(instanceID string) bool {
+	if e == nil {
+		return false
+	}
+	current := e.sessionState.PersistedInstanceOpsJob
+	return validPersistedInstanceOpsJob(current) &&
+		!strings.EqualFold(strings.TrimSpace(current.InstanceID), strings.TrimSpace(instanceID))
+}
+
 // recordInstanceOpsInterruption stashes the notice when the run returned an error and either a
 // command settled or an approved background launch published its opaque handle. A preflight
 // failure has neither and remains silent.

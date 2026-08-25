@@ -36,6 +36,14 @@ class _SFTP:
             attrs.st_mode = (attrs.st_mode & ~0o777) | self._modes[path]
         return attrs
 
+    def normalize(self, path):
+        local = os.path.realpath(self._local(path))
+        base = os.path.realpath(root)
+        relative = os.path.relpath(local, base)
+        if relative == ".":
+            return "/"
+        return "/" + relative.replace(os.sep, "/")
+
     def file(self, path, mode):
         local = self._local(path)
         os.makedirs(os.path.dirname(local), exist_ok=True)
@@ -98,6 +106,23 @@ class _RenameRaceClient:
 
 def _open_rename_race(_conn):
     return _RenameRaceClient(), None
+
+
+class _ResolvedBoundaryRaceSFTP(_SFTP):
+    def normalize(self, path):
+        return "/etc/ssh" if path.endswith("/workspace") else super().normalize(path)
+
+
+class _ResolvedBoundaryRaceClient:
+    def open_sftp(self):
+        return _ResolvedBoundaryRaceSFTP()
+
+    def close(self):
+        pass
+
+
+def _open_resolved_boundary_race(_conn):
+    return _ResolvedBoundaryRaceClient(), None
 
 
 root = tempfile.mkdtemp(prefix="sshops-atomic-test-")
@@ -164,6 +189,35 @@ try:
     check("hash-bound-state-file-edit-remains-recoverable",
           atomic_file._valid_path("/var/lib/example/app.conf") is True)
 
+    # A harmless-looking logical path must not use an ancestor symlink to cross into an SSH/login
+    # recovery boundary. Canonical resolution is checked both before and after approval.
+    denied_dir = _SFTP._local("/etc/ssh")
+    os.makedirs(denied_dir, exist_ok=True)
+    ancestor_link = _SFTP._local("/workspace/redirect")
+    try:
+        os.symlink(_SFTP._local("/etc"), ancestor_link, target_is_directory=True)
+    except (OSError, NotImplementedError):
+        print("-- ancestor-symlink-boundary: SKIPPED (host does not permit symlink creation)")
+    else:
+        ancestor_create = atomic_file.prepare_edit({}, {
+            "operation": "create", "path": "/workspace/redirect/ssh/new.conf",
+            "content": "x=1\n", "mode": "0644", "change_summary": "test canonical boundary",
+        }, opener=_open)
+        check("ancestor-symlink-cannot-bypass-a-denied-create-path",
+              ancestor_create["ok"] is False
+              and ancestor_create["error_class"] == "resolved_path_not_allowed")
+        denied_existing = os.path.join(denied_dir, "existing.conf")
+        with open(denied_existing, "wb") as handle:
+            handle.write(b"x=1\n")
+        ancestor_replace = atomic_file.prepare_edit({}, {
+            "operation": "replace_fragment", "path": "/workspace/redirect/ssh/existing.conf",
+            "expected_sha256": hashlib.sha256(b"x=1\n").hexdigest(),
+            "old_text": "x=1", "new_text": "x=2", "change_summary": "test canonical boundary",
+        }, opener=_open)
+        check("ancestor-symlink-cannot-bypass-a-denied-replace-path",
+              ancestor_replace["ok"] is False
+              and ancestor_replace["error_class"] == "resolved_path_not_allowed")
+
     symlink_path = "/workspace/link.conf"
     symlink_local = _SFTP._local(symlink_path)
     try:
@@ -217,6 +271,18 @@ try:
           and raced_create_result["error_class"] == "target_already_exists_after_approval")
     check("create-race-preserves-the-concurrent-file",
           open(_SFTP._local(raced_create_path), "rb").read() == b"concurrent-value\n")
+
+    resolved_race_path = "/workspace/resolved-race.conf"
+    resolved_race_plan = atomic_file.prepare_edit(
+        {}, dict(create_args, path=resolved_race_path, content="agent-value\n"), opener=_open)
+    resolved_race_result = atomic_file.apply_edit(
+        {}, resolved_race_plan, opener=_open_resolved_boundary_race)
+    check("ancestor-resolution-is-rechecked-after-approval",
+          resolved_race_result["ok"] is False
+          and resolved_race_result["error_class"] == "resolved_path_not_allowed"
+          and resolved_race_result["box_may_be_changed"] is False)
+    check("resolved-path-race-does-not-create-the-target",
+          not os.path.lexists(_SFTP._local(resolved_race_path)))
 
     rename_race_path = "/workspace/rename-race.conf"
     rename_race_plan = atomic_file.prepare_edit(
