@@ -229,6 +229,11 @@ type chatPrep struct {
 	feishuConsoleHandoffOptIn bool
 }
 
+// A job begun on the last ordinary turn must have a bounded chance to finish. The allowance is
+// derived from durable message_count (two rows per attempt), so it survives restarts without a new
+// counter/schema and cannot turn an unresolved cursor into unbounded model usage.
+const maxSessionBackgroundJobContinuationTurns = 6
+
 // prepareChat performs all pre-stream work shared by the SSE and WS paths:
 // input validation, OCR extraction, engine lease, session-state hydration, and
 // the user + assistant-placeholder row inserts. It returns either a ready
@@ -254,18 +259,6 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 		return nil, AsAPIError(err)
 	}
 	sessionID = sess.ID
-
-	// Enforce per-session turn cap. Each completed Chat call persists exactly
-	// two rows (user + assistant), so message_count == max_session_turns * 2
-	// means the cap has been reached. Aborted / errored turns still count —
-	// resource-wise they consumed a slot.
-	maxTurns := h.cfg.Agent.HTTP.MaxSessionTurns
-	if maxTurns <= 0 {
-		maxTurns = config.DefaultMaxSessionTurns
-	}
-	if sess.MessageCount >= maxTurns*2 {
-		return nil, ErrSessionTurnLimit
-	}
 
 	// -----------------------------------------------------------------------
 	// 1.5 OCR image context extraction
@@ -300,6 +293,15 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	if err != nil {
 		return nil, AsAPIError(err)
 	}
+	// getOrCreateSession necessarily runs before Lease so it can resolve the canonical ID. Another
+	// request may then finish while this one waits on the per-session mutex. Re-read under the lease:
+	// hydrating the pre-lease snapshot can miss a newly persisted background-job cursor and launch a
+	// duplicate whose eventual stale CAS cannot be resumed.
+	sess, err = h.sessions.GetByID(ctx, base.Owner, sessionID)
+	if err != nil {
+		release()
+		return nil, AsAPIError(err)
+	}
 
 	// Clear cached state before parsing the persisted envelope. A malformed or
 	// unknown-version row must not inherit state from the previous lease and must
@@ -319,6 +321,23 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	default:
 		log.Printf("warning: session %s context parse failed (will skip persist): %v",
 			sessionID, parseErr)
+	}
+
+	// Each Chat call persists two rows. Ordinarily the configured cap is hard, including aborted
+	// turns. A live V8 guest-job cursor gets a small bounded continuation allowance so a job started
+	// on the last ordinary turn can be polled and verified; once the cursor clears, or six extra
+	// attempts are consumed, the normal cap applies again.
+	maxTurns := h.cfg.Agent.HTTP.MaxSessionTurns
+	if maxTurns <= 0 {
+		maxTurns = config.DefaultMaxSessionTurns
+	}
+	if sess.MessageCount >= maxTurns*2 {
+		continuationTurns := (sess.MessageCount - maxTurns*2) / 2
+		activeJob := parseErr == nil && !pc.AgentSessionState.PersistedInstanceOpsJob.IsZero()
+		if !activeJob || continuationTurns >= maxSessionBackgroundJobContinuationTurns {
+			release()
+			return nil, ErrSessionTurnLimit
+		}
 	}
 
 	clearChatTraceObservers(agent)

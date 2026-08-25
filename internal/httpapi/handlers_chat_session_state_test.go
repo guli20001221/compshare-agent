@@ -25,6 +25,18 @@ func (c terminalChatLLM) Chat(_ context.Context, _ llm.ChatRequest) (*llm.ChatRe
 	return &llm.ChatResponse{Content: "ok"}, nil
 }
 
+type refreshingPool struct {
+	eng     *engine.Engine
+	onLease func()
+}
+
+func (p refreshingPool) Lease(_ context.Context, _ store.Owner, _ string) (*engine.Engine, func(), error) {
+	if p.onLease != nil {
+		p.onLease()
+	}
+	return p.eng, func() {}, nil
+}
+
 // ---------------------------------------------------------------------------
 // M1 SessionState persistence — handler integration tests.
 //
@@ -103,6 +115,93 @@ func TestDispatchChat_PersistsEnvelopeOnSuccess(t *testing.T) {
 	assert.Equal(t, engine.SessionStateSchemaCurrent, pc.AgentSessionState.SchemaVersion)
 	// M1 has no in-engine writer, so SelectedInstanceID stays empty.
 	assert.Empty(t, pc.AgentSessionState.SelectedInstanceID)
+}
+
+func TestPrepareChatRefreshesSessionStateAfterWaitingForLease(t *testing.T) {
+	sess := store.Session{
+		ID: "sess-refresh-after-lease", TopOrganizationID: 1, OrganizationID: 2,
+		ContextVersion: 0, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	sessions := &mockSessions{byID: map[string]store.Session{sess.ID: sess}}
+	eng := engine.NewWithDeps(terminalChatLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+	eng.RehydrateHistory(nil)
+	job := engine.PersistedInstanceOpsJob{
+		InstanceID: "uhost-active", JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		State: "running", Purpose: "download model", UpdatedAt: "2026-08-25T12:00:00Z",
+	}
+	latestRaw, err := json.Marshal(engine.PersistedContext{AgentSessionState: engine.SessionState{
+		SchemaVersion: engine.SessionStateSchemaV8, PersistedInstanceOpsJob: job,
+	}})
+	require.NoError(t, err)
+	h := NewHandlers(
+		&config.Config{Agent: config.AgentConfig{
+			LLM:  config.LLMConfig{Model: "model-x"},
+			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+		}}, sessions, &recordingMessages{}, mockFeedback{}, refreshingPool{
+			eng: eng,
+			onLease: func() {
+				row := sessions.byID[sess.ID]
+				row.Context = latestRaw
+				row.ContextVersion = 4
+				sessions.byID[sess.ID] = row
+			},
+		}, nil)
+	base := BaseRequest{Action: "SendCSAgentChat", RequestUUID: "req-refresh"}
+	base.Owner = store.Owner{TopOrganizationID: 1, OrganizationID: 2}
+
+	prep, apiErr := h.prepareChat(context.Background(), base, sess.ID, "继续上一轮", "")
+	require.Nil(t, apiErr)
+	defer prep.release()
+	state, version, hydrated := prep.agent.SessionStateSnapshot()
+	require.True(t, hydrated)
+	require.Equal(t, 4, version, "hydration must use the row re-read inside the session lease")
+	require.Equal(t, job, state.PersistedInstanceOpsJob)
+}
+
+func TestTurnLimitAllowsOnlyBoundedActiveJobContinuation(t *testing.T) {
+	job := engine.PersistedInstanceOpsJob{
+		InstanceID: "uhost-active", JobID: "job-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		State: "running", Purpose: "compile requested app", UpdatedAt: "2026-08-25T12:00:00Z",
+	}
+	raw, err := json.Marshal(engine.PersistedContext{AgentSessionState: engine.SessionState{
+		SchemaVersion: engine.SessionStateSchemaV8, PersistedInstanceOpsJob: job,
+	}})
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name         string
+		messageCount int
+		wantAllowed  bool
+	}{
+		{name: "first continuation at ordinary cap", messageCount: 6, wantAllowed: true},
+		{name: "six continuation attempts exhausted", messageCount: 18, wantAllowed: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := engine.NewWithDeps(terminalChatLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+			eng.RehydrateHistory(nil)
+			sess := store.Session{
+				ID: "sess-job-cap", TopOrganizationID: 1, OrganizationID: 2,
+				Context: raw, ContextVersion: 2, MessageCount: tc.messageCount,
+				CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			}
+			h := NewHandlers(
+				&config.Config{Agent: config.AgentConfig{
+					LLM: config.LLMConfig{Model: "model-x"}, HTTP: config.HTTPConfig{
+						MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour, MaxSessionTurns: 3,
+					}, STS: config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+				}}, &mockSessions{byID: map[string]store.Session{sess.ID: sess}},
+				&recordingMessages{}, mockFeedback{}, fakePool{eng: eng}, nil)
+
+			sink, apiErr := dispatchChatTurn(t, h, sess.ID, "继续后台任务")
+			if tc.wantAllowed {
+				require.Nil(t, apiErr)
+				require.True(t, sink.has("done"))
+			} else {
+				require.NotNil(t, apiErr)
+				require.Equal(t, ErrSessionTurnLimit.RetCode, apiErr.RetCode)
+			}
+		})
+	}
 }
 
 // Case 2: malformed JSON in sessions.context — chat completes, NO persistence.
