@@ -79,34 +79,6 @@ check("prompt-requires-runtime-reload-after-on-disk-change",
       "File/path verification alone is not runtime verification" in _prompt_flat and
       "intentionally split across approvals" in _prompt_flat)
 
-# --- prompt canary construction -----------------------------------------------------------------
-# These are three construction paths over the SAME model/task/tool surface. The empty/default value
-# must preserve production until the experiment picks a winner; the selector is removed afterwards.
-check("prompt-canary-empty-keeps-current-production-arm",
-      harness.normalize_prompt_variant("") == harness.PROMPT_VARIANT_CURRENT_CUSTOM and
-      harness.system_prompt_for_variant(None) == harness.SYSTEM_PROMPT)
-check("prompt-canary-official-is-the-sdk-preset-without-a-copied-prompt",
-      harness.system_prompt_for_variant(harness.PROMPT_VARIANT_OFFICIAL_CLAUDE_CODE) ==
-      {"type": "preset", "preset": "claude_code"})
-check("prompt-canary-remote-appends-only-the-reviewed-delta",
-      harness.system_prompt_for_variant(harness.PROMPT_VARIANT_OFFICIAL_REMOTE) == {
-          "type": "preset", "preset": "claude_code", "append": harness.REMOTE_INSTANCE_DELTA,
-      })
-check("prompt-canary-remote-delta-is-smaller-than-the-replaced-playbook",
-      len(harness.REMOTE_INSTANCE_DELTA) < 1600 and
-      len(harness.REMOTE_INSTANCE_DELTA) < len(harness.SYSTEM_PROMPT) // 2)
-check("prompt-canary-remote-delta-carries-only-cross-environment-contracts",
-      all(term in harness.REMOTE_INSTANCE_DELTA for term in
-          ("customer instance", "CLI host", "control-plane metadata", "exact effect",
-           "original observable success criterion", "部分修复")) and
-      all(term not in harness.REMOTE_INSTANCE_DELTA.lower() for term in
-          ("filebrowser", "comfyui", "8188", "25 seconds", "background job", "atomic")))
-try:
-    harness.system_prompt_for_variant("unreviewed_prompt")
-    check("prompt-canary-unknown-arm-fails-closed", False)
-except SystemExit:
-    check("prompt-canary-unknown-arm-fails-closed", True)
-
 
 # --- versioned reference context: data only, bounded, and backwards-compatible -----------------
 # The model gets raw user reports and allowlisted platform facts in a separate prompt section. This
@@ -656,27 +628,12 @@ for name, bad in [
 if "claude_agent_sdk" in sys.modules or _sdk_importable():
     _saved_resolver = harness.resolve_claude_cli
     _real_opts = None
-    _real_opts_by_variant = {}
     try:
         harness.resolve_claude_cli = lambda: "stub-claude"
-        for _variant in harness.PROMPT_VARIANTS:
-            _real_opts_by_variant[_variant] = harness.build_options(
-                object(), "test-model", 5, prompt_variant=_variant)  # SystemExit on INV-9 drift
-        _real_opts = _real_opts_by_variant[harness.PROMPT_VARIANT_CURRENT_CUSTOM]
+        _real_opts = harness.build_options(object(), "test-model", 5)  # SystemExit on INV-9 drift
         check("inv9-real-build-options-passes", True)
-        check("inv9-every-prompt-arm-uses-the-single-repair-surface",
-              all(list(o.allowed_tools) == harness.ALLOWED_TOOLS and
-                  o.tools == [] and o.skills == [] and o.setting_sources == []
-                  for o in _real_opts_by_variant.values()))
-        check("prompt-canary-real-options-preserve-all-three-sdk-shapes",
-              _real_opts_by_variant[harness.PROMPT_VARIANT_CURRENT_CUSTOM].system_prompt ==
-              harness.SYSTEM_PROMPT and
-              _real_opts_by_variant[harness.PROMPT_VARIANT_OFFICIAL_CLAUDE_CODE].system_prompt ==
-              {"type": "preset", "preset": "claude_code"} and
-              _real_opts_by_variant[harness.PROMPT_VARIANT_OFFICIAL_REMOTE].system_prompt == {
-                  "type": "preset", "preset": "claude_code",
-                  "append": harness.REMOTE_INSTANCE_DELTA,
-              })
+        check("inv9-real-options-use-the-single-repair-surface",
+              list(_real_opts.allowed_tools) == harness.ALLOWED_TOOLS)
         _continuation_opts = harness.build_options(
             object(), "test-model", 5, {"job_id": _JOB_ID, "state": "running"})
         check("pending-job-options-keep-the-stable-reviewed-surface",
@@ -713,24 +670,17 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
         # mcp_servers is replaced with {} because the real value holds a live SDK MCP server object
         # that json.dumps cannot serialize; it is not part of what these four flags assert.
         import dataclasses as _dc
-        def _argv_for(options):
-            return _T(prompt="inv9-argv-probe",
-                      options=_dc.replace(options, mcp_servers={}))._build_command()
+        _argv = _T(prompt="inv9-argv-probe", options=_dc.replace(_real_opts, mcp_servers={}))._build_command()
 
-        _argv = _argv_for(_real_opts)
-
-        def _flag_value_in(argv, flag):
+        def _flag_value(flag):
             """The value after `--flag`, or after `--flag=`; None when the flag is absent."""
-            if flag in argv:
-                i = argv.index(flag)
-                return argv[i + 1] if i + 1 < len(argv) else None
-            for a in argv:
+            if flag in _argv:
+                i = _argv.index(flag)
+                return _argv[i + 1] if i + 1 < len(_argv) else None
+            for a in _argv:
                 if a.startswith(flag + "="):
                     return a[len(flag) + 1:]
             return None
-
-        def _flag_value(flag):
-            return _flag_value_in(_argv, flag)
 
         # `--tools ""` is the empty base set. An ABSENT --tools means the CLI's default set exists,
         # which is Bash/Read/Write on the CONTROL-PLANE host — the spike's #1 safety bug.
@@ -748,35 +698,6 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
         check("argv-disallowed-tools-carries-skill", "Skill" in _denied)
         check("argv-disallowed-tools-carries-the-executors",
               all(t in _denied for t in ("Bash", "Read", "Write")))
-
-        # claude-agent-sdk 0.2.106 is the adapter shipped with the production Claude Code 2.1.218
-        # binary. Its contract is intentional: a raw string replaces the default prompt; a preset
-        # without append emits no prompt flag and therefore keeps the CLI-owned versioned prompt;
-        # preset+append emits only --append-system-prompt. Copying the official prompt text into this
-        # repository would instead freeze and fork it.
-        _custom_argv = _argv_for(
-            _real_opts_by_variant[harness.PROMPT_VARIANT_CURRENT_CUSTOM])
-        _official_argv = _argv_for(
-            _real_opts_by_variant[harness.PROMPT_VARIANT_OFFICIAL_CLAUDE_CODE])
-        _remote_argv = _argv_for(
-            _real_opts_by_variant[harness.PROMPT_VARIANT_OFFICIAL_REMOTE])
-        check("argv-current-arm-explicitly-replaces-the-system-prompt",
-              _flag_value("--system-prompt") == harness.SYSTEM_PROMPT and
-              "--append-system-prompt" not in _custom_argv)
-        check("argv-official-arm-keeps-the-cli-owned-default-prompt",
-              "--system-prompt" not in _official_argv and
-              "--append-system-prompt" not in _official_argv)
-        check("argv-official-remote-arm-appends-only-the-minimal-delta",
-              "--system-prompt" not in _remote_argv and
-              "--append-system-prompt" in _remote_argv and
-              _remote_argv[_remote_argv.index("--append-system-prompt") + 1] ==
-              harness.REMOTE_INSTANCE_DELTA)
-        check("argv-all-prompt-arms-keep-inv9-tool-and-settings-flags",
-              all("--tools" in argv and argv[argv.index("--tools") + 1] == "" and
-                  any(a == "--setting-sources=" for a in argv) and
-                  (_flag_value_in(argv, "--allowedTools") or "").split(",") ==
-                  harness.ALLOWED_TOOLS
-                  for argv in (_custom_argv, _official_argv, _remote_argv)))
     except Exception as exc:            # noqa: BLE001 — deliberately broad; see below
         # Deliberately a FAILURE, not a skip: the SDK internals moved, so what `skills=[]`,
         # `setting_sources=[]` and `tools=[]` now mean has to be re-read before INV-9 can be trusted.

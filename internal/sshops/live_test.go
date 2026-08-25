@@ -150,7 +150,6 @@ func liveSupervisor() Supervisor {
 		BaseURL:       envOr("SSHH_BASE_URL", "https://api.modelverse.cn"),
 		APIKey:        os.Getenv("SSHH_API_KEY"),
 		Model:         envOr("SSHH_MODEL", "gpt-5.6-terra"),
-		PromptVariant: os.Getenv("SSHH_PROMPT_VARIANT"),
 		Timeout:       12 * time.Minute, // sized for the whole command sequence, see Supervisor.Run
 	}
 }

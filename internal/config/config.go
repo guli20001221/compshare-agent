@@ -110,46 +110,18 @@ type ExternalImageOAuthConfig struct {
 // SSHOpsConfig configures the consent-gated in-instance diagnosis lane. The
 // server requires tenant-scoped STS credentials and the audit schema.
 type SSHOpsConfig struct {
-	HarnessPath string `yaml:"harness_path"` // absolute path to deploy/ssh_ops_harness/harness.py
-	BaseURL     string `yaml:"base_url"`     // ANTHROPIC_BASE_URL of the ModelVerse Anthropic endpoint
-	APIKey      string `yaml:"api_key"`      // empty = agent.llm.api_key
-	Python      string `yaml:"python"`       // interpreter; empty = "python3"
-	Model       string `yaml:"model"`        // third-party model id; empty = agent.llm.model
-	// PromptVariant is temporary canary scaffolding. It selects one of three Agent-SDK prompt
-	// construction paths while keeping the model, task and tool surface fixed. Remove it after the
-	// behavior comparison chooses one production path.
-	PromptVariant string        `yaml:"prompt_variant"`
-	Timeout       time.Duration `yaml:"timeout"` // hard per-task wall clock; empty = 12m
+	HarnessPath string        `yaml:"harness_path"` // absolute path to deploy/ssh_ops_harness/harness.py
+	BaseURL     string        `yaml:"base_url"`     // ANTHROPIC_BASE_URL of the ModelVerse Anthropic endpoint
+	APIKey      string        `yaml:"api_key"`      // empty = agent.llm.api_key
+	Python      string        `yaml:"python"`       // interpreter; empty = "python3"
+	Model       string        `yaml:"model"`        // third-party model id; empty = agent.llm.model
+	Timeout     time.Duration `yaml:"timeout"`      // hard per-task wall clock; empty = 12m
 	// InternalIPv6 uses the UCloud internal gateway to replace a UHost's public
 	// address. It requires agent.sts.iam_url and is production-network-specific.
 	InternalIPv6 bool `yaml:"internal_ipv6"`
 	// PublicIPv6Prefix provides a translated public-IPv4 candidate after the
 	// internal candidate. The advertised public EIP is never dialled directly.
 	PublicIPv6Prefix string `yaml:"public_ipv6_prefix"`
-}
-
-const (
-	SSHOpsPromptCurrentCustom      = "current_custom"
-	SSHOpsPromptOfficialClaudeCode = "official_claude_code"
-	SSHOpsPromptOfficialRemote     = "official_claude_code_remote"
-)
-
-// NormalizeSSHOpsPromptVariant keeps the temporary canary a closed set. An empty value preserves
-// the production prompt that existed before the canary; an unknown value fails at config load/boot
-// instead of surfacing only after the user approved entry into an instance.
-func NormalizeSSHOpsPromptVariant(value string) (string, error) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return SSHOpsPromptCurrentCustom, nil
-	}
-	switch value {
-	case SSHOpsPromptCurrentCustom, SSHOpsPromptOfficialClaudeCode, SSHOpsPromptOfficialRemote:
-		return value, nil
-	default:
-		return "", fmt.Errorf(
-			"agent.ssh_ops.prompt_variant %q is invalid (want %s, %s or %s)",
-			value, SSHOpsPromptCurrentCustom, SSHOpsPromptOfficialClaudeCode, SSHOpsPromptOfficialRemote)
-	}
 }
 
 // HTTPConfig holds settings for the HTTP server mode (compshare-agent server).
@@ -304,11 +276,6 @@ func Load(path string) (*Config, error) {
 	if err := resolveOptionalCredential(&cfg.Agent.SSHOps.APIKey, "agent.ssh_ops.api_key"); err != nil {
 		return nil, err
 	}
-	promptVariant, err := NormalizeSSHOpsPromptVariant(cfg.Agent.SSHOps.PromptVariant)
-	if err != nil {
-		return nil, err
-	}
-	cfg.Agent.SSHOps.PromptVariant = promptVariant
 	if err := resolveOptionalPlaceholder(&cfg.Agent.ProjectId, "agent.project_id"); err != nil {
 		return nil, err
 	}

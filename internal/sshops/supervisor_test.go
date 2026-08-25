@@ -90,7 +90,6 @@ conn = json.loads(line)
 print("<<<VERDICT>>>")
 print("HANDSHAKE_OK host=%s user=%s port=%s instance=%s task=%s" % (
     conn.get("host"), conn.get("user"), conn.get("port"), conn.get("instance_id"), conn.get("task")))
-print("PROMPT_VARIANT=%s" % conn.get("prompt_variant"))
 print("HAS_PASSWORD=%s" % bool(conn.get("password")))
 print("AUTH_TOKEN_OK=%s" % (os.environ.get("ANTHROPIC_AUTH_TOKEN") == "modelverse-test-token"))
 print("ENVKEYS=" + ",".join(sorted(os.environ.keys())))
@@ -105,13 +104,12 @@ func TestSupervisorHandshakeAndScrubbedEnv(t *testing.T) {
 	defer os.Unsetenv("MYSQL_DSN")
 
 	sup := Supervisor{
-		Python:        requirePython(t),
-		HarnessPath:   writeFakeHarness(t, fakeEcho),
-		BaseURL:       testAnthropicBaseURL,
-		APIKey:        testAnthropicAPIKey,
-		Model:         "gpt-5.6-terra",
-		PromptVariant: "official_claude_code_remote",
-		Timeout:       30 * time.Second,
+		Python:      requirePython(t),
+		HarnessPath: writeFakeHarness(t, fakeEcho),
+		BaseURL:     testAnthropicBaseURL,
+		APIKey:      testAnthropicAPIKey,
+		Model:       "gpt-5.6-terra",
+		Timeout:     30 * time.Second,
 	}
 	c := cred("uhost-abc", "1.2.3.4", "root", 23, "S3cr3tPw")
 
@@ -127,9 +125,6 @@ func TestSupervisorHandshakeAndScrubbedEnv(t *testing.T) {
 	}
 	if !strings.Contains(out, "task=health check") {
 		t.Fatalf("task not delivered over stdin: %q", out)
-	}
-	if !strings.Contains(out, "PROMPT_VARIANT=official_claude_code_remote") {
-		t.Fatalf("prompt canary arm not delivered over stdin: %q", out)
 	}
 	if !strings.Contains(out, "HAS_PASSWORD=True") {
 		t.Fatalf("password not delivered over stdin: %q", out)
