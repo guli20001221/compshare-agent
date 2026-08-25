@@ -224,8 +224,8 @@ check("pending-job-invalid-or-terminal-handle-is-not-resumed",
       harness.normalize_pending_background_job({"job_id": _JOB_ID, "state": "succeeded"}) is None)
 _continuation_prompt = harness.render_prepared_prompt("继续排查", None, _pending_job)
 check("pending-job-prompt-requires-exact-poll-and-allows-read-only-work",
-      _JOB_ID in _continuation_prompt and "Read-only diagnosis remains available" in _continuation_prompt
-      and "refuse every new guest change" in _continuation_prompt
+      _JOB_ID in _continuation_prompt and "Read-only diagnosis and separately approved" in _continuation_prompt
+      and "refuse a second background job" in _continuation_prompt
       and "Do not reconstruct or rerun" in _continuation_prompt)
 
 # A server rolled back below this harness still sends v1, and that must keep working — but against
@@ -1069,7 +1069,7 @@ check("pending-job-main-keeps-the-reviewed-surface-for-read-only-and-post-termin
       [tool._test_tool_name for tool in _pending_tools] ==
       [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
 check("pending-job-main-prompt-carries-the-opaque-handle-not-a-command",
-      _JOB_ID in _captured_sdk_prompts[2] and "Read-only diagnosis remains available" in _captured_sdk_prompts[2] and
+      _JOB_ID in _captured_sdk_prompts[2] and "Read-only diagnosis and separately approved" in _captured_sdk_prompts[2] and
       "pip install package" not in _captured_sdk_prompts[2])
 _pending_poll_tool = next(tool for tool in _pending_tools
                           if tool._test_tool_name == "poll_background_job")
@@ -1135,9 +1135,10 @@ check("pending-job-rejects-every-unknown-job-id",
 check("first-run-cannot-poll-an-untracked-opaque-job-id",
       "refused_precondition" in _no_active_poll_wire and not _unknown_poll_calls)
 
-# An active job blocks every other write but not reads. Atomic edit is checked before SFTP; ssh_exec
-# checks the classified tier before opening a confirmation card.
+# One active background job does not turn exact approval into a hard refusal for unrelated foreground
+# work. It only prevents a second untrackable background launch.
 _saved_run_ssh, _saved_confirm = harness.ssh_transport.run_ssh, harness._request_confirm
+_saved_prepare_edit, _saved_apply_edit = harness.atomic_file.prepare_edit, harness.atomic_file.apply_edit
 _confirm_calls = []
 try:
     harness.set_conn(conn)
@@ -1145,6 +1146,15 @@ try:
         "exit_code": 0, "stdout": "GPU ok", "stderr": "", "truncated": False,
     }
     harness._request_confirm = lambda display: _confirm_calls.append(display) or (True, "")
+    harness.atomic_file.prepare_edit = lambda *_args, **_kwargs: {
+        "ok": True, "operation": "create", "path": "/workspace/app.conf",
+        "change_summary": "create requested config", "after_sha256": "a" * 64,
+        "mode": "0644", "_data": b"x=1\n", "_mode": 0o644,
+    }
+    harness.atomic_file.apply_edit = lambda *_args, **_kwargs: {
+        "ok": True, "operation": "create", "path": "/workspace/app.conf",
+        "after_sha256": "a" * 64, "mode": "0644", "result_bytes": 4, "atomic": True,
+    }
     _active_read_wire = _capture(lambda: _asyncio.run(
         _pending_ssh_tool({"command": "nvidia-smi"})))
     _active_write_wire = _capture(lambda: _asyncio.run(
@@ -1156,12 +1166,14 @@ try:
 finally:
     harness.ssh_transport.run_ssh = _saved_run_ssh
     harness._request_confirm = _saved_confirm
+    harness.atomic_file.prepare_edit = _saved_prepare_edit
+    harness.atomic_file.apply_edit = _saved_apply_edit
 check("active-job-keeps-proven-read-only-ssh-available",
       "ran_read_only" in _active_read_wire)
-check("active-job-refuses-foreground-writes-without-a-card",
-      "refused_precondition" in _active_write_wire and not _confirm_calls)
-check("active-job-refuses-atomic-edits-before-sftp-or-a-card",
-      "refused_precondition" in _active_atomic_wire and not _confirm_calls)
+check("active-job-still-allows-exactly-approved-foreground-writes",
+      "ran_mutating" in _active_write_wire and any("systemctl restart app" in x for x in _confirm_calls))
+check("active-job-still-allows-exactly-approved-atomic-edits",
+      "ran_mutating" in _active_atomic_wire and any("atomic_text_edit" in x for x in _confirm_calls))
 
 # A terminal poll clears the active slot immediately, allowing a second long step in this diagnosis.
 _SECOND_JOB_ID = "job-" + "b" * 32

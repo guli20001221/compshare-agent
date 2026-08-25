@@ -206,8 +206,8 @@ classified as one effect; keep independently useful probes in separate calls.
 
 Each call is a fresh, non-interactive SSH session capped at 25 seconds. For long work set
 run_in_background=true and give an evidence-backed purpose. ssh_exec owns detachment, logs and the opaque
-ID. At most one job may be
-active: while active, poll it and continue reads; other changes are refused. A terminal poll frees the slot.
+ID. At most one background job may be active; a terminal poll frees that slot. Reads and separately
+approved foreground changes remain available while it runs.
 Do not hand-roll detachment or resend a timed-out foreground command.
 
 For managed service, use its existing supervisor/launcher, not an inner binary. Do not create a new unit
@@ -464,9 +464,10 @@ def render_prepared_prompt(task, context, pending_background_job=None):
         continuation = (
             "\n\nA previously approved background job on this same instance is still unresolved: "
             + _context_json(pending_background_job) + ". Call poll_background_job with that exact "
-            "job_id before proposing another change. Read-only diagnosis remains available, but the "
-            "tools refuse every new guest change while this job is active. Do not reconstruct or "
-            "rerun the command that created it. Once a poll observes a terminal state, continue the "
+            "job_id before proposing a dependent change. Read-only diagnosis and separately approved "
+            "foreground changes remain available, but the tools refuse a second background job while "
+            "this one is active. Do not reconstruct or rerun the command that created it. Once a poll "
+            "observes a terminal state, continue the "
             "smallest necessary repair and verification normally."
         )
     if context is None:
@@ -753,7 +754,7 @@ def _emit_verdict(text: str) -> None:
     sys.stdout.flush()
 
 
-def run_command(command: str, mutating_precondition: str = "") -> dict:
+def run_command(command: str) -> dict:
     """Classify the command and, only for the read_only tier, execute it via SSH + scrub. SDK-free.
     Returns {text, is_error, tier, executed}. Appends one AUDIT record (never carrying the credential)
     and emits exactly one @@STEP line — from the finally, the sole point all six return paths converge,
@@ -768,10 +769,6 @@ def run_command(command: str, mutating_precondition: str = "") -> dict:
             return {"text": f"⛔ REFUSED — destructive command, never executed: {command}",
                     "is_error": True, "tier": tier, "executed": False}
         if tier == "mutating":
-            if mutating_precondition:
-                entry["disposition"] = "refused_precondition"
-                return {"text": ("⛔ NOT EXECUTED — " + mutating_precondition),
-                        "is_error": True, "tier": tier, "executed": False}
             # The SHAPE gate is NOT part of the read-only policy — it is the prompt-injection
             # firewall, and it survives write mode unchanged. `classify` scans the LITERAL command
             # for destructive verbs, so `$(printf '\\x72\\x6d') -rf /` reads as harmless text to it;
@@ -983,7 +980,7 @@ def assert_tool_surface(opts) -> None:
 
     Every run expects the same ALLOWED_TOOLS entries. A background-job continuation still needs
     read-only diagnosis and may proceed after a terminal poll; executable gates reject every new
-    guest change while the opaque handle is active. `tools` is the load-bearing
+    second background launch while the opaque handle is active. `tools` is the load-bearing
     off-switch, asserted FIRST: per the SDK it is the base set of built-ins
     that EXIST, and anything absent from it cannot run at all. `allowed_tools` only grants auto-approval
     (a built-in NOT listed there still EXISTS), and `disallowed_tools` is a hand-enumerated denylist a
@@ -1323,12 +1320,7 @@ async def main():
                     "structuredContent": result,
                     **({"is_error": True} if not result.get("ok") else {})}
 
-        active_message = ""
-        if active_background_job_id:
-            active_message = (
-                "a background job is still active; poll it to a terminal state before any other "
-                "guest change. Read-only commands remain available.")
-        r = run_command(command, mutating_precondition=active_message)
+        r = run_command(command)
         return {"content": [{"type": "text", "text": r["text"]}],
                 **({"is_error": True} if r["is_error"] else {})}
 
@@ -1456,16 +1448,6 @@ async def main():
           annotations=ToolAnnotations(title="Atomically edit one text file", readOnlyHint=False,
                                       destructiveHint=True, idempotentHint=False, openWorldHint=True))
     async def atomic_text_edit(args):
-        if active_background_job_id:
-            result = {"ok": False, "error_class": "refused_precondition",
-                      "message": ("a background job is still active; poll it to a terminal state "
-                                  "before any file change")}
-            rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-            display = "atomic_text_edit path=" + str(args.get("path") or "invalid")[:512]
-            _record_structured_step(display, "mutating", "refused_precondition",
-                                    len(rendered.encode("utf-8")))
-            return {"content": [{"type": "text", "text": rendered}],
-                    "structuredContent": result, "is_error": True}
         plan = await asyncio.to_thread(atomic_file.prepare_edit, _CONN, args)
         if not plan.get("ok"):
             rendered = json.dumps(plan, ensure_ascii=False, separators=(",", ":"))
