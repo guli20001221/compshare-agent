@@ -134,6 +134,13 @@ def new_job_id():
     return "job-" + uuid.uuid4().hex
 
 
+def _completion_body(command, status_tmp, status):
+    """Run arbitrary shell text as data while keeping the completion recorder outside it."""
+    return ("bash -c %s; rc=$?; printf '%%s\\n' \"$rc\" > %s; mv %s %s" %
+            (shlex.quote(command), shlex.quote(status_tmp), shlex.quote(status_tmp),
+             shlex.quote(status)))
+
+
 def start(conn, command, purpose, secrets=(), runner=ssh_transport.run_ssh, job_id=None):
     command = str(command or "").strip()
     purpose = " ".join(str(purpose or "").split())[:200]
@@ -145,16 +152,16 @@ def start(conn, command, purpose, secrets=(), runner=ssh_transport.run_ssh, job_
         return {"ok": False, "error_class": "invalid_job_id", "box_may_be_changed": False}
     directory = _JOB_ROOT + "/" + job_id
     status_tmp, status = directory + "/status.tmp", directory + "/status"
-    # The original command runs in a subshell so an `exit` inside it cannot skip the completion
-    # record. The trusted wrapper is generated locally after policy/confirmation; it is never model
-    # input and is not what the audit displays. stdout/stderr are detached from the SSH session.
+    # The original command is one argv value to a nested shell so `exit`, a trailing comment or a
+    # heredoc delimiter cannot consume/corrupt the completion recorder in the outer shell. The
+    # trusted wrapper is generated locally after policy/confirmation; it is never model input and
+    # is not what the audit displays. stdout/stderr are detached from the SSH session.
     #
     # Do NOT impose RLIMIT_FSIZE here. A limit inherited by the payload applies to every file it
     # writes, not merely stdout/stderr: large wheels, model shards and compiler outputs are cut off
     # with SIGXFSZ and left partial. poll() bounds what crosses the model boundary without changing
     # the approved job's filesystem semantics.
-    body = ("( %s ); rc=$?; printf '%%s\\n' \"$rc\" > %s; mv %s %s" %
-            (command, shlex.quote(status_tmp), shlex.quote(status_tmp), shlex.quote(status)))
+    body = _completion_body(command, status_tmp, status)
     launcher = (
         "umask 077; mkdir -p %s || exit $?; "
         "nohup env COMPSHARE_OPS_JOB_ID=%s bash -c %s </dev/null >%s 2>%s & job_pid=$!; "

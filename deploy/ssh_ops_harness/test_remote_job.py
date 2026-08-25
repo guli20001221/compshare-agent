@@ -1,6 +1,10 @@
 """Offline protocol tests for structured long jobs."""
 import json
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import types
 
 import remote_job
@@ -34,6 +38,26 @@ check("trusted-wrapper-records-exit-without-limiting-payload-files",
 check("trusted-wrapper-marks-process-identity",
       "COMPSHARE_OPS_JOB_ID=" + started["job_id"] in captured[0])
 check("result-never-returns-generated-shell", "pip install" not in json.dumps(started))
+multiline_payload = "cat <<'PY'\nhello from heredoc\nPY\n# trailing comment"
+body = remote_job._completion_body(multiline_payload, "/tmp/status.tmp", "/tmp/status")
+check("arbitrary-command-is-one-nested-shell-argument",
+      body.startswith("bash -c " + remote_job.shlex.quote(multiline_payload) + "; rc=$?;"))
+if os.name != "nt" and shutil.which("bash"):
+    with tempfile.TemporaryDirectory(prefix="sshops-remote-job-") as tmp:
+        status_tmp = os.path.join(tmp, "status.tmp")
+        status = os.path.join(tmp, "status")
+        executed = subprocess.run(
+            ["bash", "-c", remote_job._completion_body(multiline_payload, status_tmp, status)],
+            capture_output=True, text=True, check=False)
+        status_text = ""
+        if os.path.exists(status):
+            with open(status, encoding="utf-8") as handle:
+                status_text = handle.read().strip()
+        check("heredoc-and-trailing-comment-preserve-completion-record",
+              executed.returncode == 0 and executed.stdout == "hello from heredoc\n" and
+              status_text == "0")
+else:
+    print("--  heredoc-and-trailing-comment-preserve-completion-record SKIPPED (bash absent)")
 fixed_job_id = "job-" + "b" * 32
 fixed_commands = []
 fixed = remote_job.start(
