@@ -39,6 +39,7 @@ import ssh_transport
 _CONN = None          # {"host","user","port","password"|"key"}  (+ optional "instance_id","model")
 _ENDPOINT_TARGETS = {}  # opaque id -> private server-selected HTTP/TCP target; never rendered
 AUDIT = []            # per-command: {command, tier, executed, exit_code, disposition}
+_DYNAMIC_SECRETS = [] # caller API auth used by structured probes; process-memory only, never audited
 _JOB_POLL_OFFSETS = {}  # job_id -> bounded stdout/stderr cursors for this one model run
 # Monotonic id for confirm requests. The reply must carry the SAME id: a decision that arrived
 # for an earlier command must never approve the one currently pending, so the match is explicit
@@ -471,8 +472,18 @@ def _secrets():
     """Literal secret strings to scrub from box output: the password AND its base64 form."""
     if _CONN and _CONN.get("password"):
         pw = _CONN["password"]
-        return [pw, base64.b64encode(pw.encode()).decode()]
-    return []
+        return [pw, base64.b64encode(pw.encode()).decode()] + list(_DYNAMIC_SECRETS)
+    return list(_DYNAMIC_SECRETS)
+
+
+def _remember_authorization(value):
+    """Retain probe auth only for exact output/verdict scrubbing in this short-lived process."""
+    if not isinstance(value, str) or not value or value != value.strip():
+        return
+    parts = value.split(None, 1)
+    for secret in (value, parts[-1] if parts else ""):
+        if len(secret) >= 3 and secret not in _DYNAMIC_SECRETS:
+            _DYNAMIC_SECRETS.append(secret)
 
 
 # --- stdout line protocol (parsed by the Go supervisor) ------------------------------------------
@@ -1379,10 +1390,11 @@ async def main():
           annotations=ToolAnnotations(title="Probe a platform endpoint", readOnlyHint=True,
                                       destructiveHint=False, idempotentHint=True, openWorldHint=True))
     async def probe_endpoint(args):
+        _remember_authorization(args.get("authorization"))
         # Network I/O is bounded but blocking in the stdlib; keep it off the SDK event loop.
         result = await asyncio.to_thread(
             endpoint_probe.probe, _ENDPOINT_TARGETS, args.get("target_id") or "",
-            args.get("path") or "", args.get("method") or "GET")
+            args.get("path") or "", args.get("method") or "GET", args.get("authorization") or "")
         rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         # A completed connection/HTTP attempt is diagnostic evidence even when it observes a
         # refusal, timeout or 5xx. Only target/options validation is a precondition refusal.
@@ -1399,6 +1411,7 @@ async def main():
           annotations=ToolAnnotations(title="Probe guest loopback", readOnlyHint=True,
                                       destructiveHint=False, idempotentHint=True, openWorldHint=False))
     async def probe_guest_endpoint(args):
+        _remember_authorization(args.get("authorization"))
         result = await asyncio.to_thread(
             guest_endpoint_probe.probe, _CONN, args, _secrets())
         rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))

@@ -18,10 +18,12 @@ def check(name, condition):
 class _Handler(http.server.BaseHTTPRequestHandler):
     seen_paths = []
     seen_methods = []
+    seen_authorizations = []
 
     def do_GET(self):
         self.__class__.seen_paths.append(self.path)
         self.__class__.seen_methods.append(("GET", self.path))
+        self.__class__.seen_authorizations.append(self.headers.get("Authorization", ""))
         if self.path == "/redirect":
             self.send_response(302)
             self.send_header("Location", f"http://localhost:{self.server.server_address[1]}/ok")
@@ -38,6 +40,7 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.__class__.seen_paths.append(self.path)
         self.__class__.seen_methods.append(("HEAD", self.path))
+        self.__class__.seen_authorizations.append(self.headers.get("Authorization", ""))
         if self.path == "/same-redirect":
             self.send_response(302)
             self.send_header("Location", "/ok")
@@ -102,11 +105,23 @@ check("schema-allows-only-an-absolute-bounded-path",
       and schema["properties"]["path"]["maxLength"] == endpoint_probe._MAX_PATH_LENGTH)
 check("schema-closes-http-methods-to-read-only-options",
       schema["properties"]["method"]["enum"] == ["GET", "HEAD"])
+check("schema-exposes-only-one-bounded-custom-header",
+      schema["properties"]["authorization"]["maxLength"] ==
+      endpoint_probe._MAX_AUTHORIZATION_LENGTH)
 
 http_result = endpoint_probe.probe(targets, "platform-http-1")
 check("http-probe-reaches-response", http_result["transport_reachable"] is True and http_result["http_status"] == 204)
 check("http-result-hides-private-destination",
       all(value not in json.dumps(http_result) for value in ("127.0.0.1", "live-secret", "token=", "must-not-return")))
+auth_token = "test-api-" + "secret-123"
+auth_value = "Bearer " + auth_token
+auth_result = endpoint_probe.probe(
+    targets, "platform-http-1", "/v1/models", authorization=auth_value)
+check("authenticated-http-probe-sends-user-value-without-returning-it",
+      auth_result["transport_reachable"] is True and auth_result["authorization_sent"] is True
+      and _Handler.seen_authorizations[-1] == auth_value
+      and auth_value not in json.dumps(auth_result)
+      and auth_token not in json.dumps(auth_result))
 head_result = endpoint_probe.probe(targets, "platform-http-1", method="HEAD")
 check("head-probe-reaches-response-without-returning-content",
       head_result["transport_reachable"] is True and head_result["http_status"] == 204
@@ -156,6 +171,10 @@ tcp_head = endpoint_probe.probe(targets, "platform-tcp-2", method="HEAD")
 check("tcp-target-rejects-http-method-options",
       tcp_head["transport_reachable"] is False
       and tcp_head["error_class"] == "http_options_not_supported")
+tcp_auth = endpoint_probe.probe(targets, "platform-tcp-2", authorization=auth_value)
+check("tcp-target-rejects-authorization-before-connect",
+      tcp_auth["transport_reachable"] is False
+      and tcp_auth["error_class"] == "http_options_not_supported")
 invalid_method = endpoint_probe.probe(targets, "platform-http-1", method="POST")
 check("http-method-is-a-closed-read-only-enum",
       invalid_method["transport_reachable"] is False
@@ -164,6 +183,12 @@ check("http-method-is-a-closed-read-only-enum",
 unknown = endpoint_probe.probe(targets, "not-listed")
 check("model-cannot-invent-a-destination",
       unknown["transport_reachable"] is False and unknown["error_class"] == "unknown_target_id")
+for bad_auth in (" Bearer x", "Bearer x\r\nX-Evil: y", "x" * 2049):
+    invalid = endpoint_probe.probe(targets, "platform-http-1", authorization=bad_auth)
+    check("invalid-authorization-is-rejected-before-network::" + repr(bad_auth[:20]),
+          invalid["transport_reachable"] is False
+          and invalid["stage"] == "request_validation"
+          and invalid["error_class"] == "invalid_authorization")
 
 httpd.shutdown()
 httpd.server_close()

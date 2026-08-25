@@ -75,6 +75,18 @@ check("http-probe-reports-status-and-body",
       result["ok"] and result["status_code"] == 403 and "Blocked request" in result["body"])
 check("http-probe-closes-channel-and-client", channel.closed and client.closed)
 
+auth_token = "guest-api-" + "secret-456"
+auth_value = "Bearer " + auth_token
+auth_client, auth_channel, _ = _open(
+    b"HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\n\r\n" + auth_token.encode())
+authenticated = guest_endpoint_probe.probe(
+    {}, {"protocol": "http", "port": 8000, "path": "/v1/models",
+         "authorization": auth_value}, opener=lambda _c: (auth_client, None))
+check("authenticated-guest-probe-sends-header-without-returning-secret",
+      ("Authorization: " + auth_value + "\r\n").encode() in auth_channel.sent
+      and authenticated["authorization_sent"] is True
+      and auth_token not in authenticated["body"])
+
 tcp_client, tcp_channel, tcp_transport = _open()
 tcp = guest_endpoint_probe.probe(
     {}, {"protocol": "tcp", "port": 8888}, opener=lambda _c: (tcp_client, None))
@@ -126,6 +138,10 @@ for name, args in [
     ("bad-protocol", {"protocol": "udp", "port": 1}),
     ("body-method", {"protocol": "http", "port": 80, "method": "POST"}),
     ("header-injection", {"protocol": "http", "port": 80, "host_header": "x\r\nAuth: y"}),
+    ("authorization-injection", {"protocol": "http", "port": 80,
+                                  "authorization": "Bearer x\r\nX-Evil: y"}),
+    ("tcp-authorization", {"protocol": "tcp", "port": 80,
+                            "authorization": "Bearer x"}),
     ("absolute-url", {"protocol": "http", "port": 80, "path": "http://example.com/"}),
 ]:
     bad = guest_endpoint_probe.probe(

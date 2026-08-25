@@ -17,7 +17,7 @@ import (
 // SSHOpsAuditStore is the synchronous, fail-closed AuditWriter backing the consent-gated SSH-ops
 // lane. It implements sshops.AuditWriter against the ssh_ops_audit table
 // (deploy/migrations/0011 + 0013). The SSH credential is NEVER written — only tenant identity, the target
-// instance, the (PII-redacted) task text, aggregate context coverage, and the outcome. Begin's row
+// instance, the (PII/credential-redacted) task text, aggregate context coverage, and the outcome. Begin's row
 // carries the REQUESTED context coverage; Finish overwrites it with what was applied, clearing it when
 // the harness could not confirm the model turn began on that context — so only a row with finished_at
 // set states delivery, and a query ignoring that over-reports. Begin must succeed before the harness
@@ -69,7 +69,9 @@ func (s *SSHOpsAuditStore) Begin(ctx context.Context, ev sshops.AuditEvent) (str
 	id := uuid.NewString()
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	// INV-4: the task is free-form operator/model text — redact PII before it is persisted. The
+	// INV-4: the task is free-form operator/model text — redact PII and credentials before it is
+	// persisted. The live harness still receives the original task for the current run; only this
+	// durable copy is reduced. The
 	// task_hash column is the raw-task sha256 the caller computed (the INV-9 dedup identity); it is
 	// stored verbatim and, being a hash, carries nothing sensitive. UNIQUE(turn_id, task_hash) makes
 	// a retry of the same turn fail here, which the fail-closed caller turns into a refusal.
@@ -79,11 +81,15 @@ INSERT INTO ssh_ops_audit
      context_schema_version, context_fact_coverage, disposition, started_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'started', now())`,
 		id, ev.RequestUUID, ev.TurnID, ev.TaskHash, ev.TopOrganizationID, ev.OrganizationID, ev.InstanceID,
-		truncateAuditTask(guardrails.RedactPII(ev.Task), 4000), ev.Phase, ev.ContextSchemaVersion, ev.ContextFactCoverage)
+		auditTaskText(ev.Task), ev.Phase, ev.ContextSchemaVersion, ev.ContextFactCoverage)
 	if err != nil {
 		return "", fmt.Errorf("ssh_ops_audit begin: %w", err)
 	}
 	return id, nil
+}
+
+func auditTaskText(task string) string {
+	return truncateAuditTask(guardrails.RedactCredentials(guardrails.RedactPII(task)), 4000)
 }
 
 // Finish enriches the row with the outcome. A failure here does not lose the verdict (the access

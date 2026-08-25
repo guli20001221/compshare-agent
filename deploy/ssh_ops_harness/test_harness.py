@@ -1305,10 +1305,11 @@ _endpoint_contract = _json.dumps({"description": _endpoint_tool._test_tool_descr
 check("endpoint-tool-exposes-only-opaque-target-id",
       _endpoint_tool._test_tool_schema["properties"]["target_id"]["enum"] == ["platform-http-1"] and
       all(field not in _endpoint_tool._test_tool_schema["properties"] for field in ("url", "host", "port")))
-check("endpoint-tool-offers-only-closed-read-methods-without-content-or-credential-input",
+check("endpoint-tool-offers-only-closed-read-methods-and-one-bounded-auth-input",
       _endpoint_tool._test_tool_schema["properties"]["method"]["enum"] == ["GET", "HEAD"] and
+      _endpoint_tool._test_tool_schema["properties"]["authorization"]["maxLength"] == 2048 and
       all(field not in _endpoint_tool._test_tool_schema["properties"]
-          for field in ("token", "bearer_token", "authorization", "headers", "body")))
+          for field in ("token", "bearer_token", "headers", "body")))
 check("endpoint-private-url-never-enters-prompt-or-tool-contract",
       all(secret not in (_captured_sdk_prompts[0] + _endpoint_contract)
           for secret in ("private.example.invalid", "never-render", "token=")))
@@ -1343,24 +1344,31 @@ try:
           and "is_error" not in _guest_responses[0])
 
     _endpoint_args = []
-    harness.endpoint_probe.probe = lambda targets, target_id, path, method: (
-        _endpoint_args.append((target_id, path, method)) or {
+    harness.endpoint_probe.probe = lambda targets, target_id, path, method, authorization: (
+        _endpoint_args.append((target_id, path, method, authorization)) or {
             "target_id": target_id, "kind": "http", "vantage": "ssh_ops_runner",
             "transport_reachable": True, "stage": "http_response", "http_status": 200,
-            "method": method, "body_kind": "not_requested",
+            "method": method, "authorization_sent": bool(authorization),
+            "body_kind": "not_requested",
         })
     del harness.AUDIT[:]
     _endpoint_responses = []
+    _harness_auth_token = "harness-api-" + "secret-789"
+    _harness_authorization = "Bearer " + _harness_auth_token
     _endpoint_step = _capture(lambda: _endpoint_responses.append(
         _asyncio.run(_endpoint_tool({
             "target_id": "platform-http-1", "path": "/health", "method": "HEAD",
+            "authorization": _harness_authorization,
         }))))
     check("registered-endpoint-tool-passes-the-closed-read-method",
-          _endpoint_args == [("platform-http-1", "/health", "HEAD")]
+          _endpoint_args == [("platform-http-1", "/health", "HEAD",
+                              _harness_authorization)]
           and _endpoint_responses[0]["structuredContent"]["http_status"] == 200)
     check("endpoint-step-and-audit-carry-only-the-opaque-target",
           "private.example.invalid" not in _endpoint_step and "never-render" not in _endpoint_step
-          and all("private.example.invalid" not in str(item) for item in harness.AUDIT))
+          and _harness_auth_token not in _endpoint_step
+          and all("private.example.invalid" not in str(item) and
+                  _harness_auth_token not in str(item) for item in harness.AUDIT))
     harness.endpoint_probe.probe = lambda *_args, **_kwargs: {
         "target_id": "platform-http-1", "kind": "http", "vantage": "ssh_ops_runner",
         "transport_reachable": False, "stage": "connect_or_tls", "error_class": "timeout",
@@ -1386,6 +1394,18 @@ finally:
     harness.remote_search.find_paths = _saved_find_impl
     harness.guest_endpoint_probe.probe = _saved_guest_probe_impl
     harness.endpoint_probe.probe = _saved_endpoint_probe_impl
+
+del harness._DYNAMIC_SECRETS[:]
+harness._remember_authorization("   ")
+check("blank-authorization-never-crashes-or-becomes-a-secret",
+      harness._DYNAMIC_SECRETS == [])
+_dynamic_token = "dynamic-verdict-" + "secret-321"
+_dynamic_authorization = "Bearer " + _dynamic_token
+harness._remember_authorization(_dynamic_authorization)
+check("authorization-and-token-are-both-held-only-for-scrubbing",
+      harness._DYNAMIC_SECRETS == [_dynamic_authorization, _dynamic_token] and
+      _dynamic_token not in harness.guardrails.scrub_output(_dynamic_token, harness._secrets()))
+del harness._DYNAMIC_SECRETS[:]
 
 
 # The receipt is an ATTESTATION the audit stores, so it must not fire on a run the model never saw.

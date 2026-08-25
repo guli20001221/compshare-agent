@@ -9,14 +9,16 @@ _HOST_HEADER = re.compile(r"[A-Za-z0-9.-]+(?::\d+)?")
 _PATH = re.compile(r"/[A-Za-z0-9._~!$&'()*+,;=:@%/?-]*")
 _MAX_RESPONSE_BYTES = 32768
 _MAX_BODY_BYTES = 8192
+_MAX_AUTHORIZATION_LENGTH = 2048
 
 TOOL_DESCRIPTION = (
     "Probe a TCP listener or HTTP GET/HEAD on loopback inside the selected remote guest, through "
     "the existing SSH transport and without requiring curl/wget/python on the guest. Use it to "
     "separate process/listener/application health from an external platform route. The destination "
     "host is fixed to 127.0.0.1; the tool accepts only a port, bounded path, and optional literal "
-    "Host header for virtual-host diagnostics. It cannot reach public/private network hosts, send "
-    "request bodies, authenticate, write files, or change the guest.")
+    "Host header for virtual-host diagnostics. For a caller-requested API check it can send one "
+    "exact user-provided Authorization value; that value is never returned or shown in activity. "
+    "It cannot reach public/private network hosts, send request bodies, write files, or change the guest.")
 
 
 def input_schema():
@@ -29,6 +31,13 @@ def input_schema():
             "path": {"type": "string", "minLength": 1, "maxLength": 512, "default": "/"},
             "host_header": {"type": "string", "minLength": 1, "maxLength": 253,
                             "description": "Optional literal virtual host; never an address to dial."},
+            "authorization": {
+                "type": "string", "minLength": 1, "maxLength": _MAX_AUTHORIZATION_LENGTH,
+                "description": (
+                    "Optional exact Authorization header value supplied by the user, for example "
+                    "Bearer <key>. It is sent only to guest loopback and never returned."
+                ),
+            },
             "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
         },
         "required": ["protocol", "port"],
@@ -42,6 +51,7 @@ def _validated(args):
     protocol, port = args.get("protocol"), args.get("port")
     method, path = args.get("method", "GET"), args.get("path", "/")
     host_header = args.get("host_header", "")
+    authorization = args.get("authorization", "")
     timeout = args.get("timeout_seconds", 5)
     if protocol not in ("tcp", "http"):
         return None
@@ -52,9 +62,16 @@ def _validated(args):
     if (host_header and
             (not isinstance(host_header, str) or not _HOST_HEADER.fullmatch(host_header))):
         return None
+    if (authorization and
+            (not isinstance(authorization, str) or len(authorization) > _MAX_AUTHORIZATION_LENGTH
+             or authorization != authorization.strip()
+             or any(ord(ch) < 0x20 or ord(ch) >= 0x7f for ch in authorization))):
+        return None
+    if protocol == "tcp" and authorization:
+        return None
     if not isinstance(timeout, int) or isinstance(timeout, bool) or not 1 <= timeout <= 10:
         return None
-    return protocol, port, method, path, host_header, timeout
+    return protocol, port, method, path, host_header, authorization, timeout
 
 
 def _read_response(channel):
@@ -75,7 +92,7 @@ def probe(conn, args, secrets=(), opener=ssh_transport.open_client):
     checked = _validated(args)
     if checked is None:
         return {"ok": False, "error_class": "invalid_arguments"}
-    protocol, port, method, path, host_header, timeout = checked
+    protocol, port, method, path, host_header, authorization, timeout = checked
     client, connect_error = opener(conn)
     if connect_error:
         return {"ok": False, "protocol": protocol, "port": port,
@@ -108,9 +125,10 @@ def probe(conn, args, secrets=(), opener=ssh_transport.open_client):
                     "connected": True}
 
         virtual_host = host_header or "127.0.0.1:%d" % port
+        authorization_line = "Authorization: %s\r\n" % authorization if authorization else ""
         request = ("%s %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n"
-                   "User-Agent: compshare-ops-probe\r\n\r\n" %
-                   (method, path, virtual_host)).encode("ascii")
+                   "User-Agent: compshare-ops-probe\r\n%s\r\n" %
+                   (method, path, virtual_host, authorization_line)).encode("ascii")
         channel.sendall(request)
         raw, capped = _read_response(channel)
         head, separator, body = raw.partition(b"\r\n\r\n")
@@ -118,11 +136,15 @@ def probe(conn, args, secrets=(), opener=ssh_transport.open_client):
         match = re.match(r"HTTP/\d(?:\.\d)?\s+(\d{3})(?:\s|$)", status_line)
         status_code = int(match.group(1)) if match else None
         body_cut = capped or len(body) > _MAX_BODY_BYTES
+        auth_parts = authorization.split(None, 1) if authorization else []
+        response_secrets = tuple(secrets) + tuple(
+            item for item in (authorization, auth_parts[-1] if auth_parts else "") if item)
         body_text = guardrails.scrub_output(
-            body[:_MAX_BODY_BYTES].decode("utf-8", "replace"), secrets)
+            body[:_MAX_BODY_BYTES].decode("utf-8", "replace"), response_secrets)
         return {"ok": bool(match), "protocol": "http", "port": port, "probe_completed": True,
                 "connected": True,
                 "method": method, "path": path, "host_header": virtual_host,
+                "authorization_sent": bool(authorization),
                 "status_code": status_code, "status_line": status_line,
                 "body": body_text, "truncated": body_cut,
                 **({"error_class": "invalid_http_response"} if not match else {})}
