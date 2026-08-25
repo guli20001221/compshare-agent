@@ -401,6 +401,36 @@ func TestBackgroundJobOnAnotherInstanceMakesTheSingleDurableSlotBusy(t *testing.
 	require.Equal(t, jobID, eng.sessionState.PersistedInstanceOpsJob.JobID)
 }
 
+func TestNotFoundClearsMatchingBackgroundJobAndReleasesSlot(t *testing.T) {
+	jobID := "job-" + strings.Repeat("f", 32)
+	runner := &fakeInstanceOpsRunner{err: ErrInstanceOpsNotFound}
+	eng := newInstanceOpsEngine(runner, alwaysConfirm)
+	eng.observeInstanceOpsBackgroundJob("uhost-gone", jobID, "running", "下载模型")
+	eng.lastUserMsg = "检查已经释放的 uhost-gone"
+	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: eng.lastUserMsg}
+	eng.turnContextViewReady = true
+
+	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": "uhost-gone", "Task": "检查后台任务",
+	}, func(StepEvent) {})
+
+	require.True(t, eng.sessionState.PersistedInstanceOpsJob.IsZero())
+	require.Nil(t, eng.pendingInstanceOpsInterruption,
+		"NotFound before any settled command must not promise that an unpollable job was retained")
+
+	runner.err = nil
+	runner.verdict = InstanceOpsVerdict{Text: "另一实例可以继续"}
+	eng.instanceOpsRanThisTurn = false
+	eng.lastUserMsg = "排查 uhost-next"
+	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: eng.lastUserMsg}
+	eng.turnContextViewReady = true
+	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": "uhost-next", "Task": "排查服务",
+	}, func(StepEvent) {})
+
+	require.False(t, runner.lastReq.Context.BackgroundJobSlotBusy)
+}
+
 func TestBackgroundJobPurposeIsRedactedAndRuneBounded(t *testing.T) {
 	jobID := "job-" + strings.Repeat("e", 32)
 	eng := &Engine{}

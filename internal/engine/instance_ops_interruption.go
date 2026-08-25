@@ -117,7 +117,9 @@ func normalizePersistedInstanceOpsJob(job PersistedInstanceOpsJob) PersistedInst
 // one structured-tool event. Terminal observations clear the matching handle.
 // Malformed lifecycle values are ignored, and no command text is retained.
 // While A has an active cursor, a different job (including one on B) cannot
-// silently replace it.
+// silently replace it. This one-slot guarantee relies on the current singleton deployment plus
+// agentpool's per-session lease. A deployment with multiple replicas must add a shared pre-launch
+// reservation before it may rely on this cursor as an exclusive distributed slot.
 func (e *Engine) observeInstanceOpsBackgroundJob(instanceID, jobID, state, purpose string) {
 	if e == nil || !validInstanceOpsJobID(jobID) {
 		return
@@ -178,6 +180,20 @@ func (e *Engine) backgroundJobSlotBusyForOtherInstance(instanceID string) bool {
 	current := e.sessionState.PersistedInstanceOpsJob
 	return validPersistedInstanceOpsJob(current) &&
 		!strings.EqualFold(strings.TrimSpace(current.InstanceID), strings.TrimSpace(instanceID))
+}
+
+// clearBackgroundJobForInstance drops only the cursor whose control-plane target has been
+// authoritatively reported absent. It cannot clear a different instance's in-flight work.
+func (e *Engine) clearBackgroundJobForInstance(instanceID string) {
+	if e == nil {
+		return
+	}
+	current := e.sessionState.PersistedInstanceOpsJob
+	if validPersistedInstanceOpsJob(current) &&
+		strings.EqualFold(strings.TrimSpace(current.InstanceID), strings.TrimSpace(instanceID)) {
+		e.sessionState.PersistedInstanceOpsJob = PersistedInstanceOpsJob{}
+		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
+	}
 }
 
 // recordInstanceOpsInterruption stashes the notice when the run returned an error and either a

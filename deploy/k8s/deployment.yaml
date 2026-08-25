@@ -6,7 +6,9 @@ metadata:
     app: compshare-agent
 spec:
   # The Feishu long-connection adapter runs beside the HTTP server and must
-  # never be duplicated during an update, so use a singleton recreate rollout.
+  # never be duplicated during an update, so use a singleton recreate rollout. The per-session
+  # lease and observable SSH background-job slot are also process-local; add a shared pre-launch
+  # reservation before increasing replicas.
   replicas: 1
   strategy:
     type: Recreate

@@ -188,6 +188,12 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		ConfirmWrite: confirmWrite,
 	}, onProgress)
 	if err != nil {
+		// A control-plane NotFound result is authoritative for this target: its guest job can no
+		// longer be polled and must not occupy the conversation's only observable-job slot forever.
+		// Clear before composing the interruption so no notice falsely promises a retained cursor.
+		if errors.Is(err, ErrInstanceOpsNotFound) {
+			e.clearBackgroundJobForInstance(instanceID)
+		}
 		// The run ended with no verdict. Whatever settled before it did is the only account the user
 		// will ever get of a box that may already have been changed — so stash it for the next turn.
 		// A run with neither a settled command nor a background-job handle stays silent, which keeps
