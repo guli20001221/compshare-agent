@@ -57,11 +57,24 @@ check("env-prefix-cannot-hide-self-backgrounding",
       remote_job.command_is_self_backgrounding("/usr/bin/env -i FOO=1 bash -lc 'sleep 2 & wait'") is True and
       remote_job.command_is_self_backgrounding("FOO=1 bash -lc 'sleep 2 & wait'") is True)
 check("env-split-string-cannot-hide-self-backgrounding",
-      remote_job.command_is_self_backgrounding("env -S 'bash -lc \\\"sleep 2 & wait\\\"'") is True)
+      remote_job.command_is_self_backgrounding("env -S 'bash -lc \\\"sleep 2 & wait\\\"'") is True and
+      remote_job.command_is_self_backgrounding(
+          "env -S 'FOO=1 bash -lc \\\"sleep 2 & wait\\\"'") is True and
+      remote_job.command_is_self_backgrounding(
+          "env --split-string='FOO=1 bash -lc \\\"sleep 2 & wait\\\"'") is True)
+check("chains-and-transparent-wrappers-cannot-hide-self-backgrounding",
+      remote_job.command_is_self_backgrounding(
+          "cd /workspace && bash -lc 'sleep 2 & wait'") is True and
+      remote_job.command_is_self_backgrounding(
+          "timeout 10 bash -lc 'sleep 2 & wait'") is True and
+      remote_job.command_is_self_backgrounding(
+          "nohup bash -lc 'sleep 2 & wait'") is True)
 check("foreground-chain-remains-supported",
       remote_job.command_is_self_backgrounding("apt-get update && apt-get install -y jq") is False and
       remote_job.command_is_self_backgrounding("bash -lc 'printf ready'") is False and
-      remote_job.command_is_self_backgrounding("env FOO=1 python3 app.py") is False)
+      remote_job.command_is_self_backgrounding("env FOO=1 python3 app.py") is False and
+      remote_job.command_is_self_backgrounding(
+          "cd /workspace && bash -lc 'printf ready'") is False)
 check("approval-display-binds-background-mode-purpose-and-command",
       remote_job.confirmation_display("python3 app.py", "start the requested app") ==
       "ssh_exec run_in_background=true purpose=start the requested app command=python3 app.py")

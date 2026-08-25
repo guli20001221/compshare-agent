@@ -81,7 +81,13 @@ def _unwrap_command_prefix(tokens):
             if len(tokens) < 2:
                 return []
             try:
-                return shlex.split(tokens[1], posix=True) + tokens[2:]
+                return _unwrap_command_prefix(shlex.split(tokens[1], posix=True) + tokens[2:])
+            except ValueError:
+                return []
+        if token.startswith("--split-string="):
+            try:
+                return _unwrap_command_prefix(
+                    shlex.split(token.split("=", 1)[1], posix=True) + tokens[1:])
             except ValueError:
                 return []
         if token.startswith("-"):
@@ -107,8 +113,15 @@ def command_is_self_backgrounding(command):
     if "&" in tokens:
         return True
     command_tokens = _unwrap_command_prefix(tokens)
-    if command_tokens and command_tokens[0].rsplit("/", 1)[-1] in _SHELLS:
-        for i, token in enumerate(command_tokens[:-1]):
+    # A shell may be reached after a top-level chain or a transparent wrapper (`cd ... && bash`,
+    # `timeout ... bash`, `nohup bash`, ...). Conservatively inspect every shell-looking execution
+    # segment rather than maintaining an incomplete list of wrappers. A false positive merely asks
+    # the model to rewrite the form; a false negative makes a completed job record untruthful.
+    for shell_at, executable in enumerate(command_tokens):
+        if executable.rsplit("/", 1)[-1] not in _SHELLS:
+            continue
+        for i in range(shell_at + 1, len(command_tokens) - 1):
+            token = command_tokens[i]
             # POSIX shells permit combined short options (`-lc`, `-ec`, ...). Long options such
             # as `--norc` are not command-string switches even though their spelling contains c.
             if token.startswith("-") and not token.startswith("--") and "c" in token[1:] and \
