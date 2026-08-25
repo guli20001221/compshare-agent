@@ -105,14 +105,17 @@ def tool_description(targets, authorization_refs=()):
         for item in available) or "none"
     auth_note = (
         " For an authenticated API check, select one current-request authorization_ref from the "
-        "schema. The harness resolves it privately; never copy or guess the credential."
+        "schema. That one call returns a baseline without the caller-provided Authorization header, "
+        "followed by the result with that header. Platform-supplied URL credentials, if any, remain "
+        "in both probes. The harness resolves them privately; never copy or guess a credential."
         if authorization_refs else
         " No current-request Authorization reference is available; probe without authentication."
     )
     return (
         "Probe one platform-supplied endpoint from the SSH-ops runner's network vantage. "
-        "This is read-only and sends no arbitrary payload: HTTP performs one bounded GET or HEAD and "
-        "follows only same-origin redirects; TCP only connects and sends no "
+        "This is read-only and sends no arbitrary payload: HTTP performs one bounded GET or HEAD "
+        "without a caller Authorization reference, or two bounded same-origin requests when one is "
+        "selected for comparison; redirects remain same-origin. TCP only connects and sends no "
         "bytes. For an HTTP target you may optionally replace its path with one absolute path/query "
         "on the same server-selected origin (for example /health or /index.html); schemes, authorities "
         "and fragments are rejected, and any credential query already attached by the platform is "
@@ -156,8 +159,10 @@ def input_schema(targets, authorization_refs=()):
             "type": "string",
             "enum": refs,
             "description": (
-                "Opaque current-request Authorization reference. Omit it to send no Authorization "
-                "header. The value is resolved privately and never returned."
+                "Opaque current-request Authorization reference. When set, the tool returns both "
+                "a baseline without this caller-provided header and the result with it; any "
+                "platform-supplied URL credential remains in both. Omit it for one request without "
+                "this header. The value is resolved privately and never returned."
             ),
         }
     return {

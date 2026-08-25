@@ -22,7 +22,8 @@ TOOL_DESCRIPTION = (
     "host is fixed to 127.0.0.1; the tool accepts only a port, bounded path, and optional literal "
     "Host header for virtual-host diagnostics. For a caller-requested API check it can use a "
     "current-request opaque Authorization reference when the schema offers one; the harness resolves "
-    "the value privately and never returns it or shows it in activity. "
+    "the value privately and returns an unauthenticated baseline followed by the authenticated "
+    "result in that one call; it never returns the value or shows it in activity. "
     "It cannot reach public/private network hosts, send request bodies, write files, or change the guest. "
     "For HTTP pass separate fields like protocol=http, port=8000, path=/health; never pass a URL.")
 
@@ -49,8 +50,9 @@ def input_schema(authorization_refs=()):
         properties["authorization_ref"] = {
             "type": "string", "enum": refs,
             "description": (
-                "Opaque current-request Authorization reference. Omit it to send no Authorization "
-                "header. The value is resolved privately and never returned."
+                "Opaque current-request Authorization reference. When set, the tool returns both "
+                "an unauthenticated baseline and the authenticated result. Omit it for one "
+                "unauthenticated request. The value is resolved privately and never returned."
             ),
         }
     return {

@@ -24,6 +24,7 @@ func TestEachRefusalReasonIsDistinguishable(t *testing.T) {
 		"refused_not_approved",
 		"refused_unconfirmable",
 		"refused_precondition",
+		"refused_no_progress",
 		"refused_mutating_phase1",
 	}
 	seen := map[string]string{}
@@ -64,6 +65,11 @@ func TestShapeRefusalIsNotWordedAsAPolicyRefusal(t *testing.T) {
 	if !strings.Contains(precondition, "前置条件") || !strings.Contains(precondition, "重新读取") ||
 		strings.Contains(precondition, "高危") || strings.Contains(precondition, "只读模式") {
 		t.Fatalf("a stale or invalid precondition must tell the operator how to retry, got %q", precondition)
+	}
+	noProgress := instanceOpsRefusalReason("refused_no_progress")
+	if !strings.Contains(noProgress, "结果没有变化") || !strings.Contains(noProgress, "已停止重复") ||
+		strings.Contains(noProgress, "重新读取目标状态后重试") {
+		t.Fatalf("a no-progress refusal must not tell the operator to repeat it, got %q", noProgress)
 	}
 }
 

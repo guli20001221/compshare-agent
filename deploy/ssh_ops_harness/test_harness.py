@@ -58,8 +58,9 @@ check("prompt-does-not-infer-events-from-absence-or-time-order",
       "Current absence, timestamp ordering" in _prompt_flat and
       "Do not claim a restart, rebuild, crash, eviction, or actor" in _prompt_flat)
 check("prompt-stops-discovery-after-repair-path-is-proven",
-      "Once the fault and narrowest repair path are supported, stop" in _prompt_flat and
-      "do not inspect shell history, backups, or broad unrelated trees" in _prompt_flat)
+      "never repeat a completed read unless state/time changed" in _prompt_flat and
+      "Vary one input or conclude" in _prompt_flat and
+      "avoid history, backups and unrelated trees" in _prompt_flat)
 check("prompt-prefers-direct-environment-interpreter",
       "Invoke that executable directly" in _prompt_flat and
       "instead of sourcing an activation script" in _prompt_flat)
@@ -75,9 +76,141 @@ check("prompt-does-not-call-a-failed-probe-no-repair-needed",
       "failed or inconclusive diagnostic/reproduction/repair" in _prompt_flat and
       "is `未修复`, not `无需修复`" in _prompt_flat)
 check("prompt-requires-runtime-reload-after-on-disk-change",
-      "not applied to an already-running process" in _prompt_flat and
-      "File/path verification alone is not runtime verification" in _prompt_flat and
-      "intentionally split across approvals" in _prompt_flat)
+      "do not affect a running process until reload/restart" in _prompt_flat and
+      "file checks are not runtime verification" in _prompt_flat and
+      "If split across approvals" in _prompt_flat)
+check("platform-auth-comparison-does-not-call-hidden-url-credentials-unauthenticated",
+      "baseline without the caller-provided Authorization header" in
+          harness.endpoint_probe.tool_description(
+              {"platform-http-1": {"id": "platform-http-1", "kind": "http",
+                                    "label": "app", "source": "test"}},
+              ["opaque-ref"])
+      and "Platform-supplied URL credentials, if any, remain" in
+          harness.endpoint_probe.tool_description(
+              {"platform-http-1": {"id": "platform-http-1", "kind": "http",
+                                    "label": "app", "source": "test"}},
+              ["opaque-ref"])
+      and "unauthenticated baseline" not in harness.endpoint_probe.tool_description(
+              {"platform-http-1": {"id": "platform-http-1", "kind": "http",
+                                    "label": "app", "source": "test"}},
+              ["opaque-ref"]))
+check("platform-auth-description-discloses-two-bounded-requests",
+      "two bounded same-origin requests" in harness.endpoint_probe.tool_description(
+          {"platform-http-1": {"id": "platform-http-1", "kind": "http",
+                                "label": "app", "source": "test"}}, ["opaque-ref"]))
+
+_negative_auth_comparison = harness._authorization_comparison_result(
+    {"ok": False, "probe_completed": True, "connected": False,
+     "error_class": "connection_refused"},
+    {"ok": False, "probe_completed": True, "connected": False,
+     "error_class": "connection_refused"}, True)
+check("completed-negative-auth-comparison-never-claims-top-level-success",
+      "ok" not in _negative_auth_comparison
+      and _negative_auth_comparison["comparison_completed"] is True
+      and _negative_auth_comparison["without_authorization"]["ok"] is False
+      and _negative_auth_comparison["with_authorization"]["error_class"] ==
+          "connection_refused")
+
+
+# A deterministic model can otherwise spend its entire turn budget repeating a successful read.
+# The guard retains only digests, materializes schema defaults, ignores non-evidentiary latency,
+# allows one transient recheck, and resets after time or actual guest state changes.
+_fake_now = [100.0]
+_progress_guard = harness._ReadProgressGuard(
+    clock=lambda: _fake_now[0], window_seconds=60)
+_progress_schema = {
+    "type": "object",
+    "properties": {
+        "path": {"type": "string", "default": "/"},
+        "method": {"type": "string", "default": "GET"},
+        "timeout_seconds": {"type": "integer", "default": 5},
+        "authorization_ref": {"type": "string", "enum": ["opaque-current-request-ref"]},
+    },
+}
+_progress_args = {"private": "must-not-be-retained"}
+_progress_result = {
+    "ok": True, "status_code": 200, "latency_ms": 10,
+    "text": "stable-result-must-not-be-retained",
+}
+_first_observation = _progress_guard.observe(
+    "endpoint_probe", _progress_args, _progress_schema,
+    _progress_result, "ran_read_only")
+_second_observation = _progress_guard.observe(
+    "endpoint_probe",
+    {"path": "/", "method": "GET", "timeout_seconds": 5},
+    _progress_schema, dict(_progress_result, latency_ms=999), "ran_read_only")
+_third_precondition = _progress_guard.precondition(
+    "endpoint_probe", _progress_args, _progress_schema)
+_fourth_precondition = _progress_guard.precondition(
+    "endpoint_probe", _progress_args, _progress_schema)
+check("read-progress-allows-one-identical-transient-recheck",
+      "repeat_observation" not in _first_observation
+      and "repeat_observation" in _second_observation)
+check("read-progress-materializes-defaults-and-ignores-latency-telemetry",
+      _third_precondition is not None
+      and _third_precondition.get("error_class") == "no_progress_duplicate"
+      and _third_precondition.get("schema_declared_alternatives", {}).get(
+          "authorization_ref", {}).get("set_to") == ["opaque-current-request-ref"])
+check("read-progress-hard-stops-only-after-a-refusal-is-ignored",
+      _third_precondition.get("stop_required") is False
+      and _fourth_precondition.get("stop_required") is True
+      and _progress_guard.hard_stop is True)
+_provided_guard = harness._ReadProgressGuard(clock=lambda: _fake_now[0], window_seconds=60)
+_provided_args = {"authorization_ref": "opaque-current-request-ref"}
+_provided_guard.observe("endpoint_probe", _provided_args, _progress_schema,
+                         _progress_result, "ran_read_only")
+_provided_guard.observe("endpoint_probe", _provided_args, _progress_schema,
+                         _progress_result, "ran_read_only")
+_provided_alternatives = _provided_guard.precondition(
+    "endpoint_probe", _provided_args, _progress_schema)
+check("read-progress-offers-omission-for-a-present-optional-nondefault-field",
+      _provided_alternatives.get("schema_declared_alternatives", {}).get(
+          "authorization_ref", {}).get("omit") is True)
+check("read-progress-does-not-retain-arguments-or-results",
+      "must-not-be-retained" not in repr(_progress_guard._entries)
+      and "must-not-be-retained" not in repr(_progress_guard._locks))
+check("read-progress-permits-a-discriminating-input",
+      _progress_guard.precondition(
+          "endpoint_probe", {"path": "/other"}, _progress_schema) is None)
+
+# A changed evidence field resets the repeat count even when telemetry stays identical.
+_changed_guard = harness._ReadProgressGuard(clock=lambda: _fake_now[0], window_seconds=60)
+_changed_guard.observe("endpoint_probe", {}, _progress_schema,
+                        _progress_result, "ran_read_only")
+_changed = _changed_guard.observe(
+    "endpoint_probe", {}, _progress_schema,
+    dict(_progress_result, status_code=503), "ran_read_only")
+check("read-progress-treats-changed-evidence-as-progress",
+      "repeat_observation" not in _changed
+      and _changed_guard.precondition("endpoint_probe", {}, _progress_schema) is None)
+
+# A transition observed through one repeated canonical read opens a fresh epoch for other reads.
+# A different one-off read is not enough: only old->new evidence for its own key advances state.
+_transition_guard = harness._ReadProgressGuard(clock=lambda: _fake_now[0], window_seconds=60)
+for _ in range(2):
+    _transition_guard.observe("endpoint_probe", {}, _progress_schema,
+                              _progress_result, "ran_read_only")
+check("different-read-alone-cannot-bypass-a-blocked-endpoint",
+      _transition_guard.precondition("endpoint_probe", {}, _progress_schema) is not None)
+_process_schema = {"type": "object", "properties": {"pid": {"type": "integer"}}}
+_transition_guard.observe("read_process_environment", {"pid": 42}, _process_schema,
+                          {"ok": True, "state": "starting"}, "ran_read_only")
+check("first-different-read-does-not-reset-the-global-epoch",
+      _transition_guard.precondition("endpoint_probe", {}, _progress_schema) is not None)
+_transition_guard.observe("read_process_environment", {"pid": 42}, _process_schema,
+                          {"ok": True, "state": "ready"}, "ran_read_only")
+check("observed-state-transition-allows-endpoint-verification-again",
+      _transition_guard.precondition("endpoint_probe", {}, _progress_schema) is None
+      and _transition_guard._epoch == 1)
+
+# Time and mutation are both legitimate reasons to take the same observation again.
+_fake_now[0] = 161.0
+check("read-progress-allows-a-fresh-read-after-the-cooldown",
+      _progress_guard.precondition("endpoint_probe", {}, _progress_schema) is None)
+_progress_guard.advance()
+check("read-progress-resets-after-guest-state-change",
+      _progress_guard._entries == {} and _progress_guard.hard_stop is False
+      and _progress_guard.precondition("endpoint_probe", {}, _progress_schema) is None)
 
 
 # --- versioned reference context: data only, bounded, and backwards-compatible -----------------
@@ -909,6 +1042,7 @@ check("is-under-still-detects-real-containment",
 check("wire-ran", harness._wire_disposition("ran_read_only") == "ran")
 check("wire-refused-destructive", harness._wire_disposition("refused_destructive") == "refused")
 check("wire-refused-mutating", harness._wire_disposition("refused_mutating_phase1") == "refused")
+check("wire-refused-no-progress", harness._wire_disposition("refused_no_progress") == "refused")
 check("wire-no-connection", harness._wire_disposition("no_connection") == "failed")
 check("wire-auth-failed", harness._wire_disposition("auth_failed") == "failed")
 check("wire-connect-failed", harness._wire_disposition("connect_failed") == "failed")
@@ -917,6 +1051,9 @@ check("wire-unknown-is-failed", harness._wire_disposition("something_new") == "f
 check("structured-read-policy-refusal-is-a-precondition",
       harness._structured_read_disposition({"ok": False, "error_class": "path_not_allowed"}) ==
       "refused_precondition")
+check("structured-read-no-progress-has-its-own-actionable-refusal",
+      harness._structured_read_disposition(
+          {"ok": False, "error_class": "no_progress_duplicate"}) == "refused_no_progress")
 check("structured-read-transport-failure-is-not-misreported-as-a-refusal",
       harness._structured_read_disposition({"ok": False, "error_class": "connect_failed"}) ==
       "connect_failed" and harness._wire_disposition("connect_failed") == "failed")
@@ -1418,16 +1555,87 @@ try:
             "authorization_ref": _HANDSHAKE_AUTH_REF,
         }))))
     check("registered-guest-probe-resolves-the-opaque-reference-privately",
-          len(_guest_args) == 1
-          and _guest_args[0][0]["authorization"] == _HANDSHAKE_AUTHORIZATION
-          and _HANDSHAKE_AUTHORIZATION in _guest_args[0][1]
-          and _HANDSHAKE_AUTH_TOKEN in _guest_args[0][1]
-          and _guest_auth_responses[0]["structuredContent"]["status_code"] == 200)
+          len(_guest_args) == 2
+          and "authorization" not in _guest_args[0][0]
+          and _guest_args[1][0]["authorization"] == _HANDSHAKE_AUTHORIZATION
+          and _HANDSHAKE_AUTHORIZATION in _guest_args[1][1]
+          and _HANDSHAKE_AUTH_TOKEN in _guest_args[1][1]
+          and _guest_auth_responses[0]["structuredContent"]["comparison"] ==
+              "without_vs_with_authorization"
+          and _guest_auth_responses[0]["structuredContent"]["probe_count"] == 2
+          and _guest_auth_responses[0]["structuredContent"]["with_authorization"][
+              "status_code"] == 200)
     check("guest-probe-wire-and-audit-never-carry-the-resolved-authorization",
           all(secret not in _guest_auth_step
               for secret in (_HANDSHAKE_AUTHORIZATION, _HANDSHAKE_AUTH_TOKEN))
           and all(_HANDSHAKE_AUTHORIZATION not in str(item)
                   and _HANDSHAKE_AUTH_TOKEN not in str(item) for item in harness.AUDIT))
+
+    # Exercise the registered handler, not only the helper: two identical completed reads reach the
+    # guest, the third is refused locally, and the refusal does not retain the private capability.
+    _duplicate_probe_calls = []
+    harness.guest_endpoint_probe.probe = lambda _conn, args, _secrets: (
+        _duplicate_probe_calls.append(dict(args)) or {
+            "ok": True, "protocol": "http", "port": 18081, "probe_completed": True,
+            "connected": True, "status_code": 200,
+            "authorization_sent": bool(args.get("authorization")),
+        })
+    _duplicate_args = {
+        "protocol": "http", "port": 18081, "path": "/health",
+        "authorization_ref": _HANDSHAKE_AUTH_REF,
+    }
+    _duplicate_responses = []
+    _duplicate_wire = _capture(lambda: [
+        _duplicate_responses.append(_asyncio.run(_guest_endpoint_tool(_duplicate_args)))
+        for _ in range(4)
+    ])
+    check("registered-read-tool-stops-a-third-identical-completed-probe",
+          len(_duplicate_probe_calls) == 4
+          and all("authorization" not in _duplicate_probe_calls[i] for i in (0, 2))
+          and all(_duplicate_probe_calls[i].get("authorization") == _HANDSHAKE_AUTHORIZATION
+                  for i in (1, 3))
+          and "repeat_observation" in _duplicate_responses[1]["structuredContent"]
+          and _duplicate_responses[2]["structuredContent"].get("error_class") ==
+              "no_progress_duplicate"
+          and _duplicate_responses[2].get("is_error") is True
+          and _duplicate_responses[3]["structuredContent"].get("stop_required") is True
+          and '"reason": "refused_no_progress"' in _duplicate_wire)
+    check("no-progress-wire-and-fingerprints-contain-no-private-authorization",
+          _HANDSHAKE_AUTHORIZATION not in _duplicate_wire
+          and _HANDSHAKE_AUTH_TOKEN not in _duplicate_wire
+          and all(_HANDSHAKE_AUTHORIZATION not in str(item)
+                  and _HANDSHAKE_AUTH_TOKEN not in str(item) for item in harness.AUDIT))
+
+    # The pinned SDK dispatches sibling control requests concurrently. Four simultaneous identical
+    # calls must still perform only the first two logical reads (two HTTP arms each for auth), then
+    # return the ordinary refusal and hard-stop responses from behind the same-key lock.
+    _parallel_probe_calls = []
+    harness.guest_endpoint_probe.probe = lambda _conn, args, _secrets: (
+        _parallel_probe_calls.append(dict(args)) or {
+            "ok": True, "protocol": "http", "port": 18083, "probe_completed": True,
+            "connected": True, "status_code": 200,
+            "authorization_sent": bool(args.get("authorization")),
+        })
+    _parallel_args = {
+        "protocol": "http", "port": 18083, "path": "/health",
+        "authorization_ref": _HANDSHAKE_AUTH_REF,
+    }
+
+    async def _run_parallel_identical_reads():
+        return await _asyncio.gather(*(
+            _guest_endpoint_tool(_parallel_args) for _ in range(4)))
+
+    _parallel_responses = _asyncio.run(_run_parallel_identical_reads())
+    check("concurrent-identical-reads-cannot-bypass-the-progress-bound",
+          len(_parallel_probe_calls) == 4
+          and sum(item["structuredContent"].get("error_class") == "no_progress_duplicate"
+                  for item in _parallel_responses) == 2
+          and any(item["structuredContent"].get("stop_required") is True
+                  for item in _parallel_responses))
+    check("concurrent-read-locks-retain-no-private-authorization",
+          all(_HANDSHAKE_AUTHORIZATION not in str(item)
+                  and _HANDSHAKE_AUTH_TOKEN not in str(item)
+              for item in harness.AUDIT))
 
     _endpoint_args = []
     harness.endpoint_probe.probe = lambda targets, target_id, path, method, authorization: (
@@ -1445,11 +1653,17 @@ try:
             "authorization_ref": _HANDSHAKE_AUTH_REF,
         }))))
     check("registered-endpoint-tool-resolves-the-reference-and-passes-the-closed-read-method",
-          _endpoint_args == [("platform-http-1", "/health", "HEAD",
-                              _HANDSHAKE_AUTHORIZATION)]
-          and _endpoint_responses[0]["structuredContent"]["http_status"] == 200)
+          _endpoint_args == [
+              ("platform-http-1", "/health", "HEAD", ""),
+              ("platform-http-1", "/health", "HEAD", _HANDSHAKE_AUTHORIZATION),
+          ]
+          and _endpoint_responses[0]["structuredContent"]["comparison"] ==
+              "without_vs_with_authorization"
+          and _endpoint_responses[0]["structuredContent"]["with_authorization"][
+              "http_status"] == 200)
     check("endpoint-step-and-audit-carry-only-the-opaque-target",
-          "private.example.invalid" not in _endpoint_step and "never-render" not in _endpoint_step
+          "endpoint_probe target=platform-http-1 auth=provided" in _endpoint_step
+          and "private.example.invalid" not in _endpoint_step and "never-render" not in _endpoint_step
           and _HANDSHAKE_AUTHORIZATION not in _endpoint_step
           and _HANDSHAKE_AUTH_TOKEN not in _endpoint_step
           and all("private.example.invalid" not in str(item) and
@@ -1472,7 +1686,7 @@ try:
         }))),
     ))
     check("raw-and-unknown-authorization-inputs-are-refused-before-any-probe-io",
-          len(_endpoint_args) == 1 and len(_guest_args) == 1
+          len(_endpoint_args) == 2 and len(_guest_args) == 2
           and [item["structuredContent"]["error_class"] for item in _refusal_responses] == [
               "raw_authorization_not_accepted", "unknown_authorization_ref",
               "raw_authorization_not_accepted", "unknown_authorization_ref",
@@ -1503,7 +1717,7 @@ try:
         }))),
     ))
     check("a-reference-from-the-previous-handshake-is-stale-before-probe-io",
-          len(_endpoint_args) == 1 and len(_guest_args) == 1
+          len(_endpoint_args) == 2 and len(_guest_args) == 2
           and all(item["structuredContent"]["error_class"] == "unknown_authorization_ref"
                   for item in _stale_responses)
           and all(item.get("is_error") is True for item in _stale_responses)
@@ -1539,6 +1753,72 @@ finally:
     harness._ENDPOINT_TARGETS = _saved_handler_targets
     harness._PROBE_AUTHORIZATIONS = _saved_handler_authorizations
     harness._DYNAMIC_SECRETS[:] = _saved_dynamic_secrets
+
+# If the model ignores the first no-progress refusal, main must close the SDK stream instead of
+# emitting dozens more refused steps and eventually returning max_turns. This uses the real
+# registered handler and outer loop with an in-process SDK fake; the remote probe itself is counted.
+_no_progress_tool_attempts = []
+_no_progress_remote_calls = []
+
+
+async def _looping_read_query(prompt, options):
+    del prompt, options
+    tool = next(item for item in _captured_sdk_servers[-1]["tools"]
+                if item._test_tool_name == "guest_endpoint_probe")
+    for _ in range(10):
+        _no_progress_tool_attempts.append(1)
+        await tool({"protocol": "http", "port": 18082})
+        message = type("AssistantMessage", (), {})()
+        message.error = None
+        message.content = []
+        yield message
+    result = type("ResultMessage", (), {})()
+    result.result = "should never reach this result"
+    result.is_error = False
+    result.num_turns = 10
+    yield result
+
+
+_saved_loop_query = _fake_sdk.query
+_saved_stdin, _saved_conn, _saved_preflight = sys.stdin, harness._CONN, harness.preflight_probe
+_saved_stage, _saved_options = harness.stage_clean_workdir, harness.build_options
+_saved_guest_probe_impl = harness.guest_endpoint_probe.probe
+try:
+    _fake_sdk.query = _looping_read_query
+    sys.modules["claude_agent_sdk"] = _fake_sdk
+    harness.stage_clean_workdir = lambda: None
+    harness.preflight_probe = lambda _conn: None
+    harness.build_options = lambda *_args, **_kwargs: object()
+    harness.guest_endpoint_probe.probe = lambda *_args, **_kwargs: (
+        _no_progress_remote_calls.append(1) or {
+            "ok": True, "protocol": "http", "port": 18082,
+            "probe_completed": True, "connected": True, "status_code": 200,
+        })
+    sys.stdin = _io.StringIO(_json.dumps({
+        "host": "10.0.0.9", "user": "root", "port": 22,
+        "password": "no-progress-test-password", "task": "inspect one endpoint",
+    }) + "\n")
+    _no_progress_main_wire = _capture(lambda: _asyncio.run(harness.main()))
+finally:
+    _fake_sdk.query = _saved_loop_query
+    sys.stdin = _saved_stdin
+    harness._CONN = _saved_conn
+    harness.preflight_probe = _saved_preflight
+    harness.stage_clean_workdir = _saved_stage
+    harness.build_options = _saved_options
+    harness.guest_endpoint_probe.probe = _saved_guest_probe_impl
+    if _saved_sdk is None:
+        sys.modules.pop("claude_agent_sdk", None)
+    else:
+        sys.modules["claude_agent_sdk"] = _saved_sdk
+check("main-stops-after-the-model-ignores-a-no-progress-refusal",
+      len(_no_progress_remote_calls) == 2
+      and len(_no_progress_tool_attempts) == 4
+      and _no_progress_main_wire.count('"reason": "refused_no_progress"') == 2
+      and "未修复：诊断代理在实例状态未变化时连续重复同一个只读检查" in
+          _no_progress_main_wire
+      and "should never reach this result" not in _no_progress_main_wire
+      and "maximum number of turns" not in _no_progress_main_wire.lower())
 
 del harness._DYNAMIC_SECRETS[:]
 harness._remember_authorization("   ")

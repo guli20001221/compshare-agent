@@ -18,12 +18,15 @@ The pure logic (handshake, classify-dispatch, scrub, INV-9 check) is SDK-indepen
 offline; the SDK wiring (the reviewed MCP operations + the agent loop) is in main(), behind a guarded import.
 """
 import base64
+import functools
+import hashlib
 import json
 import os
 import re
 import shutil
 import sys
 import tempfile
+import time
 
 import atomic_file
 import endpoint_probe
@@ -42,6 +45,10 @@ _PROBE_AUTHORIZATIONS = {}  # opaque current-request ref -> private Authorizatio
 AUDIT = []            # per-command: {command, tier, executed, exit_code, disposition}
 _DYNAMIC_SECRETS = [] # caller API auth used by structured probes; process-memory only, never audited
 _JOB_POLL_OFFSETS = {}  # job_id -> bounded stdout/stderr cursors for this one model run
+_MAX_IDENTICAL_COMPLETED_READS = 2
+_READ_REPEAT_WINDOW_SECONDS = 60.0
+_MAX_IGNORED_NO_PROGRESS_REFUSALS = 2
+_NON_EVIDENTIARY_OBSERVATION_FIELDS = frozenset({"latency_ms"})
 # Monotonic id for confirm requests. The reply must carry the SAME id: a decision that arrived
 # for an earlier command must never approve the one currently pending, so the match is explicit
 # rather than "whatever line showed up next".
@@ -77,8 +84,8 @@ operations. You have no local shell or arbitrary network access.
 
 ## Evidence model
 - Assume no OS, image, GPU, runtime, manager, port or architecture. User reports set outcome: current
-  first; bounded prior reports only continue an explicit unfinished request. Planner focuses diagnosis (or is fallback
-  if reports are absent) but cannot invent writes. Other claims and new effects are hypotheses, not approval.
+  first; bounded prior reports only continue an explicit unfinished request. Planner may focus diagnosis
+  but cannot authorize writes; all other claims/effects are hypotheses.
 - Preserve provenance: Control-plane metadata, catalog expectations, guest state, application state and
   external reachability are separate. A mapping != listener; localhost != external route; device health
   != application health.
@@ -92,8 +99,8 @@ operations. You have no local shell or arbitrary network access.
 
 ## Diagnostic loop
 1. Define an observable success criterion. If evidence proves it, change nothing and answer `无需修复`.
-2. Collect the smallest discriminating facts. Once the fault and narrowest repair path are supported,
-   stop; do not inspect shell history, backups, or broad unrelated trees.
+2. Collect discriminating facts; never repeat a completed read unless state/time changed. Vary one
+   input or conclude; avoid history, backups and unrelated trees.
 3. Test alternatives at the failing layer using the application's real interpreter, environment,
    owner, config and launcher. A bounded virtualenv or Conda probe is valid: Invoke that executable
    directly instead of sourcing an activation script. After evidence identifies an app root, use
@@ -118,9 +125,10 @@ ask whether the user wants the instance restarted.
 If an approval is pending or denied, do not turn the command into a manual instruction; report it as
 `等待你确认` or not executed. Do not seek an equivalent fallback for a denied effect.
 
-Before changing managed service, identify its existing supervisor, unit, entrypoint or launcher. Use it,
-not an inner process. Reconcile an existing ownership conflict; bounded-poll transitional manager states
-to a terminal result, then verify every component/endpoint it owns.
+For a managed service, use its existing supervisor, unit or launcher, not an inner process. Reconcile
+stale children first. Start a stopped unit unchanged; STOPPED alone does not implicate its definition.
+Edit only after that attempt fails and manager output, logs or a direct file check implicates it. Poll
+manager transitions to a terminal result, then verify every component/endpoint it owns.
 
 ## Final response
 Reply concisely in Chinese. Start `已修复`, `部分修复`, `未修复` or `无需修复`. Use `无需修复` only
@@ -131,9 +139,8 @@ or inconclusive diagnostic/reproduction/repair is `未修复`, not `无需修复
 reproduction, compatibility probe, or fault injection is not a repair. Use `已修复` only when an executed
 change corrected the user's original fault and post-change evidence proves it. If any part of the original
 success criterion remains untested, use `部分修复`, even when one confirmed failure path is removed.
-On-disk code/config is not applied to an already-running process before real reload/restart. File/path
-verification alone is not runtime verification; if intentionally split across approvals, remain partial/unfixed
-until runtime and criterion are rechecked.
+On-disk changes do not affect a running process until reload/restart; file checks are not runtime
+verification. If split across approvals, remain partial/unfixed until runtime and criterion are rechecked.
 Then include `已完成` and, only when needed, `下一步`. In `已完成`, list every state-changing operation
 actually executed, including attempts that ran but failed, and label it as your action. Do not list a
 pending or denied operation as executed. Never claim success without criterion-linked post-change evidence."""
@@ -159,14 +166,14 @@ most one background job may be active; a terminal poll frees the slot. Reads and
 changes remain available.
 Do not hand-roll detachment or resend a timed-out foreground command.
 
-For managed service, use its existing supervisor/launcher, not an inner binary. Do not create a new unit
-merely because a manager exists; when only a launcher exists, use it and report the durability gap. Never
-invent a platform-facing port or substitute service. Before starting, reconcile any surviving child outside
-that ownership; bounded-poll transitional manager states to a terminal result. Verify the full service
-contract owned by the launcher. A traceback proves failure site, not intended semantics: edit only with a
-local test or version contract; otherwise use reversible rollback/disable within scope. Restarting the
-instance is unavailable. A process or service restart is not an instance reboot; if guest-local restart
-cannot recover, ask whether the user wants the instance restarted; do not seek a guest-shell workaround."""
+For managed service, use its existing supervisor/launcher, not an inner binary. Reconcile stale children
+first. Start a stopped unit's existing definition unchanged; STOPPED alone does not implicate it. Edit only
+after that attempt fails and manager output, logs or a direct file check implicates it. When only a launcher
+exists, use it and report the durability gap; do not invent a unit, platform-facing port or substitute
+service. Poll manager transitions, and verify every endpoint/component it owns. A traceback proves the
+failure site, not intended semantics: edit only with a local test or version contract; otherwise use a
+reversible rollback/disable within scope. Instance restart is unavailable. A service restart is not an
+instance reboot; if guest-local restart cannot recover, ask whether the user wants one."""
 
 
 def ssh_exec_schema():
@@ -501,6 +508,30 @@ def _authorization_refs():
     return list(_PROBE_AUTHORIZATIONS)
 
 
+def _probe_auth_state(args) -> str:
+    """Return a safe activity label without exposing the opaque ref or its value."""
+    ref = args.get("authorization_ref") if isinstance(args, dict) else None
+    if not ref:
+        return "omitted"
+    return "provided" if ref in _PROBE_AUTHORIZATIONS else "unknown"
+
+
+def _authorization_comparison_result(without_authorization: dict,
+                                     with_authorization: dict,
+                                     completed: bool) -> dict:
+    """Combine two closed read probes without exposing the private Authorization value."""
+    result = {
+        "comparison": "without_vs_with_authorization",
+        "comparison_completed": bool(completed),
+        "probe_count": 2,
+        "without_authorization": without_authorization,
+        "with_authorization": with_authorization,
+    }
+    if not completed:
+        result["error_class"] = "authorization_comparison_incomplete"
+    return result
+
+
 def _resolve_probe_authorization(args):
     """Resolve one model-visible ref without ever reflecting a supplied value."""
     if isinstance(args, dict) and "authorization" in args:
@@ -595,6 +626,7 @@ _DISPOSITION_MAP = {
     "refused_not_approved": "refused",
     "refused_unconfirmable": "refused",
     "refused_precondition": "refused",
+    "refused_no_progress": "refused",
     "no_connection": "failed",
 }
 
@@ -647,11 +679,194 @@ def _structured_read_disposition(result: dict, completed: bool = False) -> str:
     if result.get("ok") or completed:
         return "ran_read_only"
     error_class = str(result.get("error_class") or "structured_read_failed")
+    if error_class == "no_progress_duplicate":
+        return "refused_no_progress"
     if error_class in _STRUCTURED_READ_OBSERVED_NEGATIVES:
         return "ran_read_only"
     if error_class in _STRUCTURED_READ_PRECONDITION_ERRORS:
         return "refused_precondition"
     return error_class
+
+
+def _stable_digest(value) -> str:
+    """Hash one JSON-shaped value without retaining its raw text."""
+    try:
+        raw = json.dumps(value, ensure_ascii=False, sort_keys=True,
+                         separators=(",", ":"), default=str).encode("utf-8")
+    except Exception:  # noqa: BLE001 — an odd SDK value must not disable the guard
+        raw = repr(type(value)).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()
+
+
+def _canonical_schema_args(args, schema) -> dict:
+    """Project tool arguments onto its schema and materialize defaults before fingerprinting."""
+    supplied = args if isinstance(args, dict) else {}
+    properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+    canonical = {}
+    for name in sorted(properties):
+        spec = properties[name] if isinstance(properties[name], dict) else {}
+        if name in supplied:
+            canonical[name] = supplied[name]
+        elif "default" in spec:
+            canonical[name] = spec["default"]
+    return canonical
+
+
+def _stable_observation(value):
+    """Drop transport telemetry that changes without adding diagnostic evidence."""
+    if isinstance(value, dict):
+        return {key: _stable_observation(item) for key, item in value.items()
+                if key not in _NON_EVIDENTIARY_OBSERVATION_FIELDS
+                and key != "repeat_observation"}
+    if isinstance(value, list):
+        return [_stable_observation(item) for item in value]
+    return value
+
+
+def _enum_argument_alternatives(args, schema) -> dict:
+    """Return bounded schema-declared alternatives, never guessed free-form values."""
+    supplied = args if isinstance(args, dict) else {}
+    canonical = _canonical_schema_args(args, schema)
+    properties = schema.get("properties", {}) if isinstance(schema, dict) else {}
+    required = set(schema.get("required", ())) if isinstance(schema, dict) else set()
+    alternatives = {}
+    for name in sorted(properties):
+        spec = properties[name] if isinstance(properties[name], dict) else {}
+        values = spec.get("enum")
+        option = {}
+        if isinstance(values, list) and values and len(values) <= 8:
+            remaining = [value for value in values if canonical.get(name) != value]
+            if remaining:
+                option["set_to"] = remaining
+        # Omitting an optional field with no default is a real semantic alternative. Do not suggest
+        # omitting defaulted fields: canonicalization correctly treats that as the same request.
+        if name in supplied and name not in required and "default" not in spec:
+            option["omit"] = True
+        if option:
+            alternatives[name] = option
+        if len(alternatives) >= 8:
+            break
+    return alternatives
+
+
+class _ReadProgressGuard:
+    """Bound repeated completed reads for one model run without retaining their contents."""
+
+    def __init__(self, clock=time.monotonic, window_seconds=_READ_REPEAT_WINDOW_SECONDS):
+        self._clock = clock
+        self._window_seconds = max(1.0, float(window_seconds))
+        self._entries = {}
+        self._locks = {}
+        self._epoch = 0
+        self.hard_stop = False
+
+    def _key(self, tool_name: str, args, schema) -> tuple:
+        canonical = _canonical_schema_args(args, schema)
+        return (self._epoch, str(tool_name or "")[:64], _stable_digest(canonical))
+
+    def _fresh(self, entry, now: float) -> bool:
+        return bool(entry and now - float(entry.get("observed_at", 0)) <= self._window_seconds)
+
+    def serial_lock(self, tool_name: str, args, schema):
+        """Return one event-loop lock per canonical read, keyed only by hashes.
+
+        The pinned SDK dispatches sibling tool calls in detached tasks. Without this single-flight
+        boundary, several identical calls can all pass precondition before the first observation is
+        recorded and bypass the repeat bound. Distinct reads retain the SDK's normal parallelism.
+        """
+        import asyncio
+        canonical = _canonical_schema_args(args, schema)
+        key = (str(tool_name or "")[:64], _stable_digest(canonical))
+        lock = self._locks.get(key)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._locks[key] = lock
+        return lock
+
+    def precondition(self, tool_name: str, args, schema):
+        """Refuse a third identical completed observation inside the bounded time window."""
+        key = self._key(tool_name, args, schema)
+        now = self._clock()
+        entry = self._entries.get(key)
+        if not self._fresh(entry, now):
+            self._entries.pop(key, None)
+            return None
+        if entry.get("same", 0) < _MAX_IDENTICAL_COMPLETED_READS:
+            return None
+        entry["refusals"] = int(entry.get("refusals", 0)) + 1
+        stop_required = entry["refusals"] >= _MAX_IGNORED_NO_PROGRESS_REFUSALS
+        self.hard_stop = self.hard_stop or stop_required
+        message = (
+            "This identical read already returned the same complete result twice with no "
+            "intervening state change. Change one discriminating input, use another observation "
+            "to establish a state transition, wait at least %.0f seconds, or conclude; do not "
+            "call it again now." % self._window_seconds
+        )
+        if stop_required:
+            message += " The repeated no-progress refusal is terminating this diagnosis."
+        result = {
+            "ok": False,
+            "error_class": "no_progress_duplicate",
+            "stop_required": stop_required,
+            "message": message,
+        }
+        alternatives = _enum_argument_alternatives(args, schema)
+        if alternatives:
+            result["schema_declared_alternatives"] = alternatives
+        return result
+
+    def observe(self, tool_name: str, args, schema, result: dict, disposition: str) -> dict:
+        """Remember only hashes and annotate the one allowed identical recheck."""
+        if disposition != "ran_read_only":
+            return result
+        key = self._key(tool_name, args, schema)
+        now = self._clock()
+        digest = _stable_digest(_stable_observation(result))
+        previous = self._entries.get(key)
+        # A changed result for the SAME canonical read is direct evidence that the guest moved to
+        # a new state. Advance the global epoch so earlier endpoint/log/process observations may be
+        # verified again. A merely different tool/argument cannot do this and therefore cannot be
+        # alternated to bypass the repeat bound.
+        if (self._fresh(previous, now) and previous.get("digest") != digest):
+            self.advance()
+            key = self._key(tool_name, args, schema)
+            previous = None
+        same = (int(previous.get("same", 0)) + 1
+                if self._fresh(previous, now) and previous.get("digest") == digest else 1)
+        self._entries[key] = {
+            "digest": digest,
+            "same": same,
+            "observed_at": now,
+            "refusals": 0,
+        }
+        if same < _MAX_IDENTICAL_COMPLETED_READS:
+            return result
+        annotated = dict(result)
+        annotated["repeat_observation"] = (
+            "Same complete result as the prior identical read. Do not call it again without an "
+            "intervening state change; vary one discriminating input, wait, or conclude."
+        )
+        alternatives = _enum_argument_alternatives(args, schema)
+        if alternatives:
+            annotated["schema_declared_alternatives"] = alternatives
+        return annotated
+
+    def advance(self) -> None:
+        """Allow post-change verification while bounding stale fingerprints."""
+        self._epoch += 1
+        self._entries.clear()
+        self.hard_stop = False
+
+
+def _read_progress_response(guard, tool_name: str, args, schema, display: str):
+    result = guard.precondition(tool_name, args, schema)
+    if result is None:
+        return None
+    rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+    _record_structured_step(display, "read_only", "refused_no_progress",
+                            len(rendered.encode("utf-8")))
+    return {"content": [{"type": "text", "text": rendered}],
+            "structuredContent": result, "is_error": True}
 
 
 _ATOMIC_PREPARE_PRECONDITION_ERRORS = frozenset({
@@ -832,7 +1047,7 @@ def _emit_verdict(text: str) -> None:
     sys.stdout.flush()
 
 
-def run_command(command: str) -> dict:
+def run_command(command: str, on_mutation=None) -> dict:
     """Classify the command and, only for the read_only tier, execute it via SSH + scrub. SDK-free.
     Returns {text, is_error, tier, executed}. Appends one AUDIT record (never carrying the credential)
     and emits exactly one @@STEP line — from the finally, the sole point all six return paths converge,
@@ -929,6 +1144,11 @@ def run_command(command: str) -> dict:
             text += "\n[output truncated]"
         return {"text": text, "is_error": False, "tier": tier, "executed": True}
     finally:
+        # A command that actually reached the guest can invalidate every prior read. This includes
+        # a timed-out mutating command: the SSH channel timed out, not necessarily the process, so
+        # treating the old observations as current would be less safe than allowing re-verification.
+        if tier == "mutating" and entry.get("executed") and on_mutation is not None:
+            on_mutation()
         AUDIT.append(entry)
         _emit_step(entry)
 
@@ -1332,8 +1552,28 @@ async def main():
         return
 
     active_background_job_id = (pending_background_job or {}).get("job_id")
+    read_progress = _ReadProgressGuard()
+    ssh_exec_tool_schema = ssh_exec_schema()
+    remote_text_tool_schema = remote_text.input_schema()
+    find_paths_tool_schema = remote_search.find_schema()
+    search_text_tool_schema = remote_search.input_schema()
+    process_env_tool_schema = process_env.input_schema()
+    endpoint_tool_schema = endpoint_probe.input_schema(
+        _ENDPOINT_TARGETS, _authorization_refs())
+    guest_endpoint_tool_schema = guest_endpoint_probe.input_schema(_authorization_refs())
 
-    @tool("ssh_exec", TOOL_DESC, ssh_exec_schema())
+    def serialize_identical_read(tool_name, schema):
+        """Serialize only equal canonical reads before their precondition/observe pair."""
+        def decorate(func):
+            @functools.wraps(func)
+            async def wrapped(args):
+                async with read_progress.serial_lock(tool_name, args, schema):
+                    return await func(args)
+            return wrapped
+        return decorate
+
+    @tool("ssh_exec", TOOL_DESC, ssh_exec_tool_schema)
+    @serialize_identical_read("ssh_exec", ssh_exec_tool_schema)
     async def ssh_exec(args):
         nonlocal active_background_job_id
         command = str(args.get("command") or "").strip()
@@ -1390,6 +1630,8 @@ async def main():
             _emit_background_job(job_id, "unknown", purpose)
             result = await asyncio.to_thread(
                 remote_job.start, _CONN, command, purpose, _secrets(), job_id=job_id)
+            if result.get("ok") or result.get("box_may_be_changed"):
+                read_progress.advance()
             rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
             disposition = ("ran_mutating" if result.get("ok") or result.get("box_may_be_changed")
                            else "remote_job_failed")
@@ -1410,66 +1652,121 @@ async def main():
             return {"content": [{"type": "text", "text": "⛔ NOT EXECUTED — " + message}],
                     "is_error": True}
 
-        r = run_command(command)
+        progress_args = {"command": command}
+        progress_schema = {
+            "type": "object", "properties": {"command": ssh_exec_tool_schema["properties"]["command"]}}
+        if guardrails.classify(command) == "read_only":
+            blocked = _read_progress_response(
+                read_progress, "ssh_exec", progress_args, progress_schema,
+                "ssh_exec command=" + command[:_MAX_CONFIRMABLE_COMMAND])
+            if blocked is not None:
+                return blocked
+        r = run_command(command, on_mutation=read_progress.advance)
+        if r["tier"] == "read_only" and r["executed"] and not r["is_error"]:
+            observed = read_progress.observe(
+                "ssh_exec", progress_args, progress_schema,
+                {"text": r["text"]}, "ran_read_only")
+            repeat_note = observed.get("repeat_observation")
+            if repeat_note:
+                r["text"] += "\n\n[no-progress guard] " + repeat_note
         return {"content": [{"type": "text", "text": r["text"]}],
                 **({"is_error": True} if r["is_error"] else {})}
 
-    @tool("read_text_file", remote_text.TOOL_DESCRIPTION, remote_text.input_schema(),
+    @tool("read_text_file", remote_text.TOOL_DESCRIPTION, remote_text_tool_schema,
           annotations=ToolAnnotations(title="Read one remote text file", readOnlyHint=True,
                                       destructiveHint=False, idempotentHint=True, openWorldHint=True))
+    @serialize_identical_read("read_text_file", remote_text_tool_schema)
     async def read_text_file(args):
+        display = "read_text_file path=" + str(args.get("path") or "invalid")[:512]
+        blocked = _read_progress_response(
+            read_progress, "read_text_file", args, remote_text_tool_schema, display)
+        if blocked is not None:
+            return blocked
         result = await asyncio.to_thread(remote_text.read, _CONN, args, _secrets())
-        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         disposition = _structured_read_disposition(result)
         display = "read_text_file path=" + str(result.get("path") or "invalid")[:512]
+        result = read_progress.observe(
+            "read_text_file", args, remote_text_tool_schema, result, disposition)
+        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         _record_structured_step(display, "read_only", disposition, len(rendered.encode("utf-8")))
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
                 **({"is_error": True} if disposition != "ran_read_only" else {})}
 
-    @tool("find_paths", remote_search.FIND_DESCRIPTION, remote_search.find_schema(),
+    @tool("find_paths", remote_search.FIND_DESCRIPTION, find_paths_tool_schema,
           annotations=ToolAnnotations(title="Find paths in one remote application tree",
                                       readOnlyHint=True, destructiveHint=False,
                                       idempotentHint=True, openWorldHint=True))
+    @serialize_identical_read("find_paths", find_paths_tool_schema)
     async def find_paths(args):
+        display = "find_paths root=" + str(args.get("root") or "invalid")[:512]
+        blocked = _read_progress_response(
+            read_progress, "find_paths", args, find_paths_tool_schema, display)
+        if blocked is not None:
+            return blocked
         result = await asyncio.to_thread(remote_search.find_paths, _CONN, args, _secrets())
-        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         disposition = _structured_read_disposition(result)
         display = "find_paths root=" + str(result.get("root") or "invalid")[:512]
+        result = read_progress.observe(
+            "find_paths", args, find_paths_tool_schema, result, disposition)
+        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         _record_structured_step(display, "read_only", disposition,
                                 len(rendered.encode("utf-8")))
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
                 **({"is_error": True} if disposition != "ran_read_only" else {})}
 
-    @tool("search_text_tree", remote_search.TOOL_DESCRIPTION, remote_search.input_schema(),
+    @tool("search_text_tree", remote_search.TOOL_DESCRIPTION, search_text_tool_schema,
           annotations=ToolAnnotations(title="Search one remote application tree", readOnlyHint=True,
                                       destructiveHint=False, idempotentHint=True, openWorldHint=True))
+    @serialize_identical_read("search_text_tree", search_text_tool_schema)
     async def search_text_tree(args):
+        display = "search_text_tree root=" + str(args.get("root") or "invalid")[:512]
+        blocked = _read_progress_response(
+            read_progress, "search_text_tree", args, search_text_tool_schema, display)
+        if blocked is not None:
+            return blocked
         result = await asyncio.to_thread(remote_search.search, _CONN, args, _secrets())
-        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         disposition = _structured_read_disposition(result)
         display = "search_text_tree root=" + str(result.get("root") or "invalid")[:512]
+        result = read_progress.observe(
+            "search_text_tree", args, search_text_tool_schema, result, disposition)
+        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         _record_structured_step(display, "read_only", disposition,
                                 len(rendered.encode("utf-8")))
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
                 **({"is_error": True} if disposition != "ran_read_only" else {})}
 
-    @tool("read_process_environment", process_env.TOOL_DESCRIPTION, process_env.input_schema(),
+    @tool("read_process_environment", process_env.TOOL_DESCRIPTION, process_env_tool_schema,
           annotations=ToolAnnotations(title="Read selected process environment", readOnlyHint=True,
                                       destructiveHint=False, idempotentHint=True, openWorldHint=True))
+    @serialize_identical_read("read_process_environment", process_env_tool_schema)
     async def read_process_environment(args):
+        display = "read_process_environment pid=" + str(args.get("pid") or "invalid")[:16]
+        blocked = _read_progress_response(
+            read_progress, "read_process_environment", args, process_env_tool_schema, display)
+        if blocked is not None:
+            return blocked
         result = await asyncio.to_thread(process_env.read, _CONN, args, _secrets())
-        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         disposition = _structured_read_disposition(result)
         display = "read_process_environment pid=" + str(result.get("pid") or "invalid")[:16]
+        result = read_progress.observe(
+            "read_process_environment", args, process_env_tool_schema, result, disposition)
+        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         _record_structured_step(display, "read_only", disposition, len(rendered.encode("utf-8")))
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
                 **({"is_error": True} if disposition != "ran_read_only" else {})}
 
     @tool("endpoint_probe", endpoint_probe.tool_description(_ENDPOINT_TARGETS, _authorization_refs()),
-          endpoint_probe.input_schema(_ENDPOINT_TARGETS, _authorization_refs()),
+          endpoint_tool_schema,
           annotations=ToolAnnotations(title="Probe a platform endpoint", readOnlyHint=True,
                                       destructiveHint=False, idempotentHint=True, openWorldHint=True))
+    @serialize_identical_read("endpoint_probe", endpoint_tool_schema)
     async def probe_endpoint(args):
+        display = ("endpoint_probe target=" + str(args.get("target_id") or "invalid")[:64]
+                   + " auth=" + _probe_auth_state(args))
+        blocked = _read_progress_response(
+            read_progress, "endpoint_probe", args, endpoint_tool_schema, display)
+        if blocked is not None:
+            return blocked
         authorization, auth_error = _resolve_probe_authorization(args)
         if auth_error is not None:
             result = dict(auth_error)
@@ -1480,25 +1777,48 @@ async def main():
             return {"content": [{"type": "text", "text": rendered}],
                     "structuredContent": result, "is_error": True}
         # Network I/O is bounded but blocking in the stdlib; keep it off the SDK event loop.
-        result = await asyncio.to_thread(
-            endpoint_probe.probe, _ENDPOINT_TARGETS, args.get("target_id") or "",
-            args.get("path") or "", args.get("method") or "GET", authorization)
-        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        probe_call = lambda auth: endpoint_probe.probe(
+            _ENDPOINT_TARGETS, args.get("target_id") or "",
+            args.get("path") or "", args.get("method") or "GET", auth)
+        if authorization:
+            without_authorization = await asyncio.to_thread(probe_call, "")
+            with_authorization = await asyncio.to_thread(probe_call, authorization)
+            comparison_completed = all(
+                item.get("stage") in _ENDPOINT_COMPLETED_STAGES
+                for item in (without_authorization, with_authorization))
+            result = _authorization_comparison_result(
+                without_authorization, with_authorization, comparison_completed)
+        else:
+            result = await asyncio.to_thread(probe_call, "")
         # A completed connection/HTTP attempt is diagnostic evidence even when it observes a
         # refusal, timeout or 5xx. Only target/options validation is a precondition refusal.
         disposition = _structured_read_disposition(
-            result, completed=result.get("stage") in _ENDPOINT_COMPLETED_STAGES)
-        _record_structured_step(
-            "endpoint_probe target=" + str(result.get("target_id") or "unknown")[:64],
-            "read_only", disposition, len(rendered.encode("utf-8")))
+            result, completed=(bool(result.get("comparison_completed")) if authorization
+                               else result.get("stage") in _ENDPOINT_COMPLETED_STAGES))
+        result = read_progress.observe(
+            "endpoint_probe", args, endpoint_tool_schema, result, disposition)
+        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        # Keep the model-selected opaque target id from the validated input. An authenticated
+        # comparison wraps two probe results and deliberately has no top-level target_id; deriving
+        # the label from that wrapper would make successful activity/audit rows say target=unknown.
+        _record_structured_step(display, "read_only", disposition,
+                                len(rendered.encode("utf-8")))
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
                 **({"is_error": True} if disposition != "ran_read_only" else {})}
 
     @tool("guest_endpoint_probe", guest_endpoint_probe.TOOL_DESCRIPTION,
-          guest_endpoint_probe.input_schema(_authorization_refs()),
+          guest_endpoint_tool_schema,
           annotations=ToolAnnotations(title="Probe guest loopback", readOnlyHint=True,
                                       destructiveHint=False, idempotentHint=True, openWorldHint=False))
+    @serialize_identical_read("guest_endpoint_probe", guest_endpoint_tool_schema)
     async def probe_guest_endpoint(args):
+        display = "guest_endpoint_probe protocol=%s port=%s auth=%s" % (
+            str(args.get("protocol") or "invalid")[:8], str(args.get("port") or "invalid")[:8],
+            _probe_auth_state(args))
+        blocked = _read_progress_response(
+            read_progress, "guest_endpoint_probe", args, guest_endpoint_tool_schema, display)
+        if blocked is not None:
+            return blocked
         authorization, auth_error = _resolve_probe_authorization(args)
         if auth_error is not None:
             result = dict(auth_error)
@@ -1513,16 +1833,32 @@ async def main():
         # version were to skip JSON-schema validation.
         probe_args = {key: args[key] for key in (
             "protocol", "port", "method", "path", "host_header", "timeout_seconds") if key in args}
+        probe_call = lambda selected_args: guest_endpoint_probe.probe(
+            _CONN, selected_args, _secrets())
         if authorization:
-            probe_args["authorization"] = authorization
-        result = await asyncio.to_thread(
-            guest_endpoint_probe.probe, _CONN, probe_args, _secrets())
-        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+            without_authorization = await asyncio.to_thread(probe_call, dict(probe_args))
+            with_auth_args = dict(probe_args)
+            with_auth_args["authorization"] = authorization
+            with_authorization = await asyncio.to_thread(probe_call, with_auth_args)
+            result = _authorization_comparison_result(
+                without_authorization, with_authorization,
+                bool(without_authorization.get("probe_completed")
+                     and with_authorization.get("probe_completed")))
+        else:
+            result = await asyncio.to_thread(probe_call, probe_args)
         protocol = str(result.get("protocol") or "invalid")[:8]
         port = str(result.get("port") or "invalid")[:8]
+        if authorization:
+            protocol = str(with_authorization.get("protocol") or "invalid")[:8]
+            port = str(with_authorization.get("port") or "invalid")[:8]
         disposition = _structured_read_disposition(
-            result, completed=bool(result.get("probe_completed")))
-        _record_structured_step("guest_endpoint_probe protocol=%s port=%s" % (protocol, port),
+            result, completed=(bool(result.get("comparison_completed")) if authorization
+                               else bool(result.get("probe_completed"))))
+        result = read_progress.observe(
+            "guest_endpoint_probe", args, guest_endpoint_tool_schema, result, disposition)
+        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+        _record_structured_step("guest_endpoint_probe protocol=%s port=%s auth=%s" % (
+                                    protocol, port, _probe_auth_state(args)),
                                 "read_only", disposition, len(rendered.encode("utf-8")))
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
                 **({"is_error": True} if disposition != "ran_read_only" else {})}
@@ -1559,6 +1895,9 @@ async def main():
         if state in _TERMINAL_BACKGROUND_JOB_STATES:
             active_background_job_id = None
             _JOB_POLL_OFFSETS.pop(job_id, None)
+            # Completion is a real state transition (including a job resumed from a prior model
+            # turn), so observations made while it was running may now be re-verified.
+            read_progress.advance()
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
                 **({"is_error": True} if disposition != "ran_read_only" else {})}
 
@@ -1584,6 +1923,8 @@ async def main():
             text = _confirmation_refusal_text(refusal, display)
             return {"content": [{"type": "text", "text": text}], "is_error": True}
         result = await asyncio.to_thread(atomic_file.apply_edit, _CONN, plan)
+        if result.get("ok") or result.get("box_may_be_changed"):
+            read_progress.advance()
         rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         # A failed rollback is still an executed mutation and must be reported as one. Every
         # clean failure/precondition refusal remains failed/refused rather than overstating it.
@@ -1615,6 +1956,7 @@ async def main():
     # worst outcome, since the commands already executed still carry real evidence. So the loop is
     # wrapped: whatever was gathered is still emitted, flagged as partial.
     context_receipt_sent = False
+    no_progress_stopped = False
     try:
         async for msg in query(prompt=prompt, options=options):
             kind = type(msg).__name__
@@ -1637,11 +1979,22 @@ async def main():
                          if type(b).__name__ == "TextBlock" and getattr(b, "text", "").strip()]
                 if texts:
                     last_assistant = "\n".join(t.strip() for t in texts)
+            if read_progress.hard_stop:
+                # One refusal is actionable model feedback. Repeating the exact call after that
+                # feedback proves the loop is not self-correcting; stop before it consumes all 50
+                # turns. The activity stream retains the evidence, but no unverified diagnosis is
+                # synthesized here.
+                no_progress_stopped = True
+                break
     except Exception as exc:                             # noqa: BLE001 — any SDK/transport failure
         sdk_error = str(exc).strip()
 
     body = verdict.strip() or last_assistant.strip()
-    if not body:
+    if no_progress_stopped:
+        body = ("未修复：诊断代理在实例状态未变化时连续重复同一个只读检查，"
+                "已自动停止以避免无效循环。此前的观察和操作仍保留在活动记录中，"
+                "但本轮没有形成经验证的最终结论。")
+    elif not body:
         body = "（诊断已结束，但未生成明确结论"
         body += f"：{sdk_error}）" if sdk_error else "）"
     elif sdk_error:

@@ -506,6 +506,8 @@ func knownInstanceOpsRefusalReason(reason string) (string, bool) {
 		return "命令过长，无法完整展示在确认卡上", true
 	case "refused_precondition":
 		return "前置条件未满足，操作未执行；请按工具返回的具体原因检查参数或重新读取目标状态后重试", true
+	case "refused_no_progress":
+		return "相同只读检查的结果没有变化，已停止重复；请更换检查条件、等待真实状态变化或结束本轮排查", true
 	case "refused_mutating_phase1":
 		return "旧版只读执行器未运行这条修改命令，请重新发起实例内排查", true
 	}

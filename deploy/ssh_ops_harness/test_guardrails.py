@@ -89,6 +89,7 @@ CLASSIFY_CASES = [
     ("journalctl -u docker --no-pager -n 100", "read_only"),
     ("journalctl -xe", "read_only"),                  # r2 FP: -e is a bound
     ("journalctl -u vllm -n 100 -e", "read_only"),
+    ("journalctl --since '24 hours ago' -p warning..alert --no-pager -o short-iso 2>&1 | grep -Ei 'ssh|error|fail' | tail -120", "read_only"),
     ("docker ps", "read_only"),
     ("podman ps --format '{{.ID}} {{.Image}} {{.Names}} {{.Status}}' 2>/dev/null", "read_only"),
     ("nerdctl images", "read_only"),
@@ -632,6 +633,18 @@ CLASSIFY_CASES = [
     ("python3 --version", "read_only"),
     ("git --version", "read_only"),
     ("docker --version", "read_only"),
+    ("cc --version 2>&1 | head -n 2", "read_only"),
+    ("c++ --version 2>&1 | head -n 2", "read_only"),
+    ("mountpoint -q /model", "read_only"),
+    ("if [ -e /model ]; then mountpoint -q /model; else printf '%s\\n' absent; fi", "read_only"),
+    ("cc -o /tmp/probe /tmp/probe.c", "mutating"),
+    ("c++ /tmp/probe.cc", "mutating"),
+    ("head -n 2", "mutating"),
+    ("node version", "mutating"),
+    ("gcc version", "mutating"),
+    ("cmake version", "mutating"),
+    ("if [ -e /model ]; then mountpoint -q /model; else touch /tmp/created; fi", "mutating"),
+    ("printf '%s\\n' '== paths ==' ; command -v nvcc || true ; command -v cmake || true ; command -v cc || true ; command -v gcc || true ; command -v c++ || true ; command -v g++ || true ; printf '%s\\n' '== versions ==' ; nvcc --version 2>&1 || true ; cmake --version 2>&1 || true ; cc --version 2>&1 | head -n 2 || true ; c++ --version 2>&1 | head -n 2 || true ; printf '%s\\n' '== model ==' ; if [ -e /model ]; then stat -c 'path=%n type=%F mode=%A uid=%u gid=%g' /model 2>&1 ; mountpoint -q /model && printf '%s\\n' 'mountpoint=yes' || printf '%s\\n' 'mountpoint=no' ; findmnt -T /model -o TARGET,SOURCE,FSTYPE,OPTIONS 2>&1 || true ; df -P /model 2>&1 || true ; else printf '%s\\n' 'path=/model absent'; fi", "read_only"),
     #     A path-qualified interpreter stays read_only via the basename-normalized allowlist
     #     in _is_read_only_segment, which is now its ONLY route.
     ("/usr/local/miniconda3/envs/comfyui/bin/python --version", "read_only"),

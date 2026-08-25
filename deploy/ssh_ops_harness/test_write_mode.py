@@ -122,6 +122,9 @@ check("prompt-names-hard-limits",
       "Hard refusal is only" in _WRITE_PROMPT and
       "tenant/control-plane boundary" in _WRITE_PROMPT)
 check("prompt-contract::shared-core", _WRITE_PROMPT.startswith(harness._SYSTEM_PROMPT_CORE))
+check("prompt-contract::completed-read-no-progress-loop",
+      "never repeat a completed read unless state/time changed" in _WRITE_PROMPT_FLAT
+      and "Vary one input or conclude" in _WRITE_PROMPT_FLAT)
 check("prompt-contract::structured",
       all(section in _WRITE_PROMPT for section in ("## Evidence model", "## Diagnostic loop",
                                                     "## Authorization:", "## Final response")))
@@ -135,8 +138,8 @@ check("prompt-contract::actual-runtime",
 check("prompt-contract::managed-ownership-invariant",
       "controller's ownership state" in _WRITE_PROMPT and "drift rather than proof" in _WRITE_PROMPT)
 check("prompt-contract::reconciles-owner-before-start-and-polls-terminal-state",
-      "Reconcile an existing ownership conflict" in _WRITE_PROMPT and
-      "bounded-poll transitional manager states" in _WRITE_PROMPT and "terminal result" in _WRITE_PROMPT)
+      "Reconcile stale children" in _WRITE_PROMPT_FLAT and
+      "Poll manager transitions to a terminal result" in _WRITE_PROMPT_FLAT)
 check("prompt-contract::single-mode-only",
       "Authorization: diagnose, repair, verify" in _WRITE_PROMPT and
       "Authorization: diagnosis only" not in _WRITE_PROMPT)
@@ -166,10 +169,9 @@ check("tool-desc-states-execution-semantics",
 check("tool-description-prefers-the-actual-runtime",
       "application's actual interpreter" in _WRITE_DESC)
 check("tool-description-requires-managed-ownership",
-      "surviving" in _WRITE_DESC and "outside that ownership" in _WRITE_DESC)
+      "Reconcile stale children" in _WRITE_DESC)
 check("tool-description-reconciles-owner-and-polls-transition",
-      "reconcile any surviving child outside that ownership" in _WRITE_DESC and
-      "transitional manager states" in _WRITE_DESC and "terminal result" in _WRITE_DESC)
+      "Poll manager transitions" in _WRITE_DESC)
 check("tool-desc-contract-stays-general",
       all(token not in _WRITE_DESC.lower()
           for token in ("filebrowser", "main.py", "/start.d/", "8188", "python -c")))
@@ -292,16 +294,15 @@ check("write-tool-desc-platform-boundary::forbids-invention",
 check("write-system-prompt-platform-boundary::forbids-invention",
       "invent a platform-facing" in _WRITE_PROMPT and "substitute service" in _WRITE_PROMPT)
 check("write-tool-desc-platform-boundary::names-and-hands-off-restart",
-      "Restarting the instance is unavailable" in _WRITE_DESC and
-      "ask whether the user wants the instance restarted" in _WRITE_DESC and
-      "guest-shell" in _WRITE_DESC)
+      "Instance restart is unavailable" in _WRITE_DESC and
+      "ask whether the user wants one" in _WRITE_DESC)
 check("write-system-prompt-platform-boundary::names-and-hands-off-restart",
       "需要重启实例才能继续" in _WRITE_PROMPT and
       "ask whether the user wants the instance restarted" in flat(_WRITE_PROMPT) and
       "Do not bypass those limits" in _WRITE_PROMPT)
 check("write-prompts::distinguish-service-restart-from-instance-reboot",
       "A process or service restart is not an instance reboot" in _WRITE_PROMPT_FLAT and
-      "A process or service restart is not an instance reboot" in _WRITE_DESC and
+      "A service restart is not an instance reboot" in _WRITE_DESC and
       "guest-local restart cannot recover" in _WRITE_PROMPT_FLAT and
       "guest-local restart cannot recover" in _WRITE_DESC)
 check("write-tool-desc::separates-independent-probes",
@@ -333,23 +334,28 @@ _td = _WRITE_DESC
 check("tooldesc-rule-prefer-image-launcher",
       "use its existing supervisor/launcher" in _td and "not an inner binary" in _td)
 check("tooldesc-rule-does-not-invent-manager-ownership",
-      "Do not create a new unit merely because a manager exists" in _td and
+      "do not invent a unit" in _td and
       "only a launcher exists" in _td and "report the durability gap" in _td)
 check("prompt-and-tool-do-not-invent-traceback-semantics",
       "A traceback proves a failure site, not intended" in _wp and
-      "A traceback proves failure site, not intended semantics" in _td and
+      "A traceback proves the failure site, not intended semantics" in _td and
       "local test" in _wp and "version contract" in _wp and
       "reversible rollback/disable within scope" in _wp and
       "reversible rollback/disable within scope" in _td)
 check("prompt-and-tool-align-on-managed-service-ownership",
-      "identify its existing supervisor" in _wp and "use its existing supervisor" in _td)
+      "use its existing supervisor" in _wp and "use its existing supervisor" in _td)
+check("prompt-and-tool-start-stopped-managed-definition-before-editing",
+      "Start a stopped unit unchanged" in flat(_wp) and
+      "Start a stopped unit's existing definition unchanged" in _td and
+      "STOPPED alone does not implicate" in _wp and "STOPPED alone does not implicate" in _td and
+      all(term in (_wp + _td) for term in ("manager output", "logs", "direct file check")))
 check("prompts-drop-product-specific-launcher-patches",
       all(token not in (_wp + _td).lower() for token in ("filebrowser", "main.py", "/start.d/")))
 # Replaces the before/after diff, which could not fire: in the fault under test BOTH ports start
 # down, so "was up before" is empty. This asks about the ports the LAUNCHER defines instead, which is
 # exactly the 7860 case — a port the repair never restored rather than one it broke.
 check("tooldesc-rule-verify-every-launcher-port",
-      "Verify the full service contract owned by the launcher" in _td)
+      "verify every endpoint/component it owns" in _td)
 check("prompt-no-longer-carries-port-diff", "list the listening ports" not in _wp)
 check("prompt-rule-verdict-starts-with-status",
       all(token in _wp for token in ("`已修复`", "`部分修复`", "`未修复`", "`无需修复`")) and

@@ -263,9 +263,12 @@ _SAFE_REDIR = re.compile(r"(?:\d*>&\d+|&>\s*/dev/null|\d*>\s*/dev/null)")
 # Hard-dangerous shell constructs. Deliberately EXCLUDES `|` (pipe), `*`/`?` (glob), and the
 # SINGLE quote — those are validated structurally below. Everything that enables command chaining
 # (`;` `&&`), substitution (`` ` `` `$()` `$VAR`), real-file redirection (`>`), brace/bracket/tilde
-# expansion, parent-dir traversal, or newlines is banned. Balanced quotes are allowed after raw
+# expansion or newlines is banned. Parent traversal is rejected by every path-bearing reader and
+# system-program check at the point where a token is actually interpreted as a path; treating every
+# literal `..` as path syntax incorrectly cards valid non-path arguments such as journal priorities.
+# Balanced quotes are allowed after raw
 # command/variable expansion has been rejected; quoted grep patterns and paths are inert argv data.
-_HARD_META = re.compile(r"""[;&`$<>(){}\[\]~]|\.\.|\n""")
+_HARD_META = re.compile(r"""[;&`$<>(){}\[\]~]|\n""")
 # Command substitution — denied on the RAW command even inside single quotes (see F14).
 _SUBSTITUTION = re.compile(r"\$\(|`")
 _VARIABLE_EXPANSION = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]+\}|[0-9!#*@_-])")
@@ -314,6 +317,7 @@ _STRUCTURED_DIAG = [re.compile(p) for p in [
     r"lsof(\s+\S+)*",                                  # open-file/socket metadata; no write mode
     r"df(\s+\S+)*",
     r"findmnt(\s+\S+)*",
+    r"mountpoint(\s+\S+)*",                           # query mount membership/device; no write form
     r"dmesg(\s+(-T|-x|-t|-H|-k|-r|-e|--ctime|--color=\w+|-l\s+\w+|-n\s+\d+|--level=\S+))*",
     r"(ss|netstat)(\s+\S+)*",
     r"ip\s+(-\w+\s+)*(addr|a|link|l|route|r|neigh|n)(\s+(show|list|s|l))?",
@@ -325,7 +329,11 @@ _STRUCTURED_DIAG = [re.compile(p) for p in [
     # util-linux lists, older versions did not, and the difference is not worth guessing at.
     r"swapon(\s+(-s|--summary|--show(=\S+)?|--noheadings|--raw|--bytes))+",
     r"mount(\s+(-l|--list))*",
-    r"(nvcc|python3?|pip3?|conda|docker|podman|nerdctl|git|gcc|g\+\+|cmake|go|java|node|npm|ruff|jupyter)\s+(--version|-V|version)",
+    # Real version FLAGS only. A bare `version` is a positional script/source name for several of
+    # these programs (`node version`, `cmake version`, compilers) and must not silently execute.
+    r"(nvcc|python3?|pip3?|conda|gcc|g\+\+|cc|c\+\+|cmake|java|node|ruff|jupyter)\s+(--version|-V)",
+    r"(docker|podman|nerdctl|git|go)\s+(--version|-V|version)",
+    r"npm\s+(--version|-v)",
     r"npx\s+(--version|-v)",
     r"pip3?\s+(list|show|freeze)(\s+\S+)*",
     r"pip3?\s+cache\s+dir",
@@ -1557,7 +1565,7 @@ _EXEC_BINARIES = {
 # (`python --version` is a genuine, and heavily used, environment probe).
 _INTERPRETERS = {"python", "python2", "python3", "perl", "ruby", "node", "php", "lua", "Rscript"}
 _PYTHON_BINARY = re.compile(r"^python(?:\d+(?:\.\d+)*)?$")
-_VERSION_ONLY = re.compile(r"^(--version|-V|--help|version|help)$")
+_VERSION_ONLY = re.compile(r"^(--version|-V|--help)$")
 # Executing a file on the box (a script, or anything invoked by relative path) is
 # execution regardless of what it is named — this is what keeps an unknown binary from
 # becoming an arbitrary write primitive now that the read allowlist is gone.
@@ -1575,9 +1583,8 @@ def _is_system_program_path(raw0: str) -> bool:
     path = _unquote(raw0)
     if not path.startswith("/"):
         return False
-    # normpath so the check judges the real target rather than its spelling: `/usr/bin/../../tmp/x`
-    # is /tmp/x. (`..` is separately refused by the shape gate; not relying on that keeps the two
-    # gates independently reorderable.)
+    # normpath judges the real target rather than its spelling: `/usr/bin/../../tmp/x` is /tmp/x,
+    # so traversal cannot turn a non-system executable into a trusted system-program path.
     return posixpath.dirname(posixpath.normpath(path)) in _SYSTEM_PROGRAM_DIRS
 # Reads that never terminate or that stream a whole block device.
 _BLOCKING_PATHS = re.compile(r"^/proc/kmsg$|^/dev/(sd|nvme|vd|hd|xvd|loop|zero|random|urandom|full|port|mem|kmem)")
