@@ -36,3 +36,21 @@ func TestInstanceOpsRunner_TranslatesAddressUnavailableSentinel(t *testing.T) {
 	require.Contains(t, buf.String(), "i/o timeout")
 	require.Contains(t, buf.String(), "uhost-x")
 }
+
+func TestInstanceOpsRunner_TranslatesSSHPreflightUnreachableSentinel(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+
+	wrapped := fmt.Errorf("%w: %s", sshops.ErrSSHPreflightUnreachable,
+		"no candidate address accepted a connection on port 22")
+	r := newInstanceOpsRunner(&fakeDiagnoser{err: wrapped}, noopDescriber{}, nil)
+
+	_, err := r.Run(context.Background(), engine.InstanceOpsRequest{InstanceID: "uhost-x", TurnID: "t1"}, func(engine.InstanceOpsProgress) {})
+
+	require.ErrorIs(t, err, engine.ErrInstanceOpsSSHPreflightUnreachable,
+		"the engine mirror must distinguish a failed TCP preflight from address derivation")
+	require.NotErrorIs(t, err, engine.ErrInstanceOpsAddressUnavailable)
+	require.Contains(t, buf.String(), "no SSH candidate was reachable")
+	require.Contains(t, buf.String(), "uhost-x")
+}

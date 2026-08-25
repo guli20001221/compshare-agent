@@ -29,19 +29,17 @@ var ErrInstanceOpsNotRunning = errors.New("engine: instance is not running")
 // describe failure (which keeps the retry advice).
 var ErrInstanceOpsNotFound = errors.New("engine: instance not found in this account")
 
-// ErrInstanceOpsAddressUnavailable is the engine-side mirror of a failed internal-address
-// rewrite (agent.ssh_ops.internal_ipv6). The lane refuses rather than dialling the public
-// address it is configured not to use, and the cause is entirely on the deployment side —
-// the internal gateway, its configuration, or the region lookup. Nothing about the user's
-// instance is implicated, so the generic 「请稍后重试，或到控制台查看实例状态」 would point
-// them at a console with nothing wrong on it.
-//
-// It is separate from the generic bucket mainly so the FIRST production run of that route
-// is self-diagnosing: it ships without ever having reached the real gateway (nothing routes
-// there from a development machine), and "the address could not be derived" has to be
-// distinguishable from "the address was derived and the dial failed" by whoever reads the
-// reply, not only by whoever can read the server log.
+// ErrInstanceOpsAddressUnavailable is the engine-side mirror of a failed
+// internal-address derivation. It occurs before a TCP connection or SSH session
+// exists. The reply may name that layer, but must not turn the absence of guest
+// evidence into a conclusion about the user's original fault.
 var ErrInstanceOpsAddressUnavailable = errors.New("engine: instance internal address unavailable")
+
+// ErrInstanceOpsSSHPreflightUnreachable mirrors a failed TCP reachability check
+// after candidate addresses were derived. It is distinct from address derivation
+// because the user-facing next steps differ, while still proving only that this
+// diagnosis attempt never authenticated over SSH or entered the guest.
+var ErrInstanceOpsSSHPreflightUnreachable = errors.New("engine: instance ssh preflight unreachable")
 
 // InstanceOpsRunner executes ONE consented, read-only in-instance diagnosis and
 // streams its activity back through onProgress. The engine depends only on this

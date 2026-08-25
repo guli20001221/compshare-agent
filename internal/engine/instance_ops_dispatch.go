@@ -221,6 +221,14 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 			return finalReplyPrefix + msg
 		}
+		// Candidate addresses were available, but the TCP prerequisite for SSH did
+		// not connect. This is still pre-entry: no authentication and no guest command.
+		// List the possible layers without selecting one that was never observed.
+		if errors.Is(err, ErrInstanceOpsSSHPreflightUnreachable) {
+			msg := "诊断服务已尝试可用候选地址，但未能与实例的 SSH 端口建立 TCP 连接；未建立 SSH 会话、未进入实例，也没有执行任何命令。可能涉及诊断服务到实例的网络路径、端口 / 防火墙、SSH 服务或实例当时状态；仅凭本次失败无法确定具体原因，也无法判断用户原始故障是否属于实例内部。"
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
+			return finalReplyPrefix + msg
+		}
 		// The state is a current platform fact, so return it instead of a generic retry.
 		if errors.Is(err, ErrInstanceOpsNotRunning) {
 			msg := fmt.Sprintf("该实例当前状态为 %s，不是运行中（Running），无法进入实例排查。等实例恢复运行后可以再试。",

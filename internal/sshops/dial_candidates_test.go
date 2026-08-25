@@ -165,8 +165,10 @@ func TestProbePicksTheFirstCandidateThatListens(t *testing.T) {
 	}
 }
 
-// When nothing answers, refuse instead of returning an unverified address.
-func TestNothingReachableRefusesAndNamesWhatWasTried(t *testing.T) {
+// When nothing answers, refuse instead of returning an unverified address. This
+// is a TCP preflight failure, not an address-derivation failure: candidates were
+// successfully built and actually tried.
+func TestNothingReachableReturnsSSHPreflightFailureAndNamesWhatWasTried(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
 	host, err := pickReachableDialHost(ctx, map[string]any{"UHostId": "uhost-x"},
@@ -174,8 +176,11 @@ func TestNothingReachableRefusesAndNamesWhatWasTried(t *testing.T) {
 	if err == nil {
 		t.Fatalf("want a refusal, got host %q", host)
 	}
-	if !errors.Is(err, ErrInternalAddressUnavailable) {
-		t.Fatalf("want ErrInternalAddressUnavailable so the engine says it is a deployment problem, got %v", err)
+	if !errors.Is(err, ErrSSHPreflightUnreachable) {
+		t.Fatalf("want ErrSSHPreflightUnreachable, got %v", err)
+	}
+	if errors.Is(err, ErrInternalAddressUnavailable) {
+		t.Fatalf("reachable candidates were derived, so this must not claim address derivation failed: %v", err)
 	}
 	if !strings.Contains(err.Error(), "::1") {
 		t.Errorf("the refusal must name an address that was tried, got %v", err)
