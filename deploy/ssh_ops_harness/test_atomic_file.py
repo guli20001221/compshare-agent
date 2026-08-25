@@ -125,6 +125,60 @@ def _open_resolved_boundary_race(_conn):
     return _ResolvedBoundaryRaceClient(), None
 
 
+class _RenameResponseLostSFTP(_SFTP):
+    def rename(self, source, target):
+        super().rename(source, target)
+        raise ConnectionError("response lost after create rename")
+
+    def posix_rename(self, source, target):
+        super().posix_rename(source, target)
+        raise ConnectionError("response lost after replace rename")
+
+
+class _RenameResponseLostClient:
+    def open_sftp(self):
+        return _RenameResponseLostSFTP()
+
+    def close(self):
+        pass
+
+
+def _open_rename_response_lost(_conn):
+    return _RenameResponseLostClient(), None
+
+
+class _RenameOutcomeUnverifiableSFTP(_SFTP):
+    def __init__(self):
+        self._rename_lost = False
+
+    def lstat(self, path):
+        if self._rename_lost:
+            raise ConnectionError("cannot verify rename outcome")
+        return super().lstat(path)
+
+    def rename(self, source, target):
+        super().rename(source, target)
+        self._rename_lost = True
+        raise ConnectionError("response and connection lost after create rename")
+
+    def posix_rename(self, source, target):
+        super().posix_rename(source, target)
+        self._rename_lost = True
+        raise ConnectionError("response and connection lost after replace rename")
+
+
+class _RenameOutcomeUnverifiableClient:
+    def open_sftp(self):
+        return _RenameOutcomeUnverifiableSFTP()
+
+    def close(self):
+        pass
+
+
+def _open_rename_outcome_unverifiable(_conn):
+    return _RenameOutcomeUnverifiableClient(), None
+
+
 root = tempfile.mkdtemp(prefix="sshops-atomic-test-")
 try:
     path = "/workspace/app.conf"
@@ -150,6 +204,41 @@ try:
     check("mode-is-preserved", os.name == "nt" or stat.S_IMODE(os.stat(local_path).st_mode) == 0o640)
     check("recoverable-backup-is-retained",
           open(_SFTP._local(result["backup_path"]), "rb").read() == b"port=8080\nmode=prod\n")
+
+    lost_replace_path = "/workspace/lost-replace.conf"
+    lost_replace_local = _SFTP._local(lost_replace_path)
+    with open(lost_replace_local, "wb") as handle:
+        handle.write(b"x=1\n")
+    lost_replace_plan = atomic_file.prepare_edit({}, {
+        "operation": "replace_fragment", "path": lost_replace_path,
+        "expected_sha256": hashlib.sha256(b"x=1\n").hexdigest(),
+        "old_text": "x=1", "new_text": "x=2", "change_summary": "change test value",
+    }, opener=_open)
+    lost_replace_result = atomic_file.apply_edit(
+        {}, lost_replace_plan, opener=_open_rename_response_lost)
+    check("replace-response-loss-recovers-the-applied-postcondition",
+          lost_replace_result["ok"] is True
+          and lost_replace_result["rename_outcome_recovered"] is True
+          and open(lost_replace_local, "rb").read() == b"x=2\n")
+    check("replace-response-loss-retains-the-recoverable-backup",
+          open(_SFTP._local(lost_replace_result["backup_path"]), "rb").read() == b"x=1\n")
+
+    unknown_replace_path = "/workspace/unknown-replace.conf"
+    unknown_replace_local = _SFTP._local(unknown_replace_path)
+    with open(unknown_replace_local, "wb") as handle:
+        handle.write(b"x=1\n")
+    unknown_replace_plan = atomic_file.prepare_edit({}, {
+        "operation": "replace_fragment", "path": unknown_replace_path,
+        "expected_sha256": hashlib.sha256(b"x=1\n").hexdigest(),
+        "old_text": "x=1", "new_text": "x=2", "change_summary": "change test value",
+    }, opener=_open)
+    unknown_replace_result = atomic_file.apply_edit(
+        {}, unknown_replace_plan, opener=_open_rename_outcome_unverifiable)
+    check("unverifiable-replace-reports-possible-change-and-keeps-backup",
+          unknown_replace_result["ok"] is False
+          and unknown_replace_result["error_class"] == "atomic_replace_outcome_unknown"
+          and unknown_replace_result["box_may_be_changed"] is True
+          and open(_SFTP._local(unknown_replace_result["backup_path"]), "rb").read() == b"x=1\n")
 
     raced_path = "/workspace/raced.conf"
     raced_local = _SFTP._local(raced_path)
@@ -255,6 +344,26 @@ try:
     check("create-writes-exact-content-with-requested-mode",
           open(create_local, encoding="utf-8").read() == create_args["content"]
           and (os.name == "nt" or stat.S_IMODE(os.stat(create_local).st_mode) == 0o750))
+
+    lost_create_path = "/workspace/lost-create.conf"
+    lost_create_plan = atomic_file.prepare_edit(
+        {}, dict(create_args, path=lost_create_path, content="created-value\n"), opener=_open)
+    lost_create_result = atomic_file.apply_edit(
+        {}, lost_create_plan, opener=_open_rename_response_lost)
+    check("create-response-loss-recovers-the-applied-postcondition",
+          lost_create_result["ok"] is True
+          and lost_create_result["rename_outcome_recovered"] is True
+          and open(_SFTP._local(lost_create_path), "rb").read() == b"created-value\n")
+
+    unknown_create_path = "/workspace/unknown-create.conf"
+    unknown_create_plan = atomic_file.prepare_edit(
+        {}, dict(create_args, path=unknown_create_path, content="created-value\n"), opener=_open)
+    unknown_create_result = atomic_file.apply_edit(
+        {}, unknown_create_plan, opener=_open_rename_outcome_unverifiable)
+    check("unverifiable-create-reports-possible-change",
+          unknown_create_result["ok"] is False
+          and unknown_create_result["error_class"] == "atomic_create_outcome_unknown"
+          and unknown_create_result["box_may_be_changed"] is True)
     existing_create = atomic_file.prepare_edit({}, create_args, opener=_open)
     check("create-never-overwrites-an-existing-target",
           existing_create["ok"] is False

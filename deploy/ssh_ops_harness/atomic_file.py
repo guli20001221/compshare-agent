@@ -329,6 +329,7 @@ def _apply_create(sftp, plan):
     nonce = uuid.uuid4().hex[:12]
     temporary = posixpath.join(directory, ".%s.sshops-tmp-%s" % (name, nonce))
     created = False
+    rename_attempted = False
     try:
         absent, existing_error = _target_absent(sftp, path)
         if not absent:
@@ -342,13 +343,32 @@ def _apply_create(sftp, plan):
         try:
             # Standard SFTP rename requires the destination not to exist. Do not use posix_rename:
             # its overwrite semantics would turn a create race into silent data loss.
+            rename_attempted = True
             sftp.rename(temporary, path)
         except Exception as exc:  # noqa: BLE001
-            absent, _ = _target_absent(sftp, path)
-            if not absent:
+            try:
+                absent, _ = _target_absent(sftp, path)
+                if absent:
+                    return _error("atomic_create_failed", path=path,
+                                  detail=type(exc).__name__, box_may_be_changed=False)
+                attrs, verified = _read_regular(sftp, path)
+                actual, actual_mode = _sha(verified), stat.S_IMODE(attrs.st_mode)
+                if actual == plan["after_sha256"] and actual_mode == plan["_mode"]:
+                    created = True
+                    return {
+                        "ok": True, "operation": "create", "path": path,
+                        "after_sha256": actual, "mode": "0%03o" % actual_mode,
+                        "result_bytes": len(verified), "atomic": True,
+                        "rename_outcome_recovered": True,
+                    }
                 return _error("target_created_after_approval", path=path,
                               detail=type(exc).__name__, box_may_be_changed=False)
-            raise
+            except ValueError:
+                return _error("target_created_after_approval", path=path,
+                              detail=type(exc).__name__, box_may_be_changed=False)
+            except Exception as verify_exc:  # noqa: BLE001 — rename outcome is now unknowable
+                return _error("atomic_create_outcome_unknown", path=path,
+                              detail=type(verify_exc).__name__, box_may_be_changed=True)
         created = True
         attrs, verified = _read_regular(sftp, path)
         actual = _sha(verified)
@@ -365,7 +385,7 @@ def _apply_create(sftp, plan):
         return _error(str(exc), path=path, box_may_be_changed=created)
     except Exception as exc:  # noqa: BLE001
         return _error("atomic_create_failed", path=path, detail=type(exc).__name__,
-                      box_may_be_changed=created)
+                      box_may_be_changed=created or rename_attempted)
     finally:
         if not created:
             try:
@@ -382,7 +402,9 @@ def _apply_replace(sftp, plan):
                             (name, plan["before_sha256"][:12], nonce))
     temporary = posixpath.join(directory, ".%s.sshops-tmp-%s" % (name, nonce))
     replaced = False
+    mutation_attempted = False
     backup_written = False
+    preserve_backup = False
     try:
         attrs, current = _read_regular(sftp, path)
         if _resolved_target(sftp, path, True) != plan["_resolved_path"]:
@@ -395,6 +417,7 @@ def _apply_replace(sftp, plan):
         _write_new_file(sftp, backup, current, mode, attrs.st_uid, attrs.st_gid)
         backup_written = True
         _write_new_file(sftp, temporary, plan["_data"], mode, attrs.st_uid, attrs.st_gid)
+        mutation_attempted = True
         sftp.posix_rename(temporary, path)
         replaced = True
         _, verified = _read_regular(sftp, path)
@@ -408,6 +431,34 @@ def _apply_replace(sftp, plan):
             "backup_path": backup, "atomic": True,
         }
     except Exception as exc:  # noqa: BLE001
+        if mutation_attempted and not replaced:
+            try:
+                attrs, observed = _read_regular(sftp, path)
+                actual = _sha(observed)
+                metadata_ok = (stat.S_IMODE(attrs.st_mode) == plan["_mode"]
+                               and attrs.st_uid == plan["_uid"] and attrs.st_gid == plan["_gid"])
+                if actual == plan["after_sha256"] and metadata_ok:
+                    replaced = True
+                    return {
+                        "ok": True, "operation": "replace_fragment", "path": path,
+                        "before_sha256": plan["before_sha256"], "after_sha256": actual,
+                        "replacement_count": 1, "result_bytes": len(observed),
+                        "backup_path": backup, "atomic": True,
+                        "rename_outcome_recovered": True,
+                    }
+                if actual == plan["before_sha256"] and metadata_ok:
+                    return _error("atomic_replace_failed", path=path,
+                                  detail=type(exc).__name__, rolled_back=False,
+                                  box_may_be_changed=False)
+                preserve_backup = True
+                return _error("atomic_replace_outcome_unknown", path=path,
+                              detail=type(exc).__name__, actual_sha256=actual,
+                              backup_path=backup, rolled_back=False, box_may_be_changed=True)
+            except Exception as verify_exc:  # noqa: BLE001 — keep recovery evidence on ambiguity
+                preserve_backup = True
+                return _error("atomic_replace_outcome_unknown", path=path,
+                              detail=type(verify_exc).__name__, backup_path=backup,
+                              rolled_back=False, box_may_be_changed=True)
         rolled_back = False
         if replaced and backup_written:
             try:
@@ -419,7 +470,7 @@ def _apply_replace(sftp, plan):
                       rolled_back=rolled_back, box_may_be_changed=replaced and not rolled_back)
     finally:
         if not replaced:
-            for candidate in (temporary, backup if backup_written else ""):
+            for candidate in (temporary, backup if backup_written and not preserve_backup else ""):
                 if not candidate:
                     continue
                 try:

@@ -563,6 +563,24 @@ def _structured_read_disposition(result: dict, completed: bool = False) -> str:
     return error_class
 
 
+_ATOMIC_PREPARE_PRECONDITION_ERRORS = frozenset({
+    "invalid_arguments", "invalid_operation", "path_not_allowed", "invalid_change_summary",
+    "invalid_content", "content_too_large", "invalid_mode", "invalid_expected_sha256",
+    "invalid_replacement", "replacement_too_large", "symlink_refused", "not_regular_file",
+    "file_too_large", "parent_symlink_refused", "parent_not_directory",
+    "resolved_path_not_allowed", "target_already_exists", "stale_precondition", "not_utf8",
+    "match_count_not_one", "result_too_large", "parent_not_found",
+})
+
+
+def _atomic_prepare_disposition(result: dict) -> str:
+    """Keep policy/state refusals distinct from SSH/SFTP execution failures."""
+    error_class = str(result.get("error_class") or "atomic_prepare_failed")
+    if error_class in _ATOMIC_PREPARE_PRECONDITION_ERRORS:
+        return "refused_precondition"
+    return error_class
+
+
 def _emit_step(entry: dict) -> None:
     """Emit one @@STEP line — metadata ONLY, never command output (INV-6)."""
     wire = {
@@ -1438,7 +1456,7 @@ async def main():
         if not plan.get("ok"):
             rendered = json.dumps(plan, ensure_ascii=False, separators=(",", ":"))
             display = "atomic_text_edit path=" + str(plan.get("path") or "invalid")[:512]
-            _record_structured_step(display, "mutating", "refused_precondition",
+            _record_structured_step(display, "mutating", _atomic_prepare_disposition(plan),
                                     len(rendered.encode("utf-8")))
             return {"content": [{"type": "text", "text": rendered}], "structuredContent": plan,
                     "is_error": True}

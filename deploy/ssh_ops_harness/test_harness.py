@@ -1170,6 +1170,41 @@ check("active-job-still-allows-exactly-approved-foreground-writes",
 check("active-job-still-allows-exactly-approved-atomic-edits",
       "ran_mutating" in _active_atomic_wire and any("atomic_text_edit" in x for x in _confirm_calls))
 
+# Preparing an atomic edit can fail before confirmation for two categorically different reasons.
+# A stale hash is a refused precondition; an SSH/SFTP failure is an execution failure and must not
+# tell the user that policy rejected the operation.
+_saved_prepare_edit = harness.atomic_file.prepare_edit
+try:
+    harness.atomic_file.prepare_edit = lambda *_args, **_kwargs: {
+        "ok": False, "error_class": "connect_failed", "path": "/workspace/app.conf",
+    }
+    _atomic_connect_wire = _capture(lambda: _asyncio.run(_first_atomic_tool({
+        "operation": "create", "path": "/workspace/app.conf", "content": "x=1\n",
+        "mode": "0644", "change_summary": "create requested config",
+    })))
+    harness.atomic_file.prepare_edit = lambda *_args, **_kwargs: {
+        "ok": False, "error_class": "stale_precondition", "path": "/workspace/app.conf",
+    }
+    _atomic_stale_wire = _capture(lambda: _asyncio.run(_first_atomic_tool({
+        "operation": "replace_fragment", "path": "/workspace/app.conf",
+        "expected_sha256": "a" * 64, "old_text": "x=1", "new_text": "x=2",
+        "change_summary": "update requested value",
+    })))
+finally:
+    harness.atomic_file.prepare_edit = _saved_prepare_edit
+_atomic_connect_step = _json.loads(next(
+    line[len("@@STEP "):] for line in _atomic_connect_wire.splitlines()
+    if line.startswith("@@STEP ")))
+_atomic_stale_step = _json.loads(next(
+    line[len("@@STEP "):] for line in _atomic_stale_wire.splitlines()
+    if line.startswith("@@STEP ")))
+check("atomic-prepare-transport-failure-is-not-a-precondition-refusal",
+      _atomic_connect_step.get("disposition") == "failed" and
+      _atomic_connect_step.get("reason") == "connect_failed")
+check("atomic-prepare-stale-hash-remains-a-precondition-refusal",
+      _atomic_stale_step.get("disposition") == "refused" and
+      _atomic_stale_step.get("reason") == "refused_precondition")
+
 # A terminal poll clears the active slot immediately, allowing a second long step in this diagnosis.
 _SECOND_JOB_ID = "job-" + "b" * 32
 _saved_start, _saved_new_job_id, _saved_confirm, _saved_poll = (
