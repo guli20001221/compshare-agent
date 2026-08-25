@@ -246,9 +246,11 @@ check("process-environment-tool-is-selected-and-secret-bounded",
 # separate user decision.
 for _name, _needle in [
     ("states the scope", "Repair the diagnosed fault only"),
-    ("names redeploying an app", "re-downloading an application"),
+    ("names redeploying an app", "Re-downloading an app"),
     ("names taking a service down", "disabling an unrelated service"),
-    ("routes it to the user rather than forbidding it", "separate user intent unless the task requests it"),
+    ("routes it to the user rather than forbidding it",
+     "needs explicit intent in an available user report"),
+    ("keeps prior user intent bounded to continuation", "prior reports only continue unfinished requests"),
 ]:
     check(f"tool-desc-bounds-scope::{_name}", _needle in _WRITE_DESC)
 

@@ -116,6 +116,39 @@ check("context-renders-four-labelled-sections",
       all(marker in _rendered_context_prompt for marker in
           ("<planner_task>", "<current_user_report>", "<prior_user_reports>", "<platform_facts>")))
 check("context-fences-untrusted-user-text", "REFERENCE DATA ONLY" in _rendered_context_prompt)
+check("context-establishes-user-report-over-planner-scope-hierarchy",
+      all(term in _rendered_context_prompt for term in (
+          "user-authored reports define the requested outcome",
+          "current report takes priority",
+          "bounded prior reports may only continue an explicit unfinished request",
+          "planner task is diagnostic focus and summary",
+          "not a source of new write scope",
+          "unverified hypothesis",
+          "perform zero writes and answer 无需修复")))
+check("context-keeps-labelled-ocr-as-evidence-not-effect-approval",
+      "screenshot OCR may identify the symptom" in _rendered_context_prompt and
+      "fallible evidence" in _rendered_context_prompt and
+      "never approves a change" in _rendered_context_prompt)
+_continuing_user_intent = harness.render_prompt("repair the web endpoint", {
+    "schema_version": 2,
+    "current_user_report": {"text": "cpod-example", "source": "chat.current_user",
+                            "observed_at": "unknown", "status": "reported"},
+    "prior_user_reports": [{"text": "The web endpoint is down; please repair it.",
+                            "source": "chat.prior_user", "observed_at": "unknown",
+                            "status": "reported"}],
+})
+check("scope-contract-preserves-an-explicit-unfinished-prior-turn-request",
+      "bounded prior reports may only continue an explicit unfinished request" in _continuing_user_intent
+      and "The web endpoint is down; please repair it." in _continuing_user_intent
+      and "cpod-example" in _continuing_user_intent)
+_generic_scope_prompt = harness.render_prompt("inspect the reported symptom", {
+    "schema_version": 2,
+    "current_user_report": {"text": "the requested endpoint is unavailable", "source": "chat.current_user",
+                            "observed_at": "unknown", "status": "reported"},
+})
+check("scope-contract-has-no-incident-specific-runtime-patch",
+      all(term not in (harness.SYSTEM_PROMPT + harness.TOOL_DESC + _generic_scope_prompt).lower()
+          for term in ("filebrowser", "comfyui", "8188", "main.py", "/start.d/")))
 check("context-carries-labelled-screenshot-error-as-reference",
       "截图 OCR" in _rendered_context_prompt and
       "IndexError: list index out of range" in _rendered_context_prompt and
@@ -979,7 +1012,7 @@ check("context-main-verdict-still-emits", "mocked contextual diagnosis" in _main
 _first_tools = _captured_sdk_servers[0]["tools"]
 _legacy_flag_tools = _captured_sdk_servers[1]["tools"]
 _pending_tools = _captured_sdk_servers[2]["tools"]
-check("mcp-surface-version-bumped-for-background-lifecycle-and-atomic-create",
+check("mcp-surface-version-covers-endpoint-method-and-background-lifecycle",
       _captured_sdk_servers[0]["version"] == "2.6.0")
 check("main-registers-exact-single-repair-tool-surface",
       [tool._test_tool_name for tool in _first_tools] == [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
@@ -1196,6 +1229,10 @@ _endpoint_contract = _json.dumps({"description": _endpoint_tool._test_tool_descr
 check("endpoint-tool-exposes-only-opaque-target-id",
       _endpoint_tool._test_tool_schema["properties"]["target_id"]["enum"] == ["platform-http-1"] and
       all(field not in _endpoint_tool._test_tool_schema["properties"] for field in ("url", "host", "port")))
+check("endpoint-tool-offers-only-closed-read-methods-without-content-or-credential-input",
+      _endpoint_tool._test_tool_schema["properties"]["method"]["enum"] == ["GET", "HEAD"] and
+      all(field not in _endpoint_tool._test_tool_schema["properties"]
+          for field in ("token", "bearer_token", "authorization", "headers", "body")))
 check("endpoint-private-url-never-enters-prompt-or-tool-contract",
       all(secret not in (_captured_sdk_prompts[0] + _endpoint_contract)
           for secret in ("private.example.invalid", "never-render", "token=")))
@@ -1204,6 +1241,7 @@ check("endpoint-private-url-never-enters-prompt-or-tool-contract",
 # path that used to turn every structured-tool failure into refused_precondition.
 _saved_find_impl = harness.remote_search.find_paths
 _saved_guest_probe_impl = harness.guest_endpoint_probe.probe
+_saved_endpoint_probe_impl = harness.endpoint_probe.probe
 try:
     harness.remote_search.find_paths = lambda *_args, **_kwargs: {
         "ok": False, "error_class": "connect_failed", "detail": "TimeoutError"}
@@ -1227,9 +1265,51 @@ try:
           harness.AUDIT[-1]["disposition"] == "ran_read_only"
           and '"disposition": "ran"' in _guest_step
           and "is_error" not in _guest_responses[0])
+
+    _endpoint_args = []
+    harness.endpoint_probe.probe = lambda targets, target_id, path, method: (
+        _endpoint_args.append((target_id, path, method)) or {
+            "target_id": target_id, "kind": "http", "vantage": "ssh_ops_runner",
+            "transport_reachable": True, "stage": "http_response", "http_status": 200,
+            "method": method, "body_kind": "not_requested",
+        })
+    del harness.AUDIT[:]
+    _endpoint_responses = []
+    _endpoint_step = _capture(lambda: _endpoint_responses.append(
+        _asyncio.run(_endpoint_tool({
+            "target_id": "platform-http-1", "path": "/health", "method": "HEAD",
+        }))))
+    check("registered-endpoint-tool-passes-the-closed-read-method",
+          _endpoint_args == [("platform-http-1", "/health", "HEAD")]
+          and _endpoint_responses[0]["structuredContent"]["http_status"] == 200)
+    check("endpoint-step-and-audit-carry-only-the-opaque-target",
+          "private.example.invalid" not in _endpoint_step and "never-render" not in _endpoint_step
+          and all("private.example.invalid" not in str(item) for item in harness.AUDIT))
+    harness.endpoint_probe.probe = lambda *_args, **_kwargs: {
+        "target_id": "platform-http-1", "kind": "http", "vantage": "ssh_ops_runner",
+        "transport_reachable": False, "stage": "connect_or_tls", "error_class": "timeout",
+    }
+    del harness.AUDIT[:]
+    _negative_endpoint_responses = []
+    _negative_endpoint_step = _capture(lambda: _negative_endpoint_responses.append(
+        _asyncio.run(_endpoint_tool({"target_id": "platform-http-1"}))))
+    check("registered-negative-endpoint-attempt-is-a-completed-read",
+          harness.AUDIT[-1]["disposition"] == "ran_read_only"
+          and '"disposition": "ran"' in _negative_endpoint_step
+          and "is_error" not in _negative_endpoint_responses[0])
+    harness.endpoint_probe.probe = _saved_endpoint_probe_impl
+    del harness.AUDIT[:]
+    _invalid_endpoint_responses = []
+    _invalid_endpoint_step = _capture(lambda: _invalid_endpoint_responses.append(
+        _asyncio.run(_endpoint_tool({"target_id": "platform-http-1", "method": "POST"}))))
+    check("registered-unresolved-endpoint-input-is-a-precondition-refusal",
+          harness.AUDIT[-1]["disposition"] == "refused_precondition"
+          and '"disposition": "refused"' in _invalid_endpoint_step
+          and _invalid_endpoint_responses[0].get("is_error") is True)
 finally:
     harness.remote_search.find_paths = _saved_find_impl
     harness.guest_endpoint_probe.probe = _saved_guest_probe_impl
+    harness.endpoint_probe.probe = _saved_endpoint_probe_impl
 
 
 # The receipt is an ATTESTATION the audit stores, so it must not fire on a run the model never saw.
