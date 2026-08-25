@@ -223,9 +223,10 @@ check("pending-job-invalid-or-terminal-handle-is-not-resumed",
       harness.normalize_pending_background_job({"job_id": "job-not-opaque", "state": "running"}) is None and
       harness.normalize_pending_background_job({"job_id": _JOB_ID, "state": "succeeded"}) is None)
 _continuation_prompt = harness.render_prepared_prompt("继续排查", None, _pending_job)
-check("pending-job-prompt-requires-the-exact-read-only-poll",
-      _JOB_ID in _continuation_prompt and "only that read-only poll" in _continuation_prompt and
-      "without reconstructing or rerunning" in _continuation_prompt)
+check("pending-job-prompt-requires-exact-poll-and-allows-read-only-work",
+      _JOB_ID in _continuation_prompt and "Read-only diagnosis remains available" in _continuation_prompt
+      and "refuse every new guest change" in _continuation_prompt
+      and "Do not reconstruct or rerun" in _continuation_prompt)
 
 # A server rolled back below this harness still sends v1, and that must keep working — but against
 # the V1 allowlist, not the union. Two directions, because "accepts both" silently becoming "accepts
@@ -676,10 +677,10 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
                   "type": "preset", "preset": "claude_code",
                   "append": harness.REMOTE_INSTANCE_DELTA,
               })
-        _poll_only_opts = harness.build_options(
+        _continuation_opts = harness.build_options(
             object(), "test-model", 5, {"job_id": _JOB_ID, "state": "running"})
-        check("pending-job-options-expose-only-the-read-only-poll",
-              list(_poll_only_opts.allowed_tools) == [harness._BACKGROUND_JOB_POLL_TOOL])
+        check("pending-job-options-keep-the-stable-reviewed-surface",
+              list(_continuation_opts.allowed_tools) == harness.ALLOWED_TOOLS)
     except SystemExit as exc:
         print(f"XX  inv9-real-build-options-passes: {exc}")
         FAILS.append("inv9-real-build-options-passes")
@@ -1057,18 +1058,42 @@ check("context-main-verdict-still-emits", "mocked contextual diagnosis" in _main
 _first_tools = _captured_sdk_servers[0]["tools"]
 _legacy_flag_tools = _captured_sdk_servers[1]["tools"]
 _pending_tools = _captured_sdk_servers[2]["tools"]
-check("mcp-surface-version-bumped-for-remote-glob-tool",
-      _captured_sdk_servers[0]["version"] == "2.5.0")
+check("mcp-surface-version-bumped-for-background-lifecycle-and-atomic-create",
+      _captured_sdk_servers[0]["version"] == "2.6.0")
 check("main-registers-exact-single-repair-tool-surface",
       [tool._test_tool_name for tool in _first_tools] == [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
 check("removed-mode-flag-cannot-change-the-tool-surface",
       [tool._test_tool_name for tool in _legacy_flag_tools] ==
       [tool._test_tool_name for tool in _first_tools])
-check("pending-job-main-registers-only-the-poll-tool",
-      [tool._test_tool_name for tool in _pending_tools] == ["poll_background_job"])
+check("pending-job-main-keeps-the-reviewed-surface-for-read-only-and-post-terminal-work",
+      [tool._test_tool_name for tool in _pending_tools] ==
+      [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
 check("pending-job-main-prompt-carries-the-opaque-handle-not-a-command",
-      _JOB_ID in _captured_sdk_prompts[2] and "only that read-only poll" in _captured_sdk_prompts[2] and
+      _JOB_ID in _captured_sdk_prompts[2] and "Read-only diagnosis remains available" in _captured_sdk_prompts[2] and
       "pip install package" not in _captured_sdk_prompts[2])
+_pending_poll_tool = next(tool for tool in _pending_tools
+                          if tool._test_tool_name == "poll_background_job")
+_pending_ssh_tool = next(tool for tool in _pending_tools if tool._test_tool_name == "ssh_exec")
+_pending_atomic_tool = next(tool for tool in _pending_tools
+                            if tool._test_tool_name == "atomic_text_edit")
+_first_ssh_tool = next(tool for tool in _first_tools if tool._test_tool_name == "ssh_exec")
+_first_atomic_tool = next(tool for tool in _first_tools
+                          if tool._test_tool_name == "atomic_text_edit")
+check("ssh-exec-schema-owns-the-optional-background-mode",
+      _first_ssh_tool._test_tool_schema["required"] == ["command"] and
+      set(_first_ssh_tool._test_tool_schema["properties"]) ==
+      {"command", "run_in_background", "purpose"} and
+      _first_ssh_tool._test_tool_schema["properties"]["run_in_background"]["type"] == "boolean")
+check("atomic-edit-schema-is-generic-create-or-fragment-replace",
+      _first_atomic_tool._test_tool_schema["required"] ==
+      ["operation", "path", "change_summary"] and
+      set(_first_atomic_tool._test_tool_schema["properties"]["operation"]["enum"]) ==
+      {"create", "replace_fragment"} and
+      all(name in _first_atomic_tool._test_tool_schema["properties"]
+          for name in ("content", "mode", "expected_sha256", "old_text", "new_text")))
+check("background-terminal-states-are-the-only-slot-release-states",
+      harness._TERMINAL_BACKGROUND_JOB_STATES ==
+      {"succeeded", "failed", "interrupted", "not_found"})
 _saved_poll, _poll_saved_conn = harness.remote_job.poll, harness._CONN
 try:
     harness.remote_job.poll = lambda *_args, **_kwargs: {
@@ -1078,7 +1103,7 @@ try:
     harness.set_conn(conn)
     harness.AUDIT.clear()
     _poll_wire = _capture(lambda: _asyncio.run(
-        _pending_tools[0]({"job_id": _JOB_ID, "wait_seconds": 0})))
+        _pending_poll_tool({"job_id": _JOB_ID, "wait_seconds": 0})))
 finally:
     harness.remote_job.poll = _saved_poll
     harness._CONN = _poll_saved_conn
@@ -1088,24 +1113,85 @@ _poll_step = _json.loads(_poll_step_line)
 check("pending-job-poll-emits-the-opaque-handle-and-lifecycle",
       _poll_step.get("job_id") == _JOB_ID and _poll_step.get("job_state") == "running" and
       "pip install package" not in _poll_step_line)
-_start_tool = next(tool for tool in _first_tools if tool._test_tool_name == "start_background_job")
-_saved_start, _saved_new_job_id, _saved_confirm = (
-    harness.remote_job.start, harness.remote_job.new_job_id, harness._request_confirm)
+
+# Only the active opaque ID may be polled; this gate applies on first runs too, so an opaque-looking
+# guessed ID cannot be turned into an arbitrary /tmp job-directory read.
+_saved_unknown_poll = harness.remote_job.poll
+_unknown_poll_calls = []
 try:
-    harness.remote_job.new_job_id = lambda: _JOB_ID
+    harness.remote_job.poll = lambda *_args, **_kwargs: _unknown_poll_calls.append(True) or {
+        "ok": True, "state": "running",
+    }
+    _unknown_poll_wire = _capture(lambda: _asyncio.run(
+        _pending_poll_tool({"job_id": "job-" + "c" * 32, "wait_seconds": 0})))
+    _first_poll_tool = next(tool for tool in _first_tools
+                            if tool._test_tool_name == "poll_background_job")
+    _no_active_poll_wire = _capture(lambda: _asyncio.run(
+        _first_poll_tool({"job_id": _JOB_ID, "wait_seconds": 0})))
+finally:
+    harness.remote_job.poll = _saved_unknown_poll
+check("pending-job-rejects-every-unknown-job-id",
+      "refused_precondition" in _unknown_poll_wire and not _unknown_poll_calls)
+check("first-run-cannot-poll-an-untracked-opaque-job-id",
+      "refused_precondition" in _no_active_poll_wire and not _unknown_poll_calls)
+
+# An active job blocks every other write but not reads. Atomic edit is checked before SFTP; ssh_exec
+# checks the classified tier before opening a confirmation card.
+_saved_run_ssh, _saved_confirm = harness.ssh_transport.run_ssh, harness._request_confirm
+_confirm_calls = []
+try:
+    harness.set_conn(conn)
+    harness.ssh_transport.run_ssh = lambda *_args, **_kwargs: {
+        "exit_code": 0, "stdout": "GPU ok", "stderr": "", "truncated": False,
+    }
+    harness._request_confirm = lambda display: _confirm_calls.append(display) or (True, "")
+    _active_read_wire = _capture(lambda: _asyncio.run(
+        _pending_ssh_tool({"command": "nvidia-smi"})))
+    _active_write_wire = _capture(lambda: _asyncio.run(
+        _pending_ssh_tool({"command": "systemctl restart app"})))
+    _active_atomic_wire = _capture(lambda: _asyncio.run(_pending_atomic_tool({
+        "operation": "create", "path": "/workspace/app.conf", "content": "x=1\n",
+        "mode": "0644", "change_summary": "create requested config",
+    })))
+finally:
+    harness.ssh_transport.run_ssh = _saved_run_ssh
+    harness._request_confirm = _saved_confirm
+check("active-job-keeps-proven-read-only-ssh-available",
+      "ran_read_only" in _active_read_wire)
+check("active-job-refuses-foreground-writes-without-a-card",
+      "refused_precondition" in _active_write_wire and not _confirm_calls)
+check("active-job-refuses-atomic-edits-before-sftp-or-a-card",
+      "refused_precondition" in _active_atomic_wire and not _confirm_calls)
+
+# A terminal poll clears the active slot immediately, allowing a second long step in this diagnosis.
+_SECOND_JOB_ID = "job-" + "b" * 32
+_saved_start, _saved_new_job_id, _saved_confirm, _saved_poll = (
+    harness.remote_job.start, harness.remote_job.new_job_id, harness._request_confirm,
+    harness.remote_job.poll)
+try:
+    harness.remote_job.poll = lambda *_args, **_kwargs: {
+        "ok": True, "job_id": _JOB_ID, "state": "succeeded", "exit_code": 0,
+        "stdout": "done", "stderr": "", "stdout_bytes_total": 4, "stderr_bytes_total": 0,
+    }
+    _terminal_wire = _capture(lambda: _asyncio.run(
+        _pending_poll_tool({"job_id": _JOB_ID, "wait_seconds": 0})))
+    harness.remote_job.new_job_id = lambda: _SECOND_JOB_ID
     harness.remote_job.start = lambda *_args, **_kwargs: {
-        "ok": True, "job_id": _JOB_ID, "state": "started", "poll_with": "poll_background_job",
+        "ok": True, "job_id": _SECOND_JOB_ID, "state": "started",
+        "poll_with": "poll_background_job",
     }
     harness._request_confirm = lambda _display: (True, "")
     harness.set_conn(conn)
     harness.AUDIT.clear()
-    _start_wire = _capture(lambda: _asyncio.run(_start_tool({
+    _start_wire = _capture(lambda: _asyncio.run(_pending_ssh_tool({
         "command": "python3 -m pip install package", "purpose": "install package",
+        "run_in_background": True,
     })))
 finally:
     harness.remote_job.start = _saved_start
     harness.remote_job.new_job_id = _saved_new_job_id
     harness._request_confirm = _saved_confirm
+    harness.remote_job.poll = _saved_poll
     harness._CONN = _poll_saved_conn
 _start_step_line = next((line[len("@@STEP "):] for line in _start_wire.splitlines()
                          if line.startswith("@@STEP ")), "{}")
@@ -1114,13 +1200,15 @@ _start_job_line = next((line[len("@@JOB "):] for line in _start_wire.splitlines(
                         if line.startswith("@@JOB ")), "{}")
 _start_job = _json.loads(_start_job_line)
 check("background-job-start-emits-the-resumable-handle-before-a-turn-can-disconnect",
-      _start_job == {"job_id": _JOB_ID, "job_state": "unknown"} and
+      "job_state\": \"succeeded" in _terminal_wire and
+      _start_job == {"job_id": _SECOND_JOB_ID, "job_state": "unknown"} and
       _start_wire.index("@@JOB ") < _start_wire.index("@@STEP ") and
-      _start_step.get("job_id") == _JOB_ID and _start_step.get("job_state") == "started")
-_second_start_wire = _capture(lambda: _asyncio.run(_start_tool({
+      _start_step.get("job_id") == _SECOND_JOB_ID and _start_step.get("job_state") == "started")
+_second_start_wire = _capture(lambda: _asyncio.run(_pending_ssh_tool({
     "command": "python3 -m pip install another", "purpose": "install another",
+    "run_in_background": True,
 })))
-check("one-diagnosis-cannot-replace-its-background-job-handle",
+check("one-active-job-cannot-be-replaced-by-a-concurrent-job",
       "@@JOB " not in _second_start_wire and "refused_precondition" in _second_start_wire)
 _endpoint_tool = next(tool for tool in _first_tools if tool._test_tool_name == "endpoint_probe")
 _remote_text_tool = next(tool for tool in _first_tools if tool._test_tool_name == "read_text_file")

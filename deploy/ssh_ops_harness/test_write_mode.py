@@ -185,15 +185,15 @@ check("gate-actually-allows-redirect",
 check("gate-actually-allows-pipe", guardrails.classify("ps aux | grep -i comfy") == "read_only")
 check("tool-desc-drops-false-shape-clause",
       "no chaining/pipes/redirection" not in _WRITE_DESC)
-# The BrokenPipe/exit-124 lesson is now executable structure rather than a shell recipe the model has
-# to reproduce. The SSH description must route long work to the two reviewed tools and must not keep
-# teaching a parallel hand-rolled protocol that can drift from them.
-check("tool-desc-routes-long-work-to-structured-job",
-      "structured background-job tools" in _WRITE_DESC and
-      "do not hand-roll detachment" in _WRITE_DESC)
-check("surface-has-start-and-poll-job-tools",
-      all(name in harness.ALLOWED_TOOLS for name in
-          ("mcp__ssh_ops__start_background_job", "mcp__ssh_ops__poll_background_job")))
+# Backgrounding is one execution mode of ssh_exec, not a parallel shell tool. The description owns
+# the lifecycle contract and must not teach a hand-rolled protocol that can drift from it.
+check("tool-desc-routes-long-work-to-ssh-exec-background-mode",
+      "run_in_background=true" in flat(_WRITE_DESC) and "do not hand-roll" in _WRITE_DESC.lower() and
+      "At most one job may be active" in flat(_WRITE_DESC))
+check("surface-has-one-shell-tool-plus-a-read-only-poll",
+      "mcp__ssh_ops__ssh_exec" in harness.ALLOWED_TOOLS and
+      "mcp__ssh_ops__poll_background_job" in harness.ALLOWED_TOOLS and
+      all("start_background_job" not in name for name in harness.ALLOWED_TOOLS))
 
 # The lane has no skills or built-in Skill tool; policy lives in the prompt and executable tools.
 check("skills-are-gone-from-the-module", not hasattr(harness, "skills_for") and not hasattr(harness, "SKILLS"))
@@ -208,7 +208,7 @@ check("prompt-does-not-claim-skill-load", "skill" not in _WRITE_PROMPT.lower())
 # back to its original posture — no built-in exists on the control-plane host.
 check("skill-tool-no-longer-exists", harness.TOOLS_BASE == [])
 check("atomic-file-tool-exists-in-single-repair-surface",
-      "mcp__ssh_ops__atomic_text_replace" in harness.ALLOWED_TOOLS)
+      "mcp__ssh_ops__atomic_text_edit" in harness.ALLOWED_TOOLS)
 check("remote-text-tool-exists-in-single-repair-surface",
       "mcp__ssh_ops__read_text_file" in harness.ALLOWED_TOOLS)
 check("remote-search-tool-exists-in-single-repair-surface",
@@ -223,7 +223,8 @@ check("guest-endpoint-probe-exists-in-single-repair-surface",
       "mcp__ssh_ops__guest_endpoint_probe" in harness.ALLOWED_TOOLS)
 check("atomic-file-tool-is-hash-bound-and-backed-up",
       all(term in harness.atomic_file.TOOL_DESCRIPTION
-          for term in ("SHA-256", "same-directory backup", "atomically renames")))
+          for term in ("SHA-256", "same-directory temporary", "recoverable backup",
+                       "Create never overwrites")))
 check("remote-text-tool-is-bounded-read-only-and-hash-bearing",
       all(term in harness.remote_text.TOOL_DESCRIPTION
           for term in ("read-only", "32 KiB", "whole-file SHA-256", "follows no symlink")))
@@ -364,7 +365,8 @@ check("prompt-within-verified-length-band", len(_wp) < 6000)
 # rather than against a file, which is the whole point of the move.
 check("repair-rule-executed-section-survives", "In `已完成`" in _wp)
 check("repair-rule-long-job-lifecycle-survives",
-      "structured background-job tools" in _td and "timed-out foreground command" in _td)
+      "run_in_background=true" in _td and "timed-out foreground command" in _td and
+      "terminal poll frees the slot" in _td)
 check("repair-rule-own-failed-attempts-survives",
       "attempts that ran but failed" in _wp and "label it as your action" in _wp)
 

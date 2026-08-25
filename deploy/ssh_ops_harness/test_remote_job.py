@@ -51,13 +51,13 @@ check("nested-self-backgrounding-payload-is-refused",
       remote_job.command_is_self_backgrounding("bash -c 'sleep 2 &'") is True)
 check("foreground-chain-remains-supported",
       remote_job.command_is_self_backgrounding("apt-get update && apt-get install -y jq") is False)
-check("description-routes-nonterminating-service-start-to-the-job-tool",
-      "foreground service process" in remote_job.START_DESCRIPTION and
-      "stop/wait and foreground replacement start" in remote_job.START_DESCRIPTION and
-      "instead of first sending it through ssh_exec" in remote_job.START_DESCRIPTION)
+check("approval-display-binds-background-mode-purpose-and-command",
+      remote_job.confirmation_display("python3 app.py", "start the requested app") ==
+      "ssh_exec run_in_background=true purpose=start the requested app command=python3 app.py")
 check("poll-schema-supports-bounded-wait",
       remote_job.poll_schema()["properties"]["wait_seconds"]["maximum"] == 30 and
-      "tight loop" in remote_job.POLL_DESCRIPTION)
+      "tight loop" in remote_job.POLL_DESCRIPTION and
+      "currently active" in remote_job.POLL_DESCRIPTION)
 
 
 class _File:

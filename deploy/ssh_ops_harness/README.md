@@ -24,14 +24,15 @@ sudoers.d drop-in 都是可确认操作。只有不可恢复的数据/启动/登
   绝对 path/query，以验证 `/health`、`/index.html` 等真实入口，但模型仍不能传 URL、主机、端口、
   header 或 body，平台 URL 中已有的 token 只在 harness 内私有保留。结果也不带真实地址或 token，
   只证明 ssh-ops runner 这一网络视角。
-- `start_background_job` / `poll_background_job`：写模式下将已经诊断清楚、已经逐项确认的长命令
-  放入私有 job 目录；stdin/stdout/stderr 全部脱离 SSH 会话，PID 带 job marker，完成码原子落盘。
-  轮询只返回有界日志尾部并只接受 `job-...` ID，不能借它读取任意路径。任务文件不继承日志大小限制，
+- `ssh_exec(run_in_background=true)` / `poll_background_job`：将已经诊断清楚、已经逐项确认的
+  长命令放入私有 job 目录；stdin/stdout/stderr 全部脱离 SSH 会话，PID 带 job marker，完成码原子落盘。
+  同时最多一个 active，期间仍可只读排查；轮询终态后可在同一诊断继续下一项修复。轮询只接受当前
+  opaque `job-...` ID 并返回有界日志尾部，不能借它读取任意路径。任务文件不继承日志大小限制，
   因而安装大 wheel、下载模型或编译大产物不会被当成“日志过大”截断；启动大型任务前应先检查磁盘余量。
-- `atomic_text_replace`：写模式下对一个已由 `read_text_file` 读取的既有 UTF-8 普通文件做一次
-  SHA-256 绑定的精确替换；批准后
-  再检查 hash/metadata，保留同目录备份并使用 OpenSSH `posix-rename` 原子替换。确认卡和审计只显示
-  路径、用途和前后 hash，不显示文件内容。
+- `atomic_text_edit`：对一个已由 `read_text_file` 读取的既有 UTF-8 普通文件做 SHA-256 绑定的
+  `replace_fragment`，或在父目录已存在时无覆盖地 `create` 一个有界 UTF-8 文件。批准后重新检查
+  路径/元数据，使用同目录临时文件并回读 hash；替换另保留同目录备份。确认卡和审计只显示操作、
+  路径、用途、mode/count 和前后 hash，不显示文件内容。
 
 平台入口 URL 及 SSH 地址只在 Go→harness 的 stdin 私有握手里存在；它们不进入 task、prompt、
 模型输出或审计。平台元数据、Guest listener、应用响应和 runner 视角的外部探测仍是四层不同证据。

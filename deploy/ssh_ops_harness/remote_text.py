@@ -45,7 +45,7 @@ TOOL_DESCRIPTION = (
     "caller-named text file. It is read-only, follows no symlink, refuses credential stores, private "
     "keys and kernel/device pseudo-files, caps files at 1 MiB and returned content at 32 KiB, and "
     "redacts credential-shaped values. The result includes the whole-file SHA-256 required by "
-    "atomic_text_replace plus line-window metadata. Use ssh_exec for generated process, listener, "
+    "atomic_text_edit plus line-window metadata. Use ssh_exec for generated process, listener, "
     "hardware and service-manager state, and for bounded log searches rather than reading a large "
     "log as one file."
 )

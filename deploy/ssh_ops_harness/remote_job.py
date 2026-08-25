@@ -12,44 +12,18 @@ _JOB_ID = re.compile(r"^job-[0-9a-f]{32}$")
 _RETURN_LOG_BYTES = 16000
 _SHELLS = {"sh", "bash", "dash", "zsh", "ksh"}
 
-START_DESCRIPTION = (
-    "Start one previously diagnosed, user-approved remote command as a durable background job when "
-    "it cannot finish inside the 25-second SSH command bound (for example package installation, a "
-    "model download, compilation, or a foreground service process that must remain running). When "
-    "no service manager exists, put the narrow stop/wait and foreground replacement start in this "
-    "one confirmed payload instead of first sending it through ssh_exec. The tool creates a private "
-    "job directory, detaches stdin and "
-    "both output streams, records the exit code, and returns a job_id. Check available disk space "
-    "before starting large work; poll returns bounded log tails even though the on-instance logs "
-    "remain complete. The "
-    "exact original command is shown on the approval card. At most one background job may be started "
-    "in a diagnosis. Use poll_background_job on later calls; "
-    "do not resend the foreground command or hand-roll nohup/redirection. This does not authorize a "
-    "broader repair, destructive operation, reboot, or substitute platform service.")
-
 POLL_DESCRIPTION = (
     "Read the state and bounded stdout/stderr tail of a background job previously returned by "
-    "start_background_job. This is read-only. It accepts only the opaque job-NNN ID and cannot read "
+    "ssh_exec with run_in_background=true. This is read-only. It accepts only the currently active "
+    "opaque job-NNN ID and cannot read "
     "an arbitrary path. Set wait_seconds (normally 15-30) so the tool waits before checking instead "
-    "of burning model turns in a tight loop. After six running polls, stop and report partial repair, "
-    "the job_id, progress and pending verification; a later turn resumes rather than restarts it. "
+    "of burning model turns in a tight loop. Read-only diagnosis remains available while it runs, "
+    "but no other guest change or second background job is allowed until a poll observes a terminal "
+    "state. After six running polls, stop and report partial repair, the job_id, progress and pending "
+    "verification; a later turn resumes rather than restarts it. "
     "Repeated calls return only new log bytes plus total byte counts and log_progress. `running` means the recorded PID still exists; `succeeded` means exit "
     "code zero; `failed` includes the non-zero exit code; `interrupted` means no completion record "
     "and no process (for example after a restart).")
-
-
-def start_schema():
-    return {
-        "type": "object",
-        "properties": {
-            "command": {"type": "string", "minLength": 1, "maxLength": 1500,
-                        "description": "Exact remote command to run in the background."},
-            "purpose": {"type": "string", "minLength": 1, "maxLength": 200,
-                        "description": "Short evidence-backed purpose; no secrets."},
-        },
-        "required": ["command", "purpose"],
-        "additionalProperties": False,
-    }
 
 
 def poll_schema():
@@ -68,7 +42,7 @@ def poll_schema():
 
 def confirmation_display(command, purpose):
     purpose = " ".join(str(purpose or "").split())[:200]
-    return "start_background_job purpose=%s command=%s" % (purpose, command)
+    return "ssh_exec run_in_background=true purpose=%s command=%s" % (purpose, command)
 
 
 def command_is_self_backgrounding(command):

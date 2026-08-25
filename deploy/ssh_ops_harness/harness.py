@@ -61,7 +61,7 @@ ALLOWED_TOOLS = [
     "mcp__ssh_ops__read_process_environment",
     "mcp__ssh_ops__endpoint_probe", "mcp__ssh_ops__guest_endpoint_probe",
     "mcp__ssh_ops__poll_background_job",
-    "mcp__ssh_ops__atomic_text_replace", "mcp__ssh_ops__start_background_job",
+    "mcp__ssh_ops__atomic_text_edit",
 ]
 DISALLOWED_TOOLS = [
     "Bash", "BashOutput", "KillShell", "Read", "Write", "Edit", "NotebookEdit",
@@ -196,29 +196,48 @@ def system_prompt_for_variant(value):
         preset["append"] = REMOTE_INSTANCE_DELTA
     return preset
 
-TOOL_DESC = """Run one SSH command. Positively proven reads run now; other reversible effects need exact
-approval. Returns exit status. For repair, send the smallest concrete command; it runs when the user
-approves that exact command. Repair the diagnosed fault only; re-downloading an application or disabling
-an unrelated service needs separate user intent unless the task requests it. Irreversible
-data/boot/recovery loss, control-plane crossings,
-reboot, accounts/passwords, SSH/network disabling and substitution are refused. Pipes, chains, globs,
-redirection and multi-line scripts work. Use the application's actual interpreter. Rewrite only a rejected
-form; never bypass policy/approval. Each call is classified as one effect; keep independently useful probes
-in separate calls.
+TOOL_DESC = """Run one SSH command and return its exit status. Positively proven reads run now; other
+reversible effects need exact approval. For repair, send the smallest concrete command; it runs when the
+user approves that exact command. Repair the diagnosed fault only: re-downloading an application or
+disabling an unrelated service needs separate user intent unless the task requests it. Irreversible loss,
+control-plane crossings, reboot, accounts/passwords, SSH/network disabling and substitution are refused.
+Use the application's actual interpreter. Rewrite only a rejected form; never bypass policy/approval. Each call is
+classified as one effect; keep independently useful probes in separate calls.
 
-Use find_paths/search_text_tree below a known app root, then read_text_file for an exact window. Use
-read_process_environment only for selected variables. Each call is a fresh, non-interactive SSH session
-capped at 25 seconds. Use structured background-job tools for long work; do not hand-roll detachment or
-resend a timed-out foreground command.
+Each call is a fresh, non-interactive SSH session capped at 25 seconds. For long work set
+run_in_background=true and give an evidence-backed purpose. ssh_exec owns detachment, logs and the opaque
+ID. At most one job may be
+active: while active, poll it and continue reads; other changes are refused. A terminal poll frees the slot.
+Do not hand-roll detachment or resend a timed-out foreground command.
 
 For managed service, use its existing supervisor/launcher, not an inner binary. Do not create a new unit
 merely because a manager exists; when only a launcher exists, use it and report the durability gap. Never
-invent a platform-facing port or substitute service. A traceback proves failure site, not intended semantics:
-edit only with a local test or version contract; otherwise use reversible rollback/disable within scope.
-Before starting, reconcile any surviving child outside that ownership; bounded-poll transitional manager
-states to a terminal result. Verify the full service contract owned by the launcher. Restarting the instance
-is unavailable. A process or service restart is not an instance reboot; if guest-local restart cannot recover,
-ask whether the user wants the instance restarted; do not seek a guest-shell workaround."""
+invent a platform-facing port or substitute service. Before starting, reconcile any surviving child outside
+that ownership; bounded-poll transitional manager states to a terminal result. Verify the full service
+contract owned by the launcher. A traceback proves failure site, not intended semantics: edit only with a
+local test or version contract; otherwise use reversible rollback/disable within scope. Restarting the
+instance is unavailable. A process or service restart is not an instance reboot; if guest-local restart
+cannot recover, ask whether the user wants the instance restarted; do not seek a guest-shell workaround."""
+
+
+def ssh_exec_schema():
+    """One command contract; backgrounding is an execution mode, not a second shell tool."""
+    return {
+        "type": "object",
+        "properties": {
+            "command": {"type": "string", "minLength": 1, "maxLength": _MAX_CONFIRMABLE_COMMAND},
+            "run_in_background": {
+                "type": "boolean", "default": False,
+                "description": "Run a confirmed long command through the managed background protocol.",
+            },
+            "purpose": {
+                "type": "string", "maxLength": 200,
+                "description": "Required only for background work; short evidence-backed purpose, no secrets.",
+            },
+        },
+        "required": ["command"],
+        "additionalProperties": False,
+    }
 
 
 def read_handshake(line: str) -> dict:
@@ -260,7 +279,6 @@ _CONTEXT_FACT_KEYS_BY_VERSION = {1: _CONTEXT_FACT_KEYS_V1, 2: _CONTEXT_FACT_KEYS
 _BACKGROUND_JOB_ID = re.compile(r"^job-[0-9a-f]{32}$")
 _ACTIVE_BACKGROUND_JOB_STATES = {"started", "running", "unknown"}
 _TERMINAL_BACKGROUND_JOB_STATES = {"succeeded", "failed", "interrupted", "not_found"}
-_BACKGROUND_JOB_POLL_TOOL = "mcp__ssh_ops__poll_background_job"
 
 
 def _context_text(value, limit=_MAX_CONTEXT_TEXT):
@@ -446,8 +464,10 @@ def render_prepared_prompt(task, context, pending_background_job=None):
         continuation = (
             "\n\nA previously approved background job on this same instance is still unresolved: "
             + _context_json(pending_background_job) + ". Call poll_background_job with that exact "
-            "job_id. This continuation run exposes only that read-only poll; report its current "
-            "state and output without reconstructing or rerunning the command that created it."
+            "job_id before proposing another change. Read-only diagnosis remains available, but the "
+            "tools refuse every new guest change while this job is active. Do not reconstruct or "
+            "rerun the command that created it. Once a poll observes a terminal state, continue the "
+            "smallest necessary repair and verification normally."
         )
     if context is None:
         return task + continuation
@@ -725,7 +745,7 @@ def _emit_verdict(text: str) -> None:
     sys.stdout.flush()
 
 
-def run_command(command: str) -> dict:
+def run_command(command: str, mutating_precondition: str = "") -> dict:
     """Classify the command and, only for the read_only tier, execute it via SSH + scrub. SDK-free.
     Returns {text, is_error, tier, executed}. Appends one AUDIT record (never carrying the credential)
     and emits exactly one @@STEP line — from the finally, the sole point all six return paths converge,
@@ -740,6 +760,10 @@ def run_command(command: str) -> dict:
             return {"text": f"⛔ REFUSED — destructive command, never executed: {command}",
                     "is_error": True, "tier": tier, "executed": False}
         if tier == "mutating":
+            if mutating_precondition:
+                entry["disposition"] = "refused_precondition"
+                return {"text": ("⛔ NOT EXECUTED — " + mutating_precondition),
+                        "is_error": True, "tier": tier, "executed": False}
             # The SHAPE gate is NOT part of the read-only policy — it is the prompt-injection
             # firewall, and it survives write mode unchanged. `classify` scans the LITERAL command
             # for destructive verbs, so `$(printf '\\x72\\x6d') -rf /` reads as harmless text to it;
@@ -944,13 +968,14 @@ def preflight_probe(conn):
 TOOLS_BASE = []
 
 
-def assert_tool_surface(opts, poll_only=False) -> None:
+def assert_tool_surface(opts) -> None:
     """INV-9: fail CLOSED unless the exact reviewed MCP surface exists and no built-in exists.
     A built-in Bash/Read here would run on the LOCAL control-plane host and bypass the SSH guardrails
     entirely (the spike's #1 safety bug).
 
-    A normal run expects every ALLOWED_TOOLS entry; a background-job continuation passes the exact
-    one-tool poll subset. `tools` is the load-bearing
+    Every run expects the same ALLOWED_TOOLS entries. A background-job continuation still needs
+    read-only diagnosis and may proceed after a terminal poll; executable gates reject every new
+    guest change while the opaque handle is active. `tools` is the load-bearing
     off-switch, asserted FIRST: per the SDK it is the base set of built-ins
     that EXIST, and anything absent from it cannot run at all. `allowed_tools` only grants auto-approval
     (a built-in NOT listed there still EXISTS), and `disallowed_tools` is a hand-enumerated denylist a
@@ -982,7 +1007,7 @@ def assert_tool_surface(opts, poll_only=False) -> None:
             f"INV-9: tools must be exactly {TOOLS_BASE} — no built-in may EXIST "
             f"(allowed_tools grants auto-approval, not existence), got {tools!r}")
     allowed = list(getattr(opts, "allowed_tools", None) or [])
-    expected_allowed = [_BACKGROUND_JOB_POLL_TOOL] if poll_only else list(ALLOWED_TOOLS)
+    expected_allowed = list(ALLOWED_TOOLS)
     if allowed != expected_allowed:
         raise SystemExit(f"INV-9: allowed_tools must be exactly {expected_allowed}, got {allowed}")
     disallowed = set(getattr(opts, "disallowed_tools", None) or [])
@@ -1160,11 +1185,10 @@ def resolve_claude_cli() -> str:
 def build_options(server, model, max_turns=DEFAULT_MAX_TURNS, pending_background_job=None,
                   prompt_variant=DEFAULT_PROMPT_VARIANT):
     from claude_agent_sdk import ClaudeAgentOptions
-    # A continuation run has one job and one operation: observe it. Keeping an exact single-tool
-    # surface makes "do not replay" structural rather than a prompt preference. A later user turn
-    # gets the normal repair surface only after this handle reaches a terminal state.
-    allowed_tools = ([_BACKGROUND_JOB_POLL_TOOL]
-                     if pending_background_job is not None else list(ALLOWED_TOOLS))
+    # Keep a stable surface across a continuation: read-only diagnosis remains useful while a job
+    # runs, and the same model turn may continue after polling it terminal. The tool functions, not
+    # prompt text, reject any concurrent guest change or unknown job ID.
+    allowed_tools = list(ALLOWED_TOOLS)
     opts = ClaudeAgentOptions(
         tools=list(TOOLS_BASE),                          # INV-9: no built-in exists (no Skill/Bash/Read/Write)
         system_prompt=system_prompt_for_variant(prompt_variant),
@@ -1177,7 +1201,7 @@ def build_options(server, model, max_turns=DEFAULT_MAX_TURNS, pending_background
         model=model,
         cli_path=resolve_claude_cli(),                    # never silently use the SDK's older bundled CLI
     )
-    assert_tool_surface(opts, pending_background_job is not None)  # fail closed before any turn
+    assert_tool_surface(opts)  # fail closed before any turn
     return opts
 
 
@@ -1223,9 +1247,80 @@ async def main():
         _emit_verdict(f"⚠ 实例内排查未能开始：{reason}")
         return
 
-    @tool("ssh_exec", TOOL_DESC, {"command": str})
+    active_background_job_id = (pending_background_job or {}).get("job_id")
+
+    @tool("ssh_exec", TOOL_DESC, ssh_exec_schema())
     async def ssh_exec(args):
-        r = run_command(args.get("command") or "")
+        nonlocal active_background_job_id
+        command = str(args.get("command") or "").strip()
+        run_in_background = args.get("run_in_background", False)
+        if not isinstance(run_in_background, bool):
+            result = {"ok": False, "error_class": "refused_precondition",
+                      "message": "run_in_background must be a boolean"}
+            rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+            _record_structured_step("ssh_exec command=invalid", "mutating",
+                                    "refused_precondition", len(rendered.encode("utf-8")))
+            return {"content": [{"type": "text", "text": rendered}],
+                    "structuredContent": result, "is_error": True}
+        if run_in_background:
+            purpose = " ".join(str(args.get("purpose") or "").split())[:200]
+            display = remote_job.confirmation_display(command, purpose)
+            tier = guardrails.classify(command)
+            refusal = ""
+            message = ""
+            if active_background_job_id:
+                refusal, message = "refused_precondition", (
+                    "a background job is still active; poll it to a terminal state before another change")
+            elif not command or len(command) > 1500 or not purpose:
+                refusal, message = "refused_precondition", (
+                    "background execution requires a bounded command and a non-empty purpose")
+            elif remote_job.command_is_self_backgrounding(command):
+                refusal, message = "refused_form", (
+                    "the payload must stay in the foreground; ssh_exec owns detachment")
+            elif tier == "destructive":
+                refusal, message = "refused_destructive", "destructive commands are unavailable"
+            elif guardrails.is_form_violation(command):
+                refusal, message = "refused_form", "command form rejected"
+            elif len(display) > _MAX_CONFIRMABLE_COMMAND:
+                refusal, message = "refused_unconfirmable", (
+                    "operation is too long for an exact approval card")
+            if refusal:
+                _record_structured_step(display[:_MAX_CONFIRMABLE_COMMAND], "mutating", refusal)
+                result = {"ok": False, "error_class": refusal, "message": message}
+                rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+                return {"content": [{"type": "text", "text": rendered}],
+                        "structuredContent": result, "is_error": True}
+            approved, refusal = _request_confirm(display)
+            if not approved:
+                _record_structured_step(display, "mutating", refusal)
+                text = _confirmation_refusal_text(refusal, display)
+                return {"content": [{"type": "text", "text": text}], "is_error": True}
+            job_id = remote_job.new_job_id()
+            active_background_job_id = job_id
+            # Publish BEFORE the launcher SSH call: a disconnect may kill this harness while the
+            # detached guest process survives. The next turn polls rather than replaying it.
+            _emit_background_job(job_id, "unknown")
+            result = await asyncio.to_thread(
+                remote_job.start, _CONN, command, purpose, _secrets(), job_id=job_id)
+            rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+            disposition = ("ran_mutating" if result.get("ok") or result.get("box_may_be_changed")
+                           else "remote_job_failed")
+            state = str(result.get("state") or
+                        ("unknown" if result.get("box_may_be_changed") else "not_found"))
+            _record_structured_step(display, "mutating", disposition,
+                                    len(rendered.encode("utf-8")), job_id, state)
+            if state in _TERMINAL_BACKGROUND_JOB_STATES:
+                active_background_job_id = None
+            return {"content": [{"type": "text", "text": rendered}],
+                    "structuredContent": result,
+                    **({"is_error": True} if not result.get("ok") else {})}
+
+        active_message = ""
+        if active_background_job_id:
+            active_message = (
+                "a background job is still active; poll it to a terminal state before any other "
+                "guest change. Read-only commands remain available.")
+        r = run_command(command, mutating_precondition=active_message)
         return {"content": [{"type": "text", "text": r["text"]}],
                 **({"is_error": True} if r["is_error"] else {})}
 
@@ -1315,10 +1410,11 @@ async def main():
           annotations=ToolAnnotations(title="Poll a remote background job", readOnlyHint=True,
                                       destructiveHint=False, idempotentHint=True, openWorldHint=True))
     async def poll_background_job(args):
+        nonlocal active_background_job_id
         job_id = args.get("job_id") or ""
-        if pending_background_job is not None and job_id != pending_background_job["job_id"]:
+        if not active_background_job_id or job_id != active_background_job_id:
             result = {"ok": False, "error_class": "invalid_job_id",
-                      "message": "this continuation may poll only its server-provided job_id"}
+                      "message": "poll accepts only the currently active server-tracked job_id"}
             rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
             _record_structured_step("poll_background_job job=invalid", "read_only",
                                     "refused_precondition", len(rendered.encode("utf-8")))
@@ -1339,20 +1435,33 @@ async def main():
         _record_structured_step("poll_background_job job=" + str(job_id)[:64], "read_only",
                                 disposition, len(rendered.encode("utf-8")),
                                 str(result.get("job_id") or job_id), state)
+        if state in _TERMINAL_BACKGROUND_JOB_STATES:
+            active_background_job_id = None
+            _JOB_POLL_OFFSETS.pop(job_id, None)
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
                 **({"is_error": True} if disposition != "ran_read_only" else {})}
 
     sdk_tools = [ssh_exec, read_text_file, find_paths, search_text_tree, read_process_environment,
                  probe_endpoint, probe_guest_endpoint, poll_background_job]
 
-    @tool("atomic_text_replace", atomic_file.TOOL_DESCRIPTION, atomic_file.input_schema(),
+    @tool("atomic_text_edit", atomic_file.TOOL_DESCRIPTION, atomic_file.input_schema(),
           annotations=ToolAnnotations(title="Atomically edit one text file", readOnlyHint=False,
                                       destructiveHint=True, idempotentHint=False, openWorldHint=True))
-    async def atomic_text_replace(args):
-        plan = await asyncio.to_thread(atomic_file.prepare_replace, _CONN, args)
+    async def atomic_text_edit(args):
+        if active_background_job_id:
+            result = {"ok": False, "error_class": "refused_precondition",
+                      "message": ("a background job is still active; poll it to a terminal state "
+                                  "before any file change")}
+            rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
+            display = "atomic_text_edit path=" + str(args.get("path") or "invalid")[:512]
+            _record_structured_step(display, "mutating", "refused_precondition",
+                                    len(rendered.encode("utf-8")))
+            return {"content": [{"type": "text", "text": rendered}],
+                    "structuredContent": result, "is_error": True}
+        plan = await asyncio.to_thread(atomic_file.prepare_edit, _CONN, args)
         if not plan.get("ok"):
             rendered = json.dumps(plan, ensure_ascii=False, separators=(",", ":"))
-            display = "atomic_text_replace path=" + str(plan.get("path") or "invalid")[:512]
+            display = "atomic_text_edit path=" + str(plan.get("path") or "invalid")[:512]
             _record_structured_step(display, "mutating", "refused_precondition",
                                     len(rendered.encode("utf-8")))
             return {"content": [{"type": "text", "text": rendered}], "structuredContent": plan,
@@ -1363,7 +1472,7 @@ async def main():
             _record_structured_step(display, "mutating", refusal)
             text = _confirmation_refusal_text(refusal, display)
             return {"content": [{"type": "text", "text": text}], "is_error": True}
-        result = await asyncio.to_thread(atomic_file.apply_replace, _CONN, plan)
+        result = await asyncio.to_thread(atomic_file.apply_edit, _CONN, plan)
         rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         # A failed rollback is still an executed mutation and must be reported as one. Every
         # clean failure/precondition refusal remains failed/refused rather than overstating it.
@@ -1372,71 +1481,10 @@ async def main():
         return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
                 **({"is_error": True} if not result.get("ok") else {})}
 
-    sdk_tools.append(atomic_text_replace)
-
-    background_job_started = False
-
-    @tool("start_background_job", remote_job.START_DESCRIPTION, remote_job.start_schema(),
-          annotations=ToolAnnotations(title="Start a remote background job", readOnlyHint=False,
-                                      destructiveHint=True, idempotentHint=False, openWorldHint=True))
-    async def start_background_job(args):
-        nonlocal background_job_started
-        command = str(args.get("command") or "").strip()
-        purpose = " ".join(str(args.get("purpose") or "").split())[:200]
-        display = remote_job.confirmation_display(command, purpose)
-        tier = guardrails.classify(command)
-        refusal = ""
-        message = ""
-        if background_job_started:
-            refusal, message = "refused_precondition", "only one background job may be started per diagnosis"
-        elif not command or len(command) > 1500 or not purpose:
-            refusal, message = "refused_precondition", "invalid or oversized background-job request"
-        elif remote_job.command_is_self_backgrounding(command):
-            refusal, message = "refused_form", (
-                "the job payload must stay in the foreground; the job tool owns detachment")
-        elif tier == "destructive":
-            refusal, message = "refused_destructive", "destructive commands are unavailable"
-        elif guardrails.is_form_violation(command):
-            refusal, message = "refused_form", "command form rejected"
-        elif len(display) > _MAX_CONFIRMABLE_COMMAND:
-            refusal, message = "refused_unconfirmable", "operation is too long for an exact approval card"
-        if refusal:
-            _record_structured_step(display[:_MAX_CONFIRMABLE_COMMAND], "mutating", refusal)
-            result = {"ok": False, "error_class": refusal, "message": message}
-            rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-            return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
-                    "is_error": True}
-        approved, refusal = _request_confirm(display)
-        if not approved:
-            _record_structured_step(display, "mutating", refusal)
-            text = _confirmation_refusal_text(refusal, display)
-            return {"content": [{"type": "text", "text": text}], "is_error": True}
-        background_job_started = True
-        job_id = remote_job.new_job_id()
-        # Publish BEFORE remote_job.start: after approval, a disconnect can kill this harness while
-        # the short launcher SSH call is in flight even though the detached guest process survives.
-        _emit_background_job(job_id, "unknown")
-        result = await asyncio.to_thread(
-            remote_job.start, _CONN, command, purpose, _secrets(), job_id=job_id)
-        rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-        disposition = "ran_mutating" if result.get("ok") or result.get("box_may_be_changed") else "remote_job_failed"
-        state = str(result.get("state") or
-                    ("unknown" if result.get("box_may_be_changed") else "not_found"))
-        _record_structured_step(display, "mutating", disposition, len(rendered.encode("utf-8")),
-                                job_id, state)
-        return {"content": [{"type": "text", "text": rendered}], "structuredContent": result,
-                **({"is_error": True} if not result.get("ok") else {})}
-
-    # A live continuation is a read-only observation run. Do not expose any command/edit/start tool:
-    # the original command is intentionally absent, and no model decision can reconstruct or replay
-    # it behind the user's back. Once terminal, a later turn starts a normal diagnosis if needed.
-    if pending_background_job is not None:
-        sdk_tools = [poll_background_job]
-    else:
-        sdk_tools.append(start_background_job)
+    sdk_tools.append(atomic_text_edit)
 
     server = create_sdk_mcp_server(
-        name="ssh-ops", version="2.5.0", tools=sdk_tools)
+        name="ssh-ops", version="2.6.0", tools=sdk_tools)
     try:
         turns = int(_CONN.get("max_turns") or DEFAULT_MAX_TURNS)
     except (TypeError, ValueError):
