@@ -118,7 +118,7 @@ func readOneFrame(t *testing.T, ctx context.Context, conn *websocket.Conn) map[s
 func TestWSLegacy_ConfirmationFramePrecedesTokenFrame(t *testing.T) {
 	llmFake := &mutatingProposalLLM{
 		proposalTool: "RequestStartInstance",
-		proposalArgs: `{"UHostId":"uhost-1"}`,
+		proposalArgs: `{"UHostId":"uhost-1","StartMode":"normal"}`,
 		reply:        "已取消开机操作，还需要我做别的吗？",
 	}
 	eng := engine.NewWithDeps(llmFake, tools.ToolExecutor(startResolvingExecutor{}), denyConfirm)

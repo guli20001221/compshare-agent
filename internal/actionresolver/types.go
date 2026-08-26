@@ -68,13 +68,12 @@ const (
 )
 
 type FieldSpec struct {
-	Name                string
-	Required            bool
-	Codec               SlotCodecKind
-	Enum                []string
-	Target              bool
-	TargetKind          string
-	CurrentUserEvidence bool
+	Name       string
+	Required   bool
+	Codec      SlotCodecKind
+	Enum       []string
+	Target     bool
+	TargetKind string
 }
 
 // IntakeMode declares how an operation handles a proposal that is well-formed but

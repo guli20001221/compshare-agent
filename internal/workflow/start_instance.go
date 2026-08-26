@@ -23,16 +23,22 @@ const (
 	// before→after instead of describing the instance as it currently is.
 	withoutGPUSpecA = "A"
 	withoutGPUSpecB = "B"
+
+	// These are the model-facing modes. A/B are an upstream wire protocol, not
+	// terminology a user should have to know or quote. The conversion stays at
+	// the workflow boundary so the Agent can reason from the user's actual CPU
+	// and memory needs while the confirmation card remains human-readable.
+	startModeCPUOnly2C4GB  = "cpu_only_2c4g"
+	startModeCPUOnly8C16GB = "cpu_only_8c16g"
 )
 
 // StartInstanceDef returns the workflow definition for starting a CompShare GPU
-// instance. Normal start is query -> confirm -> start. Without-GPU start passes
-// WithoutGpuSpec directly on the start call; upstream resizes internally before
-// starting, so no separate client-side resize step is needed.
+// instance. StartMode makes the semantic choice explicit: ordinary start sends
+// no no-GPU parameter; a CPU-only mode converts to upstream A/B only at the final
+// request boundary. Both paths are query -> confirm -> start.
 func StartInstanceDef() *Definition {
 	return &Definition{
-		Name:                      "StartInstanceWorkflow",
-		CurrentUserEvidenceFields: []string{"WithoutGpuSpec"},
+		Name: "StartInstanceWorkflow",
 		Steps: []Step{
 			stepQueryForStart(),
 			stepConfirmStart(),
@@ -253,12 +259,23 @@ func requestedWithoutGPUSpec(wfCtx *Context) string {
 	if wfCtx == nil || wfCtx.Params == nil {
 		return ""
 	}
-	v, ok := wfCtx.Params["WithoutGpuSpec"]
-	if !ok {
+	// Accept the old wire-shaped parameter for a confirmation that was already
+	// sealed before deployment. New Agent proposals never see this field.
+	if v, ok := wfCtx.Params["WithoutGpuSpec"]; ok {
+		spec, _ := v.(string)
+		if spec = strings.TrimSpace(spec); spec != "" {
+			return spec
+		}
+	}
+	mode, _ := wfCtx.Params["StartMode"].(string)
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case startModeCPUOnly2C4GB:
+		return withoutGPUSpecA
+	case startModeCPUOnly8C16GB:
+		return withoutGPUSpecB
+	default:
 		return ""
 	}
-	spec, _ := v.(string)
-	return strings.TrimSpace(spec)
 }
 
 func withoutGPUSpecResources(spec string) (cpu, memory float64, ok bool) {

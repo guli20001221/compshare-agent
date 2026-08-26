@@ -197,33 +197,32 @@ func TestWorkflowFieldSourcePoliciesAreDeclared(t *testing.T) {
 		} else {
 			require.Empty(t, spec.Intake.UserSuppliedOptionalFields)
 		}
-		if field, exists := spec.Fields["WithoutGpuSpec"]; exists {
-			require.Equal(t, operation == "StartInstanceWorkflow", field.CurrentUserEvidence)
+		if operation == "StartInstanceWorkflow" {
+			field, exists := spec.Fields["StartMode"]
+			require.True(t, exists)
+			require.True(t, field.Required)
+			require.Equal(t, []string{"normal", "cpu_only_2c4g", "cpu_only_8c16g"}, field.Enum)
+			require.NotContains(t, spec.Fields, "WithoutGpuSpec")
 		}
 	}
 }
 
-func TestWithoutGpuStartKeepsOnlyCurrentUserEvidence(t *testing.T) {
+func TestStartModeIsAnAgentSemanticChoice(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
 	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
 
-	inferred := resolver.Resolve(ActionProposal{Operation: "StartInstanceWorkflow", Slots: []SlotCandidate{
-		{Name: "WithoutGpuSpec", Value: "A", Source: SourceAgentInference},
+	ordinary := resolver.Resolve(ActionProposal{Operation: "StartInstanceWorkflow", Slots: []SlotCandidate{
+		{Name: "StartMode", Value: "normal", Source: SourceAgentInference},
 	}})
-	require.NotContains(t, inferred.Arguments, "WithoutGpuSpec")
-	require.Empty(t, inferred.Rejected)
+	require.Equal(t, "normal", ordinary.Arguments["StartMode"])
+	require.Empty(t, ordinary.Rejected)
 
-	carried := resolver.Resolve(ActionProposal{Operation: "StartInstanceWorkflow", Slots: []SlotCandidate{
-		{Name: "WithoutGpuSpec", Value: "B", Source: SourceVerifiedContext},
+	cpuOnly := resolver.Resolve(ActionProposal{Operation: "StartInstanceWorkflow", Slots: []SlotCandidate{
+		{Name: "StartMode", Value: "cpu_only_8c16g", Source: SourceAgentInference},
 	}})
-	require.NotContains(t, carried.Arguments, "WithoutGpuSpec")
-	require.Empty(t, carried.Rejected)
-
-	explicit := resolver.Resolve(ActionProposal{Operation: "StartInstanceWorkflow", Slots: []SlotCandidate{
-		{Name: "WithoutGpuSpec", Value: "A", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "A"}},
-	}})
-	require.Equal(t, "A", explicit.Arguments["WithoutGpuSpec"])
+	require.Equal(t, "cpu_only_8c16g", cpuOnly.Arguments["StartMode"])
+	require.Empty(t, cpuOnly.Rejected)
 }
 
 func TestUngroundedOptionalCreateFieldsDoNotBecomeContractValues(t *testing.T) {
