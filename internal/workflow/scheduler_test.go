@@ -67,16 +67,36 @@ func TestResolveShutdownTime_ShutdownAt_NoTimezone(t *testing.T) {
 	assert.Contains(t, display, "北京时间")
 }
 
-func TestResolveShutdownTime_MixedModeFields_Error(t *testing.T) {
+func TestResolveShutdownTime_IgnoresInactiveModeFields(t *testing.T) {
 	withFixedNow(t)
 
-	params := map[string]any{"Schedule": map[string]any{
-		"mode": "after_minutes", "minutes": float64(30), "at": "2026-04-17T00:00:00+08:00",
-	}}
-	_, _, err := resolveShutdownTime(params)
-
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "不允许")
+	tests := []struct {
+		name     string
+		schedule map[string]any
+		want     time.Time
+	}{
+		{
+			name: "calendar time ignores stale relative and absolute fields",
+			schedule: map[string]any{
+				"mode": "today", "local_time": "23:00", "minutes": float64(5), "at": "",
+			},
+			want: time.Date(2026, 4, 16, 23, 0, 0, 0, shanghaiLoc),
+		},
+		{
+			name: "absolute time ignores stale relative and calendar fields",
+			schedule: map[string]any{
+				"mode": "absolute", "at": "2026-04-17T00:00:00+08:00", "minutes": float64(5), "local_time": "",
+			},
+			want: time.Date(2026, 4, 17, 0, 0, 0, 0, shanghaiLoc),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			unix, _, err := resolveShutdownTime(map[string]any{"Schedule": tc.schedule})
+			require.NoError(t, err)
+			assert.Equal(t, tc.want.Unix(), unix)
+		})
+	}
 }
 
 func TestResolveShutdownTime_NeitherProvided_Error(t *testing.T) {

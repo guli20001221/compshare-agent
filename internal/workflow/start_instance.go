@@ -31,7 +31,8 @@ const (
 // starting, so no separate client-side resize step is needed.
 func StartInstanceDef() *Definition {
 	return &Definition{
-		Name: "StartInstanceWorkflow",
+		Name:                      "StartInstanceWorkflow",
+		CurrentUserEvidenceFields: []string{"WithoutGpuSpec"},
 		Steps: []Step{
 			stepQueryForStart(),
 			stepConfirmStart(),

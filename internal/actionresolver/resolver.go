@@ -86,6 +86,16 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 			reject(name, RejectUnknownField, fmt.Sprintf("unknown slot %s", name))
 			continue
 		}
+		if field.CurrentUserEvidence && candidate.Source != SourceUserExplicit {
+			// This optional value may change the operation's meaning, so only a
+			// value grounded in the current user message may enter the contract.
+			// An inferred or carried value is simply absent: the workflow keeps its
+			// normal default and the existing confirmation card remains the user's
+			// final check. Returning a rejection here made a model that repeatedly
+			// supplied the same optional default unable to perform the ordinary
+			// operation at all.
+			continue
+		}
 		// Guided forms cannot re-confirm fields outside their controls. For the
 		// explicitly declared optional exceptions, keep a value only when it came
 		// from the user's own current-message evidence; otherwise let the workflow

@@ -105,6 +105,80 @@ func TestProposeActionRejectsSubstringTarget(t *testing.T) {
 	require.NotEmpty(t, resolved.Rejected)
 }
 
+func TestStartWithoutGPUCannotBeInferredForAnOrdinaryStart(t *testing.T) {
+	newEngine := func(question string) *Engine {
+		eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+		require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{"TotalCount": float64(1), "UHostSet": []any{
+			map[string]any{"UHostId": "cpod-1", "Name": "train", "State": "Stopped"},
+		}}, "test"))
+		eng.lastUserMsg = question
+		eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, question, "turn-start", time.Now())
+		eng.turnContextViewReady = true
+		return eng
+	}
+	proposal := map[string]any{
+		"operation": "StartInstanceWorkflow",
+		"slots": []any{
+			map[string]any{"name": "UHostId", "value": "cpod-1"},
+			map[string]any{"name": "WithoutGpuSpec", "value": "A"},
+		},
+	}
+
+	ordinary, err := newEngine("启动 cpod-1").resolveActionProposal(context.Background(), proposal)
+	require.NoError(t, err)
+	require.True(t, ordinary.action.ReadyForConfirmation)
+	require.NotContains(t, ordinary.action.Arguments, "WithoutGpuSpec")
+	require.Empty(t, ordinary.action.Rejected)
+
+	explicit, err := newEngine("把 cpod-1 无卡启动，选 A").resolveActionProposal(context.Background(), proposal)
+	require.NoError(t, err)
+	require.Equal(t, "A", explicit.action.Arguments["WithoutGpuSpec"])
+}
+
+func TestOrdinaryStartDropsInferredNoGPUValueBeforeConfirmationAndExecution(t *testing.T) {
+	var startArgs map[string]any
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1", "Name": "host", "State": "Stopped", "Zone": "cn-wlcb-01", "Region": "cn-wlcb", "GpuType": "H20", "GPU": float64(1),
+			}}}, nil
+		case "StartCompShareInstance":
+			startArgs = args
+			return map[string]any{"RetCode": 0}, nil
+		default:
+			return map[string]any{"RetCode": 0}, nil
+		}
+	}}
+	confirmCount := 0
+	var confirmSummary map[string]any
+	eng := NewWithDeps(&mockLLM{}, executor, func(_ string, summary map[string]any) bool {
+		confirmCount++
+		confirmSummary = summary
+		return true
+	})
+	eng.SetMutatingToolsEnabled(true)
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{"TotalCount": float64(1), "UHostSet": []any{
+		map[string]any{"UHostId": "uhost-1", "Name": "host", "State": "Stopped"},
+	}}, "test"))
+	eng.lastUserMsg = "把 uhost-1 启动起来"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-start", time.Now())
+	eng.turnContextViewReady = true
+
+	reply := eng.executeActionProposal(context.Background(), map[string]any{
+		"operation": "StartInstanceWorkflow",
+		"slots": []any{
+			map[string]any{"name": "UHostId", "value": "uhost-1"},
+			map[string]any{"name": "WithoutGpuSpec", "value": "A"},
+		},
+	}, noopStep)
+
+	require.Equal(t, 1, confirmCount, reply)
+	require.NotContains(t, confirmSummary, "规格变更")
+	require.NotContains(t, startArgs, "WithoutGpuSpec")
+	require.Contains(t, reply, "执行开机")
+}
+
 func TestProposeActionNeverEchoesSensitiveValues(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{"TotalCount": float64(1), "UHostSet": []any{map[string]any{"UHostId": "uhost-1"}}}, "test"))
@@ -147,7 +221,7 @@ func TestCentralAgentProposalExecutesOnlyThroughExistingWorkflowGate(t *testing.
 	out := eng.executeTool(context.Background(), toolCall("proposal", tools.ProposeActionName,
 		`{"turn_id":"turn-write","operation":"StopInstanceWorkflow","slots":[{"name":"UHostId","value":"uhost-1","source":"user_explicit","evidence":{"message_id":"turn-write","start":3,"end":10,"quote":"uhost-1"}}]}`), noopStep)
 
-	require.Contains(t, out, "执行关机")
+	require.Contains(t, out, "提交关机请求")
 	require.Equal(t, 1, confirmCalls)
 	require.Contains(t, executor.calls, "StopCompShareInstance")
 }
@@ -588,7 +662,7 @@ func TestConfirmedFollowUpExecutesThroughResolvedTargetAuthority(t *testing.T) {
 		"slots":     []any{map[string]any{"name": "UHostId", "value": "host"}},
 	}, noopStep)
 
-	require.Contains(t, out, "执行关机")
+	require.Contains(t, out, "提交关机请求")
 	require.Contains(t, executor.calls, "StopCompShareInstance")
 }
 
@@ -614,6 +688,16 @@ func TestDeterministicResizeCFSReplyCannotBeRestatedAsReadOnlyEstimate(t *testin
 	require.Contains(t, reply, "已将 CFS cfs-test 扩容到 110GB")
 	require.NotContains(t, reply, "估算")
 	require.NotContains(t, reply, "不会直接扩容")
+}
+
+func TestStopReplyReportsAsynchronousAcceptance(t *testing.T) {
+	params := map[string]any{"UHostId": "uhost-1"}
+	reply := stopInstanceWorkflowReply(params)
+	require.Contains(t, reply, "已向实例 uhost-1 提交关机请求")
+	require.Contains(t, reply, "平台正在处理")
+	require.Contains(t, reply, "请勿重复提交")
+	require.NotContains(t, reply, "已关机")
+	require.Equal(t, reply, committedWriteFallbackReply("StopInstanceWorkflow", params, &workflow.Result{Success: true}))
 }
 
 func TestAdditionalWriteAfterACommittedWritePreservesTheCommittedResult(t *testing.T) {

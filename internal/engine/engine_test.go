@@ -1133,7 +1133,7 @@ func TestWorkflowInternalReadExpensiveConsumesSubjectQuotaButSkipsTurnBudget(t *
 
 	reply := eng.executeResolvedWorkflow(context.Background(), mustConfirmable("StopInstanceWorkflow", map[string]any{"UHostId": "uhost-stop-001"}, zoneRefData(nil)), noopStep)
 
-	assert.Contains(t, reply, "执行关机", "successful stop returns a deterministic final reply")
+	assert.Contains(t, reply, "已向实例 uhost-stop-001 提交关机请求", "successful stop reports asynchronous request acceptance")
 	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
 	assert.Contains(t, executor.calls, "StopCompShareInstance")
 	var readExpensive []governance.Request
