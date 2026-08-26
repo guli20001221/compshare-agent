@@ -87,8 +87,13 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 			continue
 		}
 		if field.CurrentUserEvidence && candidate.Source != SourceUserExplicit {
-			reject(name, RejectUnverifiedSource, fmt.Sprintf("%s: 该可选值未出现在用户当前消息中；普通操作请删除该字段后重试，若用户确实需要该选项，请先让用户明确具体值", name))
-			adjudicated[name] = struct{}{}
+			// This optional value may change the operation's meaning, so only a
+			// value grounded in the current user message may enter the contract.
+			// An inferred or carried value is simply absent: the workflow keeps its
+			// normal default and the existing confirmation card remains the user's
+			// final check. Returning a rejection here made a model that repeatedly
+			// supplied the same optional default unable to perform the ordinary
+			// operation at all.
 			continue
 		}
 		// Guided forms cannot re-confirm fields outside their controls. For the

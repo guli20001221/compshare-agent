@@ -282,8 +282,9 @@ type Definition struct {
 	UserSuppliedOptionalFields []string
 	// CurrentUserEvidenceFields names proposal fields whose value may change the
 	// operation's meaning enough that current-turn user evidence is required.
-	// The action resolver rejects inferred or carried values for these fields;
-	// ordinary workflow confirmation remains unchanged.
+	// The action resolver omits inferred or carried values for these optional
+	// fields, so the workflow keeps its normal default; ordinary workflow
+	// confirmation remains unchanged.
 	CurrentUserEvidenceFields []string
 }
 
