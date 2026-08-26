@@ -3685,6 +3685,13 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 			onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "工作流返回结构化缺参结果，由中央 Agent 结合上下文处理"})
 			return string(payload)
 		}
+		if action == "StartInstanceWorkflow" && ordinaryStartMode(finalParams) {
+			if apiErr, ok := tools.UpstreamAPIErrorFrom(result.Err); ok && (apiErr.Code == 8357 || apiErr.Code == 226604) {
+				msg := "该实例原带卡规格当前库存不足，本次没有启动，也不会自动改成无卡规格。可以稍后重试；如果你确实不需要 GPU，可以告诉我用途或所需 CPU、内存，我会在新的确认卡中展示合适的 CPU-only 档位。"
+				onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, result.Err))
+				return finalReplyPrefix + msg
+			}
+		}
 		if msg, ok := friendlyMessageFromText(result.Message); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, nil))
 			return finalReplyPrefix + msg
@@ -3819,6 +3826,14 @@ func deterministicWorkflowReply(action string, args map[string]any) (string, boo
 	case "RebootInstanceWorkflow":
 		return fmt.Sprintf("✅ 已为实例 %s 执行重启。", uhost), true
 	case "StartInstanceWorkflow":
+		mode := strings.ToLower(strings.TrimSpace(fmt.Sprint(args["StartMode"])))
+		legacySpec := strings.ToUpper(strings.TrimSpace(fmt.Sprint(args["WithoutGpuSpec"])))
+		switch {
+		case mode == "cpu_only_2c4g" || legacySpec == "A":
+			return fmt.Sprintf("✅ 已将实例 %s 改为 2核/4GB 的 CPU-only 规格并执行开机，启动需要一点时间，请稍后查看。", uhost), true
+		case mode == "cpu_only_8c16g" || legacySpec == "B":
+			return fmt.Sprintf("✅ 已将实例 %s 改为 8核/16GB 的 CPU-only 规格并执行开机，启动需要一点时间，请稍后查看。", uhost), true
+		}
 		return fmt.Sprintf("✅ 已为实例 %s 执行开机，启动需要一点时间，请稍后查看。", uhost), true
 	case "RenameInstanceWorkflow":
 		if name, _ := args["Name"].(string); name != "" {
@@ -3842,6 +3857,19 @@ func deterministicWorkflowReply(action string, args map[string]any) (string, boo
 	default:
 		return "", false
 	}
+}
+
+func ordinaryStartMode(args map[string]any) bool {
+	if spec, ok := args["WithoutGpuSpec"].(string); ok && strings.TrimSpace(spec) != "" {
+		return false
+	}
+	raw, ok := args["StartMode"]
+	if !ok {
+		return true
+	}
+	mode, _ := raw.(string)
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	return mode == "" || mode == "normal"
 }
 
 // committedWriteFallbackReply is the sentence the user gets when a write has

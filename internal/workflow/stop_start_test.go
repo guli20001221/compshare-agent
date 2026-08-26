@@ -426,6 +426,23 @@ func TestStartInstance_WithoutGpuSendsSpecOnStart(t *testing.T) {
 	assert.Equal(t, "B", startCall.args["WithoutGpuSpec"])
 }
 
+func TestStartInstance_CPUOnlyModeMapsToTheUpstreamWireValue(t *testing.T) {
+	executor := startMockExecutor()
+	executor.results["DescribeCompShareInstance"] = map[string]any{"UHostSet": []any{map[string]any{
+		"UHostId": "uhost-yyy", "State": "Stopped", "Zone": "cn-bj2-04", "Region": "cn-bj2",
+		"GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic", "SupportWithoutGpuStart": true,
+	}}}
+	result, err := NewEngine(executor, func(string, map[string]any) bool { return true }, nil).Run(
+		context.Background(), StartInstanceDef(), map[string]any{
+			"UHostId": "uhost-yyy", "StartMode": "cpu_only_8c16g",
+		})
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Len(t, executor.calls, 2)
+	require.Equal(t, "B", executor.calls[1].args["WithoutGpuSpec"])
+	require.NotContains(t, executor.calls[1].args, "StartMode")
+}
+
 func TestStartInstance_WithoutGpuShowsInConfirm(t *testing.T) {
 	executor := startMockExecutor()
 	executor.results["DescribeCompShareInstance"] = map[string]any{

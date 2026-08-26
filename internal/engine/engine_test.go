@@ -1865,7 +1865,7 @@ func TestRegistryInvalidatesAfterSuccessfulMutatingTool(t *testing.T) {
 			toolCall("read", "ReadCapability_resource_info", `{"resource_ids":["uhost-a"]}`),
 		}},
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "RequestStartInstance", `{"UHostId":"uhost-a"}`),
+			toolCall("tc1", "RequestStartInstance", `{"UHostId":"uhost-a","StartMode":"normal"}`),
 		}},
 	}}
 	eng := NewWithDeps(mock, executor, func(string, map[string]any) bool { return true })

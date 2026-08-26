@@ -105,7 +105,7 @@ func TestProposeActionRejectsSubstringTarget(t *testing.T) {
 	require.NotEmpty(t, resolved.Rejected)
 }
 
-func TestStartWithoutGPUCannotBeInferredForAnOrdinaryStart(t *testing.T) {
+func TestStartModeKeepsWireCodesOutOfTheProposal(t *testing.T) {
 	newEngine := func(question string) *Engine {
 		eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 		require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{"TotalCount": float64(1), "UHostSet": []any{
@@ -116,26 +116,35 @@ func TestStartWithoutGPUCannotBeInferredForAnOrdinaryStart(t *testing.T) {
 		eng.turnContextViewReady = true
 		return eng
 	}
-	proposal := map[string]any{
+	ordinaryProposal := map[string]any{
 		"operation": "StartInstanceWorkflow",
 		"slots": []any{
 			map[string]any{"name": "UHostId", "value": "cpod-1"},
-			map[string]any{"name": "WithoutGpuSpec", "value": "A"},
+			map[string]any{"name": "StartMode", "value": "normal"},
 		},
 	}
 
-	ordinary, err := newEngine("启动 cpod-1").resolveActionProposal(context.Background(), proposal)
+	ordinary, err := newEngine("启动 cpod-1").resolveActionProposal(context.Background(), ordinaryProposal)
 	require.NoError(t, err)
 	require.True(t, ordinary.action.ReadyForConfirmation)
+	require.Equal(t, "normal", ordinary.action.Arguments["StartMode"])
 	require.NotContains(t, ordinary.action.Arguments, "WithoutGpuSpec")
 	require.Empty(t, ordinary.action.Rejected)
 
-	explicit, err := newEngine("把 cpod-1 无卡启动，选 A").resolveActionProposal(context.Background(), proposal)
+	cpuOnlyProposal := map[string]any{
+		"operation": "StartInstanceWorkflow",
+		"slots": []any{
+			map[string]any{"name": "UHostId", "value": "cpod-1"},
+			map[string]any{"name": "StartMode", "value": "cpu_only_2c4g"},
+		},
+	}
+	explicit, err := newEngine("把 cpod-1 改成只用 CPU 的 2核4G 规格后启动").resolveActionProposal(context.Background(), cpuOnlyProposal)
 	require.NoError(t, err)
-	require.Equal(t, "A", explicit.action.Arguments["WithoutGpuSpec"])
+	require.Equal(t, "cpu_only_2c4g", explicit.action.Arguments["StartMode"])
+	require.NotContains(t, explicit.action.Arguments, "WithoutGpuSpec")
 }
 
-func TestOrdinaryStartDropsInferredNoGPUValueBeforeConfirmationAndExecution(t *testing.T) {
+func TestOrdinaryStartModeNeverSendsNoGPUWireValue(t *testing.T) {
 	var startArgs map[string]any
 	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		switch action {
@@ -169,7 +178,7 @@ func TestOrdinaryStartDropsInferredNoGPUValueBeforeConfirmationAndExecution(t *t
 		"operation": "StartInstanceWorkflow",
 		"slots": []any{
 			map[string]any{"name": "UHostId", "value": "uhost-1"},
-			map[string]any{"name": "WithoutGpuSpec", "value": "A"},
+			map[string]any{"name": "StartMode", "value": "normal"},
 		},
 	}, noopStep)
 
@@ -177,6 +186,48 @@ func TestOrdinaryStartDropsInferredNoGPUValueBeforeConfirmationAndExecution(t *t
 	require.NotContains(t, confirmSummary, "规格变更")
 	require.NotContains(t, startArgs, "WithoutGpuSpec")
 	require.Contains(t, reply, "执行开机")
+}
+
+func TestOrdinaryStartStockShortageStopsWithoutNoGPUFallback(t *testing.T) {
+	startCalls := 0
+	var startArgs map[string]any
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1", "Name": "host", "State": "Stopped",
+				"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "GpuType": "H20", "GPU": float64(1),
+			}}}, nil
+		case "StartCompShareInstance":
+			startCalls++
+			startArgs = args
+			return nil, tools.NewUpstreamAPIError(226604, "out of resources")
+		default:
+			return map[string]any{"RetCode": 0}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, func(string, map[string]any) bool { return true })
+	eng.SetMutatingToolsEnabled(true)
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{"TotalCount": float64(1), "UHostSet": []any{
+		map[string]any{"UHostId": "uhost-1", "Name": "host", "State": "Stopped"},
+	}}, "test"))
+	eng.lastUserMsg = "启动 uhost-1"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-start", time.Now())
+	eng.turnContextViewReady = true
+
+	reply := eng.executeActionProposal(context.Background(), map[string]any{
+		"operation": "StartInstanceWorkflow",
+		"slots": []any{
+			map[string]any{"name": "UHostId", "value": "uhost-1"},
+			map[string]any{"name": "StartMode", "value": "normal"},
+		},
+	}, noopStep)
+
+	require.Equal(t, 1, startCalls)
+	require.NotContains(t, startArgs, "WithoutGpuSpec")
+	require.Contains(t, reply, "库存不足")
+	require.Contains(t, reply, "本次没有启动")
+	require.Contains(t, reply, "不会自动改成无卡规格")
 }
 
 func TestProposeActionNeverEchoesSensitiveValues(t *testing.T) {
