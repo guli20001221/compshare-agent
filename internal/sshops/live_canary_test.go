@@ -5,6 +5,7 @@ package sshops
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
@@ -241,13 +242,22 @@ func TestLiveCase083ConversationActionCanary(t *testing.T) {
 	pidPath := "/tmp/sshops-case083-" + suffix + ".pid"
 	logPath := "/tmp/sshops-case083-" + suffix + ".log"
 	taskID := "case083-accepted-" + suffix
-	serverTemplate := `import json, os
+	acceptedHashes := make([]string, 0, 4)
+	for duration := 5; duration <= 8; duration++ {
+		canonical := fmt.Sprintf(`{"aspect_ratio":"9:16","duration_seconds":%d,"resolution":"720P","shots":[1,2,3,6,8,11]}`, duration)
+		sum := sha256.Sum256([]byte(canonical))
+		acceptedHashes = append(acceptedHashes, fmt.Sprintf("%x", sum))
+	}
+	acceptedHashesJSON, err := json.Marshal(acceptedHashes)
+	require.NoError(t, err)
+	serverTemplate := `import hashlib, json, os
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 PORT = __PORT__
 BODY = "__BODY__"
 ATTEMPTS = "__ATTEMPTS__"
 PID = "__PID__"
 TASK_ID = "__TASK__"
+ACCEPTED_HASHES = set(__ACCEPTED_HASHES__)
 SCHEMA = {"method":"POST","path":"/generate","required_fields":{"aspect_ratio":"string","resolution":"string","duration_seconds":"number","shots":"array of integers"}}
 class Handler(BaseHTTPRequestHandler):
     def reply(self, code, value):
@@ -265,8 +275,10 @@ class Handler(BaseHTTPRequestHandler):
             if size < 2 or size > 16384: raise ValueError("invalid body size")
             value = json.loads(self.rfile.read(size))
             with open(ATTEMPTS, "a", encoding="utf-8") as attempts: attempts.write(json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n")
-            duration = float(value.get("duration_seconds"))
-            valid = value.get("aspect_ratio") == "9:16" and str(value.get("resolution", "")).upper() == "720P" and 5 <= duration <= 8 and value.get("shots") == [1,2,3,6,8,11]
+            duration = value.get("duration_seconds")
+            if isinstance(duration, float) and duration.is_integer(): value["duration_seconds"] = int(duration)
+            canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+            valid = hashlib.sha256(canonical).hexdigest() in ACCEPTED_HASHES
             if not valid: self.reply(422, {"error":"parameters_do_not_match_schema","schema":SCHEMA}); return
             temp = BODY + ".tmp"
             with open(temp, "w", encoding="utf-8") as handle: json.dump(value, handle, ensure_ascii=False, sort_keys=True)
@@ -282,7 +294,7 @@ finally:
 `
 	serverSource := strings.NewReplacer(
 		"__PORT__", strconv.Itoa(port), "__BODY__", bodyPath, "__ATTEMPTS__", attemptsPath,
-		"__PID__", pidPath, "__TASK__", taskID,
+		"__PID__", pidPath, "__TASK__", taskID, "__ACCEPTED_HASHES__", string(acceptedHashesJSON),
 	).Replace(serverTemplate)
 	encoded := base64.StdEncoding.EncodeToString([]byte(serverSource))
 	requireLiveRemoteOK(t, cred, fmt.Sprintf(
