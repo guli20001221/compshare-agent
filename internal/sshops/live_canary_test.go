@@ -256,7 +256,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(payload))); self.end_headers(); self.wfile.write(payload)
     def do_GET(self):
         if self.path == "/health": self.reply(200, {"ok":True})
-        elif self.path == "/schema": self.reply(200, SCHEMA)
+        elif self.path in ("/", "/schema"): self.reply(200, SCHEMA)
         else: self.reply(404, {"error":"not_found"})
     def do_POST(self):
         if self.path != "/generate": self.reply(404, {"error":"not_found"}); return
@@ -309,8 +309,16 @@ finally:
 	}
 	sessionID := uuid.NewString()
 	modelContext := opscontext.Context{
-		SchemaVersion:            opscontext.SchemaVersion,
-		ConversationHistory:      history,
+		SchemaVersion:       opscontext.SchemaVersion,
+		ConversationHistory: history,
+		// The location of an instance-local service is environment evidence, not user intent. The
+		// fixture controller has just proved this listener over SSH, so expose that same fact shape
+		// the production bridge uses instead of smuggling the port through a lossy planner Task.
+		PlatformFacts: []opscontext.Fact{{
+			Key: "guest.listeners", Value: map[string]any{"http": []int{port}},
+			Source: "live_fixture_ssh", ObservedAt: time.Now().UTC().Format(time.RFC3339),
+			Status: opscontext.StatusKnown,
+		}},
 		BridgeConversationAnchor: opscontext.ConversationAnchor(history),
 		RepairScopeAuthorized:    true,
 		AgentSession: &opscontext.AgentSession{
