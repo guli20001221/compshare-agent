@@ -126,13 +126,57 @@ func TestStartWithoutGPUCannotBeInferredForAnOrdinaryStart(t *testing.T) {
 
 	ordinary, err := newEngine("启动 cpod-1").resolveActionProposal(context.Background(), proposal)
 	require.NoError(t, err)
-	require.False(t, ordinary.action.ReadyForConfirmation)
+	require.True(t, ordinary.action.ReadyForConfirmation)
 	require.NotContains(t, ordinary.action.Arguments, "WithoutGpuSpec")
-	require.Contains(t, strings.Join(ordinary.action.Rejected, " "), "普通操作请删除该字段后重试")
+	require.Empty(t, ordinary.action.Rejected)
 
 	explicit, err := newEngine("把 cpod-1 无卡启动，选 A").resolveActionProposal(context.Background(), proposal)
 	require.NoError(t, err)
 	require.Equal(t, "A", explicit.action.Arguments["WithoutGpuSpec"])
+}
+
+func TestOrdinaryStartDropsInferredNoGPUValueBeforeConfirmationAndExecution(t *testing.T) {
+	var startArgs map[string]any
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1", "Name": "host", "State": "Stopped", "Zone": "cn-wlcb-01", "Region": "cn-wlcb", "GpuType": "H20", "GPU": float64(1),
+			}}}, nil
+		case "StartCompShareInstance":
+			startArgs = args
+			return map[string]any{"RetCode": 0}, nil
+		default:
+			return map[string]any{"RetCode": 0}, nil
+		}
+	}}
+	confirmCount := 0
+	var confirmSummary map[string]any
+	eng := NewWithDeps(&mockLLM{}, executor, func(_ string, summary map[string]any) bool {
+		confirmCount++
+		confirmSummary = summary
+		return true
+	})
+	eng.SetMutatingToolsEnabled(true)
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{"TotalCount": float64(1), "UHostSet": []any{
+		map[string]any{"UHostId": "uhost-1", "Name": "host", "State": "Stopped"},
+	}}, "test"))
+	eng.lastUserMsg = "把 uhost-1 启动起来"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-start", time.Now())
+	eng.turnContextViewReady = true
+
+	reply := eng.executeActionProposal(context.Background(), map[string]any{
+		"operation": "StartInstanceWorkflow",
+		"slots": []any{
+			map[string]any{"name": "UHostId", "value": "uhost-1"},
+			map[string]any{"name": "WithoutGpuSpec", "value": "A"},
+		},
+	}, noopStep)
+
+	require.Equal(t, 1, confirmCount, reply)
+	require.NotContains(t, confirmSummary, "规格变更")
+	require.NotContains(t, startArgs, "WithoutGpuSpec")
+	require.Contains(t, reply, "执行开机")
 }
 
 func TestProposeActionNeverEchoesSensitiveValues(t *testing.T) {

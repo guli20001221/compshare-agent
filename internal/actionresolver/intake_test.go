@@ -203,7 +203,7 @@ func TestWorkflowFieldSourcePoliciesAreDeclared(t *testing.T) {
 	}
 }
 
-func TestWithoutGpuStartRequiresCurrentUserEvidence(t *testing.T) {
+func TestWithoutGpuStartKeepsOnlyCurrentUserEvidence(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
 	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
@@ -212,8 +212,13 @@ func TestWithoutGpuStartRequiresCurrentUserEvidence(t *testing.T) {
 		{Name: "WithoutGpuSpec", Value: "A", Source: SourceAgentInference},
 	}})
 	require.NotContains(t, inferred.Arguments, "WithoutGpuSpec")
-	require.NotEmpty(t, inferred.Rejected)
-	require.Contains(t, inferred.Rejected[0], "普通操作请删除该字段后重试")
+	require.Empty(t, inferred.Rejected)
+
+	carried := resolver.Resolve(ActionProposal{Operation: "StartInstanceWorkflow", Slots: []SlotCandidate{
+		{Name: "WithoutGpuSpec", Value: "B", Source: SourceVerifiedContext},
+	}})
+	require.NotContains(t, carried.Arguments, "WithoutGpuSpec")
+	require.Empty(t, carried.Rejected)
 
 	explicit := resolver.Resolve(ActionProposal{Operation: "StartInstanceWorkflow", Slots: []SlotCandidate{
 		{Name: "WithoutGpuSpec", Value: "A", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "A"}},
