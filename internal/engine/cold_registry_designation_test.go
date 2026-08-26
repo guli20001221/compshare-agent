@@ -72,6 +72,85 @@ func TestATypedIDIsADesignationEvenWhenTheRegistryIsEmpty(t *testing.T) {
 	require.Equal(t, instanceID, runner.lastReq.InstanceID)
 }
 
+// Production case 063 did not call a tool in the designation turn: the model
+// merely replied "已记录". The next turn therefore had no gate at which the old
+// cold-registry fallback could persist the ID. Recording must happen from the
+// user's words at turn entry, independently of whether the planner acts yet.
+func TestColdTypedIDSurvivesAProseOnlyAcknowledgement(t *testing.T) {
+	const instanceID = "cpod-1uivn2vwu842"
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{Content: "已记录当前实例。"},
+		{ToolCalls: []openai.ToolCall{toolCall("d2", "DiagnoseInstanceInternals",
+			`{"UHostId":"cpod-1uivn2vwu842","Task":"只读核查 GPU"}`)}},
+	}}
+	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
+	eng.SetInstanceOps(runner)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	require.True(t, eng.registry.NeedsRefresh(time.Now()), "the premise is a cold registry")
+
+	_, err := eng.ChatWithOptions(context.Background(),
+		instanceID+"这是现在的实例", noopStep, ChatOptions{})
+	require.NoError(t, err)
+	require.Zero(t, runner.calls)
+	state, _, _ := eng.SessionStateSnapshot()
+	require.Equal(t, instanceID, state.SelectedInstanceID)
+	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
+
+	rehydrate(t, eng)
+	_, err = eng.ChatWithOptions(context.Background(), "查一下这台的 GPU", noopStep,
+		ChatOptions{ConfirmResultFunc: func(string, map[string]any) ConfirmationResult {
+			return ConfirmationResult{Confirmed: true}
+		}})
+	require.NoError(t, err)
+	require.Equal(t, 1, runner.calls)
+	require.Equal(t, instanceID, runner.lastReq.InstanceID)
+}
+
+// Production case 124 warmed the registry through resource_info in the same
+// turn, after the immutable context view had been compiled. The access hostname
+// contains the exact account ID, so that fresh deterministic proof must reach the
+// entry card and survive a declined card just like a directly typed ID.
+func TestWrappedAccountIDBecomesDesignationAfterSameTurnRegistryWarmup(t *testing.T) {
+	const instanceID = "cpod-1uivn2vwu842"
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "must not run"}}
+	cards := 0
+	eng := newInstanceOpsEngine(runner, func(_ string, args map[string]any) bool {
+		cards++
+		require.Equal(t, instanceID, args["UHostId"])
+		return false
+	})
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	query := "ComfyUI 上传报错：8188-" + instanceID + "-s1.pod.compshare.cn 显示 413"
+	eng.lastUserMsg = query
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+		eng, query, "case-124", time.Now())
+	eng.turnContextViewReady = true
+
+	// Turn entry is cold and must not record the wrapper token as an instance ID.
+	eng.recordUserDesignatedInstance()
+	state, _, _ := eng.SessionStateSnapshot()
+	require.Empty(t, state.SelectedInstanceID)
+
+	// resource_info now supplied the complete live account snapshot.
+	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
+		"TotalCount": float64(2), "UHostSet": []any{
+			map[string]any{"UHostId": instanceID, "Name": "upload-instance", "State": "Running"},
+			map[string]any{"UHostId": "uhost-other-2", "Name": "trainer-b", "State": "Running"},
+		},
+	}, "case-124-resource-info"))
+	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": instanceID, "Task": "排查上传 413",
+	}, noopStep)
+	require.NotContains(t, out, instanceOpsTargetRefusalForModel)
+	require.Equal(t, 1, cards, "the uniquely resolved wrapper must reach the entry card")
+	require.Zero(t, runner.calls, "the test deliberately declines the card")
+	state, _, _ = eng.SessionStateSnapshot()
+	require.Equal(t, instanceID, state.SelectedInstanceID)
+	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource,
+		"a declined card must not erase the user's deterministic wrapped reference")
+}
+
 // The #546 boundary on the cold path: the model may not manufacture a designation.
 // An id the user never wrote is refused at the gate AND leaves the session with no
 // selection, so a following bare 「继续排查」 has nothing to inherit either.

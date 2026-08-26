@@ -1,4 +1,4 @@
-// Package sshops implements the consent-gated, read-only in-instance SSH diagnostics lane:
+// Package sshops implements the consent-gated in-instance SSH diagnosis and repair lane:
 // it fetches an instance's SSH credential out-of-band and hands it to a spawned Agent-SDK
 // harness over a stdin handshake. The credential never enters an LLM prompt, a trace, the DB,
 // a reply, argv, or a log — see DESIGN-production.md (vendored under deploy/ssh_ops_harness/).

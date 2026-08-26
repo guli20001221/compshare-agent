@@ -135,7 +135,10 @@ def input_schema(targets, authorization_refs=()):
         "target_id": {
             "type": "string",
             "enum": ids,
-            "description": "Opaque server-provided endpoint target ID.",
+            "description": (
+                "Opaque server-provided endpoint target ID. For a TCP target, send only this "
+                "field; path, method and authorization_ref are HTTP-only."
+            ),
         },
         "path": {
             "type": "string",
@@ -149,8 +152,7 @@ def input_schema(targets, authorization_refs=()):
         "method": {
             "type": "string",
             "enum": list(_HTTP_METHODS),
-            "default": "GET",
-            "description": "HTTP method; GET by default. Not applicable to TCP targets.",
+            "description": "Optional HTTP method; omission means GET. Not applicable to TCP targets.",
         },
     }
     refs = [value for value in authorization_refs if _valid_id(value)]
@@ -171,6 +173,36 @@ def input_schema(targets, authorization_refs=()):
         "required": ["target_id"],
         "additionalProperties": False,
     }
+
+
+def progress_projection(targets, args, schema):
+    """Return the endpoint's semantic read shape for duplicate-read accounting.
+
+    The execution schema stays flat for Claude CLI compatibility. The CLI may materialize GET and
+    `/` for TCP even though they are no-op fields there, while omission and explicit GET are also
+    identical for HTTP. Fingerprinting those transport shapes separately would let retries evade
+    the no-progress bound. HTTP `/` is deliberately preserved: it can override a platform URL whose
+    original path is not the root.
+    """
+    supplied = dict(args) if isinstance(args, dict) else {}
+    target = targets.get(supplied.get("target_id"))
+    projected_schema = dict(schema) if isinstance(schema, dict) else {}
+    properties = dict(projected_schema.get("properties", {}))
+    projected_schema["properties"] = properties
+    if target and target.get("kind") == "tcp":
+        safe_defaults = (supplied.get("path") in (None, "", "/")
+                         and supplied.get("method") in (None, "", "GET")
+                         and not supplied.get("authorization_ref")
+                         and not supplied.get("authorization"))
+        if safe_defaults:
+            target_spec = properties.get("target_id", {})
+            projected_schema["properties"] = {"target_id": target_spec}
+            return {"target_id": supplied.get("target_id")}, projected_schema
+        return supplied, projected_schema
+    method_spec = dict(properties.get("method", {}))
+    method_spec["default"] = "GET"
+    properties["method"] = method_spec
+    return supplied, projected_schema
 
 
 def _origin(parsed):
@@ -324,7 +356,12 @@ def probe(targets, target_id, requested_path="", method="GET", authorization="")
         return {"target_id": _clean_text(target_id, 64), "vantage": "ssh_ops_runner",
                 "transport_reachable": False, "stage": "target_resolution",
                 "error_class": "unknown_target_id"}
-    if target["kind"] == "tcp" and (requested_path not in (None, "") or method != "GET" or authorization):
+    # Claude CLI currently materializes the shared tool's optional HTTP fields as path="/" and
+    # method="GET" even when the model explicitly omits them for a TCP target. Treat only those
+    # no-op defaults as omission. They are never sent on the wire: _probe_tcp only connects and
+    # closes. Any meaningful path, non-GET method or Authorization capability remains rejected.
+    if target["kind"] == "tcp" and (
+            requested_path not in (None, "", "/") or method != "GET" or authorization):
         result = _base_result(target, 0)
         result.update({"transport_reachable": False, "stage": "request_validation",
                        "error_class": "http_options_not_supported"})

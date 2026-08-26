@@ -60,9 +60,28 @@ func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime
 	if hasFilters {
 		parsed, err := readprojection.ParseResourceFilters(req.Targets)
 		if err != nil {
-			return ResourceInfoResponse{}, ReadFallbackBeforeTool(platform.ReadFallbackValidation)
+			// A model can copy a real instance reference from a shell prompt or platform URL while
+			// mislabelling it as `filter` (production case 124). Do not maintain URL suffix or
+			// instance-ID length rules here. Recovery is intentionally narrower than ordinary name
+			// resolution: it applies only to one mislabelled ref, and the uniquely resolved account ID
+			// must literally occur in the original value. Thus a malformed filter that merely equals an
+			// instance display name, or a filter mixed with explicit targets, keeps the original validation
+			// semantics. Valid state/GPU filters never enter this branch.
+			if len(req.Targets) != 1 || req.Targets[0].Type != platform.TargetRefFilter {
+				return ResourceInfoResponse{}, ReadFallbackBeforeTool(platform.ReadFallbackValidation)
+			}
+			original := req.Targets[0].Value
+			targetRef := req.Targets[0]
+			targetRef.Type = platform.TargetRefName
+			_, recoveredIDs, reason := resolveReadTargetSnapshots(ctx, []platform.TargetRef{targetRef}, rt)
+			if reason != nil || len(recoveredIDs) != 1 || !platform.ContainsLiteralSpan(original, recoveredIDs[0]) {
+				return ResourceInfoResponse{}, ReadFallbackBeforeTool(platform.ReadFallbackValidation)
+			}
+			ids = recoveredIDs
+			hasFilters = false
+		} else {
+			filters = parsed
 		}
-		filters = parsed
 	} else {
 		// Existence is established from the DescribeCompShareInstance response
 		// (re-parsed below), never from the registry snapshot, so an id the local

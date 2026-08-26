@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -98,10 +99,50 @@ print("REPAIR_SCOPE_AUTHORIZED=%s" % conn.get("repair_scope_authorized"))
 print("AGENT_SESSION=%s/%s/%s/%s" % (
     (conn.get("agent_session") or {}).get("session_id"), (conn.get("agent_session") or {}).get("contract"),
     (conn.get("agent_session") or {}).get("model"), (conn.get("agent_session") or {}).get("resume")))
+print("AGENT_ATTEMPT=%s" % (conn.get("agent_session") or {}).get("attempt_session_id"))
+print("AGENT_WORKDIR=%s" % (conn.get("agent_session") or {}).get("workdir_id"))
 print("SESSION_ROOT=%s" % conn.get("session_root"))
+print("CONVERSATION=" + json.dumps((conn.get("context") or {}).get("conversation_history"), ensure_ascii=False, separators=(",", ":")))
+print("CONVERSATION_ANCHOR=%s" % conn.get("conversation_anchor"))
+print("CONVERSATION_RESUME_INDEX=%s" % conn.get("conversation_resume_index"))
 print("ENVKEYS=" + ",".join(sorted(os.environ.keys())))
 print("<<<END>>>")
 `
+
+const fakeAgentFailureOutcome = `
+import sys, json
+json.loads(sys.stdin.readline())
+print('@@OUTCOME {"outcome":"agent_failed","err_class":"server_error","context_applied":true}')
+print("<<<VERDICT>>>")
+print("诊断中断：实例内诊断代理未能完成本轮，因此没有形成经验证的最终结论。")
+print("<<<END>>>")
+`
+
+// This exercises the process boundary, not only parseHarnessStream in isolation. If RunWithContext
+// ever forgets to project a parsed @@OUTCOME into Result, the service would audit a provider failure
+// as a successful diagnosis even though both parser-only and fake-runner service tests stayed green.
+func TestSupervisorProjectsAgentFailureOutcomeIntoResult(t *testing.T) {
+	sup := Supervisor{
+		Python:      requirePython(t),
+		HarnessPath: writeFakeHarness(t, fakeAgentFailureOutcome),
+		SessionRoot: t.TempDir(),
+		BaseURL:     testAnthropicBaseURL,
+		APIKey:      testAnthropicAPIKey,
+		Model:       "gpt-5.6-terra",
+		Timeout:     30 * time.Second,
+	}
+	res, err := sup.RunWithContext(context.Background(),
+		cred("uhost-abc", "1.2.3.4", "root", 22, "pw"), "diagnose", opscontext.Context{}, nil, nil)
+	if err != nil {
+		t.Fatalf("run: %v (output=%q)", err, res.Output)
+	}
+	if !res.AgentFailed || res.PreflightFailed || res.ErrClass != "server_error" || !res.ContextApplied {
+		t.Fatalf("result did not preserve the harness failure receipt: %+v", res)
+	}
+	if strings.Contains(res.Output, "server_error") || !strings.Contains(res.Output, "没有形成经验证的最终结论") {
+		t.Fatalf("customer verdict leaked wire metadata or lost the bounded failure message: %q", res.Output)
+	}
+}
 
 func TestSupervisorHandshakeAndScrubbedEnv(t *testing.T) {
 	// a secret in the PARENT env that must NOT reach the child (proves env scrubbing)
@@ -125,7 +166,8 @@ func TestSupervisorHandshakeAndScrubbedEnv(t *testing.T) {
 		RepairScopeAuthorized: true,
 		AgentSession: &opscontext.AgentSession{
 			SessionID: "11111111-1111-4111-8111-111111111111", Contract: "sshops-agent-v1",
-			Model: "gpt-5.6-terra", Resume: true,
+			WorkdirID: "22222222-2222-4222-8222-222222222222",
+			Model:     "gpt-5.6-terra", Resume: true,
 		},
 	}
 	res, err := sup.RunWithContext(context.Background(), c, "health check", modelContext, nil, nil)
@@ -166,6 +208,132 @@ func TestSupervisorHandshakeAndScrubbedEnv(t *testing.T) {
 	}
 }
 
+func TestSupervisorResumeKeepsFreshFallbackAndMarksTheOuterConversationDelta(t *testing.T) {
+	full := []opscontext.ConversationMessage{
+		{Role: opscontext.ConversationRoleUser, Content: "第一轮"},
+		{Role: opscontext.ConversationRoleAssistant, Content: "使用 9:16、720p、5–8 秒"},
+		{Role: opscontext.ConversationRoleUser, Content: "直接按上面的来"},
+	}
+	bridged := full[:1]
+	sup := Supervisor{
+		Python: requirePython(t), HarnessPath: writeFakeHarness(t, fakeEcho),
+		SessionRoot: "/private/sshops-sessions", BaseURL: testAnthropicBaseURL,
+		APIKey: testAnthropicAPIKey, Model: "gpt-5.6-terra", Timeout: 30 * time.Second,
+	}
+	ctx := opscontext.Context{
+		SchemaVersion:       opscontext.SchemaVersion,
+		ConversationHistory: full,
+		AgentSession: &opscontext.AgentSession{
+			SessionID: "11111111-1111-4111-8111-111111111111", Contract: "sshops-agent-v2",
+			WorkdirID: "22222222-2222-4222-8222-222222222222",
+			Model:     "gpt-5.6-terra", Resume: true,
+			ConversationAnchor: opscontext.ConversationAnchor(bridged),
+		},
+		BridgeConversationAnchor: opscontext.ConversationAnchor(full),
+	}
+	res, err := sup.RunWithContext(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 22, "pw"),
+		"task", ctx, nil, nil)
+	if err != nil {
+		t.Fatalf("run: %v (output=%q)", err, res.Output)
+	}
+	requireContains := func(value string) {
+		t.Helper()
+		if !strings.Contains(res.Output, value) {
+			t.Fatalf("output missing %q: %s", value, res.Output)
+		}
+	}
+	requireContains(`CONVERSATION=[{"role":"user","content":"第一轮"},{"role":"assistant","content":"使用 9:16、720p、5–8 秒"},{"role":"user","content":"直接按上面的来"}]`)
+	requireContains("CONVERSATION_ANCHOR=" + opscontext.ConversationAnchor(full))
+	requireContains("CONVERSATION_RESUME_INDEX=1")
+	requireContains("AGENT_WORKDIR=22222222-2222-4222-8222-222222222222")
+	attempt := regexp.MustCompile(`AGENT_ATTEMPT=([0-9a-f-]{36})`).FindStringSubmatch(res.Output)
+	if len(attempt) != 2 || attempt[1] == "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("resume was not isolated into a distinct attempt session: %s", res.Output)
+	}
+	retry, err := sup.RunWithContext(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 22, "pw"),
+		"task", ctx, nil, nil)
+	if err != nil {
+		t.Fatalf("retry run: %v (output=%q)", err, retry.Output)
+	}
+	retryAttempt := regexp.MustCompile(`AGENT_ATTEMPT=([0-9a-f-]{36})`).FindStringSubmatch(retry.Output)
+	if len(retryAttempt) != 2 || retryAttempt[1] == attempt[1] {
+		t.Fatalf("a retry reused the prior uncommitted attempt: first=%v retry=%v", attempt, retryAttempt)
+	}
+	if ctx.AgentSession.AttemptSessionID != "" {
+		t.Fatalf("supervisor mutated the engine-owned committed cursor: %+v", ctx.AgentSession)
+	}
+}
+
+func TestSupervisorFreshSessionSendsTheCompleteOuterConversationOnce(t *testing.T) {
+	full := []opscontext.ConversationMessage{
+		{Role: opscontext.ConversationRoleUser, Content: "问题"},
+		{Role: opscontext.ConversationRoleAssistant, Content: "上轮方案"},
+		{Role: opscontext.ConversationRoleUser, Content: "就这个"},
+	}
+	sup := Supervisor{
+		Python: requirePython(t), HarnessPath: writeFakeHarness(t, fakeEcho),
+		SessionRoot: "/private/sshops-sessions", BaseURL: testAnthropicBaseURL,
+		APIKey: testAnthropicAPIKey, Model: "gpt-5.6-terra", Timeout: 30 * time.Second,
+	}
+	ctx := opscontext.Context{
+		SchemaVersion:       opscontext.SchemaVersion,
+		ConversationHistory: full,
+		AgentSession: &opscontext.AgentSession{
+			SessionID: "11111111-1111-4111-8111-111111111111", Contract: opscontext.AgentSessionContract,
+			WorkdirID: "11111111-1111-4111-8111-111111111111",
+			Resume:    false,
+		},
+		BridgeConversationAnchor: opscontext.ConversationAnchor(full),
+	}
+	res, err := sup.RunWithContext(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 22, "pw"),
+		"task", ctx, nil, nil)
+	if err != nil {
+		t.Fatalf("run: %v (output=%q)", err, res.Output)
+	}
+	for _, content := range []string{`"content":"问题"`, `"content":"上轮方案"`, `"content":"就这个"`} {
+		if strings.Count(res.Output, content) != 1 {
+			t.Fatalf("fresh handshake did not carry each outer message exactly once (%s): %s", content, res.Output)
+		}
+	}
+	if !strings.Contains(res.Output, "CONVERSATION_RESUME_INDEX=0") {
+		t.Fatalf("fresh session unexpectedly carried a resume suffix: %s", res.Output)
+	}
+}
+
+func TestSupervisorAnchorMissStartsFreshWithCompleteSnapshot(t *testing.T) {
+	full := []opscontext.ConversationMessage{{Role: opscontext.ConversationRoleUser, Content: "bounded current snapshot"}}
+	sup := Supervisor{
+		Python: requirePython(t), HarnessPath: writeFakeHarness(t, fakeEcho),
+		SessionRoot: "/private/sshops-sessions", BaseURL: testAnthropicBaseURL,
+		APIKey: testAnthropicAPIKey, Model: "gpt-5.6-terra", Timeout: 30 * time.Second,
+	}
+	oldID := "11111111-1111-4111-8111-111111111111"
+	ctx := opscontext.Context{
+		SchemaVersion:       opscontext.SchemaVersion,
+		ConversationHistory: full,
+		AgentSession: &opscontext.AgentSession{
+			SessionID: oldID, Contract: "sshops-agent-v2", Model: "gpt-5.6-terra", Resume: true,
+			WorkdirID:          oldID,
+			ConversationAnchor: opscontext.ConversationAnchor([]opscontext.ConversationMessage{{Role: "user", Content: "dropped prefix"}}),
+		},
+		BridgeConversationAnchor: opscontext.ConversationAnchor(full),
+	}
+	res, err := sup.RunWithContext(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 22, "pw"),
+		"task", ctx, nil, nil)
+	if err != nil {
+		t.Fatalf("run: %v (output=%q)", err, res.Output)
+	}
+	if strings.Contains(res.Output, oldID) || !strings.Contains(res.Output, "/sshops-agent-v2/gpt-5.6-terra/False") {
+		t.Fatalf("anchor miss did not rotate to a fresh session: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, `CONVERSATION=[{"role":"user","content":"bounded current snapshot"}]`) {
+		t.Fatalf("fresh fallback did not receive the complete snapshot: %s", res.Output)
+	}
+	if !strings.Contains(res.Output, "CONVERSATION_RESUME_INDEX=0") {
+		t.Fatalf("fresh fallback carried a stale resume index: %s", res.Output)
+	}
+}
+
 func TestSupervisorEmptySessionRootDisablesCursorAndUsesHarnessCleanWorkdir(t *testing.T) {
 	sup := Supervisor{
 		Python: requirePython(t), HarnessPath: writeFakeHarness(t, fakeEcho),
@@ -174,7 +342,8 @@ func TestSupervisorEmptySessionRootDisablesCursorAndUsesHarnessCleanWorkdir(t *t
 	}
 	session := &opscontext.AgentSession{
 		SessionID: "11111111-1111-4111-8111-111111111111", Contract: "sshops-agent-v1",
-		Model: "gpt-5.6-terra", Resume: true,
+		WorkdirID: "11111111-1111-4111-8111-111111111111",
+		Model:     "gpt-5.6-terra", Resume: true,
 	}
 	res, err := sup.RunWithContext(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 22, "pw"),
 		"task", opscontext.Context{AgentSession: session}, nil, nil)
@@ -198,6 +367,7 @@ func TestSupervisorBindsFreshAgentSessionToSelectedModel(t *testing.T) {
 	}
 	session := &opscontext.AgentSession{
 		SessionID: "11111111-1111-4111-8111-111111111111", Contract: "sshops-agent-v1",
+		WorkdirID: "11111111-1111-4111-8111-111111111111",
 	}
 	res, err := sup.RunWithContext(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 22, "pw"),
 		"task", opscontext.Context{AgentSession: session}, nil, nil)
@@ -221,7 +391,8 @@ func TestSupervisorRotatesResumeCursorWhenDeploymentModelChanges(t *testing.T) {
 	}
 	session := &opscontext.AgentSession{
 		SessionID: "11111111-1111-4111-8111-111111111111", Contract: "sshops-agent-v1",
-		Model: "old-deployment-model", Resume: true,
+		WorkdirID: "11111111-1111-4111-8111-111111111111",
+		Model:     "old-deployment-model", Resume: true,
 	}
 	res, err := sup.RunWithContext(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 22, "pw"),
 		"task", opscontext.Context{AgentSession: session}, nil, nil)
@@ -377,6 +548,32 @@ func TestParseHarnessStream(t *testing.T) {
 	}
 	if v2 != "" || len(s2) != 0 {
 		t.Fatalf("expected empty verdict/steps for protocol-less output, got %q / %d", v2, len(s2))
+	}
+}
+
+func TestParseAgentSessionV2RequiresAppliedConversationAnchor(t *testing.T) {
+	const id = "11111111-1111-4111-8111-111111111111"
+	const workdirID = "22222222-2222-4222-8222-222222222222"
+	without := `{"session_id":"` + id + `","workdir_id":"` + workdirID + `","contract":"` + opscontext.AgentSessionContract + `","model":"gpt-5.6-terra"}`
+	if _, ok := parseAgentSessionUpdate(without); ok {
+		t.Fatal("a v2 receipt without an applied conversation anchor must not advance continuation")
+	}
+	with := `{"session_id":"` + id + `","workdir_id":"` + workdirID + `","contract":"` + opscontext.AgentSessionContract +
+		`","model":"gpt-5.6-terra","conversation_anchor":"` + strings.Repeat("a", 64) + `"}`
+	got, ok := parseAgentSessionUpdate(with)
+	if !ok || got.AgentSessionConversationAnchor != strings.Repeat("a", 64) {
+		t.Fatalf("valid v2 receipt was rejected or lost its anchor: %+v ok=%v", got, ok)
+	}
+	if got.AgentSessionWorkdirID != workdirID {
+		t.Fatalf("valid v2 receipt lost its stable workdir id: %+v", got)
+	}
+	bad := strings.Replace(with, strings.Repeat("a", 64), strings.Repeat("g", 64), 1)
+	if _, ok := parseAgentSessionUpdate(bad); ok {
+		t.Fatal("non-hex applied anchor must be rejected")
+	}
+	uppercase := strings.Replace(with, strings.Repeat("a", 64), strings.Repeat("A", 64), 1)
+	if _, ok := parseAgentSessionUpdate(uppercase); ok {
+		t.Fatal("non-canonical uppercase anchor must be rejected")
 	}
 }
 

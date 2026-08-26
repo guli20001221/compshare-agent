@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -85,9 +86,14 @@ type Result struct {
 	//
 	// The zero value means "entered", so a harness that predates @@OUTCOME behaves exactly as before.
 	PreflightFailed bool
-	// ErrClass is the credential-free failure class behind PreflightFailed — paramiko's exception type
-	// name, calibrated in _DIAL_CLASS_REASONS: TimeoutError = packets dropped, NoValidConnectionsError
-	// = actively refused, gaierror = DNS. Empty on a run that entered the box.
+	// AgentFailed reports that SSH access began but the inner Claude SDK/model did not complete a
+	// diagnostic turn. Its verdict is a deterministic partial-run notice, never the provider's raw
+	// error body. This is distinct from PreflightFailed: commands may already have run and their
+	// activity/audit records remain authoritative.
+	AgentFailed bool
+	// ErrClass is the credential-free bounded failure class behind PreflightFailed or AgentFailed.
+	// Dial failures use paramiko's calibrated exception type; agent failures use a closed SDK/model
+	// class and never a provider message/request ID. Empty on a completed run.
 	ErrClass string
 	// ContextApplied is true only when the harness confirmed — after the model turn had actually begun
 	// on that prompt, not merely after building it — that it included the independently transported
@@ -124,10 +130,12 @@ type Step struct {
 	// AgentSessionLifecycleOnly is an @@AGENT_SESSION side-band update. It carries only an opaque
 	// server-generated SDK cursor and compatibility labels; it is never a command, activity row or
 	// audit step. The engine may persist it to resume the same inner-agent transcript later.
-	AgentSessionLifecycleOnly bool
-	AgentSessionID            string
-	AgentSessionContract      string
-	AgentSessionModel         string
+	AgentSessionLifecycleOnly      bool
+	AgentSessionID                 string
+	AgentSessionWorkdirID          string
+	AgentSessionContract           string
+	AgentSessionModel              string
+	AgentSessionConversationAnchor string
 }
 
 // envAllowlist: non-secret system vars the interpreter / claude CLI need to function. Deliberately
@@ -209,6 +217,7 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 	cmd.WaitDelay = 5 * time.Second                         // bound the post-kill wait if a pipe lingers
 
 	agentSession := modelContext.AgentSession
+	conversationResumeIndex := 0
 	// A stable root is part of the continuation contract. Never combine a persisted cursor with an
 	// implicit OS/user temp directory: on developer hosts that directory can sit beneath a user
 	// CLAUDE.md and the harness must reject it. Empty configuration therefore means a fresh clean
@@ -218,6 +227,15 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 	}
 	if agentSession != nil {
 		copy := *agentSession
+		rotateFresh := func() {
+			freshID := uuid.NewString()
+			copy.SessionID = freshID
+			copy.AttemptSessionID = ""
+			copy.WorkdirID = freshID
+			copy.Model = s.Model
+			copy.Resume = false
+			copy.ConversationAnchor = ""
+		}
 		// Engine owns the opaque UUID/contract but does not know the deployment model. Bind a fresh
 		// cursor here, at the component that selects the model; a resume cursor must already carry
 		// the previously observed model and is deliberately not repaired when malformed.
@@ -228,10 +246,27 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 		// the engine's freshness TTL would make every ops request fail closed for up to 30 minutes.
 		// Rotate to a server-generated fresh cursor at this last model-aware boundary; the harness
 		// receipt then replaces the persisted cursor after a genuine model turn begins.
-		if copy.Resume && copy.Model != s.Model {
-			copy.SessionID = uuid.NewString()
-			copy.Model = s.Model
-			copy.Resume = false
+		if copy.Resume && (copy.Model != s.Model || strings.TrimSpace(copy.WorkdirID) == "") {
+			rotateFresh()
+		}
+		// A resumed SDK transcript already contains the outer conversation through
+		// ConversationAnchor. Compute the exact delivered prefix; the harness applies
+		// that index only after it confirms the local SDK transcript exists. If history
+		// compaction removed the prefix, start fresh with the complete currently
+		// available snapshot instead of duplicating or guessing where the cursor belonged.
+		if copy.Resume {
+			if delta, ok := opscontext.ConversationAfterAnchor(modelContext.ConversationHistory, copy.ConversationAnchor); ok {
+				conversationResumeIndex = len(modelContext.ConversationHistory) - len(delta)
+				// Never append an uncommitted request to the durable SDK transcript. Claude Code
+				// writes the user event before authentication/model success, so every resume is
+				// forked into an attempt UUID. Only the receipt for that attempt advances DB state.
+				copy.AttemptSessionID = uuid.NewString()
+			} else {
+				rotateFresh()
+			}
+		}
+		if !copy.Resume && strings.TrimSpace(copy.WorkdirID) == "" {
+			copy.WorkdirID = copy.SessionID
 		}
 		agentSession = &copy
 	}
@@ -251,7 +286,14 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 		// SessionRoot and AgentSession are private control-plane continuation metadata. They contain
 		// no transcript or credential and never enter the prompt/audit payload.
 		"agent_session": agentSession,
-		"session_root":  strings.TrimSpace(s.SessionRoot),
+		// Echoed by a v3-aware harness only after the role-complete context reaches
+		// a genuine model turn. An older harness cannot falsely advance this cursor.
+		"conversation_anchor": strings.TrimSpace(modelContext.BridgeConversationAnchor),
+		// Keep the full bounded conversation on the wire. Only the harness knows
+		// whether the SDK's local JSONL still exists; it applies this index solely
+		// for a real --resume and ignores it when it must start fresh.
+		"conversation_resume_index": conversationResumeIndex,
+		"session_root":              strings.TrimSpace(s.SessionRoot),
 		// Private destinations for the structured endpoint probe. Context itself omits these fields,
 		// so URLs carrying console tokens and raw hosts never enter the model prompt or audit record.
 		// The harness exposes only opaque IDs and resolves them against this stdin-only list.
@@ -326,6 +368,7 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 		Output:          verdict,
 		Steps:           steps,
 		PreflightFailed: outcome.Outcome == outcomePreflightFailed,
+		AgentFailed:     outcome.Outcome == outcomeAgentFailed,
 		ErrClass:        outcome.ErrClass,
 		ContextApplied:  outcome.ContextApplied,
 	}
@@ -373,10 +416,12 @@ const (
 //
 // onStep, if non-nil, is invoked for parsed @@STEP command rows and @@JOB lifecycle updates as
 // they are read; only @@STEP rows are bounded by the command-step cap and returned for audit.
-// outcomePreflightFailed is the only @@OUTCOME value the harness emits today. Unknown values are kept
-// verbatim in harnessOutcome.Outcome but map to "entered", so a newer harness inventing a value cannot
-// silently turn a successful diagnosis into a refusal on an older supervisor.
-const outcomePreflightFailed = "preflight_failed"
+// Unknown values are kept verbatim in harnessOutcome.Outcome but map to "entered", so a newer harness
+// inventing a value cannot silently turn a successful diagnosis into a refusal on an older supervisor.
+const (
+	outcomePreflightFailed = "preflight_failed"
+	outcomeAgentFailed     = "agent_failed"
+)
 
 // harnessOutcome is the parsed @@OUTCOME line. An absent line still means the box was entered, but
 // it cannot prove an independently transported context reached the model, so ContextApplied is false.
@@ -472,19 +517,41 @@ func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRe
 
 func parseAgentSessionUpdate(payload string) (Step, bool) {
 	var raw struct {
-		SessionID string `json:"session_id"`
-		Contract  string `json:"contract"`
-		Model     string `json:"model"`
+		SessionID          string `json:"session_id"`
+		WorkdirID          string `json:"workdir_id"`
+		Contract           string `json:"contract"`
+		Model              string `json:"model"`
+		ConversationAnchor string `json:"conversation_anchor"`
 	}
 	if json.Unmarshal([]byte(payload), &raw) != nil || strings.TrimSpace(raw.SessionID) == "" ||
 		strings.TrimSpace(raw.Contract) == "" {
 		return Step{}, false
 	}
+	if raw.Contract == opscontext.AgentSessionContract {
+		if _, err := uuid.Parse(strings.TrimSpace(raw.SessionID)); err != nil {
+			return Step{}, false
+		}
+		if _, err := uuid.Parse(strings.TrimSpace(raw.WorkdirID)); err != nil {
+			return Step{}, false
+		}
+		anchor := strings.TrimSpace(raw.ConversationAnchor)
+		if len(anchor) != 64 {
+			return Step{}, false
+		}
+		if _, err := hex.DecodeString(anchor); err != nil {
+			return Step{}, false
+		}
+		if strings.ToLower(anchor) != anchor {
+			return Step{}, false
+		}
+	}
 	return Step{
-		AgentSessionLifecycleOnly: true,
-		AgentSessionID:            raw.SessionID,
-		AgentSessionContract:      raw.Contract,
-		AgentSessionModel:         raw.Model,
+		AgentSessionLifecycleOnly:      true,
+		AgentSessionID:                 raw.SessionID,
+		AgentSessionWorkdirID:          raw.WorkdirID,
+		AgentSessionContract:           raw.Contract,
+		AgentSessionModel:              raw.Model,
+		AgentSessionConversationAnchor: strings.TrimSpace(raw.ConversationAnchor),
 	}, true
 }
 

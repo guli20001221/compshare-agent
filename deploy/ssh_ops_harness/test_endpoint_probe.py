@@ -60,16 +60,23 @@ port = httpd.server_address[1]
 
 tcp_listener = socket.socket()
 tcp_listener.bind(("127.0.0.1", 0))
-tcp_listener.listen(1)
+tcp_listener.listen(2)
 tcp_port = tcp_listener.getsockname()[1]
+tcp_payloads = []
 
 
-def _accept_once():
-    conn, _ = tcp_listener.accept()
-    conn.close()
+def _accept_twice():
+    for _ in range(2):
+        conn, _ = tcp_listener.accept()
+        try:
+            conn.settimeout(1)
+            tcp_payloads.append(conn.recv(1))
+        finally:
+            conn.close()
 
 
-threading.Thread(target=_accept_once, daemon=True).start()
+tcp_thread = threading.Thread(target=_accept_twice, daemon=True)
+tcp_thread.start()
 
 secret_url = f"http://127.0.0.1:{port}/ok?token=live-secret"
 targets = endpoint_probe.normalize_targets([
@@ -104,7 +111,12 @@ check("schema-allows-only-an-absolute-bounded-path",
       schema["properties"]["path"]["pattern"] == "^/"
       and schema["properties"]["path"]["maxLength"] == endpoint_probe._MAX_PATH_LENGTH)
 check("schema-closes-http-methods-to-read-only-options",
-      schema["properties"]["method"]["enum"] == ["GET", "HEAD"])
+      schema["properties"]["method"]["enum"] == ["GET", "HEAD"]
+      and "default" not in schema["properties"]["method"])
+check("schema-keeps-a-flat-complete-target-enum-for-cli-compatibility",
+      schema["properties"]["target_id"]["enum"] == list(targets)
+      and "allOf" not in schema and "oneOf" not in schema
+      and "send only this field" in schema["properties"]["target_id"]["description"])
 check("schema-without-a-current-request-capability-exposes-no-authorization-input",
       "authorization" not in schema["properties"]
       and "authorization_ref" not in schema["properties"])
@@ -171,6 +183,13 @@ check("head-method-is-preserved-across-a-same-origin-redirect",
 tcp_result = endpoint_probe.probe(targets, "platform-tcp-2")
 check("tcp-probe-connects-without-payload",
       tcp_result["transport_reachable"] is True and tcp_result["stage"] == "tcp_connected")
+tcp_cli_defaults = endpoint_probe.probe(targets, "platform-tcp-2", "/", method="GET")
+check("tcp-probe-tolerates-cli-materialized-http-defaults-without-payload",
+      tcp_cli_defaults["transport_reachable"] is True
+      and tcp_cli_defaults["stage"] == "tcp_connected")
+tcp_thread.join(2)
+check("tcp-probe-sends-zero-bytes-for-plain-and-cli-default-shapes",
+      not tcp_thread.is_alive() and tcp_payloads == [b"", b""])
 tcp_path = endpoint_probe.probe(targets, "platform-tcp-2", "/not-applicable")
 check("tcp-target-rejects-a-path",
       tcp_path["transport_reachable"] is False

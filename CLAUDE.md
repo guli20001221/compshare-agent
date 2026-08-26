@@ -149,12 +149,19 @@ Engine LRU eviction or process restart; neither the command nor its output enter
 conversation/audit storage. One unresolved handle occupies the session's single
 durable job slot until a matching terminal observation clears it.
 
-SessionState V9 also keeps a short-lived, same-instance opaque Agent SDK session
-UUID. The SDK transcript stays in its existing local ephemeral store and never
-enters PostgreSQL. A later turn can therefore continue the inner agent's prior
-observations after a browser disconnect, Engine LRU eviction or a container
-restart in the same Pod. A different instance, changed prompt/tool contract,
-changed model, expired cursor or missing local transcript starts fresh.
+SessionState V10 keeps a short-lived, same-instance opaque Agent SDK session UUID,
+a stable opaque workdir UUID, and a content-free SHA-256 high-water mark for the outer conversation already
+bridged into it. The SDK transcript stays in its existing local ephemeral store
+and never enters PostgreSQL. A fresh inner session receives the canonical bounded
+user/assistant conversation plus the current user turn; a resume receives only
+the new role-labelled suffix. A different instance, changed prompt/tool contract,
+changed model, expired cursor, missing local transcript or a compacted-away anchor
+starts fresh with the complete currently available snapshot.
+Every resume forks the committed transcript into a new attempt UUID. Only a genuine
+model-event receipt advances the persisted cursor, so authentication/transport failures
+cannot append an uncommitted user prompt to the next retry.
+Before the next serialized attempt, the harness retains only that committed source JSONL
+inside the manifest-bound workdir and removes unreceipted fork JSONLs.
 
 ## Configuration
 

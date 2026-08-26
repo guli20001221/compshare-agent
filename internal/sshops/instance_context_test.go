@@ -94,8 +94,8 @@ func TestDiagnoseWithContextProjectsOnlyAllowlistedFacts(t *testing.T) {
 	audit := &MemAuditWriter{}
 	svc := NewService(runner, audit)
 	modelContext := opscontext.Context{
-		SchemaVersion:     opscontext.SchemaVersion,
-		CurrentUserReport: &opscontext.UserReport{Text: "8188 打不开", Source: "chat.current_user", ObservedAt: "unknown", Status: opscontext.StatusReported},
+		SchemaVersion:       opscontext.SchemaVersion,
+		ConversationHistory: []opscontext.ConversationMessage{{Role: opscontext.ConversationRoleUser, Content: "8188 打不开"}},
 	}
 
 	_, err := svc.DiagnoseWithContext(context.Background(), describer, Owner{RequestUUID: "req", TurnID: "turn"}, "uhost-abc", "排查 Web UI", modelContext, nil, nil)
@@ -162,9 +162,8 @@ func TestFinishedAuditClearsUnconfirmedContextReceipt(t *testing.T) {
 	audit := &MemAuditWriter{}
 	svc := NewService(runner, audit)
 	modelContext := opscontext.Context{
-		SchemaVersion: opscontext.SchemaVersion,
-		CurrentUserReport: &opscontext.UserReport{Text: "Web UI 无法访问", Source: "chat.current_user",
-			ObservedAt: "unknown", Status: opscontext.StatusReported},
+		SchemaVersion:       opscontext.SchemaVersion,
+		ConversationHistory: []opscontext.ConversationMessage{{Role: opscontext.ConversationRoleUser, Content: "Web UI 无法访问"}},
 	}
 
 	_, err := svc.DiagnoseWithContext(context.Background(), describer, Owner{TurnID: "turn"}, "uhost-abc", "排查服务", modelContext, nil, nil)
@@ -337,8 +336,8 @@ func TestContextDoesNotChangeTaskHash(t *testing.T) {
 	firstAudit, secondAudit := &MemAuditWriter{}, &MemAuditWriter{}
 	first := NewService(&fakeRunner{res: Result{Output: "ok"}}, firstAudit)
 	second := NewService(&fakeRunner{res: Result{Output: "ok"}}, secondAudit)
-	firstContext := opscontext.Context{SchemaVersion: opscontext.SchemaVersion, CurrentUserReport: &opscontext.UserReport{Text: "8188 不通", Source: "chat.current_user", ObservedAt: "unknown", Status: opscontext.StatusReported}}
-	secondContext := opscontext.Context{SchemaVersion: opscontext.SchemaVersion, CurrentUserReport: &opscontext.UserReport{Text: "显存 100%", Source: "chat.current_user", ObservedAt: "unknown", Status: opscontext.StatusReported}}
+	firstContext := opscontext.Context{SchemaVersion: opscontext.SchemaVersion, ConversationHistory: []opscontext.ConversationMessage{{Role: opscontext.ConversationRoleUser, Content: "8188 不通"}}}
+	secondContext := opscontext.Context{SchemaVersion: opscontext.SchemaVersion, ConversationHistory: []opscontext.ConversationMessage{{Role: opscontext.ConversationRoleUser, Content: "显存 100%"}}}
 
 	_, err := first.DiagnoseWithContext(context.Background(), stubDescriber{resp: describe}, Owner{TurnID: "one"}, "uhost-abc", "同一个任务", firstContext, nil, nil)
 	require.NoError(t, err)

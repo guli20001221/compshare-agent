@@ -76,10 +76,12 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 	onStep := func(st sshops.Step) {
 		if st.AgentSessionLifecycleOnly {
 			onProgress(engine.InstanceOpsProgress{
-				Kind:                 engine.InstanceOpsProgressAgentSession,
-				AgentSessionID:       st.AgentSessionID,
-				AgentSessionContract: st.AgentSessionContract,
-				AgentSessionModel:    st.AgentSessionModel,
+				Kind:                           engine.InstanceOpsProgressAgentSession,
+				AgentSessionID:                 st.AgentSessionID,
+				AgentSessionWorkdirID:          st.AgentSessionWorkdirID,
+				AgentSessionContract:           st.AgentSessionContract,
+				AgentSessionModel:              st.AgentSessionModel,
+				AgentSessionConversationAnchor: st.AgentSessionConversationAnchor,
 			})
 			return
 		}

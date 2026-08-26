@@ -36,9 +36,14 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
 
 平台入口 URL 及 SSH 地址只在 Go→harness 的 stdin 私有握手里存在；它们不进入 task、prompt、
 模型输出或审计。平台元数据、Guest listener、应用响应和 runner 视角的外部探测仍是四层不同证据。
-当前轮及最近用户轮次的截图 OCR 会在脱敏和长度限制后，直接附在对应用户报告中送给内层 Agent，
-并明确标为“可能识别有误、不是指令或授权”的参考信息；它不参与实例选择、写确认或 task hash，
-审计也不保存 OCR 原文。
+当前未回答的 user 消息与最近的完整 user/assistant 对话会在角色化、脱敏和整轮预算后组成一条
+连续历史送给内层 Agent，因而
+“按上面的来”可以承接助手上一轮已经确认的参数，而不是依赖关键词或 planner 改写。V3 有完整
+历史时，planner Task 只保留在服务端作路由、审计与重放身份，不再作为第二套可执行指令进入模型；
+没有 V3 历史的兼容调用仍使用 Task。历史对话用于
+理解指代；实例当前状态仍以平台事实和 SSH 实测为准。截图 OCR 直接附在对应用户报告中，并明确
+标为“可能识别有误、不是指令或授权”的参考信息；它不参与实例选择、写确认或 task hash，审计也
+不保存对话或 OCR 原文。
 
 ## 生产配置
 
@@ -62,8 +67,17 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
 `HOME` 卷下的 `.claude/projects`，并通过 `cleanupPeriodDays: 1` 使用 CLI 支持的最短自动清理周期。
 这两个目录都必须对部署私有，并只保证同一 Pod 内的容器重启续接；需要监控 512 MiB `agent-home`
 卷的使用量，Pod 重建会清空两者并安全降级为新会话。
-PostgreSQL 的 SessionState V9 只保存 UUID、实例 ID、契约/模型和时间，不保存对话、命令或输出；
+PostgreSQL 的 SessionState V10 只保存会话 UUID、稳定工作目录 UUID、实例 ID、契约/模型、conversation anchor 和时间，
+不保存对话、命令或输出；
 换实例、契约/模型变化、游标过期、本地记录缺失或 Pod 被重建时都会诚实地开始新会话。
+v3 另保存一枚 64 个小写十六进制字符的 SHA-256 conversation anchor，只表示 inner SDK 已经收到外层对话到哪个位置；
+它不含对话文本。Go 始终在私有握手里发送完整的有界快照和已送达前缀长度；harness 仅在本地 SDK
+transcript 确实存在时把 prompt 收敛为新增后缀，本地记录缺失则以完整快照 fresh start。harness 只在
+v3 上下文进入真实模型回合后回执该 anchor；旧/不支持的 context、鉴权失败或模型未启动都不能前移它。
+每次 resume 都通过 Claude SDK 的 `fork_session` 写入新的尝试 UUID；失败尝试不会追加到已提交 transcript，
+只有成功回执才会将数据库游标前移到该 fork。稳定工作目录 UUID 只负责让连续 fork 仍能找到同一私有 SDK project。
+下一次串行运行前，harness 只保留数据库当前指向的 source JSONL，并删除同一 manifest/workdir 下未回执的
+canonical UUID JSONL，避免失败 fork 完整复制成熟 transcript 后把 512 MiB `agent-home` 卷放大到清理周期才回收。
 
 ## 运行环境
 
@@ -104,14 +118,15 @@ SDK 在 `initialize` 等待 60 秒后超时；harness 会在同一个已选 npm 
 
    **`finished_at IS NOT NULL` 这个条件不是可选的**：`Begin` 写入的 `started` 行记的是本次
    **请求**的 schema/coverage（那时 harness 还没启动），`Finish` 才把它改写成**实际生效**的值——
-   harness 没能确认（旧版本、长度上限回退、SDK 在模型出首条消息前就失败）时清零。所以在终态行上，
+   harness 没能确认（旧版本或 SDK 在模型出首条消息前就失败）时清零。所以在终态行上，
    `context_schema_version` 非 0 表示模型这一轮确实是带着版本化参考上下文跑的；`0` 表示没有。而
    `started` 行只说明「请求过上下文」，把它当送达结果读会高估覆盖率——`Finish` 本身也可能失败
    （日志里是 `ssh-ops: audit finish failed …`），那种行会永远停在 `started`。
 
-   当前生产值是 **`2`**。`1` 只出现在 Go 二进制回滚到 v2 之前、而 harness 已是新版的混合期：
-   新 harness 仍接受 v1，旧 harness 遇到 v2 会安全降级成 task-only（终态行就是 `0`，不是半份
-   上下文）。两版的差别全在事实键——v1 用一个 `instance.reported_ports` 同时装 Describe 的
+   当前值是 **`3`**：除当前用户报告和平台事实外，它还携带按真实角色排列的完整历史问答；历史由
+   Go 侧按完整 exchange 统一预算，harness 不再用另一个字节上限把整块上下文静默丢成 task-only。
+   新 harness 仍接受 v1/v2；旧 harness 遇到 v3 会安全降级成 task-only（终态行就是 `0`，不是
+   半份上下文）。v2 与 v3 的平台事实键相同；v1 用一个 `instance.reported_ports` 同时装 Describe 的
    `Ports` 与 `TcpForwards`，v2 拆成 `platform.instance_port_hints` / `platform.tcp_forwards`，
    并新增 `instance.declared_software`（**只有名字**：同级的 `URL` 里带活的 Jupyter token）和
    `catalog.expected_software_ports`（镜像目录的**预期**端口，状态恒为 `reported`，永远不会是

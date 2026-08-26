@@ -9,6 +9,7 @@ import (
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/opscontext"
 	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/tools"
 )
@@ -96,7 +97,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	// user's designation before confirmation so a declined or timed-out card does
 	// not erase it. Account-single and expired-selection fallbacks are not new user
 	// designations and therefore are not recorded here.
-	if e.userNamedInstanceThisTurn(instanceID) {
+	if e.userNamedInstanceThisTurn(instanceID) || e.userResolvedInstanceThisTurn(instanceID) {
 		e.recordSelectedInstanceIDWithSource(instanceID, "", SelectedInstanceSourceUser)
 	}
 
@@ -139,6 +140,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	// Connected and command progress become bounded activity events. Command
 	// output never enters this stream; only metadata does.
 	commandsEmitted := 0
+	modelContext.BridgeConversationAnchor = opscontext.ConversationAnchor(modelContext.ConversationHistory)
 	// Settled commands are accumulated separately from the emitted ones. The live stream is capped
 	// at maxInstanceOpsStepEvents because it is a UI feed, but the interruption notice has to be
 	// able to report all settled commands over the WHOLE run — a cap on the feed must not
@@ -150,8 +152,11 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 			// Side-band session continuity only: not a command, UI step, trace event or audit row.
 			e.observeInstanceOpsBackgroundJob(instanceID, p.JobID, p.JobState, p.JobPurpose)
 		case InstanceOpsProgressAgentSession:
-			e.observeInstanceOpsAgentSession(instanceID, p.AgentSessionID,
-				p.AgentSessionContract, p.AgentSessionModel)
+			if p.AgentSessionConversationAnchor != modelContext.BridgeConversationAnchor {
+				return
+			}
+			e.observeInstanceOpsAgentSession(instanceID, p.AgentSessionID, p.AgentSessionWorkdirID,
+				p.AgentSessionContract, p.AgentSessionModel, p.AgentSessionConversationAnchor)
 		case InstanceOpsProgressConnected:
 			onStep(StepEvent{
 				Type:    StepToolCall,
@@ -337,6 +342,19 @@ func (e *Engine) userNamedInstanceThisTurn(instanceID string) bool {
 		return false
 	}
 	return entity.TextExplicitlyMentionsName(e.turnContextViewThisTurn.CurrentQuestion, instanceID)
+}
+
+// userResolvedInstanceThisTurn verifies a non-literal wrapper (for example an
+// access hostname or shell prompt) against the current complete account snapshot.
+// Requiring an explicit, uniquely bound current-turn reference keeps passive list
+// observations and account-single fallback out of authorization provenance.
+func (e *Engine) userResolvedInstanceThisTurn(instanceID string) bool {
+	if e == nil || !e.turnContextViewReady || strings.TrimSpace(instanceID) == "" {
+		return false
+	}
+	binding := e.bindInstanceTarget(e.turnContextViewThisTurn, instanceID)
+	return binding.explicit && binding.bound() &&
+		strings.EqualFold(strings.TrimSpace(binding.id), strings.TrimSpace(instanceID))
 }
 
 // userScreenshotNamesInstanceThisTurn accepts one exact instance ID from the
