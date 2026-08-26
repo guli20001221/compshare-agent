@@ -97,7 +97,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	// user's designation before confirmation so a declined or timed-out card does
 	// not erase it. Account-single and expired-selection fallbacks are not new user
 	// designations and therefore are not recorded here.
-	if e.userNamedInstanceThisTurn(instanceID) {
+	if e.userNamedInstanceThisTurn(instanceID) || e.userResolvedInstanceThisTurn(instanceID) {
 		e.recordSelectedInstanceIDWithSource(instanceID, "", SelectedInstanceSourceUser)
 	}
 
@@ -342,6 +342,19 @@ func (e *Engine) userNamedInstanceThisTurn(instanceID string) bool {
 		return false
 	}
 	return entity.TextExplicitlyMentionsName(e.turnContextViewThisTurn.CurrentQuestion, instanceID)
+}
+
+// userResolvedInstanceThisTurn verifies a non-literal wrapper (for example an
+// access hostname or shell prompt) against the current complete account snapshot.
+// Requiring an explicit, uniquely bound current-turn reference keeps passive list
+// observations and account-single fallback out of authorization provenance.
+func (e *Engine) userResolvedInstanceThisTurn(instanceID string) bool {
+	if e == nil || !e.turnContextViewReady || strings.TrimSpace(instanceID) == "" {
+		return false
+	}
+	binding := e.bindInstanceTarget(e.turnContextViewThisTurn, instanceID)
+	return binding.explicit && binding.bound() &&
+		strings.EqualFold(strings.TrimSpace(binding.id), strings.TrimSpace(instanceID))
 }
 
 // userScreenshotNamesInstanceThisTurn accepts one exact instance ID from the

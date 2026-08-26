@@ -123,6 +123,16 @@ func (e *Engine) bindInstanceTarget(view AgentContext, proposedIDs ...string) se
 		if len(unresolved) > 0 {
 			explicit = true // a typed id we can't resolve is still an explicit reference
 		}
+		// Tokenization intentionally consumes identifier-like suffixes, so an
+		// ingress hostname such as "<port>-<account-id>-<suffix>" produces one
+		// unresolved wrapper token. Resolve the user's literal ID independently
+		// against the complete account snapshot. This is not a hostname rule or a
+		// fuzzy match: only an exact ID returned by the live account listing can
+		// contribute a reference, and two distinct IDs still conflict below.
+		for _, h := range snap.AccountInstanceIDsInText(text) {
+			explicit = true
+			refs = appendDistinctID(refs, h.UHostId)
+		}
 		// A unique exact instance name mentioned in the message.
 		if id, ambiguous, present := uniqueRegistryNameInText(text, snap); present {
 			explicit = true

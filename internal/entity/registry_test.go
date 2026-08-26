@@ -369,6 +369,27 @@ func TestResolveByNamePrefersExactLongAccountIDOverItsPrefix(t *testing.T) {
 	assert.Equal(t, "cpod-abcdef", matches[0].UHostId)
 }
 
+func TestAccountInstanceIDsInTextUsesOnlyTheLiveAccountGrammar(t *testing.T) {
+	snap := RegistrySnapshot{Instances: map[string]InstanceSnapshot{
+		"cpod-abc":    {UHostId: "cpod-abc", Name: "short-instance"},
+		"cpod-abcdef": {UHostId: "cpod-abcdef", Name: "long-instance"},
+		"uhost-def":   {UHostId: "uhost-def", Name: "other"},
+	}}
+
+	matches := snap.AccountInstanceIDsInText("8188-cpod-abcdef-s1.pod.example")
+	require.Len(t, matches, 1)
+	assert.Equal(t, "cpod-abcdef", matches[0].UHostId,
+		"a shorter live ID must not win by prefix")
+
+	matches = snap.AccountInstanceIDsInText("copy cpod-abc to uhost-def")
+	require.Len(t, matches, 2)
+	assert.ElementsMatch(t, []string{"cpod-abc", "uhost-def"},
+		[]string{matches[0].UHostId, matches[1].UHostId})
+
+	assert.Empty(t, snap.AccountInstanceIDsInText("display name short-instance"),
+		"authorization provenance must not inherit fuzzy display-name matching")
+}
+
 func TestSnapshotIDStableAcrossInputOrder(t *testing.T) {
 	regA := NewRegistry()
 	require.NoError(t, regA.SyncFromDescribe(describeResult(

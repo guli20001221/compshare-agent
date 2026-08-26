@@ -3139,18 +3139,39 @@ func (e *Engine) recordObservedInstanceFromMonitor(raw map[string]any) {
 
 // recordUserDesignatedInstance persists a target deterministically resolved from
 // this turn's user-authored ID, exact name or displayed-list ordinal. Carried or
-// observed targets do not refresh this proof. Cold-registry literal IDs are
-// handled later by the instance-ops gate. This records continuity only; execution
-// still requires existence verification and confirmation.
+// observed targets do not refresh this proof. A single boundary-safe literal ID
+// is also retained while the registry is cold: persistence is conversational
+// continuity, not account authority, and every operation still performs its
+// normal point lookup and confirmation before execution.
 func (e *Engine) recordUserDesignatedInstance() {
 	if e == nil || !e.sessionStateHydrated || !e.turnContextViewReady {
 		return
 	}
 	binding := e.bindInstanceTarget(e.turnContextViewThisTurn)
-	if !binding.explicit || !binding.bound() {
+	if binding.conflict || !binding.explicit {
 		return
 	}
-	e.recordSelectedInstanceIDWithSource(binding.id, "", SelectedInstanceSourceUser)
+	if binding.bound() {
+		e.recordSelectedInstanceIDWithSource(binding.id, "", SelectedInstanceSourceUser)
+		return
+	}
+
+	// A complete snapshot has authoritatively rejected the reference, so never
+	// turn a typo into a selection. On a cold HTTP session, however, the user may
+	// provide an exact ID and receive a prose-only acknowledgement before any tool
+	// warms the registry. Retain exactly one complete, boundary-safe token so the
+	// next "查这台" turn does not lose the user's choice. Wrapped hostnames are not
+	// mistaken for IDs because their consumed token is not a complete-name span.
+	snap := e.RegistrySnapshot()
+	if snap.FreshAndCompleteAt(time.Now()) {
+		return
+	}
+	tokens := snap.InstanceIDTokensInText(e.turnContextViewThisTurn.CurrentQuestion)
+	if len(tokens) != 1 || !entity.TextExplicitlyMentionsName(
+		e.turnContextViewThisTurn.CurrentQuestion, tokens[0]) {
+		return
+	}
+	e.recordSelectedInstanceIDWithSource(tokens[0], "", SelectedInstanceSourceUser)
 }
 
 // recordObservedInstanceID records one instance as read-only conversational

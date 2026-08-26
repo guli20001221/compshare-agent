@@ -268,6 +268,15 @@ func (s RegistrySnapshot) ResolveInstanceRefsInText(text string) ([]*InstanceSna
 	return hits, unresolved
 }
 
+// AccountInstanceIDsInText returns only literal IDs that occur in text and are
+// present in this account snapshot. It deliberately performs neither fuzzy-name
+// matching nor wrapper parsing: the live account listing is the complete grammar.
+// This is suitable for authorization provenance where an access hostname, shell
+// prompt, or other wrapper may contain the exact instance ID the user selected.
+func (s RegistrySnapshot) AccountInstanceIDsInText(text string) []*InstanceSnapshot {
+	return instancesWhoseIDAppearsInText(text, s.Instances)
+}
+
 func (s RegistrySnapshot) instancesForIDs(ids []string) []*InstanceSnapshot {
 	matches := make([]*InstanceSnapshot, 0, len(ids))
 	for _, id := range ids {
