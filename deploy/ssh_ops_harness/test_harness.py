@@ -241,6 +241,46 @@ _provided_alternatives = _provided_guard.precondition(
 check("read-progress-offers-omission-for-a-present-optional-nondefault-field",
       _provided_alternatives.get("schema_declared_alternatives", {}).get(
           "authorization_ref", {}).get("omit") is True)
+
+_tcp_progress_targets = {
+    "platform-tcp-3": {"id": "platform-tcp-3", "kind": "tcp", "label": "SSH forward",
+                       "source": "Describe test", "host": "127.0.0.1", "port": 23},
+}
+_tcp_progress_schema = harness.endpoint_probe.input_schema(_tcp_progress_targets)
+_tcp_progress_shapes = [
+    {"target_id": "platform-tcp-3"},
+    {"target_id": "platform-tcp-3", "method": "GET"},
+    {"target_id": "platform-tcp-3", "path": "/"},
+    {"target_id": "platform-tcp-3", "path": "/", "method": "GET"},
+]
+_tcp_projections = [harness.endpoint_probe.progress_projection(
+    _tcp_progress_targets, args, _tcp_progress_schema) for args in _tcp_progress_shapes]
+check("tcp-cli-default-shapes-share-one-no-progress-fingerprint",
+      all(args == {"target_id": "platform-tcp-3"} for args, _ in _tcp_projections)
+      and all(set(schema["properties"]) == {"target_id"}
+              for _, schema in _tcp_projections))
+_tcp_progress_guard = harness._ReadProgressGuard(clock=lambda: 1.0)
+for _args, _schema in _tcp_projections[:2]:
+    _tcp_progress_guard.observe(
+        "endpoint_probe", _args, _schema, _progress_result, "ran_read_only")
+_tcp_equivalent_refusal = _tcp_progress_guard.precondition(
+    "endpoint_probe", *_tcp_projections[2])
+check("tcp-cli-default-alternation-cannot-evade-the-repeat-bound",
+      _tcp_equivalent_refusal is not None
+      and _tcp_equivalent_refusal["error_class"] == "no_progress_duplicate")
+_http_progress_targets = {
+    "platform-http-1": {"id": "platform-http-1", "kind": "http", "label": "app",
+                        "source": "Describe test", "url": "https://private.invalid/base"},
+}
+_http_progress_schema = harness.endpoint_probe.input_schema(_http_progress_targets)
+_http_omitted, _http_omitted_schema = harness.endpoint_probe.progress_projection(
+    _http_progress_targets, {"target_id": "platform-http-1"}, _http_progress_schema)
+_http_root, _ = harness.endpoint_probe.progress_projection(
+    _http_progress_targets, {"target_id": "platform-http-1", "path": "/"},
+    _http_progress_schema)
+check("http-get-is-canonical-but-explicit-root-remains-semantic",
+      _http_omitted_schema["properties"]["method"]["default"] == "GET"
+      and "path" not in _http_omitted and _http_root.get("path") == "/")
 check("read-progress-does-not-retain-arguments-or-results",
       "must-not-be-retained" not in repr(_progress_guard._entries)
       and "must-not-be-retained" not in repr(_progress_guard._locks))
@@ -2020,6 +2060,9 @@ try:
             "id": "platform-http-1", "kind": "http", "label": "ComfyUI platform entry",
             "source": "Describe test",
             "url": "https://private.example.invalid/?token=never-render",
+        }, {
+            "id": "platform-tcp-3", "kind": "tcp", "label": "SSH forward",
+            "source": "Describe test", "host": "127.0.0.1", "port": 23,
         }],
         probe_authorizations=[{
             "ref": _HANDSHAKE_AUTH_REF, "value": _HANDSHAKE_AUTHORIZATION,
@@ -2253,6 +2296,38 @@ try:
           harness.AUDIT[-1]["disposition"] == "refused_precondition"
           and '"disposition": "refused"' in _invalid_endpoint_step
           and _invalid_endpoint_responses[0].get("is_error") is True)
+
+    # Claude CLI materializes the shared schema's no-op HTTP defaults for a TCP target. The real
+    # registered handler must execute the first two equivalent observations, then apply one common
+    # no-progress bound instead of treating four argument spellings as four different reads.
+    harness.set_conn(dict(
+        conn,
+        endpoint_targets=[{
+            "id": "platform-tcp-3", "kind": "tcp", "label": "SSH forward",
+            "source": "Describe test", "host": "127.0.0.1", "port": 23,
+        }],
+    ))
+    _tcp_handler_calls = []
+    harness.endpoint_probe.probe = lambda _targets, target_id, path, method, authorization: (
+        _tcp_handler_calls.append((target_id, path, method, authorization)) or {
+            "target_id": target_id, "kind": "tcp", "vantage": "ssh_ops_runner",
+            "transport_reachable": True, "stage": "tcp_connected",
+        })
+    _tcp_handler_shapes = [
+        {"target_id": "platform-tcp-3"},
+        {"target_id": "platform-tcp-3", "method": "GET"},
+        {"target_id": "platform-tcp-3", "path": "/"},
+        {"target_id": "platform-tcp-3", "path": "/", "method": "GET"},
+    ]
+    _tcp_handler_responses = [
+        _asyncio.run(_endpoint_tool(args)) for args in _tcp_handler_shapes
+    ]
+    check("registered-tcp-cli-default-shapes-share-the-repeat-bound",
+          len(_tcp_handler_calls) == 2
+          and _tcp_handler_responses[1]["structuredContent"].get("repeat_observation")
+          and _tcp_handler_responses[2]["structuredContent"].get("error_class") ==
+              "no_progress_duplicate"
+          and _tcp_handler_responses[3]["structuredContent"].get("stop_required") is True)
 finally:
     harness.remote_search.find_paths = _saved_find_impl
     harness.guest_endpoint_probe.probe = _saved_guest_probe_impl

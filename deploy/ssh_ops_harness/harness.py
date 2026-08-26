@@ -2028,12 +2028,15 @@ async def main():
         _ENDPOINT_TARGETS, _authorization_refs())
     guest_endpoint_tool_schema = guest_endpoint_probe.input_schema(_authorization_refs())
 
-    def serialize_identical_read(tool_name, schema):
+    def serialize_identical_read(tool_name, schema, progress_projection=None):
         """Serialize only equal canonical reads before their precondition/observe pair."""
         def decorate(func):
             @functools.wraps(func)
             async def wrapped(args):
-                async with read_progress.serial_lock(tool_name, args, schema):
+                progress_args, progress_schema = ((args, schema) if progress_projection is None
+                                                  else progress_projection(args))
+                async with read_progress.serial_lock(
+                        tool_name, progress_args, progress_schema):
                     return await func(args)
             return wrapped
         return decorate
@@ -2227,12 +2230,17 @@ async def main():
           endpoint_tool_schema,
           annotations=ToolAnnotations(title="Probe a platform endpoint", readOnlyHint=True,
                                       destructiveHint=False, idempotentHint=True, openWorldHint=True))
-    @serialize_identical_read("endpoint_probe", endpoint_tool_schema)
+    @serialize_identical_read(
+        "endpoint_probe", endpoint_tool_schema,
+        lambda args: endpoint_probe.progress_projection(
+            _ENDPOINT_TARGETS, args, endpoint_tool_schema))
     async def probe_endpoint(args):
         display = ("endpoint_probe target=" + str(args.get("target_id") or "invalid")[:64]
                    + " auth=" + _probe_auth_state(args))
+        progress_args, progress_schema = endpoint_probe.progress_projection(
+            _ENDPOINT_TARGETS, args, endpoint_tool_schema)
         blocked = _read_progress_response(
-            read_progress, "endpoint_probe", args, endpoint_tool_schema, display)
+            read_progress, "endpoint_probe", progress_args, progress_schema, display)
         if blocked is not None:
             return blocked
         authorization, auth_error = _resolve_probe_authorization(args)
@@ -2264,7 +2272,7 @@ async def main():
             result, completed=(bool(result.get("comparison_completed")) if authorization
                                else result.get("stage") in _ENDPOINT_COMPLETED_STAGES))
         result = read_progress.observe(
-            "endpoint_probe", args, endpoint_tool_schema, result, disposition)
+            "endpoint_probe", progress_args, progress_schema, result, disposition)
         rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
         # Keep the model-selected opaque target id from the validated input. An authenticated
         # comparison wraps two probe results and deliberately has no top-level target_id; deriving
