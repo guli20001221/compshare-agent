@@ -235,7 +235,7 @@ func TestDispatchChat_MalformedContext_SkipsPersist(t *testing.T) {
 // Case 3: unknown schema_version (forward-rollout protection) — chat
 // completes, NO persistence so a newer binary can later read the row.
 func TestDispatchChat_UnknownSchemaVersion_SkipsPersist(t *testing.T) {
-	futureEnvelope := json.RawMessage(`{"agent_session_state":{"schema_version":"10.0","future_field":"hello"},"client_context":{"app":"console"}}`)
+	futureEnvelope := json.RawMessage(`{"agent_session_state":{"schema_version":"11.0","future_field":"hello"},"client_context":{"app":"console"}}`)
 	h, sessions, _ := newChatTestHandlers(t, store.Session{
 		ID:                "sess-future",
 		TopOrganizationID: 1,
@@ -360,13 +360,22 @@ func TestDispatchChat_StaleWriteOnPersist_StillEmitsDone(t *testing.T) {
 	require.Equal(t, 1, sessions.updateContextCalls)
 }
 
-func TestChatStreamEveryTerminusPersistsExistingBackgroundJob(t *testing.T) {
+func TestChatStreamEveryTerminusPersistsExistingContinuationCursors(t *testing.T) {
 	job := engine.PersistedInstanceOpsJob{
 		InstanceID: "uhost-job",
 		JobID:      "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		State:      "running",
 		Purpose:    "download model weights",
 		UpdatedAt:  "2026-08-25T12:00:00Z",
+	}
+	agentCursor := engine.PersistedInstanceOpsAgentSession{
+		InstanceID:         "uhost-job",
+		SessionID:          "11111111-1111-4111-8111-111111111111",
+		WorkdirID:          "22222222-2222-4222-8222-222222222222",
+		Contract:           "sshops-agent-v2",
+		Model:              "gpt-5.6-terra",
+		ConversationAnchor: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		UpdatedAt:          time.Now().UTC().Format(time.RFC3339Nano),
 	}
 	for _, tc := range []struct {
 		name     string
@@ -381,8 +390,9 @@ func TestChatStreamEveryTerminusPersistsExistingBackgroundJob(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			raw, err := json.Marshal(engine.PersistedContext{
 				AgentSessionState: engine.SessionState{
-					SchemaVersion:           engine.SessionStateSchemaV8,
-					PersistedInstanceOpsJob: job,
+					SchemaVersion:             engine.SessionStateSchemaV10,
+					PersistedInstanceOpsJob:   job,
+					PersistedInstanceOpsAgent: agentCursor,
 				},
 				ClientContext: json.RawMessage(`{"page":"instance"}`),
 			})
@@ -423,6 +433,8 @@ func TestChatStreamEveryTerminusPersistsExistingBackgroundJob(t *testing.T) {
 			persisted, err := engine.ParsePersistedContext(sessions.byID[sess.ID].Context)
 			require.NoError(t, err)
 			require.Equal(t, job, persisted.AgentSessionState.PersistedInstanceOpsJob)
+			require.Equal(t, agentCursor, persisted.AgentSessionState.PersistedInstanceOpsAgent,
+				"the committed SDK cursor must survive every HTTP stream terminus")
 			require.JSONEq(t, `{"page":"instance"}`, string(persisted.ClientContext))
 		})
 	}

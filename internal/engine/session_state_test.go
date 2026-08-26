@@ -71,7 +71,7 @@ func TestParsePersistedContextRejectsMalformedAndUnknownEnvelopes(t *testing.T) 
 
 	for _, raw := range []json.RawMessage{
 		json.RawMessage(`{"agent_session_state":{"schema_version":"0.0"}}`),
-		json.RawMessage(`{"agent_session_state":{"schema_version":"10.0","future":"value"}}`),
+		json.RawMessage(`{"agent_session_state":{"schema_version":"11.0","future":"value"}}`),
 	} {
 		parsed, err := ParsePersistedContext(raw)
 		assert.ErrorIs(t, err, ErrUnknownSessionStateSchema)
@@ -230,13 +230,15 @@ func TestSetSessionStateNormalizesOnlyV8BackgroundJob(t *testing.T) {
 
 func TestPersistedInstanceOpsAgentRoundTripsWithoutTranscriptOrAuthorization(t *testing.T) {
 	state := SessionState{
-		SchemaVersion: SessionStateSchemaV9,
+		SchemaVersion: SessionStateSchemaV10,
 		PersistedInstanceOpsAgent: PersistedInstanceOpsAgentSession{
-			InstanceID: "uhost-a",
-			SessionID:  "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5",
-			Contract:   instanceOpsAgentSessionContract,
-			Model:      "gpt-5.6-terra",
-			UpdatedAt:  "2026-08-26T12:00:00Z",
+			InstanceID:         "uhost-a",
+			SessionID:          "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5",
+			WorkdirID:          "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5",
+			Contract:           instanceOpsAgentSessionContract,
+			Model:              "gpt-5.6-terra",
+			ConversationAnchor: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			UpdatedAt:          "2026-08-26T12:00:00Z",
 		},
 	}
 	raw, err := json.Marshal(PersistedContext{AgentSessionState: state})
@@ -250,22 +252,24 @@ func TestPersistedInstanceOpsAgentRoundTripsWithoutTranscriptOrAuthorization(t *
 	assert.Equal(t, state, parsed.AgentSessionState)
 }
 
-func TestSetSessionStateNormalizesAgentCursorOnlyForV9(t *testing.T) {
+func TestSetSessionStateNormalizesConversationBoundAgentCursorOnlyForV10(t *testing.T) {
 	agent := PersistedInstanceOpsAgentSession{
-		InstanceID: " uhost-a ",
-		SessionID:  "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5",
-		Contract:   instanceOpsAgentSessionContract,
-		Model:      " gpt-5.6-terra ",
-		UpdatedAt:  "2026-08-26T12:00:00Z",
+		InstanceID:         " uhost-a ",
+		SessionID:          "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5",
+		WorkdirID:          "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5",
+		Contract:           instanceOpsAgentSessionContract,
+		Model:              " gpt-5.6-terra ",
+		ConversationAnchor: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		UpdatedAt:          "2026-08-26T12:00:00Z",
 	}
 	e := newEngineForSessionStateTest(t)
-	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV9, PersistedInstanceOpsAgent: agent}, 1)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV10, PersistedInstanceOpsAgent: agent}, 1)
 	state, _, _ := e.SessionStateSnapshot()
 	assert.Equal(t, "uhost-a", state.PersistedInstanceOpsAgent.InstanceID)
 	assert.Equal(t, "gpt-5.6-terra", state.PersistedInstanceOpsAgent.Model)
 
-	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV8, PersistedInstanceOpsAgent: agent}, 2)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV9, PersistedInstanceOpsAgent: agent}, 2)
 	state, _, _ = e.SessionStateSnapshot()
 	assert.True(t, state.PersistedInstanceOpsAgent.IsZero(),
-		"a pre-V9 envelope cannot smuggle an SDK cursor through an unknown field")
+		"a v9 cursor has no conversation-anchor contract and cannot gain v10 semantics")
 }

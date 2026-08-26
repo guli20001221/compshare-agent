@@ -70,6 +70,86 @@ func TestColdRegistryNameWarmsUpInsteadOfRefusing(t *testing.T) {
 		"the resolved name must reach upstream as the id it resolved to")
 }
 
+// Production cases 063/124: the model selected resource_info but mislabelled a
+// real cpod ID / ingress hostname. The canonical transcript for 063 passed the
+// exact cpod ID as `name`; 124 passed the whole ingress hostname as `filter`.
+// The production HTTP registry starts cold, so the full account listing must
+// recover the unique ID and drive a point query.
+func TestColdRegistryWrappedInstanceIDMislabelledStillResolves(t *testing.T) {
+	const shellID = "cpod-1uhoorruxg8r"
+	const domainID = "cpod-1uilwcei63de"
+	listing := describeFixture(
+		instanceRowMap(shellID, "shell-instance", "Running"),
+		instanceRowMap(domainID, "upload-instance", "Running"),
+	)
+
+	for _, tc := range []struct {
+		name    string
+		refType platform.TargetRefType
+		value   string
+		want    string
+	}{
+		{name: "063 exact cpod id mislabelled name", refType: platform.TargetRefName,
+			value: shellID, want: shellID},
+		{name: "124 access hostname mislabelled filter", refType: platform.TargetRefFilter,
+			value: "8188-" + domainID + "-s1.pod.compshare.cn", want: domainID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			exec := &mapReadExec{results: map[string]map[string]any{resourceInfoAction: listing}}
+			result := runResource(t, exec, coldRegistrySnapshot(), ResourceInfoRequest{
+				Targets: []platform.TargetRef{{
+					Type: tc.refType, Value: tc.value, Source: platform.SourceUserText,
+				}},
+			})
+
+			require.Equal(t, platform.ReadStatusHandled, result.Status)
+			require.GreaterOrEqual(t, len(exec.calls), 2, "full account listing, then exact point query")
+			assert.Nil(t, exec.calls[0].args["UHostIds"])
+			assert.Equal(t, []string{tc.want}, exec.calls[len(exec.calls)-1].args["UHostIds"])
+			assert.Contains(t, result.Reply, tc.want)
+		})
+	}
+}
+
+// Recovery above is not a general reinterpretation of invalid filter syntax.
+// Mixed targets retain the existing validation contract even when each token
+// happens to resolve to a real account instance.
+func TestInvalidFilterRecoveryRejectsMixedTargets(t *testing.T) {
+	const id = "cpod-1uilwcei63de"
+	exec := &mapReadExec{}
+	resolver := warmRegistrySnapshot(t,
+		instanceRowMap(id, "upload-instance", "Running"),
+		instanceRowMap("cpod-second", "train-b", "Running"),
+	)
+
+	result := runResource(t, exec, resolver, ResourceInfoRequest{Targets: []platform.TargetRef{
+		{Type: platform.TargetRefFilter, Value: "8188-" + id + "-s1.pod.compshare.cn", Source: platform.SourceUserText},
+		{Type: platform.TargetRefName, Value: "train-b", Source: platform.SourceUserText},
+	}})
+
+	assert.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)
+	assert.Equal(t, platform.ReadFallbackValidation, result.FallbackReason)
+	assert.Empty(t, exec.calls)
+}
+
+// A malformed filter which merely equals an instance display name must not be
+// silently converted into a name lookup. Recovery requires the resolved account
+// ID itself to occur in the original value, as it does in cases 063/124.
+func TestInvalidFilterRecoveryRejectsDisplayNameOnlyMatch(t *testing.T) {
+	exec := &mapReadExec{}
+	resolver := warmRegistrySnapshot(t,
+		instanceRowMap("cpod-real-id", "not-filter-syntax", "Running"),
+	)
+
+	result := runResource(t, exec, resolver, ResourceInfoRequest{Targets: []platform.TargetRef{
+		{Type: platform.TargetRefFilter, Value: "not-filter-syntax", Source: platform.SourceUserText},
+	}})
+
+	assert.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)
+	assert.Equal(t, platform.ReadFallbackValidation, result.FallbackReason)
+	assert.Empty(t, exec.calls)
+}
+
 // TestWarmRegistryMissStaysAuthoritativeAndSilent is the other half of the rule,
 // and the guard against over-correcting it: a registry that HAS seen everything
 // is allowed to say "not in your account", and must do so without spending an

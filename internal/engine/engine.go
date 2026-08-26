@@ -1029,7 +1029,8 @@ func (e *Engine) SetSessionState(state SessionState, version int) {
 	// cursor is normalized again at hydration so client-supplied/unbounded text
 	// cannot bypass the persistence boundary. Version 0 is the client-provided CreateSession
 	// envelope, so neither server-owned continuation cursor may enter through it.
-	if (state.SchemaVersion != SessionStateSchemaV8 && state.SchemaVersion != SessionStateSchemaV9) || version <= 0 {
+	if (state.SchemaVersion != SessionStateSchemaV8 && state.SchemaVersion != SessionStateSchemaV9 &&
+		state.SchemaVersion != SessionStateSchemaV10) || version <= 0 {
 		state.PersistedInstanceOpsJob = PersistedInstanceOpsJob{}
 	} else {
 		state.PersistedInstanceOpsJob = normalizePersistedInstanceOpsJob(state.PersistedInstanceOpsJob)
@@ -1037,8 +1038,9 @@ func (e *Engine) SetSessionState(state SessionState, version int) {
 	// CreateCSAgentSession accepts an arbitrary client Context at version 0. The SDK cursor is
 	// server-owned continuation authority, not client state: never let a caller seed a UUID that
 	// could attach this new product session to another local transcript. The first server CAS write
-	// advances ContextVersion and may then carry a cursor observed from @@AGENT_SESSION.
-	if state.SchemaVersion != SessionStateSchemaV9 || version <= 0 {
+	// advances ContextVersion and may then carry a cursor observed from @@AGENT_SESSION. V9 did not
+	// bind that cursor to an outer-conversation anchor, so only V10 may hydrate the current contract.
+	if state.SchemaVersion != SessionStateSchemaV10 || version <= 0 {
 		state.PersistedInstanceOpsAgent = PersistedInstanceOpsAgentSession{}
 	} else {
 		state.PersistedInstanceOpsAgent = normalizePersistedInstanceOpsAgentSession(state.PersistedInstanceOpsAgent)

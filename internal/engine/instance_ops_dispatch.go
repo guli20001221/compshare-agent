@@ -9,6 +9,7 @@ import (
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/opscontext"
 	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/tools"
 )
@@ -139,6 +140,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	// Connected and command progress become bounded activity events. Command
 	// output never enters this stream; only metadata does.
 	commandsEmitted := 0
+	modelContext.BridgeConversationAnchor = opscontext.ConversationAnchor(modelContext.ConversationHistory)
 	// Settled commands are accumulated separately from the emitted ones. The live stream is capped
 	// at maxInstanceOpsStepEvents because it is a UI feed, but the interruption notice has to be
 	// able to report all settled commands over the WHOLE run — a cap on the feed must not
@@ -150,8 +152,11 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 			// Side-band session continuity only: not a command, UI step, trace event or audit row.
 			e.observeInstanceOpsBackgroundJob(instanceID, p.JobID, p.JobState, p.JobPurpose)
 		case InstanceOpsProgressAgentSession:
-			e.observeInstanceOpsAgentSession(instanceID, p.AgentSessionID,
-				p.AgentSessionContract, p.AgentSessionModel)
+			if p.AgentSessionConversationAnchor != modelContext.BridgeConversationAnchor {
+				return
+			}
+			e.observeInstanceOpsAgentSession(instanceID, p.AgentSessionID, p.AgentSessionWorkdirID,
+				p.AgentSessionContract, p.AgentSessionModel, p.AgentSessionConversationAnchor)
 		case InstanceOpsProgressConnected:
 			onStep(StepEvent{
 				Type:    StepToolCall,

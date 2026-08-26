@@ -202,6 +202,14 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 		if done.ErrClass == "" {
 			done.ErrClass = "preflight_failed"
 		}
+	case res.AgentFailed:
+		// SSH may have succeeded and commands may already have settled, but an errored SDK message is
+		// not a successful diagnostic conclusion. The harness supplies only a credential-free bounded
+		// class; its raw provider result never crosses the verdict boundary.
+		done.Disposition = "error"
+		if done.ErrClass == "" {
+			done.ErrClass = "agent_failed"
+		}
 	}
 	// Best effort: the attempt is already durably recorded by Begin, so a failed enrichment must not
 	// discard a valid verdict — but it must not be silent either. The writer only RETURNS the error;

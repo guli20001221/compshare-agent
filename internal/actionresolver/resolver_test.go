@@ -100,7 +100,9 @@ func TestOperationSpecificStructuredValidatorUsesScheduleModeAsDiscriminator(t *
 	require.True(t, ok)
 	require.NoError(t, spec.ValidateResolved(map[string]any{
 		"Schedule": map[string]any{
-			"mode": "today", "local_time": "23:00", "minutes": float64(30),
+			// Tomorrow keeps this structural discriminator test independent of the
+			// wall clock while still exercising the local_time branch.
+			"mode": "tomorrow", "local_time": "23:00", "minutes": float64(30),
 		},
 	}))
 }

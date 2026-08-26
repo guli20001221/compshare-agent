@@ -59,6 +59,14 @@ func (r *EntityRegistry) ResolveByName(name string) ([]*InstanceSnapshot, Resolv
 		}
 		return matches, ResolveResult{Status: status, Query: query, Candidates: idsOfSnapshots(matches)}
 	}
+	if matches := instancesWhoseIDAppearsInText(query, r.Instances); len(matches) > 0 {
+		r.mu.RUnlock()
+		status := ResolveHit
+		if len(matches) > 1 {
+			status = ResolveAmbiguous
+		}
+		return matches, ResolveResult{Status: status, Query: query, Candidates: idsOfSnapshots(matches)}
+	}
 	r.mu.RUnlock()
 
 	scored := make([]scoredInstance, 0)
@@ -149,6 +157,13 @@ func (s RegistrySnapshot) ResolveByName(name string) ([]*InstanceSnapshot, Resol
 
 	if ids := append([]string(nil), s.NameIndex[normalized]...); len(ids) > 0 {
 		matches := s.instancesForIDs(ids)
+		status := ResolveHit
+		if len(matches) > 1 {
+			status = ResolveAmbiguous
+		}
+		return matches, ResolveResult{Status: status, Query: query, Candidates: idsOfSnapshots(matches)}
+	}
+	if matches := instancesWhoseIDAppearsInText(query, s.Instances); len(matches) > 0 {
 		status := ResolveHit
 		if len(matches) > 1 {
 			status = ResolveAmbiguous
@@ -341,6 +356,95 @@ func isInstanceIDTokenByte(b byte) bool {
 
 func isASCIIAlphaNum(b byte) bool {
 	return (b >= 'a' && b <= 'z') || (b >= 'A' && b <= 'Z') || (b >= '0' && b <= '9')
+}
+
+// instancesWhoseIDAppearsInText resolves an instance identifier from a value the
+// model labelled as a name. The account snapshot is the grammar: only IDs the
+// live DescribeCompShareInstance listing actually returned can match. This lets
+// a shell prompt, URL or other wrapper carry an ID without teaching the resolver
+// about every wrapper syntax, fixed ID lengths or transport-specific suffixes.
+//
+// Exactly one matching account ID resolves. Text containing two different live
+// IDs remains ambiguous rather than silently selecting one.
+func instancesWhoseIDAppearsInText(text string, instances map[string]InstanceSnapshot) []*InstanceSnapshot {
+	text = strings.TrimSpace(text)
+	if text == "" || len(instances) == 0 {
+		return nil
+	}
+
+	matched := make(map[string]InstanceSnapshot)
+	for key, inst := range instances {
+		id := strings.TrimSpace(inst.UHostId)
+		if id == "" {
+			id = strings.TrimSpace(key)
+		}
+		if id == "" {
+			continue
+		}
+		foldedID := strings.ToLower(id)
+		if !containsLiteralInstanceIDSpan(text, id) {
+			continue
+		}
+		copy := inst
+		copy.UHostId = id
+		matched[foldedID] = copy
+	}
+
+	ids := make([]string, 0, len(matched))
+	for id := range matched {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]*InstanceSnapshot, 0, len(ids))
+	for _, id := range ids {
+		copy := matched[id]
+		out = append(out, &copy)
+	}
+	return out
+}
+
+// containsLiteralInstanceIDSpan is the entity-specific boundary check for a
+// literal account ID. A live account ID is
+// not a match when it is merely the prefix of a longer identifier-like token
+// (for example, cpod-abc in cpod-abcdef). Hyphens remain delimiters because
+// platform access hostnames and other wrappers legitimately place segments on
+// either side of an exact ID (for example, 8188-cpod-abc-s1). This rule depends
+// on neither a fixed ID length nor knowledge of any particular wrapper suffix.
+func containsLiteralInstanceIDSpan(text, id string) bool {
+	// Unlike general provenance folding, preserve whitespace: it is a real token
+	// boundary between IDs and surrounding prose. Instance IDs themselves are
+	// copied as exact, whitespace-free values from the account snapshot.
+	foldedText := strings.ToLower(strings.TrimSpace(text))
+	foldedID := strings.ToLower(strings.TrimSpace(id))
+	if foldedID == "" || len(foldedText) < len(foldedID) {
+		return false
+	}
+
+	for start := 0; start+len(foldedID) <= len(foldedText); start++ {
+		if start > 0 && isInstanceIDAdjacentByte(foldedText[start-1]) {
+			continue
+		}
+		matches := true
+		for offset := 0; offset < len(foldedID); offset++ {
+			if foldedText[start+offset] != foldedID[offset] {
+				matches = false
+				break
+			}
+		}
+		if !matches {
+			continue
+		}
+		end := start + len(foldedID)
+		if end < len(foldedText) && isInstanceIDAdjacentByte(foldedText[end]) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isInstanceIDAdjacentByte(b byte) bool {
+	return isASCIIAlphaNum(b) || b == '_'
 }
 
 func normalizeName(s string) string {

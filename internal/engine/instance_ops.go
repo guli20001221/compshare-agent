@@ -41,7 +41,7 @@ var ErrInstanceOpsAddressUnavailable = errors.New("engine: instance internal add
 // diagnosis attempt never authenticated over SSH or entered the guest.
 var ErrInstanceOpsSSHPreflightUnreachable = errors.New("engine: instance ssh preflight unreachable")
 
-// InstanceOpsRunner executes ONE consented, read-only in-instance diagnosis and
+// InstanceOpsRunner executes ONE task-authorized in-instance diagnosis/repair and
 // streams its activity back through onProgress. The engine depends only on this
 // structural interface; the concrete runner (a Python Agent-SDK harness spawned
 // as a subprocess that SSHes into the box) lives in internal/sshops and is wired
@@ -72,8 +72,8 @@ type InstanceOpsRequest struct {
 }
 
 // Progress kinds emitted by a runner. Connected and command become live StepEvents; background_job
-// is internal session continuity and is never surfaced as a command. The terminal summary line
-// is emitted by the engine itself from the verdict tallies, not by the runner.
+// and agent_session are internal continuation state and are never surfaced as commands. The
+// terminal summary line is emitted by the engine itself from the verdict tallies, not by the runner.
 const (
 	// InstanceOpsProgressConnected fires once when the SSH session is established.
 	InstanceOpsProgressConnected = "connected"
@@ -90,7 +90,7 @@ const (
 // InstanceOpsProgress carries command metadata or an opaque job lifecycle update. It never carries
 // command output (INV-6).
 type InstanceOpsProgress struct {
-	Kind        string // connected | command | background_job
+	Kind        string // connected | command | background_job | agent_session
 	Command     string // the command (Kind==command only)
 	Disposition string // "ran" | "refused" | "failed" (Kind==command only)
 	// Tier is the guardrail class the command was executed under ("read_only" | "mutating" |
@@ -112,9 +112,11 @@ type InstanceOpsProgress struct {
 	// job tool. The engine redacts and bounds it before SessionState persistence.
 	JobPurpose string
 	// AgentSession fields are populated only for Kind==InstanceOpsProgressAgentSession.
-	AgentSessionID       string
-	AgentSessionContract string
-	AgentSessionModel    string
+	AgentSessionID                 string
+	AgentSessionWorkdirID          string
+	AgentSessionContract           string
+	AgentSessionModel              string
+	AgentSessionConversationAnchor string
 }
 
 // InstanceOpsVerdict is the terminal root-cause conclusion. Text is the harness's

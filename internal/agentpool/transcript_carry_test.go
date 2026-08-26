@@ -47,3 +47,23 @@ func TestRowsWithoutTranscriptRebuildUnchanged(t *testing.T) {
 		}
 	}
 }
+
+// Production case 006: the first request contained only the target instance ID, then the outer
+// assistant row was aborted. A cold pool rebuild must retain that successful user row even though
+// it has no successful assistant pair; otherwise the next vague complaint loses its target.
+func TestFilterHistoryKeepsUnpairedUserAcrossAnAbortedAssistant(t *testing.T) {
+	history := filterHistory([]store.Message{
+		{Role: "user", Status: "ok", Content: "uhost-1uha5i7jetgm"},
+		{Role: "assistant", Status: "aborted", Content: ""},
+		{Role: "user", Status: "ok", Content: "都开始收费还是进不去"},
+	})
+	if len(history) != 2 {
+		t.Fatalf("kept %d messages, want both successful user endpoints", len(history))
+	}
+	if history[0].Role != "user" || history[0].Content != "uhost-1uha5i7jetgm" {
+		t.Fatalf("lost the unpaired target user row: %+v", history)
+	}
+	if history[1].Role != "user" || history[1].Content != "都开始收费还是进不去" {
+		t.Fatalf("lost the continuation user row: %+v", history)
+	}
+}

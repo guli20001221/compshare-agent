@@ -85,3 +85,17 @@ func TestErrInternalPrototypeIsNotMutated(t *testing.T) {
 		"the shared prototype must never accumulate a request's cause")
 	assert.Equal(t, "后端未预期错误", ErrInternal.Message)
 }
+
+func TestClassifyChatErrorDoesNotExposeProviderBody(t *testing.T) {
+	const canary = `{"code":"server_error","message":"provider request req-case-131","help":"https://help.openai.com"}`
+	raw := errors.New(canary)
+
+	got := classifyChatError(raw)
+
+	assert.Equal(t, ErrModelError.Code, got.Code)
+	assert.Equal(t, ErrModelError.Message, got.Message)
+	assert.NotContains(t, got.Message, "req-case-131")
+	assert.NotContains(t, got.Message, "help.openai.com")
+	assert.ErrorIs(t, got, raw, "the server-side typed cause remains available to traces/logs")
+	assert.Nil(t, ErrModelError.Cause(), "the shared public prototype must remain immutable")
+}

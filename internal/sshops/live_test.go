@@ -252,9 +252,9 @@ func TestLiveFullFlow(t *testing.T) {
 	}
 	if contextEnabled {
 		if report := envOr("SSHH_CONTEXT_CURRENT_REPORT", task); report != "" {
-			modelContext.CurrentUserReport = &opscontext.UserReport{
-				Text: report, Source: "live_test.user_report", ObservedAt: opscontext.StatusUnknown, Status: opscontext.StatusReported,
-			}
+			modelContext.ConversationHistory = []opscontext.ConversationMessage{{
+				Role: opscontext.ConversationRoleUser, Content: report,
+			}}
 		}
 	}
 	res, err := svc.DiagnoseWithContext(ctx, d, owner, instanceID, task, modelContext, func(st Step) {

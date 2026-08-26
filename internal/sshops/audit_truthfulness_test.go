@@ -53,6 +53,31 @@ func TestPreflightRefusalIsAuditedAsErrorNotOk(t *testing.T) {
 	}
 }
 
+// Production case 131: the SSH/model run had already executed five reads when Claude CLI returned
+// an errored ResultMessage. The harness exits zero deliberately so its deterministic partial verdict
+// survives; AgentFailed is therefore the only truthful signal that this is not an `ok` diagnosis.
+func TestAgentFailureAfterCommandsIsAuditedAsErrorNotOk(t *testing.T) {
+	got := diagnoseWith(t, Result{
+		Output:      "诊断中断：没有形成经验证的最终结论。",
+		AgentFailed: true,
+		ErrClass:    "server_error",
+		Steps: []Step{
+			{Command: "systemctl status app", Tier: "read_only", Disposition: "ran"},
+			{Command: "ss -lntp", Tier: "read_only", Disposition: "ran"},
+		},
+	}, nil)
+
+	if got.Disposition != "error" {
+		t.Errorf("disposition = %q, want error for an incomplete inner-agent run", got.Disposition)
+	}
+	if got.ErrClass != "server_error" {
+		t.Errorf("err_class = %q, want bounded model failure class", got.ErrClass)
+	}
+	if got.CommandsRan != 2 {
+		t.Errorf("commands_ran = %d, want settled activity retained", got.CommandsRan)
+	}
+}
+
 // WHY: the whole point of the change is that the two outcomes become distinguishable. A run that
 // entered the box must stay 'ok' with an EMPTY class, or the column just moves the ambiguity.
 func TestEnteredRunStaysOkWithNoErrClass(t *testing.T) {
@@ -144,6 +169,21 @@ func TestOutcomeLineRecordsContextReceipt(t *testing.T) {
 	}
 	if outcome.Outcome != "" || !outcome.ContextApplied {
 		t.Errorf("outcome = %+v, want normal run with a context receipt", outcome)
+	}
+}
+
+func TestAgentFailureOutcomeIsParsedWithoutLeakingIntoVerdict(t *testing.T) {
+	stream := "@@OUTCOME {\"outcome\":\"agent_failed\",\"err_class\":\"server_error\",\"context_applied\":true}\n" +
+		"<<<VERDICT>>>\n诊断中断：没有形成经验证的最终结论\n<<<END>>>\n"
+	verdict, _, outcome, err := parseHarnessStream(strings.NewReader(stream), nil, nil)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if outcome.Outcome != outcomeAgentFailed || outcome.ErrClass != "server_error" || !outcome.ContextApplied {
+		t.Fatalf("outcome = %+v, want bounded agent failure with context receipt", outcome)
+	}
+	if strings.Contains(verdict, "server_error") || !strings.Contains(verdict, "诊断中断") {
+		t.Fatalf("verdict = %q, wire metadata must not become customer prose", verdict)
 	}
 }
 

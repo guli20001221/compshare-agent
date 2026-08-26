@@ -277,6 +277,98 @@ func TestRegistrySnapshotInstanceIDRefsInText(t *testing.T) {
 	assert.Equal(t, []string{"CPOD-1RKV126DXGIQ"}, unresolved)
 }
 
+// A read target is model-shaped input: the model can correctly copy an account
+// ID while labelling it as `name`, or leave it inside the shell prompt / access
+// URL where the user observed it. Resolution must use the live account listing
+// as its authority instead of maintaining syntax rules for every wrapper.
+func TestResolveByNameRecoversUniqueAccountIDFromWrappedText(t *testing.T) {
+	const shellID = "cpod-1uhoorruxg8r"
+	const domainID = "cpod-1uilwcei63de"
+	reg := NewRegistry()
+	require.NoError(t, reg.SyncFromDescribe(describeResult(
+		host(shellID, "shell-instance", "Running", "4090", 1),
+		host(domainID, "upload-instance", "Running", "4090", 1),
+	), "test"))
+	snap := reg.Snapshot()
+
+	for _, tc := range []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "model mislabelled an id as a name", value: shellID, want: shellID},
+		{name: "shell prompt", value: "(py312) root@" + shellID + ":/workspace#", want: shellID},
+		{name: "platform access hostname", value: "8188-" + domainID + "-s1.pod.compshare.cn", want: domainID},
+		{name: "case insensitive wrapper", value: "https://8188-CPOD-1UILWCEI63DE-S1.example/", want: domainID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			matches, result := snap.ResolveByName(tc.value)
+			require.Equal(t, ResolveHit, result.Status)
+			require.Len(t, matches, 1)
+			assert.Equal(t, tc.want, matches[0].UHostId)
+		})
+	}
+}
+
+func TestResolveByNameEmbeddedAccountIDsRequireAUniqueReferent(t *testing.T) {
+	snap := RegistrySnapshot{Instances: map[string]InstanceSnapshot{
+		"cpod-abc":  {UHostId: "cpod-abc", Name: "pod"},
+		"uhost-def": {UHostId: "uhost-def", Name: "other"},
+	}}
+
+	matches, result := snap.ResolveByName("cpod-abc appears twice: cpod-abc")
+	require.Equal(t, ResolveHit, result.Status, "repeated text still names one account instance")
+	require.Len(t, matches, 1)
+	assert.Equal(t, "cpod-abc", matches[0].UHostId)
+
+	matches, result = snap.ResolveByName("copy cpod-abc to uhost-def")
+	require.Equal(t, ResolveAmbiguous, result.Status)
+	assert.ElementsMatch(t, []string{"cpod-abc", "uhost-def"}, result.Candidates)
+	require.Len(t, matches, 2)
+}
+
+func TestResolveByNameEmbeddedAccountIDRequiresIdentifierBoundary(t *testing.T) {
+	snap := RegistrySnapshot{Instances: map[string]InstanceSnapshot{
+		"cpod-abc": {UHostId: "cpod-abc", Name: "short-instance"},
+	}}
+
+	for _, value := range []string{
+		"cpod-abcdef",
+		"prefixcpod-abc",
+		"cpod-abc_suffix",
+	} {
+		t.Run(value, func(t *testing.T) {
+			matches, result := snap.ResolveByName(value)
+			assert.Equal(t, ResolveNotFoundInAccount, result.Status)
+			assert.Empty(t, matches)
+		})
+	}
+
+	for _, value := range []string{
+		"(env) root@cpod-abc:/workspace#",
+		"8188-cpod-abc-s1.pod.example",
+	} {
+		t.Run(value, func(t *testing.T) {
+			matches, result := snap.ResolveByName(value)
+			require.Equal(t, ResolveHit, result.Status)
+			require.Len(t, matches, 1)
+			assert.Equal(t, "cpod-abc", matches[0].UHostId)
+		})
+	}
+}
+
+func TestResolveByNamePrefersExactLongAccountIDOverItsPrefix(t *testing.T) {
+	snap := RegistrySnapshot{Instances: map[string]InstanceSnapshot{
+		"cpod-abc":    {UHostId: "cpod-abc", Name: "short-instance"},
+		"cpod-abcdef": {UHostId: "cpod-abcdef", Name: "long-instance"},
+	}}
+
+	matches, result := snap.ResolveByName("cpod-abcdef")
+	require.Equal(t, ResolveHit, result.Status)
+	require.Len(t, matches, 1)
+	assert.Equal(t, "cpod-abcdef", matches[0].UHostId)
+}
+
 func TestSnapshotIDStableAcrossInputOrder(t *testing.T) {
 	regA := NewRegistry()
 	require.NoError(t, regA.SyncFromDescribe(describeResult(

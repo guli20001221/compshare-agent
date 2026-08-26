@@ -797,7 +797,12 @@ func classifyChatError(err error) *APIError {
 	}
 	classified := AsAPIError(err)
 	if classified.Code == ErrInternal.Code {
-		return ErrModelError.WithMessage("%s", err.Error())
+		// An unclassified error from the chat runtime is an LLM/agent failure, but its free-form text
+		// may be raw provider JSON with request IDs or infrastructure details. Preserve the cause for
+		// server-side tracing while returning the stable public message (production case 131).
+		modelErr := *ErrModelError
+		modelErr.cause = err
+		return &modelErr
 	}
 	return classified
 }

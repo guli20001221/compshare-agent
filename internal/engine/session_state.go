@@ -50,7 +50,13 @@ const SessionStateSchemaV8 = "8.0"
 // receives only the UUID, target, contract/model binding and timestamp.
 const SessionStateSchemaV9 = "9.0"
 
-const SessionStateSchemaCurrent = SessionStateSchemaV9
+// SessionStateSchemaV10 binds the SDK cursor and its stable opaque workdir UUID to an opaque
+// digest of the outer conversation already bridged into that transcript. The digest contains no
+// conversation text and exists only to send subsequent turns as a delta. Each resume forks into a
+// new cursor, while WorkdirID keeps Claude's project/transcript lookup rooted in one private cwd.
+const SessionStateSchemaV10 = "10.0"
+
+const SessionStateSchemaCurrent = SessionStateSchemaV10
 
 // ErrUnknownSessionStateSchema is returned by ParsePersistedContext when a
 // row looks like an agent envelope (top-level object with an
@@ -71,15 +77,16 @@ var ErrUnknownSessionStateSchema = errors.New("engine: unknown SessionState sche
 // constant here. Removing an entry is a breaking change to the on-wire
 // envelope detection — be very explicit if you do it.
 var knownSessionStateSchemaVersions = map[string]struct{}{
-	SessionStateSchemaV1: {},
-	SessionStateSchemaV2: {},
-	SessionStateSchemaV3: {},
-	SessionStateSchemaV4: {},
-	SessionStateSchemaV5: {},
-	SessionStateSchemaV6: {},
-	SessionStateSchemaV7: {},
-	SessionStateSchemaV8: {},
-	SessionStateSchemaV9: {},
+	SessionStateSchemaV1:  {},
+	SessionStateSchemaV2:  {},
+	SessionStateSchemaV3:  {},
+	SessionStateSchemaV4:  {},
+	SessionStateSchemaV5:  {},
+	SessionStateSchemaV6:  {},
+	SessionStateSchemaV7:  {},
+	SessionStateSchemaV8:  {},
+	SessionStateSchemaV9:  {},
+	SessionStateSchemaV10: {},
 }
 
 // SessionState is the per-session, JSON-serializable, multi-replica-safe
@@ -136,13 +143,16 @@ func (j PersistedInstanceOpsJob) IsZero() bool {
 
 // PersistedInstanceOpsAgentSession points at an SDK-owned local transcript without copying any
 // transcript entry into sessions.context. A session is resumed only for the same target and current
-// contract/model inside a short freshness window; otherwise the harness starts a fresh SDK session.
+// contract/model inside a short freshness window; each attempt forks away from this committed cursor,
+// and otherwise the harness starts a fresh SDK session.
 type PersistedInstanceOpsAgentSession struct {
-	InstanceID string `json:"instance_id,omitempty"`
-	SessionID  string `json:"session_id,omitempty"`
-	Contract   string `json:"contract,omitempty"`
-	Model      string `json:"model,omitempty"`
-	UpdatedAt  string `json:"updated_at,omitempty"`
+	InstanceID         string `json:"instance_id,omitempty"`
+	SessionID          string `json:"session_id,omitempty"`
+	WorkdirID          string `json:"workdir_id,omitempty"`
+	Contract           string `json:"contract,omitempty"`
+	Model              string `json:"model,omitempty"`
+	ConversationAnchor string `json:"conversation_anchor,omitempty"`
+	UpdatedAt          string `json:"updated_at,omitempty"`
 }
 
 func (s PersistedInstanceOpsAgentSession) IsZero() bool {
