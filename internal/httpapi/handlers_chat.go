@@ -23,6 +23,8 @@ import (
 	"github.com/google/uuid"
 )
 
+const abortedAssistantMessage = "本次回复已中止，未完整生成。"
+
 // metaEvent is the first frame emitted when a chat turn starts streaming.
 type metaEvent struct {
 	RequestID string `json:"RequestId"`
@@ -571,7 +573,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	if errors.Is(chatErr, context.Canceled) || errors.Is(streamCtx.Err(), context.Canceled) {
 		finishTrace(chatErr)
 		_ = h.persistAssistant(base.Owner, assistantMsgID,
-			store.AssistantPatch{Status: "aborted"})
+			store.AssistantPatch{Content: abortedAssistantMessage, Status: "aborted"})
 		return
 	}
 

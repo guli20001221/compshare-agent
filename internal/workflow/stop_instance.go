@@ -2,8 +2,9 @@ package workflow
 
 import "strings"
 
-// StopInstanceDef returns the 3-step workflow definition for stopping a
-// CompShare GPU instance: query state, confirm shutdown, then stop.
+// StopInstanceDef submits one stop request after querying and confirmation.
+// Upstream stopping is asynchronous, so request acceptance is not presented as
+// a verified Stopped state.
 func StopInstanceDef() *Definition {
 	return &Definition{
 		Name: "StopInstanceWorkflow",

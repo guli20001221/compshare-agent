@@ -30,6 +30,14 @@ func BuildCatalog() (*Catalog, error) {
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q: %w", operation, err)
 		}
+		for _, name := range definition.CurrentUserEvidenceFields {
+			field, ok := fields[name]
+			if !ok {
+				return nil, fmt.Errorf("workflow %q: CurrentUserEvidenceFields names unknown field %q", operation, name)
+			}
+			field.CurrentUserEvidence = true
+			fields[name] = field
+		}
 		intake, err := intakeSpecForOperation(definition.GuidedIntake, definition.GuidedIntakeFields, definition.UserSuppliedOptionalFields, fields)
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q: %w", operation, err)

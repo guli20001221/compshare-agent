@@ -138,6 +138,12 @@ func (c streamingErrorLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.Ch
 	return nil, errors.New("llm failed")
 }
 
+type canceledChatLLM struct{}
+
+func (canceledChatLLM) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+	return nil, context.Canceled
+}
+
 // denyConfirm is the confirm callback used in tests.
 func denyConfirm(_ string, _ map[string]any) bool { return false }
 
@@ -548,6 +554,32 @@ func TestDispatchChatDoesNotPersistPartialAssistantContentOnError(t *testing.T) 
 	assert.Empty(t, messages.patch.Content)
 	assert.NotContains(t, messages.patch.Content, "1.2.3.4")
 	assert.NotContains(t, messages.patch.Content, "AKIAIOSFODNN7EXAMPLE")
+}
+
+func TestDispatchChatPersistsAVisibleAbortedReply(t *testing.T) {
+	eng := engine.NewWithDeps(canceledChatLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+	eng.RehydrateHistory(nil)
+	messages := &recordingMessages{}
+	h := NewHandlers(
+		&config.Config{Agent: config.AgentConfig{
+			LLM:  config.LLMConfig{Model: "model-x"},
+			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+		}},
+		&mockSessions{byID: map[string]store.Session{
+			"sess-aborted": {
+				ID: "sess-aborted", TopOrganizationID: 1, OrganizationID: 2,
+				CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			},
+		}},
+		messages, mockFeedback{}, fakePool{eng: eng}, nil,
+	)
+
+	sink, _ := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-aborted","Message":"hi","request_uuid":"req-aborted","top_organization_id":1,"organization_id":2}`)
+
+	require.Equal(t, "aborted", messages.patch.Status)
+	require.Equal(t, abortedAssistantMessage, messages.patch.Content)
+	require.False(t, sink.has("done"))
 }
 
 func TestDispatchChatColdSessionDoesNotRehydrateCurrentUserMessage(t *testing.T) {

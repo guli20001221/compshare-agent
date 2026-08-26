@@ -66,9 +66,13 @@ func cfsListReadSpec() ReadCapabilitySpec[CFSListRequest, CFSResponse] {
 func cfsListHandle(ctx context.Context, req CFSListRequest, rt ReadRuntime) (CFSResponse, ReadResult) {
 	args := map[string]any{}
 	if req.CFS != nil {
-		if cfsID := extractCFSID(req.CFS.ID); cfsID != "" {
-			args["CfsId"] = cfsID
+		cfsID := extractCFSID(req.CFS.ID)
+		if cfsID == "" {
+			result := ReadFallbackBeforeTool(platform.ReadFallbackValidation)
+			result.Reply = "该能力只查询 CFS；完整 CFS ID 应以 cfs- 开头，当前资源 ID 不能作为 CFS 查询。"
+			return CFSResponse{}, result
 		}
+		args["CfsId"] = cfsID
 	}
 	raw, err := rt.Executor.Execute(ctx, cfsDescribeAction, args)
 	if err != nil {

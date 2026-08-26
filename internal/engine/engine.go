@@ -3698,6 +3698,9 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		// model never speaks again — has to be able to say so.
 		e.committedWriteRepliesThisTurn = append(e.committedWriteRepliesThisTurn,
 			committedWriteFallbackReply(action, finalParams, result))
+		if action == "StopInstanceWorkflow" {
+			return finalReplyPrefix + stopInstanceWorkflowReply(finalParams)
+		}
 		// A create may have committed upstream without matching the confirmed
 		// contract: the readback can be missing, initialization can fail, or the
 		// served spec can differ from the sealed card. Return those exceptional
@@ -3776,8 +3779,6 @@ func deterministicWorkflowReply(action string, args map[string]any) (string, boo
 	switch action {
 	case "RebootInstanceWorkflow":
 		return fmt.Sprintf("✅ 已为实例 %s 执行重启。", uhost), true
-	case "StopInstanceWorkflow":
-		return fmt.Sprintf("✅ 已为实例 %s 执行关机。", uhost), true
 	case "StartInstanceWorkflow":
 		return fmt.Sprintf("✅ 已为实例 %s 执行开机，启动需要一点时间，请稍后查看。", uhost), true
 	case "RenameInstanceWorkflow":
@@ -3816,6 +3817,9 @@ func deterministicWorkflowReply(action string, args map[string]any) (string, boo
 // than claiming a specific effect — "已执行成功" with nothing to point at is the
 // weakest true statement available, and a weak truth beats a confident guess.
 func committedWriteFallbackReply(action string, params map[string]any, result *workflow.Result) string {
+	if action == "StopInstanceWorkflow" {
+		return stopInstanceWorkflowReply(params)
+	}
 	if reply, ok := deterministicWorkflowReply(action, params); ok {
 		return reply
 	}
@@ -3831,6 +3835,11 @@ func committedWriteFallbackReply(action string, params map[string]any, result *w
 		return fmt.Sprintf("✅ 已创建实例 %s。", strings.Join(ids, "、"))
 	}
 	return fmt.Sprintf("✅ %s已执行成功。", friendlyActionName(action))
+}
+
+func stopInstanceWorkflowReply(params map[string]any) string {
+	uhost := strings.TrimSpace(fmt.Sprint(params["UHostId"]))
+	return fmt.Sprintf("已向实例 %s 提交关机请求，平台正在处理。请稍后查看最终状态，请勿重复提交。", uhost)
 }
 
 // createInstanceDeliveryReply describes what the platform has actually

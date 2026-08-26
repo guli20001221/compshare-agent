@@ -102,3 +102,31 @@ func TestMonitorExplicitAbsoluteWindowIsGrounded(t *testing.T) {
 	}}
 	require.NoError(t, ValidateCurrentTurnGrounding(request, "查询 2026-07-20 01:00 到 02:00 的CPU监控"))
 }
+
+func TestCurrentTurnInstanceIDMustRemainWhole(t *testing.T) {
+	const fullID = "uhost-1ug1k5sxldb2"
+	userText := "帮我查询实例 " + fullID
+
+	require.NoError(t, ValidateCurrentTurnGrounding(ResourceInfoRequest{Targets: []platform.TargetRef{{
+		Type: platform.TargetRefUHostIDUserInput, Value: fullID, Source: platform.SourceUserText,
+	}}}, userText))
+	require.Error(t, ValidateCurrentTurnGrounding(ResourceInfoRequest{Targets: []platform.TargetRef{{
+		Type: platform.TargetRefUHostIDUserInput, Value: "uhost-1ug1k5sxldb", Source: platform.SourcePriorTurn,
+	}}}, userText))
+	require.NoError(t, ValidateCurrentTurnGrounding(ResourceInfoRequest{Targets: []platform.TargetRef{{
+		Type: platform.TargetRefUHostIDUserInput, Value: fullID, Source: platform.SourceUserText,
+	}}}, "帮我查询实例 UHOST-1UG1K5SXLDB2"), "instance IDs are case-insensitive upstream identifiers")
+	require.NoError(t, ValidateCurrentTurnGrounding(ResourceInfoRequest{Targets: []platform.TargetRef{{
+		Type: platform.TargetRefUHostIDUserInput, Value: fullID, Source: platform.SourcePriorTurn,
+	}}}, "继续查它", "上轮我说的是 "+fullID))
+	require.Error(t, ValidateCurrentTurnGrounding(ResourceInfoRequest{Targets: []platform.TargetRef{{
+		Type: platform.TargetRefUHostIDUserInput, Value: "uhost-1ug1k5sxldb", Source: platform.SourcePriorTurn,
+	}}}, "继续查它", "上轮我说的是 "+fullID))
+	require.NoError(t, ValidateCurrentTurnGrounding(ResourceInfoRequest{Targets: []platform.TargetRef{
+		{Type: platform.TargetRefUHostIDUserInput, Value: fullID, Source: platform.SourceUserText},
+		{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-previous123", Source: platform.SourcePriorTurn},
+	}}, "对比 "+fullID+" 和刚才那台", "上一轮是 uhost-previous123"))
+	require.NoError(t, ValidateCurrentTurnGrounding(ResourceInfoRequest{Targets: []platform.TargetRef{{
+		Type: platform.TargetRefUHostIDUserInput, Value: "uhost-from-prior-turn", Source: platform.SourcePriorTurn,
+	}}}, "继续查它"), "without any literal ID, a normal carried-target follow-up remains valid")
+}

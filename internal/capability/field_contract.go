@@ -86,7 +86,9 @@ func targetRefParam() schemaNode {
 func targetRefsParam() schemaNode { return arrayParam(targetRefParam()) }
 
 func cfsRefParam() schemaNode {
-	return objectParam(map[string]schemaNode{"id": stringParam()}, "id")
+	return objectParam(map[string]schemaNode{
+		"id": stringParam().described("完整 CFS ID，以 cfs- 开头。"),
+	}, "id")
 }
 
 func metricsParam() schemaNode { return arrayParam(enumParam(platform.MetricValues()...)) }
