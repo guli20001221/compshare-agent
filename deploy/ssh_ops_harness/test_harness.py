@@ -384,19 +384,19 @@ _reference_context = {
     ],
 }
 _rendered_context_prompt = harness.render_prompt("Diagnose the reported web UI", _reference_context)
-check("context-v3-renders-three-labelled-sections-with-no-duplicate-current-report",
+check("context-v3-renders-authoritative-conversation-with-no-second-task-instruction",
       all(marker in _rendered_context_prompt for marker in
-          ("<planner_task>", "<conversation_history>", "<platform_facts>")) and
+          ("<conversation_history>", "<platform_facts>")) and
+      "<planner_task>" not in _rendered_context_prompt and
+      "Diagnose the reported web UI" not in _rendered_context_prompt and
       "<current_user_report>" not in _rendered_context_prompt)
 check("context-fences-untrusted-user-text", "REFERENCE DATA ONLY" in _rendered_context_prompt)
-check("context-v3-establishes-conversation-over-planner-scope-hierarchy",
+check("context-v3-establishes-role-complete-conversation-as-the-request",
       all(term in _rendered_context_prompt for term in (
           "actual outer conversation",
           "Follow its latest user message",
           "use earlier user and assistant messages to resolve references, choices, parameters and work",
           "Conversation is not proof of the instance's current state",
-          "The planner task only focuses the instance-local work",
-          "does not override that conversation",
           "perform zero writes and answer 无需修复")))
 check("context-keeps-labelled-ocr-as-evidence-not-effect-approval",
       "screenshot OCR may identify the symptom" in _rendered_context_prompt and
@@ -414,8 +414,8 @@ check("scope-contract-preserves-role-complete-prior-turn-without-keyword-routing
       and "The web endpoint is down; please repair it." in _continuing_user_intent
       and "I found the app under /workspace/service." in _continuing_user_intent
       and "继续" in _continuing_user_intent)
-# Exact production bad-case contract: nothing in the vague current report or planner focus may erase
-# the parameters that were established by the prior assistant answer.
+# Exact production bad-case contract: the lossy planner rewrite is transport/audit metadata and must
+# not become a second model instruction once the role-complete conversation is available.
 check("context-v3-carries-production-083-confirmed-video-parameters",
       all(term in _rendered_context_prompt for term in
           ('"role":"assistant"', "9:16", "720P", "5–8 秒", "1/2/3/6/8/11",
@@ -425,10 +425,17 @@ _case083_conflicting_task = harness.render_prompt(
     "在实例内按 16:9、544p、5 秒、8 steps 提交生成任务。", _reference_context)
 check("context-v3-case083-conversation-outranks-a-conflicting-planner-task",
       all(term in _case083_conflicting_task for term in (
-          "9:16", "720P", "5–8 秒", "1/2/3/6/8/11", "直接按上面的来",
-          "16:9", "544p", "8 steps",
-          "The planner task only focuses the instance-local work",
-          "does not override that conversation")))
+          "9:16", "720P", "5–8 秒", "1/2/3/6/8/11", "直接按上面的来")) and
+      all(term not in _case083_conflicting_task for term in
+          ("16:9", "544p", "8 steps", "<planner_task>")))
+
+_v3_empty_history_fallback = harness.render_prompt("task-only compatibility", {
+    "schema_version": 3,
+    "platform_facts": _reference_context["platform_facts"],
+})
+check("context-v3-without-a-conversation-keeps-task-compatibility",
+      "task-only compatibility" in _v3_empty_history_fallback and
+      "<planner_task>" in _v3_empty_history_fallback)
 _assistant_history_verbatim = harness.render_prompt("continue", {
     "schema_version": 3,
     "conversation_history": [{
@@ -1586,7 +1593,7 @@ finally:
         sys.modules["claude_agent_sdk"] = _saved_sdk
 
 check("context-main-passes-labelled-prompt-to-sdk",
-      len(_captured_sdk_prompts) == 7 and "<planner_task>" in _captured_sdk_prompts[0] and
+      len(_captured_sdk_prompts) == 7 and "<planner_task>" not in _captured_sdk_prompts[0] and
       "<conversation_history>" in _captured_sdk_prompts[0] and
       "直接按上面的来" in _captured_sdk_prompts[0] and "8188" in _captured_sdk_prompts[0])
 check("context-main-receipt-matches-sdk-prompt",
