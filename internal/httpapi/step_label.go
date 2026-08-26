@@ -48,11 +48,7 @@ var stepActionLabels = map[string]string{
 	"ReadChunk":                               "查看知识原文",
 	"HandoffToCustomerSupport":                "联系人工客服",
 	"DiagnoseBilling":                         "诊断扣费异常",
-	// Byte-identical to the console's own STEP_LABELS entry, so shipping the
-	// server-sent label changes no rendered text — it only stops the console
-	// having to keep guessing. The confirmation card says 进入实例只读排查
-	// instead; that is a different string for a different frame, not a drift.
-	"DiagnoseInstanceInternals": "实例内只读排查",
+	"DiagnoseInstanceInternals": "实例内排查与修复",
 
 	// --- internal/capability: the "ReadCapability_"+intent family -----------
 	// Second source. These ARE the model's read surface, so in a typical turn
@@ -75,16 +71,6 @@ var stepActionLabels = map[string]string{
 	"ReadCapability_cfs_create_price":           "查询文件存储价格",
 	"ReadCapability_cfs_upgrade_price":          "查询文件存储升级价格",
 	"ReadCapability_cfs_refund_estimate":        "查询文件存储退款金额",
-
-	// --- internal/tools: standalone consts, outside the Registry list -------
-	// The lane's own card says 实例内排查与修复 (it authorizes entering the box). This one authorizes
-	// ONE command and is shown with the literal command, so it must not reuse that label — a user who
-	// sees the same words twice cannot tell which question they just answered.
-	// The same gate now covers literal shell commands and hash-bound structured file/job operations.
-	// The classifier can also route an unproven-but-read-only shell shape here. Calling every such
-	// request a "repair" is observably false and makes the user believe a read will change the box.
-	// The exact command/effect in the card remains the authority; this label states only what is known.
-	"InstanceOpsWriteCommand": "确认执行实例内命令",
 
 	// --- internal/engine: not a tool at all -------------------------------
 	// The deterministic notice a turn emits when the PREVIOUS diagnosis ended without a verdict.
@@ -129,11 +115,7 @@ func stepActionLabel(action string) string {
 func serverOwnedConfirmLabel(action string) string {
 	switch action {
 	case "DiagnoseInstanceInternals":
-		return "进入实例排查与修复"
-	case "InstanceOpsWriteCommand":
-		// Same string the step stream uses, from the same map, so the card the user
-		// approves and the line they then watch scroll cannot drift apart.
-		return stepActionLabels["InstanceOpsWriteCommand"]
+		return "授权本次实例内排查与可恢复修复"
 	}
 	return ""
 }

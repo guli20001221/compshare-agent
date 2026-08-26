@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/opscontext"
+	"github.com/google/uuid"
 )
 
 // Supervisor spawns the Python Agent-SDK harness once per consented ops-task and feeds it the SSH
@@ -28,6 +29,7 @@ import (
 type Supervisor struct {
 	Python      string        // interpreter; default "python3"
 	HarnessPath string        // absolute path to harness.py
+	SessionRoot string        // stable private root for Claude SDK session workdirs; empty disables resume storage
 	BaseURL     string        // ANTHROPIC_BASE_URL (for production: https://api.modelverse.cn)
 	APIKey      string        // ModelVerse token passed only to the Claude CLI child
 	Model       string        // ModelVerse model id (e.g. gpt-5.6-terra)
@@ -119,6 +121,13 @@ type Step struct {
 	// the harness. It reaches the session-state continuation tracker but is not a command, user
 	// activity step, tally, or persisted audit step.
 	JobLifecycleOnly bool
+	// AgentSessionLifecycleOnly is an @@AGENT_SESSION side-band update. It carries only an opaque
+	// server-generated SDK cursor and compatibility labels; it is never a command, activity row or
+	// audit step. The engine may persist it to resume the same inner-agent transcript later.
+	AgentSessionLifecycleOnly bool
+	AgentSessionID            string
+	AgentSessionContract      string
+	AgentSessionModel         string
 }
 
 // envAllowlist: non-secret system vars the interpreter / claude CLI need to function. Deliberately
@@ -199,6 +208,33 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 	cmd.Cancel = func() error { return killProcGroup(cmd) } // on ctx-done kill the GROUP, not just python
 	cmd.WaitDelay = 5 * time.Second                         // bound the post-kill wait if a pipe lingers
 
+	agentSession := modelContext.AgentSession
+	// A stable root is part of the continuation contract. Never combine a persisted cursor with an
+	// implicit OS/user temp directory: on developer hosts that directory can sit beneath a user
+	// CLAUDE.md and the harness must reject it. Empty configuration therefore means a fresh clean
+	// workdir for this run, not a best-effort resume location.
+	if strings.TrimSpace(s.SessionRoot) == "" {
+		agentSession = nil
+	}
+	if agentSession != nil {
+		copy := *agentSession
+		// Engine owns the opaque UUID/contract but does not know the deployment model. Bind a fresh
+		// cursor here, at the component that selects the model; a resume cursor must already carry
+		// the previously observed model and is deliberately not repaired when malformed.
+		if !copy.Resume && strings.TrimSpace(copy.Model) == "" {
+			copy.Model = s.Model
+		}
+		// A deployment model change invalidates the SDK transcript contract immediately. Waiting for
+		// the engine's freshness TTL would make every ops request fail closed for up to 30 minutes.
+		// Rotate to a server-generated fresh cursor at this last model-aware boundary; the harness
+		// receipt then replaces the persisted cursor after a genuine model turn begins.
+		if copy.Resume && copy.Model != s.Model {
+			copy.SessionID = uuid.NewString()
+			copy.Model = s.Model
+			copy.Resume = false
+		}
+		agentSession = &copy
+	}
 	handshake, err := json.Marshal(map[string]any{
 		"host":        cred.Host,
 		"user":        cred.User,
@@ -208,6 +244,14 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 		"model":       s.Model,
 		"task":        task, // NL request -> stdin, off the host process table
 		"context":     modelContext,
+		// Task-scoped authorization is deliberately separate from model-visible context. A new
+		// harness uses it to execute in-scope guest repairs without command-by-command cards; an old
+		// harness ignores it and is supported by the adapter's internal confirmer.
+		"repair_scope_authorized": modelContext.RepairScopeAuthorized,
+		// SessionRoot and AgentSession are private control-plane continuation metadata. They contain
+		// no transcript or credential and never enter the prompt/audit payload.
+		"agent_session": agentSession,
+		"session_root":  strings.TrimSpace(s.SessionRoot),
 		// Private destinations for the structured endpoint probe. Context itself omits these fields,
 		// so URLs carrying console tokens and raw hosts never enter the model prompt or audit record.
 		// The harness exposes only opaque IDs and resolves them against this stdin-only list.
@@ -311,15 +355,20 @@ const (
 	// One model turn can finish one background job and start the next. Keep the pre-launch cursor for
 	// each distinct job while bounding side-band events independently from command/audit rows.
 	maxHarnessJobUpdates = 32
+	// A harness announces at most one SDK cursor for a run. Keep this side band independently
+	// bounded so malformed stdout cannot flood the engine even though it does not consume step quota.
+	maxHarnessAgentSessionUpdates = 1
 )
 
 // parseHarnessStream consumes the harness stdout line protocol and returns the terminal VERDICT body
-// plus the ordered command Steps. Three line shapes are trusted; everything else (the CLI's own chatter) is
+// plus the ordered command Steps. Only the documented line shapes are trusted; everything else
+// (the CLI's own chatter) is
 // ignored. Bounded on three axes — total bytes, per-line size, step count — so a misbehaving harness
 // cannot exhaust memory or flood the activity stream.
 //
 //	@@STEP {json}                one per command, metadata only
-//	@@JOB {json}                 opaque session handle, not a command/audit step
+//	@@JOB {json}                 opaque background-job handle, not a command/audit step
+//	@@AGENT_SESSION {json}       opaque SDK continuation cursor, not a command/audit step
 //	<<<VERDICT>>> ... <<<END>>>  the single terminal conclusion block
 //
 // onStep, if non-nil, is invoked for parsed @@STEP command rows and @@JOB lifecycle updates as
@@ -343,10 +392,12 @@ func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRe
 	var total int
 	var inVerdict bool
 	jobsSeen := make(map[string]struct{})
+	agentSessionUpdates := 0
 	var vb strings.Builder
 	for sc.Scan() {
 		line := sc.Text()
 		jobPayload, isJobLine := strings.CutPrefix(line, "@@JOB ")
+		agentSessionPayload, isAgentSessionLine := strings.CutPrefix(line, "@@AGENT_SESSION ")
 		total += len(line) + 1
 		if total > maxHarnessStdoutBytes {
 			return strings.TrimSpace(vb.String()), steps, outcome,
@@ -393,6 +444,16 @@ func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRe
 					onStep(st)
 				}
 			}
+		case isAgentSessionLine:
+			if agentSessionUpdates >= maxHarnessAgentSessionUpdates {
+				continue
+			}
+			if st, ok := parseAgentSessionUpdate(agentSessionPayload); ok {
+				agentSessionUpdates++
+				if onStep != nil {
+					onStep(st)
+				}
+			}
 		case strings.HasPrefix(line, "@@OUTCOME "):
 			// Last one wins, and an unparseable payload leaves the zero value — i.e. "entered".
 			// Failing open here is deliberate: the disposition it feeds is an audit label, and
@@ -407,6 +468,24 @@ func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRe
 		return strings.TrimSpace(vb.String()), steps, outcome, e
 	}
 	return strings.TrimSpace(vb.String()), steps, outcome, nil
+}
+
+func parseAgentSessionUpdate(payload string) (Step, bool) {
+	var raw struct {
+		SessionID string `json:"session_id"`
+		Contract  string `json:"contract"`
+		Model     string `json:"model"`
+	}
+	if json.Unmarshal([]byte(payload), &raw) != nil || strings.TrimSpace(raw.SessionID) == "" ||
+		strings.TrimSpace(raw.Contract) == "" {
+		return Step{}, false
+	}
+	return Step{
+		AgentSessionLifecycleOnly: true,
+		AgentSessionID:            raw.SessionID,
+		AgentSessionContract:      raw.Contract,
+		AgentSessionModel:         raw.Model,
+	}, true
 }
 
 func parseJobUpdate(payload string) (Step, bool) {

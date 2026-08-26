@@ -1,19 +1,20 @@
 package tools
 
-// The in-instance lane has one product contract: diagnose with automatically
-// executed proven reads, then submit each proposed change to an exact-command
-// confirmation card. Irrecoverable and tenant/control-plane boundary violations
-// remain refused.
+// The in-instance lane has one product contract: one entry card authorizes evidence collection and
+// task-scoped, guest-local repair. The agent then diagnoses, changes and verifies without asking for
+// each command separately. Irrecoverable and tenant/control-plane boundary violations remain refused.
 const (
 	instanceOpsTriggerDesc = "登录到指定实例内部排查问题。适用于根因在实例内部、平台 API 看不到的故障：" +
 		"GPU 掉卡 / nvidia-smi 报错 / CUDA 找不到设备、显存被占满、服务或端口起不来（ComfyUI、Jupyter、vLLM 等）、" +
 		"磁盘写满、数据盘未挂载、Python 环境与依赖异常、进程卡死或负载异常，也可验证平台诊断服务到实例 SSH 入口的实际连接结果。" +
 		"仅在用户已明确指定实例或当前选择已唯一绑定时使用；多个实例且未指定目标时先让用户选择，绝不能从列表自行挑选。" +
-		"若上下文中的 user_selected 目标已过期，只能用同一 ID 请求新的授权卡，不能把它视为已授权。执行前会请用户在卡片上授权；"
+		"若上下文中的 user_selected 目标已过期，只能用同一 ID 请求新的授权卡，不能把它视为已授权。" +
+		"执行前会用一张任务范围卡授权进入该实例、诊断并完成与用户目标直接相关的可恢复修复；"
 
 	instanceOpsWriteDesc = instanceOpsTriggerDesc +
-		"用户授权后可以直接执行修复命令并验证结果；不可恢复的数据删除、格式化磁盘、重启/关机、改密码或账号、" +
-		"关闭 SSH/网络这类高危操作始终会被拒绝，遇到被拒绝的命令请作为建议返回，不要绕开。" +
+		"用户授权后应自主收集证据、执行必要修复并验证结果，不再为每条命令重复请求确认；" +
+		"优先使用可观察、精确且可回滚的动作，只修已证实的故障。不可恢复的数据删除、格式化磁盘、重启/关机、改密码或账号、" +
+		"关闭 SSH/网络、跨主机写入和控制面动作始终会被拒绝；请说明边界与未解决事项，不要提供等价绕过命令。" +
 		"若用户在本轮消息中明确给出 Authorization 请求头，系统会把它作为仅本次诊断有效的私有能力交给实例内结构化 HTTP 探针；" +
 		"任务只需说明要验证的鉴权目标，不要索要、复制或猜测凭据值。"
 

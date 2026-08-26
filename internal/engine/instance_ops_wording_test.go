@@ -18,10 +18,8 @@ func findInstanceOpsTool(window []openai.Tool) *string {
 	return nil
 }
 
-// The lane has one production contract: inspect immediately, propose the exact repair command, run
-// it only after that command is approved, and verify the result. A deployment-wide read-only switch
-// made the prompt, confirmation card and harness disagree; keeping one contract makes that drift
-// unrepresentable while the command classifier still auto-runs only positively proven reads.
+// The lane has one production contract: one task-scope card, then autonomous guest-local diagnosis,
+// recoverable repair and verification. The hard refusals remain code gates, not repeated UI cards.
 func TestInstanceOpsDescriptionOffersConfirmationGatedRepair(t *testing.T) {
 	desc := findInstanceOpsTool(centralAgentToolWindow(false, true))
 	if desc == nil {
@@ -30,8 +28,8 @@ func TestInstanceOpsDescriptionOffersConfirmationGatedRepair(t *testing.T) {
 	if strings.Contains(*desc, "只执行只读命令") {
 		t.Fatalf("single repair contract regressed to the removed read-only product mode: %q", *desc)
 	}
-	if !strings.Contains(*desc, "可以直接执行修复命令") {
-		t.Fatalf("description does not offer confirmation-gated repair: %q", *desc)
+	if !strings.Contains(*desc, "一张任务范围卡") || !strings.Contains(*desc, "不再为每条命令重复请求确认") {
+		t.Fatalf("description does not offer the single-card autonomous repair contract: %q", *desc)
 	}
 	if !strings.Contains(*desc, "绝不能从列表自行挑选") {
 		t.Fatalf("description omits the target-selection boundary: %q", *desc)

@@ -48,8 +48,8 @@ postgresql://user:pass@host:5432/compshare_agent?sslmode=disable
 
 ## 实例内排查（SSH-ops）
 
-用户在授权卡上同意后，助手 SSH 进他自己的实例执行命令定位问题，再动手修复并验证，每条改动命令
-单独弹一次授权卡；删除数据、格式化、重启关机、改账号密码、关 SSH/网络这类高危操作一律拒绝。
+用户在一张任务范围授权卡上同意后，助手 SSH 进他自己的实例执行命令定位问题，再自主完成范围内的
+可恢复修复并验证；删除数据、格式化、重启关机、改账号密码、关 SSH/网络，以及跨租户或控制面操作仍一律拒绝。
 
 **比其他功能多一套部署工作**：诊断循环跑在 Claude Agent SDK 的独立子进程里，不在本二进制内，
 所以机器上还要有一个装了 `deploy/ssh_ops_harness/requirements.txt` 的 Python 环境、`claude` CLI，

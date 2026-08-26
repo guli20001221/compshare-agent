@@ -14,32 +14,11 @@ import (
 // because the wording depends on boot state the browser cannot see.
 func TestLaneConfirmCardStatesTheSingleRepairContract(t *testing.T) {
 	got := serverOwnedConfirmLabel("DiagnoseInstanceInternals")
-	if got != "进入实例排查与修复" {
-		t.Fatalf("lane card = %q, want 进入实例排查与修复", got)
+	if got != "授权本次实例内排查与可恢复修复" {
+		t.Fatalf("lane card = %q, want 授权本次实例内排查与可恢复修复", got)
 	}
 	if strings.Contains(got, "只读") {
 		t.Fatalf("single-mode card still claims read-only: %q", got)
-	}
-}
-
-// The per-write card had no console entry at all, so on a real repair run the
-// user was shown a card titled `InstanceOpsWriteCommand`. A gate nobody can read
-// is not a gate.
-func TestPerWriteConfirmCardIsNeverTheRawActionName(t *testing.T) {
-	got := serverOwnedConfirmLabel("InstanceOpsWriteCommand")
-	if got == "" || got == "InstanceOpsWriteCommand" {
-		t.Fatalf("per-write card = %q; the console has no entry for this action, so the server must supply one", got)
-	}
-	// Distinct from the door card on purpose: a user shown the same sentence twice
-	// cannot tell which of the two questions they just answered.
-	if got == serverOwnedConfirmLabel("DiagnoseInstanceInternals") {
-		t.Fatalf("door card and per-command card both say %q", got)
-	}
-	if got != "确认执行实例内命令" {
-		t.Fatalf("per-command card = %q, want an effect-neutral label", got)
-	}
-	if strings.Contains(got, "修复") {
-		t.Fatalf("an unproven read may reach this card, so the label must not claim a repair: %q", got)
 	}
 }
 
@@ -68,22 +47,22 @@ func TestWorkflowConfirmFramesGainNoLabelKey(t *testing.T) {
 	}
 }
 
-// The two in-instance frames must actually carry the key — omitempty means an
-// empty label is indistinguishable from "field not implemented", and the console
-// would silently fall back to its stale map.
-func TestInstanceOpsConfirmFramesCarryTheLabelKey(t *testing.T) {
-	for _, action := range []string{"DiagnoseInstanceInternals", "InstanceOpsWriteCommand"} {
-		raw, err := json.Marshal(confirmationEvent{
-			ConfirmationID: "c-1",
-			Action:         action,
-			TimeoutSeconds: 60,
-			Label:          serverOwnedConfirmLabel(action),
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(string(raw), `"Label":"`) {
-			t.Fatalf("%s frame has no Label key: %s", action, raw)
-		}
+// The single task-scope card must carry the server-owned label. The removed per-command action
+// intentionally has no server label, so an accidental reintroduction is visible in tests.
+func TestInstanceOpsConfirmFrameCarriesOnlyTheTaskScopeLabel(t *testing.T) {
+	raw, err := json.Marshal(confirmationEvent{
+		ConfirmationID: "c-1",
+		Action:         "DiagnoseInstanceInternals",
+		TimeoutSeconds: 60,
+		Label:          serverOwnedConfirmLabel("DiagnoseInstanceInternals"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"Label":"`) {
+		t.Fatalf("task-scope frame has no Label key: %s", raw)
+	}
+	if got := serverOwnedConfirmLabel("InstanceOpsWriteCommand"); got != "" {
+		t.Fatalf("removed per-command confirmation unexpectedly has label %q", got)
 	}
 }

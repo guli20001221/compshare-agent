@@ -20,11 +20,6 @@ import (
 // the cap, per-command events stop; the terminal summary still reports the totals.
 const maxInstanceOpsStepEvents = 50
 
-// instanceOpsWriteAction names the per-command approval on the wire. It is deliberately NOT
-// DiagnoseInstanceInternals: that card authorizes entering the box, this one authorizes one
-// specific change, and a user who sees the same label twice cannot tell which they answered.
-const instanceOpsWriteAction = "InstanceOpsWriteCommand"
-
 // Target refusal text is split by audience: the activity stream gives the user
 // an actionable instruction, while the tool result explains the binding rule to
 // the model. A bare confirmation or a console-only selection does not identify a
@@ -154,6 +149,9 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		case InstanceOpsProgressBackgroundJob:
 			// Side-band session continuity only: not a command, UI step, trace event or audit row.
 			e.observeInstanceOpsBackgroundJob(instanceID, p.JobID, p.JobState, p.JobPurpose)
+		case InstanceOpsProgressAgentSession:
+			e.observeInstanceOpsAgentSession(instanceID, p.AgentSessionID,
+				p.AgentSessionContract, p.AgentSessionModel)
 		case InstanceOpsProgressConnected:
 			onStep(StepEvent{
 				Type:    StepToolCall,
@@ -177,27 +175,15 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		}
 	}
 
-	// Read commands run without a card. Every write command pauses on a card that
-	// shows the literal command being authorized.
-	confirmWrite := func(command string) ConfirmationResult {
-		confirmed := e.confirmFn(instanceOpsWriteAction, map[string]any{
-			"UHostId": instanceID,
-			"Command": command,
-		})
-		return ConfirmationResult{
-			Confirmed:      confirmed,
-			TerminalReason: e.lastConfirmationTerminalReason,
-		}
-	}
-
 	modelContext.PendingBackgroundJob = e.backgroundJobForInstance(instanceID)
 	modelContext.BackgroundJobSlotBusy = e.backgroundJobSlotBusyForOtherInstance(instanceID)
+	modelContext.AgentSession = e.instanceOpsAgentSessionForRun(instanceID)
 	verdict, err := e.instanceOps.Run(ctx, InstanceOpsRequest{
-		TurnID:       e.currentTurnID,
-		InstanceID:   instanceID,
-		Task:         task,
-		Context:      modelContext,
-		ConfirmWrite: confirmWrite,
+		TurnID:                e.currentTurnID,
+		InstanceID:            instanceID,
+		Task:                  task,
+		Context:               modelContext,
+		RepairScopeAuthorized: true,
 	}, onProgress)
 	if err != nil {
 		// A control-plane NotFound result is authoritative for this target: its guest job can no
@@ -503,7 +489,7 @@ func knownInstanceOpsRefusalReason(reason string) (string, bool) {
 		// Do not turn that absence into a claim that the user explicitly declined.
 		return "未收到对这条命令的确认，命令未执行", true
 	case "refused_unconfirmable":
-		return "命令过长，无法完整展示在确认卡上", true
+		return "命令超过实例内运维工具输入上限，未执行", true
 	case "refused_precondition":
 		return "前置条件未满足，操作未执行；请按工具返回的具体原因检查参数或重新读取目标状态后重试", true
 	case "refused_no_progress":

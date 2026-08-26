@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,103 @@ import (
 	"github.com/compshare-agent/internal/workflow"
 	"github.com/compshare-agent/internal/zones"
 )
+
+// TestLiveOpsTaskScopeCanary proves the current product authorization contract against a disposable
+// test instance: the caller supplies one trusted task-scope grant, the model may perform all
+// guest-local recoverable work needed for that task, and no legacy @@CONFIRM round-trip may occur.
+// The reasoning-blind destructive/form/control-plane refusals remain inside the harness and are not
+// bypassed by this switch. It is opt-in and never selected by the ordinary live suite.
+func TestLiveOpsTaskScopeCanary(t *testing.T) {
+	if os.Getenv("SSHH_SCOPE_CANARY") != "1" {
+		t.Skip("set SSHH_SCOPE_CANARY=1 and run this exact test against a disposable instance")
+	}
+	instanceID, task := os.Getenv("SSHH_INSTANCE"), os.Getenv("SSHH_TASK")
+	if instanceID == "" || task == "" || os.Getenv("SSHH_HARNESS") == "" || os.Getenv("SSHH_API_KEY") == "" {
+		t.Fatal("SSHH_INSTANCE/SSHH_TASK/SSHH_HARNESS/SSHH_API_KEY are required")
+	}
+	top, err := strconv.ParseUint(os.Getenv("SSHH_TOP_ORG"), 10, 32)
+	if err != nil {
+		t.Fatalf("SSHH_TOP_ORG: %v", err)
+	}
+	sub, err := strconv.ParseUint(os.Getenv("SSHH_ORG"), 10, 32)
+	if err != nil {
+		t.Fatalf("SSHH_ORG: %v", err)
+	}
+	describer, ctx := liveRealDescriber(t)
+	audit := &MemAuditWriter{}
+	supervisor := liveSupervisor()
+	if root := os.Getenv("SSHH_SESSION_ROOT"); root != "" {
+		supervisor.SessionRoot = root
+	}
+	modelContext := opscontext.Context{
+		SchemaVersion:         opscontext.SchemaVersion,
+		RepairScopeAuthorized: true,
+		CurrentUserReport: &opscontext.UserReport{
+			Text: task, Source: "live_test.user_report", ObservedAt: time.Now().UTC().Format(time.RFC3339),
+			Status: opscontext.StatusReported,
+		},
+	}
+	requestedAgentSessionID := strings.TrimSpace(os.Getenv("SSHH_AGENT_SESSION_ID"))
+	if requestedAgentSessionID != "" {
+		if supervisor.SessionRoot == "" {
+			t.Fatal("SSHH_AGENT_SESSION_ID requires SSHH_SESSION_ROOT")
+		}
+		modelContext.AgentSession = &opscontext.AgentSession{
+			SessionID: requestedAgentSessionID,
+			Contract:  envOr("SSHH_AGENT_SESSION_CONTRACT", "sshops-agent-v1"),
+			Model:     supervisor.Model,
+			Resume:    os.Getenv("SSHH_AGENT_SESSION_RESUME") == "1",
+		}
+	}
+	var compatibilityConfirms atomic.Int32
+	var observedAgentSessionID string
+	result, err := NewService(supervisor, audit).DiagnoseWithContext(
+		ctx, describer,
+		Owner{TopOrganizationID: uint32(top), OrganizationID: uint32(sub),
+			RequestUUID: "live-scope-canary", TurnID: fmt.Sprintf("live-scope-%d", time.Now().UnixNano())},
+		instanceID, task,
+		modelContext,
+		func(step Step) {
+			if step.AgentSessionLifecycleOnly {
+				observedAgentSessionID = step.AgentSessionID
+				t.Logf("agent_session=%s contract=%s model=%s", step.AgentSessionID,
+					step.AgentSessionContract, step.AgentSessionModel)
+				return
+			}
+			t.Logf("step=%s tier=%s disposition=%s reason=%s", step.Command, step.Tier,
+				step.Disposition, step.Reason)
+		},
+		func(ConfirmRequest) ConfirmDecision {
+			compatibilityConfirms.Add(1)
+			return ConfirmDecision{Approved: false, TerminalReason: "user_declined"}
+		},
+	)
+	t.Logf("VERDICT:\n%s", result.Output)
+	if err != nil {
+		t.Fatalf("task-scope canary: %v", err)
+	}
+	if compatibilityConfirms.Load() != 0 {
+		t.Fatalf("task-scope run emitted %d legacy command confirmation(s)", compatibilityConfirms.Load())
+	}
+	mutatingRan := 0
+	for _, step := range result.Steps {
+		if step.Tier == "mutating" && step.Disposition == "ran" {
+			mutatingRan++
+		}
+	}
+	if mutatingRan == 0 {
+		t.Fatal("canary performed no guest mutation, so it did not prove autonomous repair")
+	}
+	if !result.ContextApplied {
+		t.Fatal("task-scope canary did not deliver context to a model turn")
+	}
+	if requestedAgentSessionID != "" && observedAgentSessionID != requestedAgentSessionID {
+		t.Fatalf("agent session receipt = %q, want %q", observedAgentSessionID, requestedAgentSessionID)
+	}
+	if marker := os.Getenv("SSHH_ASSERT_VERDICT_CONTAINS"); marker != "" && !strings.Contains(result.Output, marker) {
+		t.Fatalf("verdict does not contain the requested continuation marker")
+	}
+}
 
 // TestLiveCreateOpsCanary creates one explicitly requested, disposable test instance through the
 // same catalog/capacity/price/confirmation workflow as production. It is never selected by the
@@ -112,6 +210,27 @@ func TestLiveCreateOpsCanary(t *testing.T) {
 		t.Fatalf("create succeeded without an instance id")
 	}
 	t.Logf("CREATED_CANARY_INSTANCE=%v", ids[0])
+}
+
+// TestLiveTerminateOpsCanary removes one caller-named disposable instance through the same
+// tenant-scoped STS executor used by the server. It is the explicit cleanup companion to the create
+// canary: the exact test name, switch and instance ID are all required, and no ordinary live run can
+// select it accidentally. Only the ID is logged; upstream response bodies and credentials are not.
+func TestLiveTerminateOpsCanary(t *testing.T) {
+	if os.Getenv("SSHH_TERMINATE_CANARY") != "1" {
+		t.Skip("set SSHH_TERMINATE_CANARY=1 and run this exact test to remove a disposable instance")
+	}
+	instanceID := strings.TrimSpace(os.Getenv("SSHH_INSTANCE"))
+	if instanceID == "" || (!strings.HasPrefix(instanceID, "uhost-") && !strings.HasPrefix(instanceID, "cpod-")) {
+		t.Fatal("SSHH_INSTANCE must be one explicit uhost-* or cpod-* disposable instance ID")
+	}
+	describer, ctx := liveRealDescriber(t)
+	if _, err := describer.Execute(ctx, "TerminateCompShareInstance", map[string]any{
+		"UHostId": instanceID, "ReleaseUDisk": true,
+	}); err != nil {
+		t.Fatalf("terminate disposable canary %s: %v", instanceID, err)
+	}
+	t.Logf("TERMINATED_CANARY_INSTANCE=%s", instanceID)
 }
 
 // TestLiveOpsWriteCanary runs the real write-authorized lane but approves exactly one caller-named

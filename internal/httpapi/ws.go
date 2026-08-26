@@ -28,7 +28,7 @@ const (
 	wsMaxConfirmationsPerTurn = workflow.MaxConfirmationsPerWorkflowTurn
 
 	// Human confirmation time is independent of machine execution time. This
-	// covers bounded workflows; the SSH lane's per-command approvals remain
+	// covers bounded workflows; the SSH lane's task-scope authorization remains
 	// subject to the overall connection backstop.
 	wsInteractionAllowance = wsMaxConfirmationsPerTurn * confirmWaitTimeout
 

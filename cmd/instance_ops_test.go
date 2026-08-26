@@ -14,7 +14,6 @@ import (
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/governance"
-	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/opscontext"
 	"github.com/compshare-agent/internal/sshops"
 	"github.com/compshare-agent/internal/tools"
@@ -122,29 +121,43 @@ func TestInstanceOpsRunner_CarriesTenantIdentityAndTurnID(t *testing.T) {
 	require.Equal(t, "check gpu", diag.lastTask)
 }
 
-// The SSH harness must see WHY a write card was not approved, not merely false.
-// A timeout used to cross this adapter as false and came back to the user as a
-// voluntary rejection. Drive the callback through the real adapter boundary so
-// changing it back to a boolean cannot leave the UI-specific tests green.
-func TestInstanceOpsRunner_PreservesPerCommandConfirmationReason(t *testing.T) {
+// One trusted entry authorization covers every in-scope guest repair in this run. The callback is
+// retained only for mixed deploys where an old harness still emits @@CONFIRM; it must auto-approve
+// instead of presenting a second card.
+func TestInstanceOpsRunner_TaskScopeAuthorizationApprovesLegacyConfirm(t *testing.T) {
 	diag := &fakeDiagnoser{output: "健康"}
 	r := newInstanceOpsRunner(diag, noopDescriber{}, &fakeLimiter{allow: true})
 
 	_, err := r.Run(userCtx(), engine.InstanceOpsRequest{
-		TurnID:     "turn-confirm-reason",
-		InstanceID: "uhost-x",
-		Task:       "修复服务",
-		ConfirmWrite: func(command string) engine.ConfirmationResult {
-			require.Equal(t, "systemctl restart demo", command)
-			return engine.ConfirmationResult{TerminalReason: observability.ConfirmationReasonTimeout}
-		},
+		TurnID:                "turn-scope-auth",
+		InstanceID:            "uhost-x",
+		Task:                  "修复服务",
+		RepairScopeAuthorized: true,
 	}, func(engine.InstanceOpsProgress) {})
 
 	require.NoError(t, err)
 	require.NotNil(t, diag.lastConfirm)
 	decision := diag.lastConfirm(sshops.ConfirmRequest{Command: "systemctl restart demo"})
-	require.False(t, decision.Approved)
-	require.Equal(t, observability.ConfirmationReasonTimeout, decision.TerminalReason)
+	require.True(t, decision.Approved)
+	require.Empty(t, decision.TerminalReason)
+	require.True(t, diag.lastContext.RepairScopeAuthorized,
+		"the trusted request bit must reach the private harness context")
+}
+
+// A direct caller cannot smuggle authorization through Context: only the engine request bit is
+// trusted. Keeping the confirmer nil makes Service's existing write-mode precondition fail closed.
+func TestInstanceOpsRunner_MissingTaskScopeAuthorizationDoesNotConstructLegacyConfirmer(t *testing.T) {
+	diag := &fakeDiagnoser{output: "不应执行"}
+	r := newInstanceOpsRunner(diag, noopDescriber{}, &fakeLimiter{allow: true})
+
+	_, err := r.Run(userCtx(), engine.InstanceOpsRequest{
+		TurnID: "turn-no-auth", InstanceID: "uhost-x", Task: "修复服务",
+		Context: opscontext.Context{RepairScopeAuthorized: true},
+	}, func(engine.InstanceOpsProgress) {})
+
+	require.NoError(t, err)
+	require.Nil(t, diag.lastConfirm)
+	require.False(t, diag.lastContext.RepairScopeAuthorized)
 }
 
 // The activity stream: one synthesized "connected" (exactly once, before the first command) then one
@@ -153,6 +166,8 @@ func TestInstanceOpsRunner_TranslatesActivityStream(t *testing.T) {
 	diag := &fakeDiagnoser{
 		output: "结论",
 		steps: []sshops.Step{
+			{AgentSessionLifecycleOnly: true, AgentSessionID: "11111111-1111-4111-8111-111111111111",
+				AgentSessionContract: "sshops-agent-v1", AgentSessionModel: "gpt-5.6-terra"},
 			{JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", JobState: "unknown", JobPurpose: "download model", JobLifecycleOnly: true},
 			{Command: "poll_background_job", Tier: "read_only", Disposition: "ran", ExitCode: intp(0), Bytes: 42,
 				JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", JobState: "running", JobPurpose: "download model"},
@@ -167,27 +182,31 @@ func TestInstanceOpsRunner_TranslatesActivityStream(t *testing.T) {
 		func(p engine.InstanceOpsProgress) { got = append(got, p) })
 
 	require.NoError(t, err)
-	require.Len(t, got, 5, "1 internal job handle + 1 connected + 3 commands")
-	require.Equal(t, engine.InstanceOpsProgressBackgroundJob, got[0].Kind)
-	require.Equal(t, "unknown", got[0].JobState)
-	require.Equal(t, "download model", got[0].JobPurpose)
-	require.Equal(t, engine.InstanceOpsProgressConnected, got[1].Kind,
+	require.Len(t, got, 6, "1 SDK cursor + 1 internal job handle + 1 connected + 3 commands")
+	require.Equal(t, engine.InstanceOpsProgressAgentSession, got[0].Kind)
+	require.Equal(t, "11111111-1111-4111-8111-111111111111", got[0].AgentSessionID)
+	require.Equal(t, "sshops-agent-v1", got[0].AgentSessionContract)
+	require.Equal(t, "gpt-5.6-terra", got[0].AgentSessionModel)
+	require.Equal(t, engine.InstanceOpsProgressBackgroundJob, got[1].Kind)
+	require.Equal(t, "unknown", got[1].JobState)
+	require.Equal(t, "download model", got[1].JobPurpose)
+	require.Equal(t, engine.InstanceOpsProgressConnected, got[2].Kind,
 		"publishing a handle is not proof that the SSH command reached the box")
-	require.Equal(t, engine.InstanceOpsProgressCommand, got[2].Kind)
-	require.Equal(t, "poll_background_job", got[2].Command)
-	require.Equal(t, "ran", got[2].Disposition)
-	require.Equal(t, 42, got[2].Bytes)
-	require.Equal(t, "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", got[2].JobID)
-	require.Equal(t, "running", got[2].JobState)
-	require.Equal(t, "download model", got[2].JobPurpose)
-	require.Equal(t, "refused", got[3].Disposition)
-	require.Nil(t, got[3].ExitCode, "a refused command has no exit code")
+	require.Equal(t, engine.InstanceOpsProgressCommand, got[3].Kind)
+	require.Equal(t, "poll_background_job", got[3].Command)
+	require.Equal(t, "ran", got[3].Disposition)
+	require.Equal(t, 42, got[3].Bytes)
+	require.Equal(t, "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", got[3].JobID)
+	require.Equal(t, "running", got[3].JobState)
+	require.Equal(t, "download model", got[3].JobPurpose)
+	require.Equal(t, "refused", got[4].Disposition)
+	require.Nil(t, got[4].ExitCode, "a refused command has no exit code")
 	// The TIER has to cross this boundary too. The audit row has carried it since 0014, but the
 	// live stream was dropping it — and it is the only thing that separates "this diagnosis looked
 	// at the box" from "this diagnosis changed it", which is the question the interruption notice
 	// (internal/engine/instance_ops_interruption.go) exists to answer.
-	require.Equal(t, "read_only", got[2].Tier)
-	require.Equal(t, "mutating", got[3].Tier)
+	require.Equal(t, "read_only", got[3].Tier)
+	require.Equal(t, "mutating", got[4].Tier)
 	// tally feeds the terminal summary: 2 ran, 1 refused
 	require.Equal(t, 2, verdict.Ran)
 	require.Equal(t, 1, verdict.Refused)

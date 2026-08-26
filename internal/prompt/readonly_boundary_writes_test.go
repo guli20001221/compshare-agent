@@ -22,6 +22,9 @@ func TestReadOnlyBoundaryYieldsToTheInstanceRepairLane(t *testing.T) {
 	if !strings.Contains(withLane, "不要回答自己没有权限") {
 		t.Fatal("the boundary must answer the observed failure directly, not just soften the wording")
 	}
+	if !strings.Contains(withLane, "任务范围授权卡") || !strings.Contains(withLane, "不要逐命令") {
+		t.Fatal("the central agent must promise the single-card autonomous repair contract")
+	}
 	// The exception is narrow: platform writes stay unavailable, and the hard refusals stay named,
 	// or the agent plans around commands the harness will reject and burns the turn.
 	if !strings.Contains(withLane, "平台侧操作") {
@@ -48,6 +51,9 @@ func TestInstanceRepairLaneIsNamedWhenMutatingToolsAreOn(t *testing.T) {
 	}
 	if !strings.Contains(both, "不要回答自己没有权限") {
 		t.Fatal("the mutating-mode copy must answer the observed refusal directly, like the read-only one")
+	}
+	if !strings.Contains(both, "任务范围授权卡") || !strings.Contains(both, "不要逐命令") {
+		t.Fatal("mutating mode must expose the same single-card autonomous repair contract")
 	}
 	if !strings.Contains(both, "高危操作") {
 		t.Fatal("the destructive refusals must stay named, or the agent plans around commands the harness rejects")

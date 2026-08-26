@@ -897,6 +897,7 @@ func (e *Engine) RegistrySnapshot() entity.RegistrySnapshot {
 func (e *Engine) InitWithContext(userCtx string) {
 	e.pendingInstanceOpsInterruption = nil
 	e.sessionState.PersistedInstanceOpsJob = PersistedInstanceOpsJob{}
+	e.sessionState.PersistedInstanceOpsAgent = PersistedInstanceOpsAgentSession{}
 	e.baseUserContext = userCtx
 	systemPrompt := prompt.BuildSystemWithOptions(userCtx, e.reactPromptBuildOptions())
 	e.messages = []openai.ChatCompletionMessage{
@@ -914,6 +915,7 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 	// separately through SetSessionState after this history rebuild.
 	e.pendingInstanceOpsInterruption = nil
 	e.sessionState.PersistedInstanceOpsJob = PersistedInstanceOpsJob{}
+	e.sessionState.PersistedInstanceOpsAgent = PersistedInstanceOpsAgentSession{}
 	e.baseUserContext = ""
 	systemPrompt := prompt.BuildSystemWithOptions("", e.reactPromptBuildOptions())
 	e.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: systemPrompt}}
@@ -1017,7 +1019,7 @@ func containsVerbatimBillingObservation(messages []openai.ChatCompletionMessage)
 func (e *Engine) SetSessionState(state SessionState, version int) {
 	if e.sessionStateHydrated && version <= e.sessionStateVersion {
 		e.sessionState.VerifiedEvidence = mergeVerifiedEvidence(e.sessionState.VerifiedEvidence, state.VerifiedEvidence)
-		// SelectedInstance{ID,Name} / PendingSelection* / PersistedInstanceOpsJob /
+		// SelectedInstance{ID,Name} / PendingSelection* / PersistedInstanceOpsJob/Agent /
 		// SchemaVersion: keep the in-memory value. The local engine has not
 		// yet persisted, so its scalars are at-or-newer than the incoming row.
 		return
@@ -1025,11 +1027,21 @@ func (e *Engine) SetSessionState(state SessionState, version int) {
 	// The job cursor was introduced in V8. Older envelopes may contain an
 	// unknown field with the same spelling; do not grant it V8 semantics. A V8
 	// cursor is normalized again at hydration so client-supplied/unbounded text
-	// cannot bypass the persistence boundary.
-	if state.SchemaVersion != SessionStateSchemaV8 {
+	// cannot bypass the persistence boundary. Version 0 is the client-provided CreateSession
+	// envelope, so neither server-owned continuation cursor may enter through it.
+	if (state.SchemaVersion != SessionStateSchemaV8 && state.SchemaVersion != SessionStateSchemaV9) || version <= 0 {
 		state.PersistedInstanceOpsJob = PersistedInstanceOpsJob{}
 	} else {
 		state.PersistedInstanceOpsJob = normalizePersistedInstanceOpsJob(state.PersistedInstanceOpsJob)
+	}
+	// CreateCSAgentSession accepts an arbitrary client Context at version 0. The SDK cursor is
+	// server-owned continuation authority, not client state: never let a caller seed a UUID that
+	// could attach this new product session to another local transcript. The first server CAS write
+	// advances ContextVersion and may then carry a cursor observed from @@AGENT_SESSION.
+	if state.SchemaVersion != SessionStateSchemaV9 || version <= 0 {
+		state.PersistedInstanceOpsAgent = PersistedInstanceOpsAgentSession{}
+	} else {
+		state.PersistedInstanceOpsAgent = normalizePersistedInstanceOpsAgentSession(state.PersistedInstanceOpsAgent)
 	}
 	e.sessionState = state
 	e.sessionStateVersion = version

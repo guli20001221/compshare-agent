@@ -1,6 +1,6 @@
 """Reasoning-blind command guardrails for the SSH-ops lane.
 
-Core safety principle: the decision to run / refuse / confirm a command is driven ONLY
+Core safety principle: the decision to run / refuse / scope-authorize a command is driven ONLY
 by the user intent + the literal command string, NEVER by anything the instance emitted.
 Output read off the box is untrusted data, not instructions — so classification happens
 here, before execution, on the command text alone. This is the XPIA / prompt-injection
@@ -8,26 +8,26 @@ firewall.
 
 Three tiers (mirror internal/tools/safe_executor.go semantics):
   - read_only  : auto-run, no human prompt        (curated, one-shot diagnostics)
-  - mutating   : requires explicit human confirm
-  - destructive: hard-refused, even with confirm  (checked FIRST, unconditional)
+  - mutating   : allowed only inside a trusted task-scoped repair authorization
+  - destructive: hard-refused, even with task authorization  (checked FIRST, unconditional)
 
 This is an operations gate for the tenant's own guest, not a general-purpose hostile-code sandbox.
-Prefer observable pre-state, exact approval and a recoverable change. Reserve the hard-refused tier
+Prefer observable pre-state, precise scope and a recoverable change. Reserve the hard-refused tier
 for effects that lose data/recovery access, make the guest unbootable, or cross into another control
-plane; a high-impact but reversible guest change belongs behind a confirmation card.
+plane; a high-impact but reversible guest change belongs inside the authorized task scope.
 
 Redaction is precision-first, classification anchors flags to the relevant binary, and the
 transport enforces a per-command timeout.
 
 The auto-run tier is positively proven. A command that matches no curated read shape is
-`mutating` and therefore reaches an exact confirmation card; an unknown bare name resolved through
-the remote PATH never executes unattended. This is intentionally conservative about automation,
-not about repair: the operator can still approve any reversible guest-local command.
+`mutating` and therefore requires the already established task scope; an unknown bare name resolved
+through the remote PATH never executes without that authorization. This is intentionally conservative
+about unauthorised execution, not about repair: an authorized run can use any reversible guest-local command.
 
 Running a FILE is no longer part of that gap, and the rule for it is deliberately small: a
 program named by absolute path auto-runs as a read only from /bin, /sbin, /usr/bin and
-/usr/sbin. Everything else — /tmp/x, /root/payload, /opt/app/bin/run — gets a confirmation
-card. The one narrow exception is a path-qualified Python/Conda interpreter whose `-c` or
+/usr/sbin. Everything else — /tmp/x, /root/payload, /opt/app/bin/run — stays in the mutating tier.
+The one narrow exception is a path-qualified Python/Conda interpreter whose `-c` or
 `-m` payload passes the same structural read-only proof as bare `python`: the path spelling
 must not turn an already-proven CUDA/package inspection into a write. This proves the payload's
 expressed effect, not the executable's identity; `/tmp/python` and a Conda interpreter are treated
@@ -36,8 +36,8 @@ the same. An unsafe payload, relative executable, script, or unknown absolute bi
 This rule deliberately does NOT try to establish that a path is trustworthy. /root/x/bin/payload
 and /root/x/payload carry the same real risk; separating them needs a growing list of exceptions
 for bin-shaped directories, temp dirs, symlinks, venvs and toolchain paths, and none of it ever
-proves a remote file is safe to execute unattended. System programs auto-read, user and
-application paths confirm first.
+proves a remote file is safe to execute without authorization. System programs auto-read; user and
+application paths require the task-scope repair authorization.
 
 What is not open is describing any of this as deny-by-default, because a reader who believes
 that will not look for the fallthrough — which is exactly how a `--help` suffix came to skip
@@ -1522,10 +1522,31 @@ _WRAPPER_BINARIES = {
     "nice": 0, "ionice": 0, "nohup": 0, "setsid": 0, "stdbuf": 0, "eatmydata": 0,
     "busybox": 0, "command": 0, "timeout": 1,
 }
+
+# A task-scoped repair grant is deliberately broad inside the selected guest, but it must not
+# become authority over another host or over a cloud/cluster control plane.  Keep this boundary
+# structural: downloads and package/source fetches remain normal guest-local mutations, while
+# remote execution/upload, publishing and explicit control-plane clients are refused outright.
+_CONTROL_PLANE_CLIENTS = {
+    "aws", "az", "gcloud", "ucloud", "aliyun", "openstack",
+    "terraform", "tofu", "pulumi", "kubectl", "oc", "helm",
+}
+_REMOTE_EXEC_OR_COPY = {"ssh", "scp", "sftp", "sshpass"}
+_SHELL_CLIENTS = {"sh", "bash", "zsh", "ksh", "dash"}
+_HTTP_WRITE_VALUE_FLAGS = {
+    "--data", "--data-ascii", "--data-binary", "--data-raw", "--data-urlencode",
+    "--form", "--form-string", "--upload-file", "--json",
+    "--post-data", "--post-file", "--body-data", "--body-file",
+}
+_HTTP_READ_METHODS = {"GET", "HEAD"}
 # Wrapper flags that consume a SEPARATE value token (`-n 5`, `-o L`, `-s KILL`, `-k 10`). Getting
 # this list wrong cannot fail open: a value token mistaken for the inner command is itself
 # classified, and a bare `5` or `L` is not a known binary, so it lands in mutating.
-_WRAPPER_VALUE_FLAGS = {"-n", "-c", "-o", "-e", "-i", "-s", "-k", "-p", "-N", "-m"}
+_WRAPPER_VALUE_FLAGS = {
+    "-n", "-c", "-o", "-e", "-i", "-s", "-k", "-p", "-N", "-m",
+    "--adjustment", "--class", "--classdata", "--pid", "--pgid", "--uid",
+    "--input", "--output", "--error", "--signal", "--kill-after",
+}
 # `command -v/-V foo` only LOOKS UP foo (like `which`) rather than running it, and it is a common
 # environment probe. Every other `command` form executes.
 _COMMAND_LOOKUP = re.compile(r"(?:^|\s)-[vV](?:\s|$)")
@@ -2050,7 +2071,10 @@ def _strip_wrapper(binary: str, tokens) -> str:
     while i < len(tokens) and tokens[i].startswith("-"):
         i += 2 if tokens[i] in _WRAPPER_VALUE_FLAGS else 1
     i += _WRAPPER_BINARIES[binary]
-    return " ".join(tokens[i:]) if i < len(tokens) else ""
+    # Re-quote argv when an inner shell receives one command-string argument. Plain joining loses
+    # that boundary (`busybox sh -ec 'curl -d ...'` becomes several unrelated argv words) and lets
+    # both the effect classifier and the cross-guest scanner inspect a different command.
+    return shlex.join(tokens[i:]) if i < len(tokens) else ""
 
 
 def _wrapper_is_mutating(binary: str, tokens, depth: int) -> bool:
@@ -2063,6 +2087,179 @@ def _wrapper_is_mutating(binary: str, tokens, depth: int) -> bool:
     if not inner:
         return True                                       # no inner command to judge: fail closed
     return _is_mutating_segment(inner, depth + 1)
+
+
+def _is_guest_loopback_url(raw: str) -> bool:
+    """True only when an explicit HTTP target stays inside the selected guest."""
+    try:
+        parsed = urlsplit(raw)
+        port = parsed.port
+    except ValueError:
+        return False
+    return (parsed.scheme.lower() in ("http", "https")
+            and parsed.username is None and parsed.password is None
+            and (parsed.hostname or "").lower() in ("localhost", "127.0.0.1", "::1", "0.0.0.0")
+            and (port is None or 1 <= port <= 65535))
+
+
+def _http_crosses_guest_boundary(tokens) -> bool:
+    """Refuse an HTTP write unless every explicit target is guest loopback.
+
+    External GET/HEAD downloads are intentionally allowed by the task-scope grant.  A body,
+    upload, or unsafe method is different: it sends tenant data or changes another system.  An
+    unresolved target fails closed because its destination cannot be proven guest-local.
+    """
+    binary = _basename(tokens[0]).lower() if tokens else ""
+    effect, urls, i = False, [], 1
+    while i < len(tokens):
+        token = tokens[i]
+        flag, has_eq, inline = token.partition("=")
+        lower = flag.lower()
+        if ((binary == "curl" and flag.startswith("-K"))
+                or (binary == "wget" and flag.startswith("-e"))
+                or lower in ("--config", "--execute")):
+            return True                                  # config can hide target, body and method
+        if lower in ("-x", "--request", "--method"):
+            method = inline if has_eq else (tokens[i + 1] if i + 1 < len(tokens) else "")
+            effect = effect or method.upper() not in _HTTP_READ_METHODS
+            i += 1 if has_eq else 2
+            continue
+        if lower.startswith("-x") and lower != "-x":
+            effect = effect or token[2:].upper() not in _HTTP_READ_METHODS
+            i += 1
+            continue
+        value_flag = ((binary == "curl" and flag in ("-d", "-F", "-T"))
+                      or lower in _HTTP_WRITE_VALUE_FLAGS
+                      or lower.startswith("--data-") or lower.startswith("--form-")
+                      or lower.startswith("--post-") or lower.startswith("--body-"))
+        if value_flag:
+            effect = True
+            i += 1 if has_eq else 2
+            continue
+        if (binary == "curl" and any(token.startswith(prefix) and token != prefix
+                                     for prefix in ("-d", "-F", "-T"))):
+            effect = True
+            i += 1
+            continue
+        if token.lower().startswith(("http://", "https://")):
+            urls.append(token)
+        i += 1
+    return effect and (not urls or any(not _is_guest_loopback_url(url) for url in urls))
+
+
+def _git_subcommand(tokens):
+    """Return git's first command verb while skipping common global options."""
+    i = 1
+    value_flags = {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path"}
+    while i < len(tokens):
+        token = tokens[i]
+        flag = token.split("=", 1)[0]
+        if flag in value_flags:
+            i += 1 if "=" in token else 2
+            continue
+        if token.startswith("-"):
+            i += 1
+            continue
+        return token.lower()
+    return ""
+
+
+def _rsync_has_remote(tokens) -> bool:
+    for token in tokens[1:]:
+        if token.startswith("-"):
+            continue
+        if token.lower().startswith("rsync://"):
+            return True
+        if re.match(r"^(?:[^/@:\s]+@)?[^/:\s]+:.+", token):
+            return True
+    return False
+
+
+def _segment_crosses_guest_boundary(seg: str, depth: int = 0) -> bool:
+    """Detect effects outside the selected guest before task-scope auto-approval."""
+    if depth > 4:
+        return True
+    seg = _strip_subshell_edges(_strip_sudo(_strip_shell_keywords(seg).strip()).strip())
+    try:
+        tokens = shlex.split(seg)
+    except ValueError:
+        return False                                      # normal form/effect gates still fail closed
+    if not tokens:
+        return False
+    while tokens and _ENV_ASSIGNMENT.fullmatch(tokens[0]):
+        tokens.pop(0)
+    if not tokens:
+        return False
+    binary = _basename(tokens[0]).lower()
+    if binary == "env":
+        i = 1
+        while i < len(tokens):
+            token = tokens[i]
+            if token == "--":
+                i += 1
+                break
+            if token in ("-S", "--split-string"):
+                if i + 1 >= len(tokens):
+                    return False
+                inner = tokens[i + 1]
+                if i + 2 < len(tokens):
+                    inner += " " + shlex.join(tokens[i + 2:])
+                return _scan_guest_boundary(inner, depth + 1)
+            if token.startswith("-S") and token != "-S":
+                inner = token[2:]
+                if i + 1 < len(tokens):
+                    inner += " " + shlex.join(tokens[i + 1:])
+                return _scan_guest_boundary(inner, depth + 1)
+            if token.startswith("--split-string="):
+                inner = token.split("=", 1)[1]
+                if i + 1 < len(tokens):
+                    inner += " " + shlex.join(tokens[i + 1:])
+                return _scan_guest_boundary(inner, depth + 1)
+            if token in ("-u", "--unset", "-C", "--chdir", "-a", "--argv0"):
+                i += 2
+                continue
+            if token.startswith(("--unset=", "--chdir=", "--argv0=")):
+                i += 1
+                continue
+            if token in ("-i", "--ignore-environment", "-0", "--null", "--debug"):
+                i += 1
+                continue
+            if token.startswith("-") or _ENV_ASSIGNMENT.fullmatch(token):
+                i += 1
+                continue
+            break
+        return i < len(tokens) and _segment_crosses_guest_boundary(shlex.join(tokens[i:]), depth + 1)
+    if binary in _WRAPPER_BINARIES:
+        inner = _strip_wrapper(binary, tokens)
+        # A malformed/no-inner wrapper is not evidence of a boundary crossing; the ordinary
+        # classifier still sends it to the mutating tier and therefore fails closed on execution.
+        return bool(inner) and _segment_crosses_guest_boundary(inner, depth + 1)
+    if binary in _SHELL_CLIENTS:
+        for pos, token in enumerate(tokens[1:], 1):
+            if token == "-c" or (re.fullmatch(r"-[A-Za-z]+", token) and "c" in token[1:]):
+                return pos + 1 >= len(tokens) or _scan_guest_boundary(tokens[pos + 1], depth + 1)
+    if binary in _CONTROL_PLANE_CLIENTS or binary in _REMOTE_EXEC_OR_COPY:
+        return True
+    if binary == "rsync" and _rsync_has_remote(tokens):
+        return True
+    if binary == "git" and _git_subcommand(tokens) == "push":
+        return True
+    if binary in ("docker", "podman", "nerdctl") and any(t.lower() == "push" for t in tokens[1:]):
+        return True
+    if binary in ("npm", "cargo", "twine") and any(t.lower() in ("publish", "upload") for t in tokens[1:]):
+        return True
+    if binary in ("curl", "wget") and _http_crosses_guest_boundary(tokens):
+        return True
+    return False
+
+
+def _scan_guest_boundary(command: str, depth: int = 0) -> bool:
+    """True when any command crosses from the selected guest into another authority domain."""
+    for line in (command or "").split("\n"):
+        for seg in _split_chain(line):
+            if _segment_crosses_guest_boundary(seg, depth):
+                return True
+    return False
 
 
 def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
@@ -2391,13 +2588,17 @@ def _scan_destructive(cmd: str) -> bool:
 
 
 def classify(command: str) -> str:
-    """Return 'destructive' | 'read_only' | 'mutating'. Reasoning-blind: command text only."""
+    """Return 'destructive' | 'read_only' | 'mutating'. Reasoning-blind: command text only.
+
+    ``destructive`` also carries the product's hard-refused cross-guest/control-plane boundary;
+    both classes are effects the task-scoped repair grant can never authorize.
+    """
     cmd = (command or "").strip()
     if not cmd:
         return "mutating"
     if cmd in _SHELL_KEYWORDS:                            # bare syntax is not a useful remote probe
         return "mutating"
-    if _scan_destructive(cmd):                            # 1) destructive precedes everything
+    if _scan_guest_boundary(cmd) or _scan_destructive(cmd):  # 1) hard refusal precedes everything
         return "destructive"
     loop_found, loop_safe, rewritten = _rewrite_proven_literal_for_loop(cmd)
     if loop_found:

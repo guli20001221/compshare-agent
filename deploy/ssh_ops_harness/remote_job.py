@@ -11,6 +11,7 @@ import ssh_transport
 _JOB_ROOT = "/tmp/compshare-ops-jobs"
 _JOB_ID = re.compile(r"^job-[0-9a-f]{32}$")
 _RETURN_LOG_BYTES = 16000
+MAX_COMMAND_CHARS = 2000
 # Private process-identity read only; never returned to the model. A Kubernetes/GPU environment can
 # easily exceed 4 KiB, while Linux ARG_MAX is normally much larger. If even this bound truncates,
 # identity remains unknown and the durable slot stays occupied instead of declaring interruption.
@@ -26,7 +27,7 @@ POLL_DESCRIPTION = (
     "ssh_exec with run_in_background=true. This is read-only. It accepts only the currently active "
     "opaque job-NNN ID and cannot read "
     "an arbitrary path. Set wait_seconds (normally 15-30) so the tool waits before checking instead "
-    "of burning model turns in a tight loop. Read-only diagnosis and separately approved foreground "
+    "of burning model turns in a tight loop. Read-only diagnosis and other task-scoped foreground "
     "changes remain available while it runs, but a second background job is refused until a poll "
     "observes a terminal state. After six running polls, stop and report partial repair, the job_id, "
     "progress and pending "
@@ -152,7 +153,7 @@ def _completion_body(command, status_tmp, status):
 def start(conn, command, purpose, secrets=(), runner=ssh_transport.run_ssh, job_id=None):
     command = str(command or "").strip()
     purpose = " ".join(str(purpose or "").split())[:200]
-    if not command or len(command) > 1500 or not purpose or command_is_self_backgrounding(command):
+    if not command or len(command) > MAX_COMMAND_CHARS or not purpose or command_is_self_backgrounding(command):
         return {"ok": False, "error_class": "invalid_arguments", "box_may_be_changed": False}
     if job_id is None:
         job_id = new_job_id()
@@ -162,13 +163,13 @@ def start(conn, command, purpose, secrets=(), runner=ssh_transport.run_ssh, job_
     status_tmp, status = directory + "/status.tmp", directory + "/status"
     # The original command is one argv value to a nested shell so `exit`, a trailing comment or a
     # heredoc delimiter cannot consume/corrupt the completion recorder in the outer shell. The
-    # trusted wrapper is generated locally after policy/confirmation; it is never model input and
+    # trusted wrapper is generated locally after policy/authorization; it is never model input and
     # is not what the audit displays. stdout/stderr are detached from the SSH session.
     #
     # Do NOT impose RLIMIT_FSIZE here. A limit inherited by the payload applies to every file it
     # writes, not merely stdout/stderr: large wheels, model shards and compiler outputs are cut off
     # with SIGXFSZ and left partial. poll() bounds what crosses the model boundary without changing
-    # the approved job's filesystem semantics.
+    # the authorized job's filesystem semantics.
     body = _completion_body(command, status_tmp, status)
     launcher = (
         "umask 077; mkdir -p %s || exit $?; "
@@ -178,7 +179,7 @@ def start(conn, command, purpose, secrets=(), runner=ssh_transport.run_ssh, job_
          shlex.quote(directory + "/stderr.log"), shlex.quote(directory + "/pid")))
     try:
         result = runner(conn, launcher, secrets=secrets)
-    except Exception as exc:  # noqa: BLE001 — after approval, a lost result has unknown outcome
+    except Exception as exc:  # noqa: BLE001 — after launch authorization, a lost result has unknown outcome
         return {"ok": False, "job_id": job_id, "error_class": "launcher_outcome_unknown",
                 "detail": type(exc).__name__, "box_may_be_changed": True,
                 "poll_with": "poll_background_job"}

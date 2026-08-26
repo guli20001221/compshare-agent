@@ -235,7 +235,7 @@ func TestDispatchChat_MalformedContext_SkipsPersist(t *testing.T) {
 // Case 3: unknown schema_version (forward-rollout protection) — chat
 // completes, NO persistence so a newer binary can later read the row.
 func TestDispatchChat_UnknownSchemaVersion_SkipsPersist(t *testing.T) {
-	futureEnvelope := json.RawMessage(`{"agent_session_state":{"schema_version":"9.0","future_field":"hello"},"client_context":{"app":"console"}}`)
+	futureEnvelope := json.RawMessage(`{"agent_session_state":{"schema_version":"10.0","future_field":"hello"},"client_context":{"app":"console"}}`)
 	h, sessions, _ := newChatTestHandlers(t, store.Session{
 		ID:                "sess-future",
 		TopOrganizationID: 1,

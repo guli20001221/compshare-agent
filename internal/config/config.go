@@ -111,6 +111,7 @@ type ExternalImageOAuthConfig struct {
 // server requires tenant-scoped STS credentials and the audit schema.
 type SSHOpsConfig struct {
 	HarnessPath string        `yaml:"harness_path"` // absolute path to deploy/ssh_ops_harness/harness.py
+	SessionRoot string        `yaml:"session_root"` // private stable SDK-session root; empty disables cross-request SDK resume
 	BaseURL     string        `yaml:"base_url"`     // ANTHROPIC_BASE_URL of the ModelVerse Anthropic endpoint
 	APIKey      string        `yaml:"api_key"`      // empty = agent.llm.api_key
 	Python      string        `yaml:"python"`       // interpreter; empty = "python3"

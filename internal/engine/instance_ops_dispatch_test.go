@@ -111,6 +111,50 @@ func TestInstanceOps_DeclineDoesNotRunAndTurnContinues(t *testing.T) {
 	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
 }
 
+func TestInstanceOps_OneEntryAuthorizationCoversMultipleRepairsAndPersistsAgentCursor(t *testing.T) {
+	const sessionID = "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5"
+	runner := &fakeInstanceOpsRunner{
+		progress: []InstanceOpsProgress{
+			{Kind: InstanceOpsProgressAgentSession, AgentSessionID: sessionID,
+				AgentSessionContract: instanceOpsAgentSessionContract, AgentSessionModel: "gpt-5.6-terra"},
+			{Kind: InstanceOpsProgressCommand, Command: "python -m pip install flask", Tier: "mutating", Disposition: "ran"},
+			{Kind: InstanceOpsProgressBackgroundJob, JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+				JobState: "unknown", JobPurpose: "download model"},
+			{Kind: InstanceOpsProgressCommand, Command: "atomic_text_edit", Tier: "mutating", Disposition: "ran"},
+		},
+		verdict: InstanceOpsVerdict{Text: "修复并验证完成", Ran: 2},
+	}
+	confirmCalls := 0
+	eng := newInstanceOpsEngine(runner, func(action string, _ map[string]any) bool {
+		confirmCalls++
+		require.Equal(t, "DiagnoseInstanceInternals", action)
+		return true
+	})
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+
+	var steps []StepEvent
+	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&steps))
+
+	require.True(t, strings.HasPrefix(out, finalReplyPrefix))
+	require.Equal(t, 1, confirmCalls, "multiple guest repairs must not create command-level UI cards")
+	require.Equal(t, 1, runner.calls)
+	require.True(t, runner.lastReq.RepairScopeAuthorized)
+	state, _, hydrated := eng.SessionStateSnapshot()
+	require.True(t, hydrated)
+	require.Equal(t, sessionID, state.PersistedInstanceOpsAgent.SessionID)
+	require.Equal(t, "gpt-5.6-terra", state.PersistedInstanceOpsAgent.Model)
+	require.Equal(t, "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", state.PersistedInstanceOpsJob.JobID)
+
+	commandSteps := 0
+	for _, step := range steps {
+		if step.Type == StepToolResult && step.Action == "DiagnoseInstanceInternals" &&
+			strings.HasPrefix(step.Message, "`") {
+			commandSteps++
+		}
+	}
+	require.Equal(t, 2, commandSteps, "both changes remain visible even though they share one scope card")
+}
+
 // 门 4 — with no confirm function installed the lane fails closed: no panic and
 // the harness is never run (INV-7).
 func TestInstanceOps_NilConfirmFailsClosed(t *testing.T) {
@@ -191,6 +235,8 @@ func TestInstanceOps_VerdictSurvivesAsTerminalReply(t *testing.T) {
 	require.Equal(t, 1, runner.calls)
 	require.Len(t, model.calls, 1, "finalReplyPrefix terminates the turn — no synthesis round after the verdict")
 	require.NotEmpty(t, runner.lastReq.TurnID, "the turn identity must reach the runner as the audit dedup key")
+	require.True(t, runner.lastReq.RepairScopeAuthorized,
+		"the single accepted entry card must authorize in-scope guest repair without more UI cards")
 	require.NotNil(t, runner.lastReq.Context.CurrentUserReport)
 	require.Contains(t, runner.lastReq.Context.CurrentUserReport.Text, screenshotError,
 		"the live screenshot OCR must reach the SSH runner without relying on planner paraphrase")
