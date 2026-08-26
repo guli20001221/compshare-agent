@@ -225,8 +225,24 @@ func TestLiveTerminateOpsCanary(t *testing.T) {
 		t.Fatal("SSHH_INSTANCE must be one explicit uhost-* or cpod-* disposable instance ID")
 	}
 	describer, ctx := liveRealDescriber(t)
+	raw, err := describer.Execute(ctx, "DescribeCompShareInstance", map[string]any{"UHostIds.0": instanceID})
+	if err != nil {
+		t.Fatalf("describe disposable canary %s before terminate: %v", instanceID, err)
+	}
+	inst, resolvedID, err := resolveInstance(raw, instanceID)
+	if err != nil {
+		t.Fatalf("resolve disposable canary %s before terminate: %v", instanceID, err)
+	}
+	if resolvedID != instanceID {
+		t.Fatalf("describe resolved %q, want exact disposable canary %q", resolvedID, instanceID)
+	}
+	region, _ := inst["Region"].(string)
+	zone, _ := inst["Zone"].(string)
+	if strings.TrimSpace(region) == "" || strings.TrimSpace(zone) == "" {
+		t.Fatalf("describe disposable canary %s returned no region/zone", instanceID)
+	}
 	if _, err := describer.Execute(ctx, "TerminateCompShareInstance", map[string]any{
-		"UHostId": instanceID, "ReleaseUDisk": true,
+		"Region": region, "Zone": zone, "UHostId": instanceID, "ReleaseUDisk": true,
 	}); err != nil {
 		t.Fatalf("terminate disposable canary %s: %v", instanceID, err)
 	}
