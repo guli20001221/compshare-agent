@@ -1,11 +1,11 @@
-"""Offline gate for the single confirmation-gated repair mode (no network / no SSH / no SDK).
+"""Offline gate for the single task-scope-authorized repair mode (no network / no SSH / no SDK).
 
 Run:  python test_write_mode.py   ->  exits non-zero on ANY failure.
 
 The product-level read-only/write split is deliberately gone. Three properties have to hold:
 
   1. commands positively proven read-only execute immediately;
-  2. every other reversible guest-local effect reaches an exact confirmation card;
+  2. every other reversible guest-local effect runs under the one task-scope authorization;
   3. destructive/boundary effects and unsupported command shapes remain refused.
 
 (3) matters because it is tempting to read the gate as "writes are allowed now, so stop refusing".
@@ -43,19 +43,20 @@ ssh_transport.run_ssh = lambda conn, cmd, secrets=None: {
 
 
 def dispatch(command):
-    """Run one command through the real classifier with an approving exact confirmer.
+    """Run one command through the real classifier with task scope authorized.
 
-    test_confirm_loop.py covers denial, timeout, stale replies and missing confirmation channels;
-    this file checks which operations may reach that card and which are hard-refused.
+    test_confirm_loop.py covers the legacy rolling-deploy wire; this file checks which operations
+    run autonomously and which remain hard-refused.
     """
-    harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw"})
+    harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw",
+                      "repair_scope_authorized": True})
     del harness.AUDIT[:]
     with confirm_stub.approving():
         res = harness.run_command(command)
     return res, harness.AUDIT[-1]
 
 
-# --- reversible guest-local effects execute only after the exact approval ------------------------
+# --- reversible guest-local effects execute under the task scope ----------------------------------
 for cmd in ["systemctl restart ollama", "pip install torch", "kill -9 4321",
             "echo x > /tmp/f", "mkdir /tmp/d", "chmod 644 /tmp/f",
             "chmod 777 /workspace/app", "chattr +i /workspace/model.bin",
@@ -111,13 +112,13 @@ res, entry = dispatch("nvidia-smi")
 check("proven-read-runs-without-a-write-tier", res["executed"] is True and
       entry["disposition"] == "ran_read_only")
 
-# --- one prompt and one tool contract: diagnose, confirm exact repairs, then verify --------------
+# --- one prompt and one tool contract: diagnose, repair autonomously, then verify -----------------
 _WRITE_PROMPT = harness.SYSTEM_PROMPT
 _WRITE_PROMPT_FLAT = flat(_WRITE_PROMPT)
 _WRITE_DESC = flat(harness.TOOL_DESC)
-check("prompt-authorizes-confirmation-gated-repair",
-      "authorized the repair workflow" in _WRITE_PROMPT_FLAT and
-      "requires approval of that exact effect" in _WRITE_PROMPT_FLAT)
+check("prompt-authorizes-task-scoped-repair",
+      "authorized this in-instance repair" in _WRITE_PROMPT_FLAT and
+      "do not ask again for each command" in _WRITE_PROMPT_FLAT)
 check("prompt-names-hard-limits",
       "Hard refusal is only" in _WRITE_PROMPT and
       "tenant/control-plane boundary" in _WRITE_PROMPT)
@@ -152,9 +153,9 @@ check("prompt-names-no-skill", "skill" not in _WRITE_PROMPT.lower())
 
 check("tool-desc-does-not-forbid-writes", "Read-only commands only" not in _WRITE_DESC)
 check("tool-desc-says-changes-run",
-      "For repair" in _WRITE_DESC and "approves that exact command" in _WRITE_DESC)
+      "Task scope lets" in _WRITE_DESC and "without per-command prompts" in _WRITE_DESC)
 # The contract tells the model to submit an evidence-backed action rather than stopping at prose.
-check("tool-desc-says-send-not-describe", "send the smallest concrete command" in _WRITE_DESC)
+check("tool-desc-says-send-not-describe", "send the smallest concrete command" in _WRITE_DESC.lower())
 # Hard limits stay stated so the agent does not plan around commands the executor will reject.
 check("tool-desc-keeps-hard-limits",
       "irreversible" in _WRITE_DESC.lower() and "control-plane crossings" in _WRITE_DESC and
@@ -164,7 +165,7 @@ check("tool-desc-forbids-invented-platform-entrypoints",
 # Tool descriptions are behavioral contracts, not a growing list of executable-path exceptions.
 check("tool-desc-states-execution-semantics",
       all(needle in _WRITE_DESC.lower() for needle in
-          ("fresh, non-interactive ssh session", "25 seconds", "positively proven",
+          ("fresh, non-interactive ssh session", "25 seconds", "proven reads",
            "exit status")))
 check("tool-description-prefers-the-actual-runtime",
       "application's actual interpreter" in _WRITE_DESC)
@@ -251,11 +252,11 @@ check("process-environment-tool-is-selected-and-secret-bounded",
 # The lane repairs only the assigned fault; broader application replacement or shutdown requires a
 # separate user decision.
 for _name, _needle in [
-    ("states the scope", "Repair the diagnosed fault only"),
+    ("states the scope", "repair the diagnosed fault only"),
     ("names redeploying an app", "Re-downloading an app"),
-    ("names taking a service down", "disabling an unrelated service"),
+    ("names taking a service down", "disabling unrelated service"),
     ("routes it to the user rather than forbidding it",
-     "needs explicit intent in an available user report"),
+     "needs explicit user intent"),
     ("keeps prior user intent bounded to continuation", "prior reports only continue unfinished requests"),
 ]:
     check(f"tool-desc-bounds-scope::{_name}", _needle in _WRITE_DESC)
@@ -267,12 +268,12 @@ check("write-tool-desc::reformats-form-refusals",
       "Rewrite only a rejected form" in _WRITE_DESC)
 check("write-system-prompt::reformats-form-refusals",
       "rejects only the command form" in _WRITE_PROMPT and "rewrite it into a supported plain command" in _WRITE_PROMPT)
-check("write-system-prompt::does-not-manualize-unapproved-writes",
-      "do not turn the command into a manual instruction" in _WRITE_PROMPT)
-check("write-system-prompt::does-not-bypass-denied-effect",
-      "Do not seek an equivalent fallback for a denied effect" in _WRITE_PROMPT)
-check("write-system-prompt::labels-waiting-for-confirmation",
-      "等待你确认" in _WRITE_PROMPT and "approval is pending or denied" in _WRITE_PROMPT)
+check("write-system-prompt::does-not-manualize-refused-effects",
+      "do not offer a manual/equivalent bypass" in _WRITE_PROMPT)
+check("write-system-prompt::reports-refused-boundary",
+      "report the boundary and what remains unresolved" in _WRITE_PROMPT)
+check("write-system-prompt::does-not-wait-for-per-command-confirmation",
+      "等待你确认" not in _WRITE_PROMPT and "do not ask again for each command" in _WRITE_PROMPT_FLAT)
 check("write-prompts::name-the-user-not-an-operator",
       "operator" not in _WRITE_DESC and "operator" not in _WRITE_PROMPT)
 

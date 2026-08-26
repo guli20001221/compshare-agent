@@ -64,13 +64,11 @@ type InstanceOpsRequest struct {
 	// Context is the versioned, redacted reference data for the inner agent.
 	// It is independent from Task so observations cannot change the dedup hash.
 	Context opscontext.Context
-	// ConfirmWrite asks the user about ONE command that will change the box, and blocks until they
-	// answer. It is separate from the lane-level card: that one authorizes entering the instance and
-	// never names what will change, so it cannot stand as consent for `kill 6934`. The terminal
-	// reason matters just as much as the boolean: a timeout, a disconnect and an explicit decline
-	// all keep the command unexecuted, but require different user-facing guidance. nil means no
-	// human is reachable, and the runner must then refuse rather than proceed — see sshops.Service.
-	ConfirmWrite func(command string) ConfirmationResult
+	// RepairScopeAuthorized is set only after the user accepts the lane's task-scoped entry card.
+	// It authorizes guest-local, non-destructive repair steps that remain inside InstanceID + Task;
+	// the harness still hard-refuses irreversible/form/control-plane effects. Keeping the bit in the
+	// typed request makes a future direct caller fail closed instead of silently inheriting autonomy.
+	RepairScopeAuthorized bool
 }
 
 // Progress kinds emitted by a runner. Connected and command become live StepEvents; background_job
@@ -84,6 +82,9 @@ const (
 	// InstanceOpsProgressBackgroundJob publishes an opaque handle before a detached launcher can
 	// outlive the browser/harness. It is not a command step or an audit record.
 	InstanceOpsProgressBackgroundJob = "background_job"
+	// InstanceOpsProgressAgentSession carries only an opaque SDK session cursor. It is durable
+	// continuation metadata, not a command, user-visible step or audit record.
+	InstanceOpsProgressAgentSession = "agent_session"
 )
 
 // InstanceOpsProgress carries command metadata or an opaque job lifecycle update. It never carries
@@ -110,6 +111,10 @@ type InstanceOpsProgress struct {
 	// JobPurpose is a short non-executable description emitted by the structured
 	// job tool. The engine redacts and bounds it before SessionState persistence.
 	JobPurpose string
+	// AgentSession fields are populated only for Kind==InstanceOpsProgressAgentSession.
+	AgentSessionID       string
+	AgentSessionContract string
+	AgentSessionModel    string
 }
 
 // InstanceOpsVerdict is the terminal root-cause conclusion. Text is the harness's

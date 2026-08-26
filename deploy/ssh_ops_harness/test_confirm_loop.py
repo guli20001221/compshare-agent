@@ -1,12 +1,10 @@
-"""Offline gate for the per-write confirmation loop (no network / no SSH / no SDK).
+"""Offline gate for task-scope authorization and the legacy confirmation wire.
 
 Run:  python test_confirm_loop.py   ->  exits non-zero on ANY failure.
 
-The lane-level card authorizes entering the box, not a later state change. Each write therefore
-requires approval of its exact command.
-
-The property under test is therefore not "it asks" but "it cannot proceed unless a matching,
-affirmative answer came back" — every other outcome must read as a refusal.
+New servers authorize the complete bounded repair scope once, so reversible writes must run without
+another wire round trip. An older server omits that bit; only that compatibility path requires a
+matching per-command answer and remains fail-closed on ambiguity.
 """
 import sys
 
@@ -37,11 +35,31 @@ def dispatch(command, **kw):
     return res, harness.AUDIT[-1], io_obj
 
 
+def dispatch_scoped(command):
+    harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw",
+                      "repair_scope_authorized": True})
+    del harness.AUDIT[:]
+    with confirm_stub.approving() as io_obj:
+        res = harness.run_command(command)
+    return res, harness.AUDIT[-1], io_obj
+
+
 WRITE = "systemctl restart ollama"
 READ = "nvidia-smi"
 DESTRUCTIVE = "rm -rf /workspace"
 
-# --- approved -> runs, and the request carried the LITERAL command ------------------------------
+# --- current protocol: one task card, zero per-command cards -------------------------------------
+res, entry, io_obj = dispatch_scoped(WRITE)
+check("task-scope-write-runs", res["executed"] is True and entry["disposition"] == "ran_mutating")
+check("task-scope-write-emits-no-confirm-wire", io_obj.requests == [])
+res, entry, io_obj = dispatch_scoped("chmod 644 /tmp/f")
+check("task-scope-second-write-runs-without-another-card",
+      res["executed"] is True and entry["disposition"] == "ran_mutating" and io_obj.requests == [])
+res, entry, io_obj = dispatch_scoped(DESTRUCTIVE)
+check("task-scope-does-not-authorize-destructive",
+      res["executed"] is False and entry["disposition"] == "refused_destructive" and io_obj.requests == [])
+
+# --- legacy server: approved -> runs, and request carried the LITERAL command -------------------
 # If the string on the card could differ from the string that executes, the approval would describe
 # a command that never ran while the one that ran was never approved.
 res, entry, io_obj = dispatch(WRITE)
@@ -59,15 +77,14 @@ check("approved-long-command-runs", res["executed"] is True)
 
 # Past the bound the command is REFUSED rather than trimmed to fit, and no card is offered — a card
 # the operator cannot fully read is not consent, and shortening it to look presentable is the bug.
-TOO_LONG = "sed -i 's/" + "a" * (harness._MAX_CONFIRMABLE_COMMAND + 100) + "/b/' /workspace/app.conf"
+TOO_LONG = "sed -i 's/" + "a" * (harness._MAX_REMOTE_COMMAND + 100) + "/b/' /workspace/app.conf"
 res, entry, io_obj = dispatch(TOO_LONG)
 check("unconfirmable-does-not-run", res["executed"] is False)
 check("unconfirmable-never-asks", len(io_obj.requests) == 0)
 check("unconfirmable-disposition", entry["disposition"] == "refused_unconfirmable")
 check("unconfirmable-settles-as-refused-on-the-wire",
       harness._wire_disposition(entry["disposition"]) == "refused")
-check("unconfirmable-says-it-is-not-a-permissions-problem", "not\na permissions problem"
-      in res["text"] or "not a permissions problem" in res["text"])
+check("oversized-command-names-bounded-tool-input", "bounded tool input" in res["text"])
 
 # --- declined -> does NOT run, and settles as refused on the wire --------------------------------
 res, entry, _ = dispatch(WRITE, decide=lambda c: False)

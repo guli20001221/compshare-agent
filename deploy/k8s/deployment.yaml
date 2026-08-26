@@ -21,6 +21,10 @@ spec:
         app: compshare-agent
     spec:
       terminationGracePeriodSeconds: 45
+      # emptyDir volumes are root-owned by default. Both containers run as uid/gid 10001 and need
+      # their HOME volume writable for the Claude SDK transcript and ordinary CLI state.
+      securityContext:
+        fsGroup: 10001
       imagePullSecrets:
         - name: regcred
       containers:

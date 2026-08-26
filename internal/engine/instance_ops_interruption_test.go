@@ -449,7 +449,7 @@ func TestBackgroundJobRoundTripsAcrossEngineRebuildWithoutCommand(t *testing.T) 
 	hot.observeInstanceOpsBackgroundJob("uhost-1", jobID, "running", "下载 token=secret-value 模型")
 	state, version, hydrated := hot.SessionStateSnapshot()
 	require.True(t, hydrated)
-	require.Equal(t, SessionStateSchemaV8, state.SchemaVersion)
+	require.Equal(t, SessionStateSchemaCurrent, state.SchemaVersion)
 
 	raw, err := json.Marshal(PersistedContext{AgentSessionState: state})
 	require.NoError(t, err)

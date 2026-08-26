@@ -29,3 +29,7 @@ agent:
     # internal fabric mapping. Candidate order is internal, then translated;
     # the advertised EIP is diagnostic-only and never selected.
     public_ipv6_prefix: "2002:a40:2e05::"
+    # This emptyDir-backed path survives a harness/CLI process and agent container restart in the
+    # same Pod. A Pod rollout deliberately starts a fresh SDK transcript instead of copying raw
+    # model/tool history into PostgreSQL.
+    session_root: "/home/compshare/.sshops-sessions"

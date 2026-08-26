@@ -210,6 +210,7 @@ func TestLoad_SSHOpsConfigParses(t *testing.T) {
 	path := writeConfig(t, baseConfig(`
   ssh_ops:
     harness_path: /opt/harness.py
+    session_root: /home/compshare/.sshops-sessions
     base_url: https://api.modelverse.cn
     api_key: ssh-ops-test-key
     python: python3
@@ -221,6 +222,7 @@ func TestLoad_SSHOpsConfigParses(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, "/opt/harness.py", cfg.Agent.SSHOps.HarnessPath)
+	assert.Equal(t, "/home/compshare/.sshops-sessions", cfg.Agent.SSHOps.SessionRoot)
 	assert.Equal(t, "https://api.modelverse.cn", cfg.Agent.SSHOps.BaseURL)
 	assert.Equal(t, "ssh-ops-test-key", cfg.Agent.SSHOps.APIKey)
 	assert.Equal(t, "gpt-5.6-terra", cfg.Agent.SSHOps.Model)

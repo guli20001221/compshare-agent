@@ -45,7 +45,12 @@ const SessionStateSchemaV7 = "7.0"
 // remains outside conversation/session persistence.
 const SessionStateSchemaV8 = "8.0"
 
-const SessionStateSchemaCurrent = SessionStateSchemaV8
+// SessionStateSchemaV9 adds one opaque Claude Agent SDK session cursor for the most recently used
+// SSH-ops target. The transcript remains in the SDK's existing ephemeral local store; PostgreSQL
+// receives only the UUID, target, contract/model binding and timestamp.
+const SessionStateSchemaV9 = "9.0"
+
+const SessionStateSchemaCurrent = SessionStateSchemaV9
 
 // ErrUnknownSessionStateSchema is returned by ParsePersistedContext when a
 // row looks like an agent envelope (top-level object with an
@@ -74,6 +79,7 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 	SessionStateSchemaV6: {},
 	SessionStateSchemaV7: {},
 	SessionStateSchemaV8: {},
+	SessionStateSchemaV9: {},
 }
 
 // SessionState is the per-session, JSON-serializable, multi-replica-safe
@@ -92,18 +98,19 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 // Older rows can contain retired semantic fields. Normal JSON decoding ignores
 // them, and a later write omits them without a migration.
 type SessionState struct {
-	SchemaVersion                  string                  `json:"schema_version"`
-	SelectedInstanceID             string                  `json:"selected_instance_id,omitempty"`
-	SelectedInstanceName           string                  `json:"selected_instance_name,omitempty"`
-	SelectedInstanceSource         string                  `json:"selected_instance_source,omitempty"`
-	SelectedInstanceAtUnix         int64                   `json:"selected_instance_at_unix,omitempty"`
-	SelectedInstanceFreshness      string                  `json:"selected_instance_freshness,omitempty"`
-	PendingSelectionKind           string                  `json:"pending_selection_kind,omitempty"`
-	PendingSelectionProducedAtUnix int64                   `json:"pending_selection_produced_at_unix,omitempty"`
-	PendingSelectionTTLSeconds     int                     `json:"pending_selection_ttl_seconds,omitempty"`
-	PendingSelectionItems          []PendingSelectionItem  `json:"pending_selection_items,omitempty"`
-	VerifiedEvidence               []VerifiedEvidenceTurn  `json:"verified_knowledge,omitempty"`
-	PersistedInstanceOpsJob        PersistedInstanceOpsJob `json:"persisted_instance_ops_job,omitzero"`
+	SchemaVersion                  string                           `json:"schema_version"`
+	SelectedInstanceID             string                           `json:"selected_instance_id,omitempty"`
+	SelectedInstanceName           string                           `json:"selected_instance_name,omitempty"`
+	SelectedInstanceSource         string                           `json:"selected_instance_source,omitempty"`
+	SelectedInstanceAtUnix         int64                            `json:"selected_instance_at_unix,omitempty"`
+	SelectedInstanceFreshness      string                           `json:"selected_instance_freshness,omitempty"`
+	PendingSelectionKind           string                           `json:"pending_selection_kind,omitempty"`
+	PendingSelectionProducedAtUnix int64                            `json:"pending_selection_produced_at_unix,omitempty"`
+	PendingSelectionTTLSeconds     int                              `json:"pending_selection_ttl_seconds,omitempty"`
+	PendingSelectionItems          []PendingSelectionItem           `json:"pending_selection_items,omitempty"`
+	VerifiedEvidence               []VerifiedEvidenceTurn           `json:"verified_knowledge,omitempty"`
+	PersistedInstanceOpsJob        PersistedInstanceOpsJob          `json:"persisted_instance_ops_job,omitzero"`
+	PersistedInstanceOpsAgent      PersistedInstanceOpsAgentSession `json:"persisted_instance_ops_agent,omitzero"`
 }
 
 // PersistedInstanceOpsJob is the single durable observation cursor for a
@@ -125,6 +132,21 @@ type PersistedInstanceOpsJob struct {
 // IsZero lets encoding/json's omitzero omit the inactive job slot.
 func (j PersistedInstanceOpsJob) IsZero() bool {
 	return j == (PersistedInstanceOpsJob{})
+}
+
+// PersistedInstanceOpsAgentSession points at an SDK-owned local transcript without copying any
+// transcript entry into sessions.context. A session is resumed only for the same target and current
+// contract/model inside a short freshness window; otherwise the harness starts a fresh SDK session.
+type PersistedInstanceOpsAgentSession struct {
+	InstanceID string `json:"instance_id,omitempty"`
+	SessionID  string `json:"session_id,omitempty"`
+	Contract   string `json:"contract,omitempty"`
+	Model      string `json:"model,omitempty"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+}
+
+func (s PersistedInstanceOpsAgentSession) IsZero() bool {
+	return s == (PersistedInstanceOpsAgentSession{})
 }
 
 // VerifiedEvidenceTurn is compact, persisted provenance for an answer that

@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/compshare-agent/internal/opscontext"
 )
 
 const (
@@ -92,6 +94,11 @@ print("HANDSHAKE_OK host=%s user=%s port=%s instance=%s task=%s" % (
     conn.get("host"), conn.get("user"), conn.get("port"), conn.get("instance_id"), conn.get("task")))
 print("HAS_PASSWORD=%s" % bool(conn.get("password")))
 print("AUTH_TOKEN_OK=%s" % (os.environ.get("ANTHROPIC_AUTH_TOKEN") == "modelverse-test-token"))
+print("REPAIR_SCOPE_AUTHORIZED=%s" % conn.get("repair_scope_authorized"))
+print("AGENT_SESSION=%s/%s/%s/%s" % (
+    (conn.get("agent_session") or {}).get("session_id"), (conn.get("agent_session") or {}).get("contract"),
+    (conn.get("agent_session") or {}).get("model"), (conn.get("agent_session") or {}).get("resume")))
+print("SESSION_ROOT=%s" % conn.get("session_root"))
 print("ENVKEYS=" + ",".join(sorted(os.environ.keys())))
 print("<<<END>>>")
 `
@@ -106,6 +113,7 @@ func TestSupervisorHandshakeAndScrubbedEnv(t *testing.T) {
 	sup := Supervisor{
 		Python:      requirePython(t),
 		HarnessPath: writeFakeHarness(t, fakeEcho),
+		SessionRoot: "/private/sshops-sessions",
 		BaseURL:     testAnthropicBaseURL,
 		APIKey:      testAnthropicAPIKey,
 		Model:       "gpt-5.6-terra",
@@ -113,7 +121,14 @@ func TestSupervisorHandshakeAndScrubbedEnv(t *testing.T) {
 	}
 	c := cred("uhost-abc", "1.2.3.4", "root", 23, "S3cr3tPw")
 
-	res, err := sup.Run(context.Background(), c, "health check", nil, nil)
+	modelContext := opscontext.Context{
+		RepairScopeAuthorized: true,
+		AgentSession: &opscontext.AgentSession{
+			SessionID: "11111111-1111-4111-8111-111111111111", Contract: "sshops-agent-v1",
+			Model: "gpt-5.6-terra", Resume: true,
+		},
+	}
+	res, err := sup.RunWithContext(context.Background(), c, "health check", modelContext, nil, nil)
 	if err != nil {
 		t.Fatalf("run: %v (output=%q)", err, res.Output)
 	}
@@ -143,6 +158,82 @@ func TestSupervisorHandshakeAndScrubbedEnv(t *testing.T) {
 	}
 	if strings.Contains(out, "ANTHROPIC_API_KEY") {
 		t.Fatalf("legacy/dummy Anthropic API key should not be present: %q", out)
+	}
+	if !strings.Contains(out, "REPAIR_SCOPE_AUTHORIZED=True") ||
+		!strings.Contains(out, "AGENT_SESSION=11111111-1111-4111-8111-111111111111/sshops-agent-v1/gpt-5.6-terra/True") ||
+		!strings.Contains(out, "SESSION_ROOT=/private/sshops-sessions") {
+		t.Fatalf("private authorization/session handshake fields were not delivered: %q", out)
+	}
+}
+
+func TestSupervisorEmptySessionRootDisablesCursorAndUsesHarnessCleanWorkdir(t *testing.T) {
+	sup := Supervisor{
+		Python: requirePython(t), HarnessPath: writeFakeHarness(t, fakeEcho),
+		SessionRoot: "  ", BaseURL: testAnthropicBaseURL,
+		APIKey: testAnthropicAPIKey, Model: "gpt-5.6-terra", Timeout: 30 * time.Second,
+	}
+	session := &opscontext.AgentSession{
+		SessionID: "11111111-1111-4111-8111-111111111111", Contract: "sshops-agent-v1",
+		Model: "gpt-5.6-terra", Resume: true,
+	}
+	res, err := sup.RunWithContext(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 22, "pw"),
+		"task", opscontext.Context{AgentSession: session}, nil, nil)
+	if err != nil {
+		t.Fatalf("run: %v (output=%q)", err, res.Output)
+	}
+	if !strings.Contains(res.Output, "AGENT_SESSION=None/None/None/None") ||
+		!strings.Contains(res.Output, "SESSION_ROOT=") {
+		t.Fatalf("empty session root must omit the private resume cursor: %q", res.Output)
+	}
+	if strings.Contains(res.Output, session.SessionID) {
+		t.Fatalf("persisted cursor escaped without a configured stable root: %q", res.Output)
+	}
+}
+
+func TestSupervisorBindsFreshAgentSessionToSelectedModel(t *testing.T) {
+	sup := Supervisor{
+		Python: requirePython(t), HarnessPath: writeFakeHarness(t, fakeEcho),
+		SessionRoot: "/private/sshops-sessions", BaseURL: testAnthropicBaseURL,
+		APIKey: testAnthropicAPIKey, Model: "gpt-5.6-terra", Timeout: 30 * time.Second,
+	}
+	session := &opscontext.AgentSession{
+		SessionID: "11111111-1111-4111-8111-111111111111", Contract: "sshops-agent-v1",
+	}
+	res, err := sup.RunWithContext(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 22, "pw"),
+		"task", opscontext.Context{AgentSession: session}, nil, nil)
+	if err != nil {
+		t.Fatalf("run: %v (output=%q)", err, res.Output)
+	}
+	if !strings.Contains(res.Output,
+		"AGENT_SESSION=11111111-1111-4111-8111-111111111111/sshops-agent-v1/gpt-5.6-terra/False") {
+		t.Fatalf("fresh cursor was not bound to the selected deployment model: %q", res.Output)
+	}
+	if session.Model != "" {
+		t.Fatalf("supervisor mutated caller-owned private context: %+v", session)
+	}
+}
+
+func TestSupervisorRotatesResumeCursorWhenDeploymentModelChanges(t *testing.T) {
+	sup := Supervisor{
+		Python: requirePython(t), HarnessPath: writeFakeHarness(t, fakeEcho),
+		SessionRoot: "/private/sshops-sessions", BaseURL: testAnthropicBaseURL,
+		APIKey: testAnthropicAPIKey, Model: "gpt-5.6-terra", Timeout: 30 * time.Second,
+	}
+	session := &opscontext.AgentSession{
+		SessionID: "11111111-1111-4111-8111-111111111111", Contract: "sshops-agent-v1",
+		Model: "old-deployment-model", Resume: true,
+	}
+	res, err := sup.RunWithContext(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 22, "pw"),
+		"task", opscontext.Context{AgentSession: session}, nil, nil)
+	if err != nil {
+		t.Fatalf("run: %v (output=%q)", err, res.Output)
+	}
+	if strings.Contains(res.Output, session.SessionID) ||
+		!strings.Contains(res.Output, "/sshops-agent-v1/gpt-5.6-terra/False") {
+		t.Fatalf("stale model cursor was not rotated to a fresh selected-model session: %q", res.Output)
+	}
+	if session.Model != "old-deployment-model" || !session.Resume {
+		t.Fatalf("supervisor mutated caller-owned resume cursor: %+v", session)
 	}
 }
 
@@ -225,6 +316,8 @@ func TestSupervisorRequiresSecretAndPath(t *testing.T) {
 func TestParseHarnessStream(t *testing.T) {
 	in := strings.Join([]string{
 		"claude cli starting...", // chatter -> ignored
+		`@@AGENT_SESSION {"session_id":"11111111-1111-4111-8111-111111111111","contract":"sshops-agent-v1","model":"gpt-5.6-terra"}`,
+		`@@AGENT_SESSION {"session_id":"22222222-2222-4222-8222-222222222222","contract":"sshops-agent-v1","model":"must be ignored"}`,
 		`@@JOB {"job_id":"job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","job_state":"unknown","purpose":"download model weights"}`,
 		`@@JOB {"job_id":"job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","job_state":"unknown","purpose":"duplicate must be ignored"}`,
 		`@@STEP {"command":"poll_background_job","tier":"read_only","disposition":"ran","exit":0,"bytes":42,"job_id":"job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","job_state":"running","purpose":"download model weights"}`,
@@ -250,12 +343,16 @@ func TestParseHarnessStream(t *testing.T) {
 	}
 	// The opaque pre-launch handle is live-only: it reaches onStep first but is not returned as a
 	// command/audit step. Then each @@STEP streams in order and matches the returned Steps.
-	if len(streamed) != 4 || !streamed[0].JobLifecycleOnly ||
-		streamed[0].JobID != "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ||
-		streamed[0].JobPurpose != "download model weights" ||
-		streamed[1].Command != "poll_background_job" || !streamed[2].JobLifecycleOnly ||
-		streamed[2].JobID != "job-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ||
-		streamed[3].Disposition != "refused" {
+	if len(streamed) != 5 || !streamed[0].AgentSessionLifecycleOnly ||
+		streamed[0].AgentSessionID != "11111111-1111-4111-8111-111111111111" ||
+		streamed[0].AgentSessionContract != "sshops-agent-v1" ||
+		streamed[0].AgentSessionModel != "gpt-5.6-terra" ||
+		!streamed[1].JobLifecycleOnly ||
+		streamed[1].JobID != "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ||
+		streamed[1].JobPurpose != "download model weights" ||
+		streamed[2].Command != "poll_background_job" || !streamed[3].JobLifecycleOnly ||
+		streamed[3].JobID != "job-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ||
+		streamed[4].Disposition != "refused" {
 		t.Fatalf("onStep did not stream steps live in order: %+v", streamed)
 	}
 	if steps[0].Command != "poll_background_job" || steps[0].Disposition != "ran" ||

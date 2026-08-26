@@ -1,15 +1,15 @@
 # 实例内排查与修复（SSH-ops）部署
 
 平台 API 看不到实例内部。用户在授权卡上点同意后，助手通过受控工具观察平台入口和实例内部，
-再动手修复并验证，每项改动操作单独弹一次授权卡。实例内策略优先“观察变更前状态 → 精确确认
-→ 保留回滚 → 事后验证”；普通服务 disable/mask、单点 chmod/chattr、swapoff、可移除的
-sudoers.d drop-in 都是可确认操作。只有不可恢复的数据/启动/登录通道损失，或越过租户、控制面
+再动手修复并验证。用户只确认一次任务范围；此后与目标直接相关、Guest 内可恢复的动作自主执行，
+不再逐命令弹卡。实例内策略优先“观察变更前状态 → 精确作用域 → 保留回滚 → 事后验证”；普通服务
+disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in 都可在该范围内执行。只有不可恢复的数据/启动/登录通道损失，或越过租户、控制面
 边界的动作才硬拒绝；重启关机、改账号密码、关 SSH/网络也在这条边界内。审计 fail-closed：
 写不进审计表就不进用户机器。
 
 当前工具面没有开放 Claude Code 的本地 Bash/Read/Write/Web：
 
-- `ssh_exec`：在目标实例执行一条有界命令；读操作直接运行，写操作逐项确认。
+- `ssh_exec`：在目标实例执行一条有界命令；任务范围授权后，读操作与可恢复修复均直接运行。
 - `read_text_file`：通过同一条 SSH/SFTP 凭据边界读取一个明确指定的 UTF-8 普通文件，按行和
   32 KiB 输出上限返回，并给出整文件 SHA-256；不跟随软链，凭据目录、私钥和内核/设备伪文件
   不可读。它承接 Claude Code 本地 `Read` 在远端实例里的等价职责，也为原子修改提供前置 hash，
@@ -24,14 +24,14 @@ sudoers.d drop-in 都是可确认操作。只有不可恢复的数据/启动/登
   绝对 path/query，以验证 `/health`、`/index.html` 等真实入口，但模型仍不能传 URL、主机、端口、
   header 或 body，平台 URL 中已有的 token 只在 harness 内私有保留。结果也不带真实地址或 token，
   只证明 ssh-ops runner 这一网络视角。
-- `ssh_exec(run_in_background=true)` / `poll_background_job`：将已经诊断清楚、已经逐项确认的
+- `ssh_exec(run_in_background=true)` / `poll_background_job`：将已经诊断清楚、属于已授权任务范围的
   长命令放入私有 job 目录；stdin/stdout/stderr 全部脱离 SSH 会话，PID 带 job marker，完成码原子落盘。
   同时最多一个 active，期间仍可只读排查；轮询终态后可在同一诊断继续下一项修复。轮询只接受当前
   opaque `job-...` ID 并返回有界日志尾部，不能借它读取任意路径。任务文件不继承日志大小限制，
   因而安装大 wheel、下载模型或编译大产物不会被当成“日志过大”截断；启动大型任务前应先检查磁盘余量。
 - `atomic_text_edit`：对一个已由 `read_text_file` 读取的既有 UTF-8 普通文件做 SHA-256 绑定的
   `replace_fragment`，或在父目录已存在时无覆盖地 `create` 一个有界 UTF-8 文件。批准后重新检查
-  路径/元数据，使用同目录临时文件并回读 hash；替换另保留同目录备份。确认卡和审计只显示操作、
+  路径/元数据，使用同目录临时文件并回读 hash；替换另保留同目录备份。活动流和审计只显示操作、
   路径、用途、mode/count 和前后 hash，不显示文件内容。
 
 平台入口 URL 及 SSH 地址只在 Go→harness 的 stdin 私有握手里存在；它们不进入 task、prompt、
@@ -51,11 +51,19 @@ sudoers.d drop-in 都是可确认操作。只有不可恢复的数据/启动/登
     api_key: ""                                                  # 空 = 复用 agent.llm.api_key
     python: "/opt/miniforge3/envs/py313/bin/python"              # 生产环境固定解释器
     model: "gpt-5.6-terra"
+    session_root: "/home/compshare/.sshops-sessions"             # 同 Pod 内续接 Agent SDK 会话
 ```
 
 `harness_path` / `base_url` 留空，或 `api_key` 和 `agent.llm.api_key` 同时为空，**服务起不来**。
 `python` 留空**不报错**，会悄悄回退到系统 `python3` —— 那上面没有 `claude_agent_sdk`，
 症状是用户点完授权卡之后诊断失败。
+
+`session_root` 保存稳定工作目录、绑定清单和最短保留策略；SDK 的明文 JSONL 位于同一私有
+`HOME` 卷下的 `.claude/projects`，并通过 `cleanupPeriodDays: 1` 使用 CLI 支持的最短自动清理周期。
+这两个目录都必须对部署私有，并只保证同一 Pod 内的容器重启续接；需要监控 512 MiB `agent-home`
+卷的使用量，Pod 重建会清空两者并安全降级为新会话。
+PostgreSQL 的 SessionState V9 只保存 UUID、实例 ID、契约/模型和时间，不保存对话、命令或输出；
+换实例、契约/模型变化、游标过期、本地记录缺失或 Pod 被重建时都会诚实地开始新会话。
 
 ## 运行环境
 
@@ -77,7 +85,7 @@ SDK 在 `initialize` 等待 60 秒后超时；harness 会在同一个已选 npm 
 ## 确认通了
 
 1. 启动日志里有 `ssh-ops enabled:` 开头的一行。没有就是没启用，同一位置会写明哪个前提没满足。
-2. 在控制台对一台自己的实例问一句实例内才能回答的问题，出现授权卡 → 同意 → 命令逐条流出，
+2. 在控制台对一台自己的实例问一句实例内才能回答的问题，出现一张任务范围授权卡 → 同意 → 命令逐条流出且不再弹卡，
    最后给结论。**授权卡 120 秒不点会自动失效。**
 3. 审计落库：
 
@@ -127,6 +135,6 @@ SDK 在 `initialize` 等待 60 秒后超时；harness 会在同一个已选 npm 
 | 启动失败，提示缺 `harness_path` / `base_url` / API key | 补齐路径、直连地址或 ModelVerse Key |
 | 启动正常但日志说通道关闭 | 用的是静态 AK/SK（没配 `agent.sts.service_ak/service_sk`），或没有数据库 |
 | 授权卡点了之后诊断失败 | Python 环境 / `claude` CLI / ModelVerse 网络或鉴权不可用 |
-| 修复命令没有执行 | 查看对应命令的精确确认卡是否被拒绝、超时，或命令是否命中不可恢复动作硬拒绝 |
+| 修复命令没有执行 | 查看入口任务范围卡是否被拒绝/超时，或命令是否命中不可恢复动作硬拒绝 |
 
 把 `enabled` 改回 `false` 重启即可关闭，其余字段留着不影响，历史审计保留。

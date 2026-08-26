@@ -74,6 +74,15 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 	// entered the box.
 	connectedSent := false
 	onStep := func(st sshops.Step) {
+		if st.AgentSessionLifecycleOnly {
+			onProgress(engine.InstanceOpsProgress{
+				Kind:                 engine.InstanceOpsProgressAgentSession,
+				AgentSessionID:       st.AgentSessionID,
+				AgentSessionContract: st.AgentSessionContract,
+				AgentSessionModel:    st.AgentSessionModel,
+			})
+			return
+		}
 		if st.JobLifecycleOnly {
 			onProgress(engine.InstanceOpsProgress{
 				Kind: engine.InstanceOpsProgressBackgroundJob, JobID: st.JobID, JobState: st.JobState,
@@ -101,21 +110,21 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 		})
 	}
 
-	// Adapt the engine's command-level confirmer. Staying nil when the engine supplied none is the
-	// point: sshops refuses a write-enabled run without one instead of silently denying every write,
-	// which would look to the user like the model failing to fix anything.
+	// The engine has already obtained one explicit task-scoped entry authorization. A new harness
+	// consumes the bit below and does not ask for command-level cards. During a rolling/mixed deploy,
+	// an old harness may still emit @@CONFIRM; answer those internally so the same authorized run does
+	// not regress to repeated human intervention. Without the trusted bit this stays nil and Service
+	// fails closed before a write-enabled harness can start.
 	var onConfirm sshops.ConfirmFunc
-	if req.ConfirmWrite != nil {
-		onConfirm = func(c sshops.ConfirmRequest) sshops.ConfirmDecision {
-			decision := req.ConfirmWrite(c.Command)
-			return sshops.ConfirmDecision{
-				Approved:       decision.Confirmed,
-				TerminalReason: decision.TerminalReason,
-			}
+	if req.RepairScopeAuthorized {
+		onConfirm = func(sshops.ConfirmRequest) sshops.ConfirmDecision {
+			return sshops.ConfirmDecision{Approved: true}
 		}
 	}
+	modelContext := req.Context
+	modelContext.RepairScopeAuthorized = req.RepairScopeAuthorized
 
-	res, err := r.diag.DiagnoseWithContext(ctx, r.describer, owner, req.InstanceID, req.Task, req.Context, onStep, onConfirm)
+	res, err := r.diag.DiagnoseWithContext(ctx, r.describer, owner, req.InstanceID, req.Task, modelContext, onStep, onConfirm)
 	if err != nil {
 		// Translate the no-SSH-target sentinel into the engine's transport-agnostic
 		// mirror so the engine gives an honest, non-retryable refusal (e.g. a Windows
@@ -211,6 +220,10 @@ func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback, apiKeyFallback st
 	sup := sshops.Supervisor{
 		Python:      sc.Python,
 		HarnessPath: sc.HarnessPath,
+		// Continuation is opt-in because an arbitrary OS/user temp directory may inherit a
+		// CLAUDE.md from one of its ancestors. With no configured root the harness uses its
+		// existing clean-workdir selection and simply starts a fresh SDK session.
+		SessionRoot: strings.TrimSpace(sc.SessionRoot),
 		BaseURL:     sc.BaseURL,
 		APIKey:      apiKey,
 		Model:       model,
@@ -289,6 +302,6 @@ func serverInstanceOpsRunner(cfg *config.Config, describer sshops.Describer, db 
 	if hostResolver != nil {
 		route = "internal IPv6 via " + cfg.Agent.STS.IAMURL
 	}
-	log.Printf("ssh-ops enabled: consent-gated in-instance diagnosis with per-command repair confirmation (per-tenant STS, fail-closed audit, dialling the %s; a client disconnect ends the run and the user retries)", route)
+	log.Printf("ssh-ops enabled: one-card task-scoped in-instance diagnosis and recoverable repair (per-tenant STS, fail-closed audit, dialling the %s; same-instance SDK/job cursors support bounded continuation)", route)
 	return newInstanceOpsRunner(svc, describer, limiter), nil
 }

@@ -1,4 +1,4 @@
-"""Confirmation-bound atomic UTF-8 text edits over SFTP.
+"""Task-scope-authorized atomic UTF-8 text edits over SFTP.
 
 Two generic operations are supported:
 
@@ -6,8 +6,8 @@ Two generic operations are supported:
   observed by ``read_text_file``;
 * ``create`` creates one new regular file without overwriting an existing path.
 
-Content never enters the confirmation wire or command audit. Both operations re-check their
-preconditions after approval, refuse symlinks, use a same-directory temporary and verify the
+Content never enters the legacy confirmation wire or command audit. Both operations re-check their
+preconditions at apply time, refuse symlinks, use a same-directory temporary and verify the
 resulting bytes. Replacements retain a same-directory backup; creates use the standard SFTP rename
 operation whose contract refuses an existing destination rather than the overwrite-capable
 OpenSSH ``posix-rename`` extension.
@@ -64,7 +64,7 @@ def input_schema():
             },
             "change_summary": {
                 "type": "string", "minLength": 1, "maxLength": 200,
-                "description": "Short reason shown on the approval card; no secrets.",
+                "description": "Short audit reason for the task-scoped change; no secrets.",
             },
         },
         "required": ["operation", "path", "change_summary"],
@@ -78,11 +78,11 @@ TOOL_DESCRIPTION = (
     "already exists; provide bounded content and an explicit ordinary mode such as 0644. Use "
     "operation=replace_fragment after read_text_file has returned an existing file's relevant "
     "content and whole-file SHA-256; the exact old text must occur once. Both operations re-check "
-    "after approval, refuse symlinks and selected boot/login/SSH/network paths whose failure can "
+    "at apply time, refuse symlinks and selected boot/login/SSH/network paths whose failure can "
     "remove the recovery channel, write through a same-directory temporary, and verify the final "
     "hash. Create never overwrites; replacement preserves mode/owner and retains a recoverable "
-    "backup. The approval card shows operation, path, purpose, hashes and mode/count but never file "
-    "contents. Use this generic file primitive only for the diagnosed repair; do not replace whole "
+    "backup. The bounded audit display records operation, path, purpose, hashes and mode/count but never "
+    "file contents. Use this generic file primitive only for the diagnosed repair; do not replace whole "
     "applications or bypass an existing service manager contract.")
 
 

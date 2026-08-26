@@ -124,14 +124,15 @@ calls) is never persisted or executed as a normal answer.
 - tenant-scoped STS credentials;
 - a configured Python/Agent-SDK harness;
 - audit migrations `0011`, `0013` and `0014`;
-- explicit entry confirmation and, when writes are enabled, per-command write
-  confirmation.
+- one explicit task-scope entry confirmation. After it is accepted, the lane may
+  autonomously perform guest-local, reversible repairs that directly serve the
+  stated task; it does not ask again for every command.
 
 The lane fails closed when audit storage is unavailable. A missing audit schema
 disables only this lane and logs the missing migration; it does not take chat
 down. Destructive effects, command substitution and guest-shell reboot remain
 refused. Multiline commands, pipes and chains are classified by effect, and
-guest changes still require exact confirmation. The definitive command policy
+guest changes remain bounded by that task-scope authorization. The definitive command policy
 and deployment contract live in `deploy/ssh_ops_harness/README.md` and its
 tests—do not duplicate their full history in config comments.
 
@@ -147,6 +148,13 @@ later diagnosis on that instance can poll the handle after a browser disconnect,
 Engine LRU eviction or process restart; neither the command nor its output enters
 conversation/audit storage. One unresolved handle occupies the session's single
 durable job slot until a matching terminal observation clears it.
+
+SessionState V9 also keeps a short-lived, same-instance opaque Agent SDK session
+UUID. The SDK transcript stays in its existing local ephemeral store and never
+enters PostgreSQL. A later turn can therefore continue the inner agent's prior
+observations after a browser disconnect, Engine LRU eviction or a container
+restart in the same Pod. A different instance, changed prompt/tool contract,
+changed model, expired cursor or missing local transcript starts fresh.
 
 ## Configuration
 

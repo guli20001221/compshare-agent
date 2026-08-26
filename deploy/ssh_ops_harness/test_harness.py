@@ -12,6 +12,7 @@ import sys
 import tempfile as _tempfile
 import time
 import types
+from pathlib import Path as _Path
 
 import guardrails
 import harness
@@ -40,6 +41,51 @@ def _sdk_importable():
 # --- handshake parsing: required fields, and the credential goes to a module var, NOT os.environ ---
 conn = harness.read_handshake('{"host":"1.2.3.4","user":"ubuntu","port":22,"password":"Pl4inPwd77x"}')
 check("handshake-parses", conn["host"] == "1.2.3.4" and conn["password"] == "Pl4inPwd77x")
+
+_AGENT_SESSION_ID = "550e8400-e29b-41d4-a716-446655440000"
+_AGENT_SESSION_ID_OTHER = "550e8400-e29b-41d4-a716-446655440001"
+_AGENT_SESSION_CONTRACT = "ssh-ops-contract-v1"
+_AGENT_SESSION_MODEL = "test/model-v1"
+_AGENT_SESSION_VALUE = {
+    "session_id": _AGENT_SESSION_ID,
+    "contract": _AGENT_SESSION_CONTRACT,
+    "model": _AGENT_SESSION_MODEL,
+    "resume": True,
+}
+_normalized_agent_session = harness.normalize_agent_session(
+    _AGENT_SESSION_VALUE, os.path.abspath("agent-session-root"), _AGENT_SESSION_MODEL,
+    "cpod-test")
+check("agent-session-contract-normalizes",
+      _normalized_agent_session["session_id"] == _AGENT_SESSION_ID and
+      _normalized_agent_session["resume_requested"] is True and
+      _normalized_agent_session["instance_id"] == "cpod-test")
+check("legacy-handshake-without-session-keeps-one-shot-mode",
+      harness.normalize_agent_session(None, None, _AGENT_SESSION_MODEL) is None)
+check("legacy-handshake-null-session-and-empty-root-keeps-one-shot-mode",
+      harness.normalize_agent_session(None, "", _AGENT_SESSION_MODEL) is None)
+
+for name, value, root, selected_model in [
+    ("agent-session-rejects-a-path-shaped-id",
+     dict(_AGENT_SESSION_VALUE, session_id="../escape"), os.path.abspath("sessions"),
+     _AGENT_SESSION_MODEL),
+    ("agent-session-rejects-a-noncanonical-uuid",
+     dict(_AGENT_SESSION_VALUE, session_id=_AGENT_SESSION_ID.upper()),
+     os.path.abspath("sessions"), _AGENT_SESSION_MODEL),
+    ("agent-session-rejects-a-relative-root", _AGENT_SESSION_VALUE, "relative/sessions",
+     _AGENT_SESSION_MODEL),
+    ("agent-session-rejects-a-model-mismatch", _AGENT_SESSION_VALUE,
+     os.path.abspath("sessions"), "other-model"),
+    ("agent-session-rejects-a-nonboolean-resume",
+     dict(_AGENT_SESSION_VALUE, resume="true"), os.path.abspath("sessions"),
+     _AGENT_SESSION_MODEL),
+    ("agent-session-rejects-a-partial-new-shape", None, os.path.abspath("sessions"),
+     _AGENT_SESSION_MODEL),
+]:
+    try:
+        harness.normalize_agent_session(value, root, selected_model)
+        check(name, False)
+    except ValueError:
+        check(name, True)
 
 for bad in ['{"user":"u","port":22,"password":"x"}',     # missing host
             '{"host":"h","user":"u","port":22}',         # missing password/key
@@ -78,7 +124,7 @@ check("prompt-does-not-call-a-failed-probe-no-repair-needed",
 check("prompt-requires-runtime-reload-after-on-disk-change",
       "do not affect a running process until reload/restart" in _prompt_flat and
       "file checks are not runtime verification" in _prompt_flat and
-      "If split across approvals" in _prompt_flat)
+      "original criterion are rechecked" in _prompt_flat)
 check("platform-auth-comparison-does-not-call-hidden-url-credentials-unauthenticated",
       "baseline without the caller-provided Authorization header" in
           harness.endpoint_probe.tool_description(
@@ -321,7 +367,7 @@ check("context-establishes-user-report-over-planner-scope-hierarchy",
 check("context-keeps-labelled-ocr-as-evidence-not-effect-approval",
       "screenshot OCR may identify the symptom" in _rendered_context_prompt and
       "fallible evidence" in _rendered_context_prompt and
-      "never approves a change" in _rendered_context_prompt)
+      "never expands the authorized outcome" in _rendered_context_prompt)
 _continuing_user_intent = harness.render_prompt("repair the web endpoint", {
     "schema_version": 2,
     "current_user_report": {"text": "cpod-example", "source": "chat.current_user",
@@ -426,7 +472,7 @@ check("pending-job-invalid-or-terminal-handle-is-not-resumed",
       harness.normalize_pending_background_job({"job_id": _JOB_ID, "state": "succeeded"}) is None)
 _continuation_prompt = harness.render_prepared_prompt("继续排查", None, _pending_job)
 check("pending-job-prompt-requires-exact-poll-and-allows-read-only-work",
-      _JOB_ID in _continuation_prompt and "Read-only diagnosis and separately approved" in _continuation_prompt
+      _JOB_ID in _continuation_prompt and "Read-only diagnosis and other scoped" in _continuation_prompt
       and "download model weights" in _continuation_prompt
       and "refuse a second background job" in _continuation_prompt
       and "Do not reconstruct or rerun" in _continuation_prompt)
@@ -435,7 +481,7 @@ _busy_elsewhere_prompt = harness.render_prepared_prompt(
 check("session-wide-job-slot-blocks-only-a-second-background-launch",
       "unresolved background job on another instance" in _busy_elsewhere_prompt
       and "diagnose, read" in _busy_elsewhere_prompt
-      and "exact-approved foreground changes" in _busy_elsewhere_prompt)
+      and "scoped reversible foreground changes" in _busy_elsewhere_prompt)
 
 # A server rolled back below this harness still sends v1, and that must keep working — but against
 # the V1 allowlist, not the union. Two directions, because "accepts both" silently becoming "accepts
@@ -889,6 +935,30 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
             object(), "test-model", 5, {"job_id": _JOB_ID, "state": "running"})
         check("pending-job-options-keep-the-stable-reviewed-surface",
               list(_continuation_opts.allowed_tools) == harness.ALLOWED_TOOLS)
+        _fresh_session_opts = harness.build_options(
+            object(), _AGENT_SESSION_MODEL, 5, agent_session={
+                "session_id": _AGENT_SESSION_ID, "workdir": os.path.abspath("session-work"),
+                "resume_existing": False, "settings_file": os.path.abspath("session-settings.json"),
+            })
+        _resumed_session_opts = harness.build_options(
+            object(), _AGENT_SESSION_MODEL, 5, agent_session={
+                "session_id": _AGENT_SESSION_ID, "workdir": os.path.abspath("session-work"),
+                "resume_existing": True, "settings_file": os.path.abspath("session-settings.json"),
+            })
+        check("fresh-agent-session-uses-session-id-not-resume",
+              _fresh_session_opts.session_id == _AGENT_SESSION_ID and
+              _fresh_session_opts.resume is None)
+        check("existing-agent-session-uses-resume-not-session-id",
+              _resumed_session_opts.resume == _AGENT_SESSION_ID and
+              _resumed_session_opts.session_id is None)
+        check("agent-session-options-pin-the-stable-cwd",
+              os.path.realpath(str(_fresh_session_opts.cwd)) ==
+              os.path.realpath(os.path.abspath("session-work")) and
+              _resumed_session_opts.cwd == _fresh_session_opts.cwd)
+        check("agent-session-options-pin-one-day-CLI-retention-settings",
+              os.path.realpath(_fresh_session_opts.settings) ==
+              os.path.realpath(os.path.abspath("session-settings.json")) and
+              _resumed_session_opts.settings == _fresh_session_opts.settings)
     except SystemExit as exc:
         print(f"XX  inv9-real-build-options-passes: {exc}")
         FAILS.append("inv9-real-build-options-passes")
@@ -922,13 +992,20 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
         # that json.dumps cannot serialize; it is not part of what these four flags assert.
         import dataclasses as _dc
         _argv = _T(prompt="inv9-argv-probe", options=_dc.replace(_real_opts, mcp_servers={}))._build_command()
+        _fresh_argv = _T(
+            prompt="fresh-session-argv-probe",
+            options=_dc.replace(_fresh_session_opts, mcp_servers={}))._build_command()
+        _resumed_argv = _T(
+            prompt="resume-session-argv-probe",
+            options=_dc.replace(_resumed_session_opts, mcp_servers={}))._build_command()
 
-        def _flag_value(flag):
+        def _flag_value(flag, argv=None):
             """The value after `--flag`, or after `--flag=`; None when the flag is absent."""
-            if flag in _argv:
-                i = _argv.index(flag)
-                return _argv[i + 1] if i + 1 < len(_argv) else None
-            for a in _argv:
+            argv = _argv if argv is None else argv
+            if flag in argv:
+                i = argv.index(flag)
+                return argv[i + 1] if i + 1 < len(argv) else None
+            for a in argv:
                 if a.startswith(flag + "="):
                     return a[len(flag) + 1:]
             return None
@@ -949,6 +1026,40 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
         check("argv-disallowed-tools-carries-skill", "Skill" in _denied)
         check("argv-disallowed-tools-carries-the-executors",
               all(t in _denied for t in ("Bash", "Read", "Write")))
+        check("argv-fresh-session-carries-only-session-id",
+              "--session-id" in _fresh_argv and _AGENT_SESSION_ID in _fresh_argv and
+              "--resume" not in _fresh_argv)
+        check("argv-resume-carries-only-resume",
+              "--resume" in _resumed_argv and _AGENT_SESSION_ID in _resumed_argv and
+              "--session-id" not in _resumed_argv)
+        _expected_settings = os.path.abspath("session-settings.json")
+        check("argv-fresh-session-carries-runtime-settings",
+              os.path.realpath(_flag_value("--settings", _fresh_argv) or "") ==
+              os.path.realpath(_expected_settings))
+        check("argv-resume-carries-runtime-settings",
+              os.path.realpath(_flag_value("--settings", _resumed_argv) or "") ==
+              os.path.realpath(_expected_settings))
+
+        # Pin the SDK-private path mapping used only to distinguish a local resume from the
+        # documented same-ID fresh fallback. No real ~/.claude data is touched.
+        from claude_agent_sdk._internal import sessions as _sdk_sessions
+        _saved_projects_dir = _sdk_sessions._get_projects_dir
+        _fake_projects_dir = _Path(_tempfile.mkdtemp(prefix="sshops-sdk-projects-"))
+        try:
+            _sdk_sessions._get_projects_dir = lambda *_args, **_kwargs: _fake_projects_dir
+            _record_workdir = os.path.abspath("session-record-work")
+            check("sdk-session-record-check-is-false-before-jsonl-exists",
+                  harness._sdk_session_record_exists(_AGENT_SESSION_ID, _record_workdir) is False)
+            _record_dir = (_fake_projects_dir /
+                           _sdk_sessions.project_key_for_directory(_record_workdir))
+            _record_dir.mkdir(parents=True)
+            (_record_dir / f"{_AGENT_SESSION_ID}.jsonl").write_text("{}\n", encoding="utf-8")
+            check("sdk-session-record-check-finds-the-exact-cwd-and-id",
+                  harness._sdk_session_record_exists(_AGENT_SESSION_ID, _record_workdir) is True and
+                  harness._sdk_session_record_exists(_AGENT_SESSION_ID_OTHER, _record_workdir) is False)
+        finally:
+            _sdk_sessions._get_projects_dir = _saved_projects_dir
+            _shutil.rmtree(_fake_projects_dir, ignore_errors=True)
     except Exception as exc:            # noqa: BLE001 — deliberately broad; see below
         # Deliberately a FAILURE, not a skip: the SDK internals moved, so what `skills=[]`,
         # `setting_sources=[]` and `tools=[]` now mean has to be re-read before INV-9 can be trusted.
@@ -967,6 +1078,60 @@ check("stage-no-claude-md-leak", harness._claude_md_ancestors(_stage_root) == []
 # harness is discoverable by the CLI's upward walk, and the repo root is where the big one lives.
 _TREE = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(harness.__file__))))
 check("stage-outside-repo-tree", not harness._is_under(_stage_root, _TREE))
+
+# Resumable sessions preserve that clean boundary but reuse one deterministic cwd. The UUID is the
+# only dynamic path segment; a server-owned manifest binds it to the model, contract and instance so
+# a stale/colliding ID cannot silently cross those boundaries.
+_session_root = os.path.join(_stage_root, "agent-sessions")
+_session_for_stage = harness.normalize_agent_session(
+    _AGENT_SESSION_VALUE, _session_root, _AGENT_SESSION_MODEL, "cpod-test")
+_stable_workdir_first = harness.stage_agent_session_workdir(_session_for_stage)
+_stable_workdir_second = harness.stage_agent_session_workdir(_session_for_stage)
+check("agent-session-cwd-is-stable-for-the-same-id",
+      os.path.realpath(_stable_workdir_first) == os.path.realpath(_stable_workdir_second) and
+      _stable_workdir_first.endswith(os.path.join(_AGENT_SESSION_ID, "work")))
+check("agent-session-cwd-keeps-the-no-claude-md-boundary",
+      harness._claude_md_ancestors(_stable_workdir_first) == [])
+check("agent-session-manifest-is-outside-the-model-cwd",
+      os.path.isfile(os.path.join(os.path.dirname(_stable_workdir_first),
+                                  harness._AGENT_SESSION_MANIFEST)) and
+      os.listdir(_stable_workdir_first) == [])
+_session_settings_path = os.path.join(os.path.dirname(_stable_workdir_first),
+                                      harness._AGENT_SESSION_SETTINGS)
+check("agent-session-settings-pin-the-supported-minimum-retention",
+      os.path.isfile(_session_settings_path) and
+      _Path(_session_settings_path).read_text(encoding="ascii") ==
+      '{"cleanupPeriodDays":1}\n' and
+      _session_for_stage["settings_file"] == _session_settings_path)
+
+_saved_record_exists = harness._sdk_session_record_exists
+try:
+    harness._sdk_session_record_exists = lambda _session_id, _workdir: False
+    _missing_record_session = harness.prepare_agent_session(
+        _AGENT_SESSION_VALUE, _session_root, _AGENT_SESSION_MODEL, "cpod-test")
+    harness._sdk_session_record_exists = lambda _session_id, _workdir: True
+    _present_record_session = harness.prepare_agent_session(
+        _AGENT_SESSION_VALUE, _session_root, _AGENT_SESSION_MODEL, "cpod-test")
+finally:
+    harness._sdk_session_record_exists = _saved_record_exists
+check("requested-resume-falls-back-to-same-id-fresh-when-local-record-is-missing",
+      _missing_record_session["resume_existing"] is False and
+      _missing_record_session["session_id"] == _AGENT_SESSION_ID)
+check("requested-resume-is-used-only-when-the-local-record-exists",
+      _present_record_session["resume_existing"] is True)
+
+_mismatch_session_a = harness.normalize_agent_session(
+    dict(_AGENT_SESSION_VALUE, session_id=_AGENT_SESSION_ID_OTHER, model="model-a"),
+    _session_root, "model-a", "cpod-test")
+harness.stage_agent_session_workdir(_mismatch_session_a)
+try:
+    _mismatch_session_b = harness.normalize_agent_session(
+        dict(_AGENT_SESSION_VALUE, session_id=_AGENT_SESSION_ID_OTHER, model="model-b"),
+        _session_root, "model-b", "cpod-test")
+    harness.stage_agent_session_workdir(_mismatch_session_b)
+    check("agent-session-manifest-refuses-model-or-contract-reuse", False)
+except SystemExit:
+    check("agent-session-manifest-refuses-model-or-contract-reuse", True)
 
 # A TEMP configured INSIDE the repository is not hypothetical (TMPDIR=./tmp, CI runners, containers
 # that relocate TEMP) and the previous containment check — candidates tested against $HOME only —
@@ -1227,6 +1392,12 @@ try:
         "background_job_slot_busy": True,
     }) + "\n")
     _main_busy_output = _capture(lambda: _asyncio.run(harness.main()))
+    sys.stdin = _io.StringIO(_json.dumps({
+        "host": "10.0.0.9", "user": "root", "port": 22, "password": "context-test-password",
+        "task": "自主修复实例", "context": _reference_context,
+        "repair_scope_authorized": True,
+    }) + "\n")
+    _main_scope_output = _capture(lambda: _asyncio.run(harness.main()))
     for _guard_task in ("sequential duplicate guard", "parallel duplicate guard"):
         sys.stdin = _io.StringIO(_json.dumps({
             "host": "10.0.0.9", "user": "root", "port": 22,
@@ -1248,7 +1419,7 @@ finally:
         sys.modules["claude_agent_sdk"] = _saved_sdk
 
 check("context-main-passes-labelled-prompt-to-sdk",
-      len(_captured_sdk_prompts) == 6 and "<planner_task>" in _captured_sdk_prompts[0] and
+      len(_captured_sdk_prompts) == 7 and "<planner_task>" in _captured_sdk_prompts[0] and
       "<current_user_report>" in _captured_sdk_prompts[0] and "8188" in _captured_sdk_prompts[0])
 check("context-main-receipt-matches-sdk-prompt",
       '"context_applied": true' in _main_output.replace('"context_applied":true', '"context_applied": true'))
@@ -1260,8 +1431,9 @@ _first_tools = _captured_sdk_servers[0]["tools"]
 _legacy_flag_tools = _captured_sdk_servers[1]["tools"]
 _pending_tools = _captured_sdk_servers[2]["tools"]
 _busy_tools = _captured_sdk_servers[3]["tools"]
-_duplicate_guard_tools = _captured_sdk_servers[4]["tools"]
-_parallel_guard_tools = _captured_sdk_servers[5]["tools"]
+_scope_tools = _captured_sdk_servers[4]["tools"]
+_duplicate_guard_tools = _captured_sdk_servers[5]["tools"]
+_parallel_guard_tools = _captured_sdk_servers[6]["tools"]
 check("mcp-surface-version-covers-endpoint-method-and-background-lifecycle",
       _captured_sdk_servers[0]["version"] == "2.6.0")
 check("main-registers-exact-single-repair-tool-surface",
@@ -1290,7 +1462,7 @@ check("a-later-handshake-without-a-capability-does-not-revive-an-old-reference",
           )._test_tool_schema["properties"]
           for tools in (_legacy_flag_tools, _pending_tools, _busy_tools)))
 check("pending-job-main-prompt-carries-the-opaque-handle-not-a-command",
-      _JOB_ID in _captured_sdk_prompts[2] and "Read-only diagnosis and separately approved" in _captured_sdk_prompts[2] and
+      _JOB_ID in _captured_sdk_prompts[2] and "Read-only diagnosis and other scoped" in _captured_sdk_prompts[2] and
       "pip install package" not in _captured_sdk_prompts[2])
 _pending_poll_tool = next(tool for tool in _pending_tools
                           if tool._test_tool_name == "poll_background_job")
@@ -1300,6 +1472,9 @@ _pending_atomic_tool = next(tool for tool in _pending_tools
 _first_ssh_tool = next(tool for tool in _first_tools if tool._test_tool_name == "ssh_exec")
 _busy_ssh_tool = next(tool for tool in _busy_tools if tool._test_tool_name == "ssh_exec")
 _first_atomic_tool = next(tool for tool in _first_tools
+                          if tool._test_tool_name == "atomic_text_edit")
+_scope_ssh_tool = next(tool for tool in _scope_tools if tool._test_tool_name == "ssh_exec")
+_scope_atomic_tool = next(tool for tool in _scope_tools
                           if tool._test_tool_name == "atomic_text_edit")
 check("ssh-exec-schema-owns-the-optional-background-mode",
       _first_ssh_tool._test_tool_schema["required"] == ["command"] and
@@ -1316,6 +1491,44 @@ check("atomic-edit-schema-is-generic-create-or-fragment-replace",
 check("background-terminal-states-are-the-only-slot-release-states",
       harness._TERMINAL_BACKGROUND_JOB_STATES ==
       {"succeeded", "failed", "interrupted", "not_found"})
+
+# The task-scope card is the only human interruption. Exercise the two non-foreground write paths
+# end to end with the real confirmation function: even an empty stdin must not produce @@CONFIRM.
+_scope_saved_conn, _scope_saved_stdin = harness._CONN, sys.stdin
+_scope_saved_start = harness.remote_job.start
+_scope_saved_prepare, _scope_saved_apply = harness.atomic_file.prepare_edit, harness.atomic_file.apply_edit
+try:
+    harness.set_conn(dict(conn, repair_scope_authorized=True))
+    sys.stdin = _io.StringIO("")
+    harness.remote_job.start = lambda *_args, **_kwargs: {
+        "ok": True, "job_id": _JOB_ID, "state": "running", "stdout": "", "stderr": "",
+    }
+    harness.atomic_file.prepare_edit = lambda *_args, **_kwargs: {
+        "ok": True, "operation": "create", "path": "/workspace/app.conf",
+        "change_summary": "create requested config", "after_sha256": "a" * 64,
+        "mode": "0644", "_data": b"x=1\n", "_mode": 0o644,
+    }
+    harness.atomic_file.apply_edit = lambda *_args, **_kwargs: {
+        "ok": True, "operation": "create", "path": "/workspace/app.conf",
+        "after_sha256": "a" * 64, "mode": "0644", "result_bytes": 4, "atomic": True,
+    }
+    _scope_background_wire = _capture(lambda: _asyncio.run(_scope_ssh_tool({
+        "command": "pip install example-package", "run_in_background": True,
+        "purpose": "install requested dependency",
+    })))
+    _scope_atomic_wire = _capture(lambda: _asyncio.run(_scope_atomic_tool({
+        "operation": "create", "path": "/workspace/app.conf", "content": "x=1\n",
+        "mode": "0644", "change_summary": "create requested config",
+    })))
+finally:
+    harness.remote_job.start = _scope_saved_start
+    harness.atomic_file.prepare_edit, harness.atomic_file.apply_edit = _scope_saved_prepare, _scope_saved_apply
+    harness._CONN, sys.stdin = _scope_saved_conn, _scope_saved_stdin
+check("task-scope-background-write-needs-no-second-card",
+      "ran_mutating" in _scope_background_wire and "@@CONFIRM " not in _scope_background_wire)
+check("task-scope-atomic-edit-needs-no-second-card",
+      "ran_mutating" in _scope_atomic_wire and "@@CONFIRM " not in _scope_atomic_wire)
+
 _saved_poll, _poll_saved_conn = harness.remote_job.poll, harness._CONN
 try:
     harness.remote_job.poll = lambda *_args, **_kwargs: {
@@ -2092,6 +2305,145 @@ check("turn-began-rejects-a-system-init", harness._model_turn_began(object(), "S
 # the required fields is not a message the pinned SDK produces, so it must not be read as a success.
 check("turn-began-rejects-a-result-missing-the-required-fields",
       harness._model_turn_began(type("ResultMessage", (), {})(), "ResultMessage") is False)
+
+
+# Session continuity is acknowledged only after the same "real model event" gate as context. An
+# init event may reveal the SDK's ID, but auth can fail immediately after init, so init alone is not
+# a receipt. The sideband contains no cwd/instance/task and a mismatched SDK ID is never persisted.
+_SESSION_RUNTIME = {
+    "session_id": _AGENT_SESSION_ID,
+    "contract": _AGENT_SESSION_CONTRACT,
+    "model": _AGENT_SESSION_MODEL,
+    "resume_requested": True,
+    "resume_existing": True,
+    "session_root": os.path.abspath("unused-session-root"),
+    "instance_id": "cpod-test",
+    "workdir": os.path.abspath("unused-session-work"),
+    "settings_file": os.path.abspath("unused-session-settings.json"),
+}
+_session_receipt_seen_after_init = []
+
+
+async def _successful_session_query(prompt, options):
+    del prompt, options
+    init = type("SystemMessage", (), {})()
+    init.data = {"subtype": "init", "session_id": _AGENT_SESSION_ID}
+    yield init
+    _session_receipt_seen_after_init.append("@@AGENT_SESSION " in sys.stdout.getvalue())
+    assistant = type("AssistantMessage", (), {})()
+    assistant.error = None
+    assistant.content = []
+    yield assistant
+    result = type("ResultMessage", (), {})()
+    result.session_id = _AGENT_SESSION_ID
+    result.result = "resumed diagnosis"
+    result.is_error = False
+    result.num_turns = 1
+    yield result
+
+
+async def _failed_session_query(prompt, options):
+    del prompt, options
+    init = type("SystemMessage", (), {})()
+    init.data = {"subtype": "init", "session_id": _AGENT_SESSION_ID}
+    yield init
+    assistant = type("AssistantMessage", (), {})()
+    assistant.error = "authentication_failed"
+    assistant.content = []
+    assistant.session_id = _AGENT_SESSION_ID
+    yield assistant
+    result = type("ResultMessage", (), {})()
+    result.session_id = _AGENT_SESSION_ID
+    result.result = None
+    result.is_error = True
+    result.num_turns = 0
+    yield result
+
+
+async def _mismatched_session_query(prompt, options):
+    del prompt, options
+    init = type("SystemMessage", (), {})()
+    init.data = {"subtype": "init", "session_id": _AGENT_SESSION_ID_OTHER}
+    yield init
+    assistant = type("AssistantMessage", (), {})()
+    assistant.error = None
+    assistant.content = []
+    yield assistant
+
+
+_saved_session_query = _fake_sdk.query
+_saved_stdin, _saved_conn, _saved_preflight = sys.stdin, harness._CONN, harness.preflight_probe
+_saved_stage, _saved_options = harness.stage_clean_workdir, harness.build_options
+_saved_prepare_session = harness.prepare_agent_session
+_captured_agent_session_options = []
+try:
+    sys.modules["claude_agent_sdk"] = _fake_sdk
+    harness.preflight_probe = lambda _conn: None
+    harness.stage_clean_workdir = lambda: None
+    harness.prepare_agent_session = lambda *_args, **_kwargs: dict(_SESSION_RUNTIME)
+    harness.build_options = lambda *_args, **_kwargs: (
+        _captured_agent_session_options.append(_args[4]) or object())
+    _session_handshake = {
+        "host": "10.0.0.9", "user": "root", "port": 22,
+        "password": "session-test-password", "instance_id": "cpod-test",
+        "model": _AGENT_SESSION_MODEL, "task": "continue diagnosis",
+        "agent_session": _AGENT_SESSION_VALUE,
+        "session_root": os.path.abspath("unused-session-root"),
+    }
+    _fake_sdk.query = _successful_session_query
+    sys.stdin = _io.StringIO(_json.dumps(_session_handshake) + "\n")
+    _successful_session_wire = _capture(lambda: _asyncio.run(harness.main()))
+
+    _fake_sdk.query = _failed_session_query
+    sys.stdin = _io.StringIO(_json.dumps(_session_handshake) + "\n")
+    _failed_session_wire = _capture(lambda: _asyncio.run(harness.main()))
+
+    _fake_sdk.query = _mismatched_session_query
+    sys.stdin = _io.StringIO(_json.dumps(_session_handshake) + "\n")
+    _mismatched_session_wire = _capture(lambda: _asyncio.run(harness.main()))
+
+    _fake_sdk.query = _exploding_query
+    sys.stdin = _io.StringIO(_json.dumps(_session_handshake) + "\n")
+    _exploding_session_wire = _capture(lambda: _asyncio.run(harness.main()))
+finally:
+    _fake_sdk.query = _saved_session_query
+    sys.stdin = _saved_stdin
+    harness._CONN = _saved_conn
+    harness.preflight_probe = _saved_preflight
+    harness.stage_clean_workdir = _saved_stage
+    harness.build_options = _saved_options
+    harness.prepare_agent_session = _saved_prepare_session
+    if _saved_sdk is None:
+        sys.modules.pop("claude_agent_sdk", None)
+    else:
+        sys.modules["claude_agent_sdk"] = _saved_sdk
+
+_session_lines = [line for line in _successful_session_wire.splitlines()
+                  if line.startswith("@@AGENT_SESSION ")]
+_session_receipt = (_json.loads(_session_lines[0][len("@@AGENT_SESSION "):])
+                    if len(_session_lines) == 1 else {})
+check("agent-session-init-alone-does-not-emit-a-receipt",
+      _session_receipt_seen_after_init == [False])
+check("agent-session-receipt-emits-once-after-a-real-model-event",
+      len(_session_lines) == 1 and
+      _successful_session_wire.index("@@AGENT_SESSION ") <
+      _successful_session_wire.index("@@OUTCOME "))
+check("agent-session-receipt-is-bounded-identity-only",
+      _session_receipt == {
+          "session_id": _AGENT_SESSION_ID,
+          "contract": _AGENT_SESSION_CONTRACT,
+          "model": _AGENT_SESSION_MODEL,
+      } and "session_root" not in _successful_session_wire and
+      "cpod-test" not in _successful_session_wire)
+check("main-passes-the-resolved-agent-session-to-sdk-options",
+      _captured_agent_session_options == [_SESSION_RUNTIME] * 4)
+check("agent-session-receipt-is-absent-on-message-shaped-auth-failure",
+      "@@AGENT_SESSION " not in _failed_session_wire)
+check("agent-session-receipt-is-absent-when-sdk-fails-before-first-message",
+      "@@AGENT_SESSION " not in _exploding_session_wire)
+check("agent-session-receipt-refuses-an-sdk-id-mismatch",
+      "@@AGENT_SESSION " not in _mismatched_session_wire and
+      "unexpected session_id" in _mismatched_session_wire)
 
 
 # run three commands (refused, refused, ran) with the box echoing the credential, then emit a verdict.

@@ -29,7 +29,7 @@ type Owner struct {
 const DefaultDiagnosisTask = "用户报告这台 GPU 实例\"掉卡\"（nvidia-smi 不可用 / 检测不到 GPU）。" +
 	"请先用只读命令排查根因：运行 nvidia-smi 看具体报错，再 cat /proc/driver/nvidia/version 和 " +
 	"cat /etc/os-release 核对，判断是宿主机驱动问题，还是容器内用户态 NVIDIA 驱动 / 库（如 libnvidia-ml）" +
-	"缺失或版本不匹配。若根因可在实例内安全修复，发送精确修复命令等待用户逐条确认，执行后验证结果。"
+	"缺失或版本不匹配。若根因可在实例内安全修复，在本次任务范围授权内执行最小可恢复修复并验证结果。"
 
 // Service is the transport-agnostic core of the consent-gated SSH-ops repair lane. The HTTP
 // Action (and any future entry) calls it AFTER verifying consent. It owns: out-of-band
@@ -87,8 +87,8 @@ func NewService(sup harnessRunner, audit AuditWriter, opts ...ServiceOption) *Se
 	return s
 }
 
-// Diagnose runs ONE consented in-instance diagnosis and confirmation-gated repair. Consent MUST already be verified
-// by the caller (the dedicated Action requires Consent==true). Audit is fail-closed: if the start
+// Diagnose runs ONE consented in-instance diagnosis and task-scoped repair. Consent MUST already be verified
+// by the caller for autonomous repair (the dedicated Action sets the private scope bit). Audit is fail-closed: if the start
 // record cannot be written, the harness does not run. onStep streams each command's metadata as it
 // settles (nil to opt out). The returned Result.Output is the harness's already-scrubbed verdict;
 // the credential never appears in it.
@@ -109,9 +109,9 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 	if s.audit == nil {
 		return Result{}, fmt.Errorf("sshops: no audit writer configured, refusing to run (fail-closed)")
 	}
-	// A missing confirmer is not a second product mode. The same repair prompt and tool surface run,
-	// while Supervisor answers every confirmation request with Approved=false. That preserves useful
-	// diagnosis in direct/live callers without letting a missing UI channel become implicit consent.
+	// A missing confirmer is not implicit repair authority. Direct/legacy callers may still diagnose,
+	// while every compatibility confirmation receives Approved=false. The product path supplies one
+	// trusted task-scope authorization and an internal confirmer only for rolling-version compatibility.
 	if strings.TrimSpace(task) == "" {
 		task = DefaultDiagnosisTask
 	}
