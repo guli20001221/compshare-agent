@@ -90,6 +90,7 @@ CLASSIFY_CASES = [
     ("journalctl -xe", "read_only"),                  # r2 FP: -e is a bound
     ("journalctl -u vllm -n 100 -e", "read_only"),
     ("journalctl --since '24 hours ago' -p warning..alert --no-pager -o short-iso 2>&1 | grep -Ei 'ssh|error|fail' | tail -120", "read_only"),
+    ("journalctl -p 4..1 -n 50 --no-pager", "read_only"),
     ("docker ps", "read_only"),
     ("podman ps --format '{{.ID}} {{.Image}} {{.Names}} {{.Status}}' 2>/dev/null", "read_only"),
     ("nerdctl images", "read_only"),
@@ -548,6 +549,7 @@ CLASSIFY_CASES = [
     ("journalctl -f", "mutating"),
     ("journalctl", "mutating"),
     ("journalctl --no-pager", "mutating"),
+    ("journalctl -p 4..1 --no-pager", "mutating"),       # priority filters; -n/--since bounds output
     ("top -b", "mutating"),
     ("vmstat 1", "mutating"),
     ("vmstat 2 0", "mutating"),                       # r2: count=0 = infinite

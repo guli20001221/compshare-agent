@@ -785,6 +785,20 @@ class _ReadProgressGuard:
 
     def precondition(self, tool_name: str, args, schema):
         """Refuse a third identical completed observation inside the bounded time window."""
+        # Termination is monotonic for one model run. A sibling mutating call may complete after a
+        # duplicate read has already crossed the stop threshold; that real state change permits no
+        # more tool work in this run, because the model has already ignored corrective feedback.
+        # The next diagnosis gets a new guard and can inspect the changed guest normally.
+        if self.hard_stop:
+            return {
+                "ok": False,
+                "error_class": "no_progress_duplicate",
+                "stop_required": True,
+                "message": (
+                    "This diagnosis is already terminating after repeated no-progress reads. "
+                    "Do not issue another read in this model run."
+                ),
+            }
         key = self._key(tool_name, args, schema)
         now = self._clock()
         entry = self._entries.get(key)
@@ -823,13 +837,11 @@ class _ReadProgressGuard:
         now = self._clock()
         digest = _stable_digest(_stable_observation(result))
         previous = self._entries.get(key)
-        # A changed result for the SAME canonical read is direct evidence that the guest moved to
-        # a new state. Advance the global epoch so earlier endpoint/log/process observations may be
-        # verified again. A merely different tool/argument cannot do this and therefore cannot be
-        # alternated to bypass the repeat bound.
-        if (self._fresh(previous, now) and previous.get("digest") != digest):
-            self.advance()
-            key = self._key(tool_name, args, schema)
+        # A changed result is progress for THIS canonical read only. Logs, process counters and
+        # clocks change naturally; treating any one of them as a global guest transition lets that
+        # volatile read erase the repeat history of every stable status/port check. Only an actual
+        # mutating operation (the explicit advance() call sites) opens a fresh global epoch.
+        if self._fresh(previous, now) and previous.get("digest") != digest:
             previous = None
         same = (int(previous.get("same", 0)) + 1
                 if self._fresh(previous, now) and previous.get("digest") == digest else 1)
@@ -852,10 +864,9 @@ class _ReadProgressGuard:
         return annotated
 
     def advance(self) -> None:
-        """Allow post-change verification while bounding stale fingerprints."""
+        """Allow post-mutation verification while keeping a terminal decision terminal."""
         self._epoch += 1
         self._entries.clear()
-        self.hard_stop = False
 
 
 def _read_progress_response(guard, tool_name: str, args, schema, display: str):
@@ -917,7 +928,7 @@ def _emit_background_job(job_id: str, state: str, purpose: str = "") -> None:
     """Publish an opaque handle before its remote launch can outlive this process.
 
     This side-band line is not a command step and is never copied into the audit step list. If the
-    browser disconnects immediately after it, the next live-session turn can safely poll the ID;
+    browser disconnects immediately after it, the next session turn can safely poll the ID;
     if launch never happened, that poll returns not_found instead of replaying the command.
     """
     if not _BACKGROUND_JOB_ID.fullmatch(job_id) or state not in _ACTIVE_BACKGROUND_JOB_STATES:

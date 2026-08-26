@@ -169,8 +169,13 @@ check("read-progress-offers-omission-for-a-present-optional-nondefault-field",
 check("read-progress-does-not-retain-arguments-or-results",
       "must-not-be-retained" not in repr(_progress_guard._entries)
       and "must-not-be-retained" not in repr(_progress_guard._locks))
+_discriminating_guard = harness._ReadProgressGuard(
+    clock=lambda: _fake_now[0], window_seconds=60)
+for _ in range(2):
+    _discriminating_guard.observe(
+        "endpoint_probe", {}, _progress_schema, _progress_result, "ran_read_only")
 check("read-progress-permits-a-discriminating-input",
-      _progress_guard.precondition(
+      _discriminating_guard.precondition(
           "endpoint_probe", {"path": "/other"}, _progress_schema) is None)
 
 # A changed evidence field resets the repeat count even when telemetry stays identical.
@@ -184,8 +189,8 @@ check("read-progress-treats-changed-evidence-as-progress",
       "repeat_observation" not in _changed
       and _changed_guard.precondition("endpoint_probe", {}, _progress_schema) is None)
 
-# A transition observed through one repeated canonical read opens a fresh epoch for other reads.
-# A different one-off read is not enough: only old->new evidence for its own key advances state.
+# A transition observed through one canonical read is local to that read. Logs, process counters and
+# clocks can change forever without proving that a stable service/port observation should be reset.
 _transition_guard = harness._ReadProgressGuard(clock=lambda: _fake_now[0], window_seconds=60)
 for _ in range(2):
     _transition_guard.observe("endpoint_probe", {}, _progress_schema,
@@ -195,22 +200,77 @@ check("different-read-alone-cannot-bypass-a-blocked-endpoint",
 _process_schema = {"type": "object", "properties": {"pid": {"type": "integer"}}}
 _transition_guard.observe("read_process_environment", {"pid": 42}, _process_schema,
                           {"ok": True, "state": "starting"}, "ran_read_only")
-check("first-different-read-does-not-reset-the-global-epoch",
-      _transition_guard.precondition("endpoint_probe", {}, _progress_schema) is not None)
-_transition_guard.observe("read_process_environment", {"pid": 42}, _process_schema,
-                          {"ok": True, "state": "ready"}, "ran_read_only")
-check("observed-state-transition-allows-endpoint-verification-again",
-      _transition_guard.precondition("endpoint_probe", {}, _progress_schema) is None
-      and _transition_guard._epoch == 1)
+_changed_process = _transition_guard.observe(
+    "read_process_environment", {"pid": 42}, _process_schema,
+    {"ok": True, "state": "ready"}, "ran_read_only")
+_same_ready_process = _transition_guard.observe(
+    "read_process_environment", {"pid": 42}, _process_schema,
+    {"ok": True, "state": "ready"}, "ran_read_only")
+check("changed-read-resets-only-its-own-fingerprint",
+      "repeat_observation" not in _changed_process
+      and "repeat_observation" in _same_ready_process
+      and _transition_guard._epoch == 0)
+_transition_terminal = _transition_guard.precondition(
+    "endpoint_probe", {}, _progress_schema)
+check("volatile-read-cannot-reset-another-stable-read",
+      _transition_terminal is not None
+      and _transition_terminal.get("stop_required") is True
+      and _transition_guard.hard_stop is True)
 
-# Time and mutation are both legitimate reasons to take the same observation again.
+# The production diagnosis loop commonly alternates status, a growing log and a stable listener.
+# Growth of the log must not erase the other two histories or their refusal count.
+_three_read_guard = harness._ReadProgressGuard(clock=lambda: _fake_now[0], window_seconds=60)
+_plain_schema = {"type": "object", "properties": {"command": {"type": "string"}}}
+_status_args = {"command": "systemctl status app"}
+_log_args = {"command": "journalctl -u app -n 50"}
+_port_args = {"command": "ss -lntp"}
+for result in ({"text": "inactive"}, {"text": "inactive"}):
+    _three_read_guard.observe("ssh_exec", _status_args, _plain_schema,
+                              result, "ran_read_only")
+for result in ({"text": "line 1"}, {"text": "line 1\nline 2"}):
+    _three_read_guard.observe("ssh_exec", _log_args, _plain_schema,
+                              result, "ran_read_only")
+for result in ({"text": "no listener"}, {"text": "no listener"}):
+    _three_read_guard.observe("ssh_exec", _port_args, _plain_schema,
+                              result, "ran_read_only")
+_status_refusal = _three_read_guard.precondition(
+    "ssh_exec", _status_args, _plain_schema)
+_three_read_guard.observe("ssh_exec", _log_args, _plain_schema,
+                          {"text": "line 1\nline 2\nline 3"}, "ran_read_only")
+_status_terminal = _three_read_guard.precondition(
+    "ssh_exec", _status_args, _plain_schema)
+check("growing-journal-cannot-bypass-the-standard-diagnosis-loop-bound",
+      _status_refusal.get("stop_required") is False
+      and _status_terminal.get("stop_required") is True
+      and _three_read_guard._epoch == 0
+      and _three_read_guard.hard_stop is True)
+
+# Time is a legitimate reason to take the same observation again before termination.
+_cooldown_guard = harness._ReadProgressGuard(clock=lambda: _fake_now[0], window_seconds=60)
+for _ in range(2):
+    _cooldown_guard.observe("endpoint_probe", {}, _progress_schema,
+                            _progress_result, "ran_read_only")
 _fake_now[0] = 161.0
 check("read-progress-allows-a-fresh-read-after-the-cooldown",
-      _progress_guard.precondition("endpoint_probe", {}, _progress_schema) is None)
+      _cooldown_guard.precondition("endpoint_probe", {}, _progress_schema) is None)
+
+# An actual guest mutation opens a fresh evidence epoch until termination. Once the guard has
+# decided to terminate, neither a sibling mutation nor another changed read may revive the run.
+_mutation_guard = harness._ReadProgressGuard(clock=lambda: _fake_now[0], window_seconds=60)
+for _ in range(2):
+    _mutation_guard.observe("endpoint_probe", {}, _progress_schema,
+                            _progress_result, "ran_read_only")
+_mutation_guard.advance()
+check("read-progress-resets-fingerprints-after-an-actual-guest-mutation",
+      _mutation_guard._entries == {} and _mutation_guard._epoch == 1
+      and _mutation_guard.hard_stop is False
+      and _mutation_guard.precondition("endpoint_probe", {}, _progress_schema) is None)
 _progress_guard.advance()
-check("read-progress-resets-after-guest-state-change",
-      _progress_guard._entries == {} and _progress_guard.hard_stop is False
-      and _progress_guard.precondition("endpoint_probe", {}, _progress_schema) is None)
+_terminal_after_advance = _progress_guard.precondition(
+    "endpoint_probe", {"path": "/after-mutation"}, _progress_schema)
+check("read-progress-hard-stop-is-monotonic-within-one-model-run",
+      _progress_guard._entries == {} and _progress_guard.hard_stop is True
+      and _terminal_after_advance.get("stop_required") is True)
 
 
 # --- versioned reference context: data only, bounded, and backwards-compatible -----------------
@@ -1167,6 +1227,15 @@ try:
         "background_job_slot_busy": True,
     }) + "\n")
     _main_busy_output = _capture(lambda: _asyncio.run(harness.main()))
+    for _guard_task in ("sequential duplicate guard", "parallel duplicate guard"):
+        sys.stdin = _io.StringIO(_json.dumps({
+            "host": "10.0.0.9", "user": "root", "port": 22,
+            "password": "context-test-password", "task": _guard_task,
+            "context": _reference_context,
+            "probe_authorizations": [{"ref": _HANDSHAKE_AUTH_REF,
+                                      "value": _HANDSHAKE_AUTHORIZATION}],
+        }) + "\n")
+        _capture(lambda: _asyncio.run(harness.main()))
 finally:
     sys.stdin = _saved_stdin
     harness._CONN = _saved_conn
@@ -1179,7 +1248,7 @@ finally:
         sys.modules["claude_agent_sdk"] = _saved_sdk
 
 check("context-main-passes-labelled-prompt-to-sdk",
-      len(_captured_sdk_prompts) == 4 and "<planner_task>" in _captured_sdk_prompts[0] and
+      len(_captured_sdk_prompts) == 6 and "<planner_task>" in _captured_sdk_prompts[0] and
       "<current_user_report>" in _captured_sdk_prompts[0] and "8188" in _captured_sdk_prompts[0])
 check("context-main-receipt-matches-sdk-prompt",
       '"context_applied": true' in _main_output.replace('"context_applied":true', '"context_applied": true'))
@@ -1191,6 +1260,8 @@ _first_tools = _captured_sdk_servers[0]["tools"]
 _legacy_flag_tools = _captured_sdk_servers[1]["tools"]
 _pending_tools = _captured_sdk_servers[2]["tools"]
 _busy_tools = _captured_sdk_servers[3]["tools"]
+_duplicate_guard_tools = _captured_sdk_servers[4]["tools"]
+_parallel_guard_tools = _captured_sdk_servers[5]["tools"]
 check("mcp-surface-version-covers-endpoint-method-and-background-lifecycle",
       _captured_sdk_servers[0]["version"] == "2.6.0")
 check("main-registers-exact-single-repair-tool-surface",
@@ -1327,23 +1398,45 @@ try:
     }
     _active_read_wire = _capture(lambda: _asyncio.run(
         _pending_ssh_tool({"command": "nvidia-smi"})))
+    _active_read_repeat_wire = _capture(lambda: _asyncio.run(
+        _pending_ssh_tool({"command": "nvidia-smi"})))
+    _pre_write_refusal_wire = _capture(lambda: _asyncio.run(
+        _pending_ssh_tool({"command": "nvidia-smi"})))
     _active_write_wire = _capture(lambda: _asyncio.run(
         _pending_ssh_tool({"command": "systemctl restart app"})))
+    _post_write_read_wire = _capture(lambda: _asyncio.run(
+        _pending_ssh_tool({"command": "nvidia-smi"})))
+    _post_write_repeat_wire = _capture(lambda: _asyncio.run(
+        _pending_ssh_tool({"command": "nvidia-smi"})))
+    _pre_atomic_refusal_wire = _capture(lambda: _asyncio.run(
+        _pending_ssh_tool({"command": "nvidia-smi"})))
     _active_atomic_wire = _capture(lambda: _asyncio.run(_pending_atomic_tool({
         "operation": "create", "path": "/workspace/app.conf", "content": "x=1\n",
         "mode": "0644", "change_summary": "create requested config",
     })))
+    _post_atomic_read_wire = _capture(lambda: _asyncio.run(
+        _pending_ssh_tool({"command": "nvidia-smi"})))
 finally:
     harness.ssh_transport.run_ssh = _saved_run_ssh
     harness._request_confirm = _saved_confirm
     harness.atomic_file.prepare_edit = _saved_prepare_edit
     harness.atomic_file.apply_edit = _saved_apply_edit
 check("active-job-keeps-proven-read-only-ssh-available",
-      "ran_read_only" in _active_read_wire)
+      "ran_read_only" in _active_read_wire
+      and "ran_read_only" in _active_read_repeat_wire
+      and "refused_no_progress" in _pre_write_refusal_wire)
 check("active-job-still-allows-exactly-approved-foreground-writes",
       "ran_mutating" in _active_write_wire and any("systemctl restart app" in x for x in _confirm_calls))
+check("successful-foreground-mutation-opens-a-fresh-read-epoch",
+      "ran_read_only" in _post_write_read_wire
+      and "refused_no_progress" not in _post_write_read_wire
+      and "ran_read_only" in _post_write_repeat_wire
+      and "refused_no_progress" in _pre_atomic_refusal_wire)
 check("active-job-still-allows-exactly-approved-atomic-edits",
       "ran_mutating" in _active_atomic_wire and any("atomic_text_edit" in x for x in _confirm_calls))
+check("successful-atomic-edit-opens-a-fresh-read-epoch",
+      "ran_read_only" in _post_atomic_read_wire
+      and "refused_no_progress" not in _post_atomic_read_wire)
 
 # Preparing an atomic edit can fail before confirmation for two categorically different reasons.
 # A stale hash is a refused precondition; an SSH/SFTP failure is an execution failure and must not
@@ -1385,13 +1478,25 @@ _SECOND_JOB_ID = "job-" + "b" * 32
 _saved_start, _saved_new_job_id, _saved_confirm, _saved_poll = (
     harness.remote_job.start, harness.remote_job.new_job_id, harness._request_confirm,
     harness.remote_job.poll)
+_saved_run_ssh_again = harness.ssh_transport.run_ssh
 try:
+    harness.ssh_transport.run_ssh = lambda *_args, **_kwargs: {
+        "exit_code": 0, "stdout": "GPU ok", "stderr": "", "truncated": False,
+    }
+    _pre_terminal_repeat_wire = _capture(lambda: _asyncio.run(
+        _pending_ssh_tool({"command": "nvidia-smi"})))
+    _pre_terminal_refusal_wire = _capture(lambda: _asyncio.run(
+        _pending_ssh_tool({"command": "nvidia-smi"})))
     harness.remote_job.poll = lambda *_args, **_kwargs: {
         "ok": True, "job_id": _JOB_ID, "state": "succeeded", "exit_code": 0,
         "stdout": "done", "stderr": "", "stdout_bytes_total": 4, "stderr_bytes_total": 0,
     }
     _terminal_wire = _capture(lambda: _asyncio.run(
         _pending_poll_tool({"job_id": _JOB_ID, "wait_seconds": 0})))
+    _post_terminal_read_wire = _capture(lambda: _asyncio.run(
+        _pending_ssh_tool({"command": "nvidia-smi"})))
+    _post_terminal_repeat_wire = _capture(lambda: _asyncio.run(
+        _pending_ssh_tool({"command": "nvidia-smi"})))
     harness.remote_job.new_job_id = lambda: _SECOND_JOB_ID
     harness.remote_job.start = lambda *_args, **_kwargs: {
         "ok": True, "job_id": _SECOND_JOB_ID, "state": "started",
@@ -1404,11 +1509,14 @@ try:
         "command": "python3 -m pip install package", "purpose": "install package",
         "run_in_background": True,
     })))
+    _post_start_read_wire = _capture(lambda: _asyncio.run(
+        _pending_ssh_tool({"command": "nvidia-smi"})))
 finally:
     harness.remote_job.start = _saved_start
     harness.remote_job.new_job_id = _saved_new_job_id
     harness._request_confirm = _saved_confirm
     harness.remote_job.poll = _saved_poll
+    harness.ssh_transport.run_ssh = _saved_run_ssh_again
     harness._CONN = _poll_saved_conn
 _start_step_line = next((line[len("@@STEP "):] for line in _start_wire.splitlines()
                          if line.startswith("@@STEP ")), "{}")
@@ -1423,6 +1531,14 @@ check("background-job-start-emits-the-resumable-handle-before-a-turn-can-disconn
       _start_wire.index("@@JOB ") < _start_wire.index("@@STEP ") and
       _start_step.get("job_id") == _SECOND_JOB_ID and _start_step.get("job_state") == "started"
       and _start_step.get("purpose") == "install package")
+check("terminal-background-poll-opens-a-fresh-read-epoch",
+      "ran_read_only" in _pre_terminal_repeat_wire
+      and "refused_no_progress" in _pre_terminal_refusal_wire
+      and "refused_no_progress" not in _post_terminal_read_wire
+      and "ran_read_only" in _post_terminal_repeat_wire)
+check("successful-background-start-opens-a-fresh-read-epoch",
+      "refused_no_progress" not in _post_start_read_wire
+      and "ran_read_only" in _post_start_read_wire)
 _second_start_wire = _capture(lambda: _asyncio.run(_pending_ssh_tool({
     "command": "python3 -m pip install another", "purpose": "install another",
     "run_in_background": True,
@@ -1437,6 +1553,10 @@ _process_env_tool = next(tool for tool in _first_tools
                          if tool._test_tool_name == "read_process_environment")
 _guest_endpoint_tool = next(tool for tool in _first_tools
                             if tool._test_tool_name == "guest_endpoint_probe")
+_duplicate_guest_endpoint_tool = next(
+    tool for tool in _duplicate_guard_tools if tool._test_tool_name == "guest_endpoint_probe")
+_parallel_guest_endpoint_tool = next(
+    tool for tool in _parallel_guard_tools if tool._test_tool_name == "guest_endpoint_probe")
 _remote_text_annotations = _remote_text_tool._test_tool_annotations
 check("remote-text-tool-schema-carries-only-a-remote-path-and-bounds",
       _remote_text_tool._test_tool_schema["required"] == ["path"] and
@@ -1586,7 +1706,7 @@ try:
     }
     _duplicate_responses = []
     _duplicate_wire = _capture(lambda: [
-        _duplicate_responses.append(_asyncio.run(_guest_endpoint_tool(_duplicate_args)))
+        _duplicate_responses.append(_asyncio.run(_duplicate_guest_endpoint_tool(_duplicate_args)))
         for _ in range(4)
     ])
     check("registered-read-tool-stops-a-third-identical-completed-probe",
@@ -1623,7 +1743,7 @@ try:
 
     async def _run_parallel_identical_reads():
         return await _asyncio.gather(*(
-            _guest_endpoint_tool(_parallel_args) for _ in range(4)))
+            _parallel_guest_endpoint_tool(_parallel_args) for _ in range(4)))
 
     _parallel_responses = _asyncio.run(_run_parallel_identical_reads())
     check("concurrent-identical-reads-cannot-bypass-the-progress-bound",
