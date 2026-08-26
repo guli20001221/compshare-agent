@@ -104,6 +104,16 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 
 	ctx, cancel := context.WithTimeout(c.Request.Context(), h.wsConnLifetime())
 	defer cancel()
+	// net/http treats an upgraded WebSocket as hijacked and Server.Shutdown does
+	// not wait for it. Register the connection so process shutdown can cancel the
+	// turn and wait for chatStream's persistence defers before exiting.
+	wsDone := make(chan struct{})
+	wsID, accepted := h.registerWebSocket(cancel, wsDone)
+	if !accepted {
+		return
+	}
+	defer h.unregisterWebSocket(wsID)
+	defer close(wsDone)
 
 	writer := wsx.New(ctx, conn)
 	// One chat turn per socket. The frontend opens a fresh WebSocket per

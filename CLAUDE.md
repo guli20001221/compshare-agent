@@ -139,13 +139,14 @@ Production address routing is configured in `config.prod.yaml`: UHost internal
 mapping first, the translated public-IPv4 candidate second. The advertised public
 EIP is diagnostic-only and is never selected as a dial target.
 
-If a browser disconnects during a diagnosis, the current process may show a
-bounded deterministic notice on the next turn. Ordinary commands are never
-replayed. When one approved managed background job already emitted its opaque
-handle, the same live session can give the next diagnosis on that instance a
-poll-only tool surface; neither its command nor output is retained. This
-continuity does not enter conversation/audit storage and does not survive
-process or LRU loss.
+If a browser disconnects during a diagnosis, the next turn may show a bounded
+deterministic notice. Ordinary commands are never replayed. When one approved
+managed background job emits its opaque handle, SessionState V8 persists only
+the instance ID, job ID, lifecycle state, redacted purpose and timestamp. A
+later diagnosis on that instance can poll the handle after a browser disconnect,
+Engine LRU eviction or process restart; neither the command nor its output enters
+conversation/audit storage. One unresolved handle occupies the session's single
+durable job slot until a matching terminal observation clears it.
 
 ## Configuration
 

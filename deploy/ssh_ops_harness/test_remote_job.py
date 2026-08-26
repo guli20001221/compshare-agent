@@ -1,6 +1,10 @@
 """Offline protocol tests for structured long jobs."""
 import json
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 import types
 
 import remote_job
@@ -34,6 +38,26 @@ check("trusted-wrapper-records-exit-without-limiting-payload-files",
 check("trusted-wrapper-marks-process-identity",
       "COMPSHARE_OPS_JOB_ID=" + started["job_id"] in captured[0])
 check("result-never-returns-generated-shell", "pip install" not in json.dumps(started))
+multiline_payload = "cat <<'PY'\nhello from heredoc\nPY\n# trailing comment"
+body = remote_job._completion_body(multiline_payload, "/tmp/status.tmp", "/tmp/status")
+check("arbitrary-command-is-one-nested-shell-argument",
+      body.startswith("bash -c " + remote_job.shlex.quote(multiline_payload) + "; rc=$?;"))
+if os.name != "nt" and shutil.which("bash"):
+    with tempfile.TemporaryDirectory(prefix="sshops-remote-job-") as tmp:
+        status_tmp = os.path.join(tmp, "status.tmp")
+        status = os.path.join(tmp, "status")
+        executed = subprocess.run(
+            ["bash", "-c", remote_job._completion_body(multiline_payload, status_tmp, status)],
+            capture_output=True, text=True, check=False)
+        status_text = ""
+        if os.path.exists(status):
+            with open(status, encoding="utf-8") as handle:
+                status_text = handle.read().strip()
+        check("heredoc-and-trailing-comment-preserve-completion-record",
+              executed.returncode == 0 and executed.stdout == "hello from heredoc\n" and
+              status_text == "0")
+else:
+    print("--  heredoc-and-trailing-comment-preserve-completion-record SKIPPED (bash absent)")
 fixed_job_id = "job-" + "b" * 32
 fixed_commands = []
 fixed = remote_job.start(
@@ -49,15 +73,41 @@ check("self-backgrounding-payload-is-refused",
       "invalid_arguments")
 check("nested-self-backgrounding-payload-is-refused",
       remote_job.command_is_self_backgrounding("bash -c 'sleep 2 &'") is True)
+check("combined-shell-options-cannot-hide-self-backgrounding",
+      remote_job.command_is_self_backgrounding("bash -lc 'sleep 2 & wait'") is True and
+      remote_job.command_is_self_backgrounding("/bin/sh -ec 'sleep 2 & wait'") is True)
+check("env-prefix-cannot-hide-self-backgrounding",
+      remote_job.command_is_self_backgrounding("env bash -lc 'sleep 2 & wait'") is True and
+      remote_job.command_is_self_backgrounding("/usr/bin/env -i FOO=1 bash -lc 'sleep 2 & wait'") is True and
+      remote_job.command_is_self_backgrounding("FOO=1 bash -lc 'sleep 2 & wait'") is True)
+check("env-split-string-cannot-hide-self-backgrounding",
+      remote_job.command_is_self_backgrounding("env -S 'bash -lc \\\"sleep 2 & wait\\\"'") is True and
+      remote_job.command_is_self_backgrounding(
+          "env -S 'FOO=1 bash -lc \\\"sleep 2 & wait\\\"'") is True and
+      remote_job.command_is_self_backgrounding(
+          "env --split-string='FOO=1 bash -lc \\\"sleep 2 & wait\\\"'") is True)
+check("chains-and-transparent-wrappers-cannot-hide-self-backgrounding",
+      remote_job.command_is_self_backgrounding(
+          "cd /workspace && bash -lc 'sleep 2 & wait'") is True and
+      remote_job.command_is_self_backgrounding(
+          "timeout 10 bash -lc 'sleep 2 & wait'") is True and
+      remote_job.command_is_self_backgrounding(
+          "nohup bash -lc 'sleep 2 & wait'") is True)
 check("foreground-chain-remains-supported",
-      remote_job.command_is_self_backgrounding("apt-get update && apt-get install -y jq") is False)
-check("description-routes-nonterminating-service-start-to-the-job-tool",
-      "foreground service process" in remote_job.START_DESCRIPTION and
-      "stop/wait and foreground replacement start" in remote_job.START_DESCRIPTION and
-      "instead of first sending it through ssh_exec" in remote_job.START_DESCRIPTION)
+      remote_job.command_is_self_backgrounding("apt-get update && apt-get install -y jq") is False and
+      remote_job.command_is_self_backgrounding("bash -lc 'printf ready'") is False and
+      remote_job.command_is_self_backgrounding("env FOO=1 python3 app.py") is False and
+      remote_job.command_is_self_backgrounding(
+          "cd /workspace && bash -lc 'printf ready'") is False)
+check("approval-display-binds-background-mode-purpose-and-command",
+      remote_job.confirmation_display("python3 app.py", "start the requested app") ==
+      "ssh_exec run_in_background=true purpose=start the requested app command=python3 app.py")
 check("poll-schema-supports-bounded-wait",
       remote_job.poll_schema()["properties"]["wait_seconds"]["maximum"] == 30 and
-      "tight loop" in remote_job.POLL_DESCRIPTION)
+      "tight loop" in remote_job.POLL_DESCRIPTION and
+      "currently active" in remote_job.POLL_DESCRIPTION and
+      "intentionally long-lived service" in remote_job.POLL_DESCRIPTION and
+      "stop polling" in remote_job.POLL_DESCRIPTION)
 
 
 class _File:
@@ -111,6 +161,24 @@ class _Client:
         pass
 
 
+class _StatusObservationErrorSFTP(_SFTP):
+    def __init__(self, files, fail_kind):
+        super().__init__(files)
+        self.fail_kind = fail_kind
+
+    def lstat(self, path):
+        if self.fail_kind == "directory" and path == base:
+            raise ConnectionError("directory observation failed")
+        if self.fail_kind == "proc" and path == "/proc/123/stat":
+            raise PermissionError("proc identity denied")
+        return super().lstat(path)
+
+    def file(self, path, mode):
+        if self.fail_kind == "pid" and path == base + "/pid":
+            raise PermissionError("pid observation denied")
+        return super().file(path, mode)
+
+
 base = "/tmp/compshare-ops-jobs/" + started["job_id"]
 files = {base + "/status": b"0\n", base + "/pid": b"123\n",
          base + "/stdout.log": b"installed\n", base + "/stderr.log": b""}
@@ -128,6 +196,19 @@ tailed = remote_job.poll({}, started["job_id"], opener=lambda _c: (_Client(_SFTP
 check("poll-returns-log-tail-not-stale-prefix",
       tailed["stdout_truncated"] is True and tailed["stdout"].endswith("new-line\n") and
       "old-line" not in tailed["stdout"])
+boundary_secret = "remote-job-boundary-secret-012345"
+boundary_prefix_bytes = 7
+boundary_suffix = b"z" * (
+    remote_job._RETURN_LOG_BYTES // 2 - (len(boundary_secret) - boundary_prefix_bytes))
+boundary_files = dict(files)
+boundary_files[base + "/stdout.log"] = (
+    b"old-prefix" + boundary_secret.encode() + boundary_suffix)
+boundary_poll = remote_job.poll(
+    {}, started["job_id"], secrets=(boundary_secret,),
+    opener=lambda _c: (_Client(_SFTP(boundary_files)), None))
+check("poll-scrubs-known-secret-across-tail-window-start",
+      boundary_secret[boundary_prefix_bytes:] not in boundary_poll["stdout"]
+      and boundary_secret not in boundary_poll["stdout"])
 check("poll-rejects-path-instead-of-job-id",
       remote_job.poll({}, "../../etc/shadow", opener=lambda _c: (None, {}))["error_class"] == "invalid_job_id")
 
@@ -137,6 +218,47 @@ running_files = {base + "/pid": b"123\n", base + "/stdout.log": b"working\n",
 running = remote_job.poll({}, started["job_id"],
                           opener=lambda _c: (_Client(_SFTP(running_files)), None))
 check("poll-verifies-running-process-marker", running["ok"] and running["state"] == "running")
+large_environment_files = dict(running_files)
+large_environment_files["/proc/123/environ"] = (
+    b"PAD=" + b"x" * 5000 + b"\0" +
+    ("COMPSHARE_OPS_JOB_ID=" + started["job_id"]).encode() + b"\0")
+large_environment = remote_job.poll(
+    {}, started["job_id"], opener=lambda _c: (_Client(_SFTP(large_environment_files)), None))
+check("marker-after-four-kib-still-proves-running-process",
+      large_environment["ok"] and large_environment["state"] == "running")
+truncated_environment_files = dict(running_files)
+truncated_environment_files["/proc/123/environ"] = (
+    b"PAD=" + b"x" * (remote_job._PROCESS_IDENTITY_BYTES + 1) + b"\0")
+truncated_environment = remote_job.poll(
+    {}, started["job_id"], opener=lambda _c: (_Client(_SFTP(truncated_environment_files)), None))
+check("truncated-private-identity-never-falsely-releases-the-slot",
+      truncated_environment["ok"] and truncated_environment["state"] == "unknown")
+unreadable_identity_files = dict(running_files)
+unreadable_identity_files.pop("/proc/123/environ")
+unreadable_identity = remote_job.poll(
+    {}, started["job_id"], opener=lambda _c: (_Client(_SFTP(unreadable_identity_files)), None))
+check("unreadable-existing-process-identity-never-falsely-releases-the-slot",
+      unreadable_identity["ok"] and unreadable_identity["state"] == "unknown")
+directory_error = remote_job.poll(
+    {}, started["job_id"],
+    opener=lambda _c: (_Client(_StatusObservationErrorSFTP(running_files, "directory")), None))
+check("directory-observation-error-is-not-job-not-found",
+      directory_error["ok"] is False and directory_error["error_class"] == "job_status_failed")
+proc_error = remote_job.poll(
+    {}, started["job_id"],
+    opener=lambda _c: (_Client(_StatusObservationErrorSFTP(running_files, "proc")), None))
+check("proc-observation-error-never-falsely-releases-the-slot",
+      proc_error["ok"] and proc_error["state"] == "unknown")
+pid_error = remote_job.poll(
+    {}, started["job_id"],
+    opener=lambda _c: (_Client(_StatusObservationErrorSFTP(running_files, "pid")), None))
+check("pid-observation-error-never-falsely-releases-the-slot",
+      pid_error["ok"] and pid_error["state"] == "unknown")
+empty_launch_window = remote_job.poll(
+    {}, started["job_id"],
+    opener=lambda _c: (_Client(_SFTP({})), None))
+check("directory-without-status-or-pid-is-an-ambiguous-launch-not-interrupted",
+      empty_launch_window["ok"] and empty_launch_window["state"] == "unknown")
 waited = []
 remote_job.poll({}, started["job_id"], wait_seconds=7,
                 opener=lambda _c: (_Client(_SFTP(running_files)), None), sleeper=waited.append)

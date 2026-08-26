@@ -19,8 +19,9 @@ import (
 // Options configures the Pool.
 type Options struct {
 	// Capacity is the maximum number of engines kept in the cache at once.
-	// When a new session is added and the cache is full, the least-recently-
-	// used entry is evicted. Must be >= 1; defaults to 200 if zero.
+	// When a new session is added and the cache is full, the least-recently-used idle entry is
+	// evicted. In-use entries are never evicted; if every entry is leased, the pool may temporarily
+	// exceed this soft limit and converges when a lease is released. Must be >= 1; defaults to 200.
 	Capacity int
 	// IdleTTL is the duration after which an entry that has not been accessed
 	// is eligible for eviction by the gc goroutine. Must be > 0; defaults to
@@ -53,6 +54,7 @@ type entry struct {
 	key         entryKey
 	eng         *engine.Engine
 	mu          sync.Mutex // serializes per-session engine access
+	leases      int        // protected by Pool.mu; eviction requires zero
 	lastTouched time.Time
 }
 
@@ -141,7 +143,20 @@ func (p *Pool) Lease(ctx context.Context, owner store.Owner, sessionID string) (
 		return nil, nil, err
 	}
 	e.mu.Lock()
-	return e.eng, func() { e.mu.Unlock() }, nil
+	return e.eng, func() {
+		e.mu.Unlock()
+		p.mu.Lock()
+		if e.leases > 0 {
+			e.leases--
+		}
+		e.lastTouched = time.Now()
+		if el, ok := p.items[e.key]; ok && el.Value.(*entry) == e {
+			p.lruList.MoveToFront(el)
+		}
+		for len(p.items) > p.capacity && p.evictOneIdleLRULocked() {
+		}
+		p.mu.Unlock()
+	}, nil
 }
 
 // getOrCreate finds or builds the entry for (owner, sessionID), updating LRU state.
@@ -156,6 +171,7 @@ func (p *Pool) getOrCreate(ctx context.Context, owner store.Owner, sessionID str
 	p.mu.Lock()
 	if el, ok := p.items[k]; ok {
 		e := el.Value.(*entry)
+		e.leases++
 		e.lastTouched = time.Now()
 		p.lruList.MoveToFront(el)
 		p.mu.Unlock()
@@ -176,19 +192,21 @@ func (p *Pool) getOrCreate(ctx context.Context, owner store.Owner, sessionID str
 	if el, ok := p.items[k]; ok {
 		// Another goroutine already inserted while we were building; use theirs.
 		e := el.Value.(*entry)
+		e.leases++
 		e.lastTouched = time.Now()
 		p.lruList.MoveToFront(el)
 		return e, nil
 	}
 
-	// Evict LRU if at capacity.
-	if len(p.items) >= p.capacity {
-		p.evictLRULocked()
+	// Evict idle LRU entries if at capacity. A leased entry owns live per-session state and mutex
+	// identity, so it is not a cache candidate; temporary overflow is safer than duplicating it.
+	for len(p.items) >= p.capacity && p.evictOneIdleLRULocked() {
 	}
 
 	e := &entry{
 		key:         k,
 		eng:         eng,
+		leases:      1,
 		lastTouched: time.Now(),
 	}
 	el := p.lruList.PushFront(e)
@@ -234,19 +252,25 @@ func (p *Pool) evictIdle() {
 			break
 		}
 		prev := el.Prev()
-		p.lruList.Remove(el)
-		delete(p.items, e.key)
+		if e.leases == 0 {
+			p.lruList.Remove(el)
+			delete(p.items, e.key)
+		}
 		el = prev
 	}
 }
 
-// evictLRULocked removes the least-recently-used entry. Must be called with p.mu held.
-func (p *Pool) evictLRULocked() {
-	el := p.lruList.Back()
-	if el == nil {
-		return
+// evictOneIdleLRULocked removes the least-recently-used unleased entry. It returns false when
+// every cached engine is in use, in which case capacity is a temporary soft limit.
+func (p *Pool) evictOneIdleLRULocked() bool {
+	for el := p.lruList.Back(); el != nil; el = el.Prev() {
+		e := el.Value.(*entry)
+		if e.leases != 0 {
+			continue
+		}
+		p.lruList.Remove(el)
+		delete(p.items, e.key)
+		return true
 	}
-	e := el.Value.(*entry)
-	p.lruList.Remove(el)
-	delete(p.items, e.key)
+	return false
 }

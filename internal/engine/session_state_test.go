@@ -188,3 +188,42 @@ func TestPendingSelectionRoundTripsAsExecutionState(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, state, parsed.AgentSessionState)
 }
+
+func TestPersistedInstanceOpsJobRoundTripsWithoutExecutablePayload(t *testing.T) {
+	state := SessionState{
+		SchemaVersion: SessionStateSchemaV8,
+		PersistedInstanceOpsJob: PersistedInstanceOpsJob{
+			InstanceID: "uhost-a",
+			JobID:      "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			State:      "running",
+			Purpose:    "download model weights",
+			UpdatedAt:  "2026-08-25T12:00:00Z",
+		},
+	}
+	raw, err := json.Marshal(PersistedContext{AgentSessionState: state})
+	require.NoError(t, err)
+	assert.NotContains(t, string(raw), "command")
+
+	parsed, err := ParsePersistedContext(raw)
+	require.NoError(t, err)
+	assert.Equal(t, state, parsed.AgentSessionState)
+}
+
+func TestSetSessionStateNormalizesOnlyV8BackgroundJob(t *testing.T) {
+	job := PersistedInstanceOpsJob{
+		InstanceID: " uhost-a ", JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", State: " running ",
+		Purpose: "contact user@example.com token=secret-value", UpdatedAt: "not-a-time",
+	}
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV8, PersistedInstanceOpsJob: job}, 1)
+	state, _, _ := e.SessionStateSnapshot()
+	assert.Equal(t, "uhost-a", state.PersistedInstanceOpsJob.InstanceID)
+	assert.NotContains(t, state.PersistedInstanceOpsJob.Purpose, "user@example.com")
+	assert.NotContains(t, state.PersistedInstanceOpsJob.Purpose, "secret-value")
+	assert.Empty(t, state.PersistedInstanceOpsJob.UpdatedAt)
+
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV7, PersistedInstanceOpsJob: job}, 2)
+	state, _, _ = e.SessionStateSnapshot()
+	assert.True(t, state.PersistedInstanceOpsJob.IsZero(),
+		"a pre-V8 envelope cannot smuggle a job cursor through an unknown field")
+}

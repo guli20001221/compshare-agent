@@ -1,17 +1,41 @@
 package httpapi
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
+	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type terminalChatLLM struct{ err error }
+
+func (c terminalChatLLM) Chat(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+	if c.err != nil {
+		return nil, c.err
+	}
+	return &llm.ChatResponse{Content: "ok"}, nil
+}
+
+type refreshingPool struct {
+	eng     *engine.Engine
+	onLease func()
+}
+
+func (p refreshingPool) Lease(_ context.Context, _ store.Owner, _ string) (*engine.Engine, func(), error) {
+	if p.onLease != nil {
+		p.onLease()
+	}
+	return p.eng, func() {}, nil
+}
 
 // ---------------------------------------------------------------------------
 // M1 SessionState persistence — handler integration tests.
@@ -91,6 +115,98 @@ func TestDispatchChat_PersistsEnvelopeOnSuccess(t *testing.T) {
 	assert.Equal(t, engine.SessionStateSchemaCurrent, pc.AgentSessionState.SchemaVersion)
 	// M1 has no in-engine writer, so SelectedInstanceID stays empty.
 	assert.Empty(t, pc.AgentSessionState.SelectedInstanceID)
+}
+
+func TestPrepareChatRefreshesSessionStateAfterWaitingForLease(t *testing.T) {
+	sess := store.Session{
+		ID: "sess-refresh-after-lease", TopOrganizationID: 1, OrganizationID: 2,
+		ContextVersion: 0, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	sessions := &mockSessions{byID: map[string]store.Session{sess.ID: sess}}
+	eng := engine.NewWithDeps(terminalChatLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+	eng.RehydrateHistory(nil)
+	job := engine.PersistedInstanceOpsJob{
+		InstanceID: "uhost-active", JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		State: "running", Purpose: "download model", UpdatedAt: "2026-08-25T12:00:00Z",
+	}
+	latestRaw, err := json.Marshal(engine.PersistedContext{AgentSessionState: engine.SessionState{
+		SchemaVersion: engine.SessionStateSchemaV8, PersistedInstanceOpsJob: job,
+	}})
+	require.NoError(t, err)
+	h := NewHandlers(
+		&config.Config{Agent: config.AgentConfig{
+			LLM:  config.LLMConfig{Model: "model-x"},
+			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+		}}, sessions, &recordingMessages{}, mockFeedback{}, refreshingPool{
+			eng: eng,
+			onLease: func() {
+				row := sessions.byID[sess.ID]
+				row.Context = latestRaw
+				row.ContextVersion = 4
+				sessions.byID[sess.ID] = row
+			},
+		}, nil)
+	base := BaseRequest{Action: "SendCSAgentChat", RequestUUID: "req-refresh"}
+	base.Owner = store.Owner{TopOrganizationID: 1, OrganizationID: 2}
+
+	prep, apiErr := h.prepareChat(context.Background(), base, sess.ID, "继续上一轮", "")
+	require.Nil(t, apiErr)
+	defer prep.release()
+	state, version, hydrated := prep.agent.SessionStateSnapshot()
+	require.True(t, hydrated)
+	require.Equal(t, 4, version, "hydration must use the row re-read inside the session lease")
+	require.Equal(t, job, state.PersistedInstanceOpsJob)
+}
+
+func TestTurnLimitAllowsOnlyBoundedActiveJobContinuation(t *testing.T) {
+	job := engine.PersistedInstanceOpsJob{
+		InstanceID: "uhost-active", JobID: "job-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		State: "running", Purpose: "compile requested app", UpdatedAt: "2026-08-25T12:00:00Z",
+	}
+	raw, err := json.Marshal(engine.PersistedContext{AgentSessionState: engine.SessionState{
+		SchemaVersion: engine.SessionStateSchemaV8, PersistedInstanceOpsJob: job,
+	}})
+	require.NoError(t, err)
+	v7Smuggled := json.RawMessage(`{"agent_session_state":{"schema_version":"7.0","persisted_instance_ops_job":{"instance_id":"uhost-active","job_id":"job-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state":"running"}}}`)
+	v8Incomplete := json.RawMessage(`{"agent_session_state":{"schema_version":"8.0","persisted_instance_ops_job":{"instance_id":"uhost-active"}}}`)
+	for _, tc := range []struct {
+		name         string
+		context      json.RawMessage
+		messageCount int
+		wantAllowed  bool
+	}{
+		{name: "first continuation at ordinary cap", context: raw, messageCount: 6, wantAllowed: true},
+		{name: "six continuation attempts exhausted", context: raw, messageCount: 18, wantAllowed: false},
+		{name: "pre-V8 field cannot grant continuation", context: v7Smuggled, messageCount: 6, wantAllowed: false},
+		{name: "partial V8 cursor cannot grant continuation", context: v8Incomplete, messageCount: 6, wantAllowed: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := engine.NewWithDeps(terminalChatLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+			eng.RehydrateHistory(nil)
+			sess := store.Session{
+				ID: "sess-job-cap", TopOrganizationID: 1, OrganizationID: 2,
+				Context: tc.context, ContextVersion: 2, MessageCount: tc.messageCount,
+				CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			}
+			h := NewHandlers(
+				&config.Config{Agent: config.AgentConfig{
+					LLM: config.LLMConfig{Model: "model-x"}, HTTP: config.HTTPConfig{
+						MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour, MaxSessionTurns: 3,
+					}, STS: config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+				}}, &mockSessions{byID: map[string]store.Session{sess.ID: sess}},
+				&recordingMessages{}, mockFeedback{}, fakePool{eng: eng}, nil)
+
+			sink, apiErr := dispatchChatTurn(t, h, sess.ID, "继续后台任务")
+			if tc.wantAllowed {
+				require.Nil(t, apiErr)
+				require.True(t, sink.has("done"))
+			} else {
+				require.NotNil(t, apiErr)
+				require.Equal(t, ErrSessionTurnLimit.RetCode, apiErr.RetCode)
+			}
+		})
+	}
 }
 
 // Case 2: malformed JSON in sessions.context — chat completes, NO persistence.
@@ -241,5 +357,126 @@ func TestDispatchChat_StaleWriteOnPersist_StillEmitsDone(t *testing.T) {
 		"stream must emit done even when CAS loses on persist — reply was already streamed")
 	assert.False(t, sink.has("error"),
 		"ErrStaleWrite is a warning-only condition, not a stream error")
-	require.Equal(t, 2, sessions.updateContextCalls)
+	require.Equal(t, 1, sessions.updateContextCalls)
+}
+
+func TestChatStreamEveryTerminusPersistsExistingBackgroundJob(t *testing.T) {
+	job := engine.PersistedInstanceOpsJob{
+		InstanceID: "uhost-job",
+		JobID:      "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		State:      "running",
+		Purpose:    "download model weights",
+		UpdatedAt:  "2026-08-25T12:00:00Z",
+	}
+	for _, tc := range []struct {
+		name     string
+		llmErr   error
+		cancel   bool
+		wantDone bool
+	}{
+		{name: "success", wantDone: true},
+		{name: "llm_error", llmErr: errors.New("model unavailable")},
+		{name: "client_disconnect", llmErr: context.Canceled, cancel: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(engine.PersistedContext{
+				AgentSessionState: engine.SessionState{
+					SchemaVersion:           engine.SessionStateSchemaV8,
+					PersistedInstanceOpsJob: job,
+				},
+				ClientContext: json.RawMessage(`{"page":"instance"}`),
+			})
+			require.NoError(t, err)
+			sess := store.Session{
+				ID: "sess-" + tc.name, TopOrganizationID: 1, OrganizationID: 2,
+				Context: raw, ContextVersion: 4, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			}
+			eng := engine.NewWithDeps(terminalChatLLM{err: tc.llmErr}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+			eng.RehydrateHistory(nil)
+			sessions := &mockSessions{byID: map[string]store.Session{sess.ID: sess}}
+			h := NewHandlers(
+				&config.Config{Agent: config.AgentConfig{
+					LLM:  config.LLMConfig{Model: "model-x"},
+					HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+					STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+				}},
+				sessions, &recordingMessages{}, mockFeedback{}, fakePool{eng: eng}, nil,
+			)
+			base := BaseRequest{Action: "SendCSAgentChat", RequestUUID: "req-" + tc.name}
+			base.Owner = store.Owner{TopOrganizationID: 1, OrganizationID: 2}
+			prep, apiErr := h.prepareChat(context.Background(), base, sess.ID, "continue", "")
+			require.Nil(t, apiErr)
+			defer prep.release()
+
+			streamCtx := context.Background()
+			if tc.cancel {
+				cancelled, cancel := context.WithCancel(context.Background())
+				cancel()
+				streamCtx = cancelled
+			}
+			sink := &recordingSink{}
+			h.chatStream(streamCtx, sink, base, prep)
+
+			require.Equal(t, tc.wantDone, sink.has("done"))
+			require.Equal(t, 1, sessions.updateContextCalls,
+				"the detached SessionState write must run once on every terminus")
+			persisted, err := engine.ParsePersistedContext(sessions.byID[sess.ID].Context)
+			require.NoError(t, err)
+			require.Equal(t, job, persisted.AgentSessionState.PersistedInstanceOpsJob)
+			require.JSONEq(t, `{"page":"instance"}`, string(persisted.ClientContext))
+		})
+	}
+}
+
+func TestSessionStateStaleWritePreservesTheWinningEnvelope(t *testing.T) {
+	h, sessions, _ := newChatTestHandlers(t, store.Session{
+		ID: "sess-stale-client", TopOrganizationID: 1, OrganizationID: 2,
+		Context: json.RawMessage(`{"source":"old"}`), ContextVersion: 0,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	calls := 0
+	sessions.updateContextOverride = func(sessionID string, ctxJSON json.RawMessage, expectedVersion int) (int, error) {
+		calls++
+		if calls == 1 {
+			concurrent, err := json.Marshal(engine.PersistedContext{
+				AgentSessionState: engine.SessionState{SchemaVersion: engine.SessionStateSchemaCurrent},
+				ClientContext:     json.RawMessage(`{"source":"new"}`),
+			})
+			require.NoError(t, err)
+			row := sessions.byID[sessionID]
+			row.Context = concurrent
+			row.ContextVersion = expectedVersion + 1
+			sessions.byID[sessionID] = row
+			return 0, store.ErrStaleWrite
+		}
+		t.Fatal("stale session state must never be retried as a whole-envelope overwrite")
+		return 0, nil
+	}
+
+	sink, _ := dispatchChatTurn(t, h, "sess-stale-client", "hi")
+	require.True(t, sink.has("done"))
+	require.Equal(t, 1, sessions.updateContextCalls)
+	parsed, err := engine.ParsePersistedContext(sessions.byID["sess-stale-client"].Context)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"source":"new"}`, string(parsed.ClientContext))
+}
+
+func TestSessionStateStaleWriteDoesNotOverwriteNewUnknownSchema(t *testing.T) {
+	h, sessions, _ := newChatTestHandlers(t, store.Session{
+		ID: "sess-stale-future", TopOrganizationID: 1, OrganizationID: 2,
+		ContextVersion: 0, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	})
+	future := json.RawMessage(`{"agent_session_state":{"schema_version":"99.0","future":true},"client_context":{"source":"future"}}`)
+	sessions.updateContextOverride = func(sessionID string, _ json.RawMessage, expectedVersion int) (int, error) {
+		row := sessions.byID[sessionID]
+		row.Context = append(json.RawMessage(nil), future...)
+		row.ContextVersion = expectedVersion + 1
+		sessions.byID[sessionID] = row
+		return 0, store.ErrStaleWrite
+	}
+
+	sink, _ := dispatchChatTurn(t, h, "sess-stale-future", "hi")
+	require.True(t, sink.has("done"))
+	require.Equal(t, 1, sessions.updateContextCalls)
+	require.JSONEq(t, string(future), string(sessions.byID["sess-stale-future"].Context))
 }

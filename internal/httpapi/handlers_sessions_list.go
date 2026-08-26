@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/bitly/go-simplejson"
-	"github.com/compshare-agent/internal/guardrails"
+	"github.com/compshare-agent/internal/security"
 	"github.com/gin-gonic/gin"
 )
 
@@ -61,7 +61,7 @@ func (h *Handlers) handleListSessions(c *gin.Context, base BaseRequest, raw *sim
 	for _, sess := range sessions {
 		items = append(items, sessionListItem{
 			SessionID:    sess.ID,
-			Title:        sess.Title,
+			Title:        redactSessionTitle(sess.Title),
 			MessageCount: sess.MessageCount,
 			Pinned:       sess.Pinned,
 			CreatedAt:    sess.CreatedAt,
@@ -71,14 +71,25 @@ func (h *Handlers) handleListSessions(c *gin.Context, base BaseRequest, raw *sim
 	return listSessionsData{Sessions: items}, nil
 }
 
+// redactSessionTitle applies the user-conversation persistence boundary both
+// before a caller-supplied title is stored and when any title is projected.
+// The read-side application also covers rows created by older binaries.
+func redactSessionTitle(title *string) *string {
+	if title == nil {
+		return nil
+	}
+	redacted := security.RedactUserConversationText(*title)
+	return &redacted
+}
+
 // deriveSessionTitle builds a history-row title from the user's first message:
-// PII-redacted (consistent with how the message body is persisted), whitespace
+// credential/PII-redacted by the exact user-message persistence boundary, whitespace
 // collapsed to single spaces, and truncated to sessionTitleMaxRunes runes with
 // an ellipsis. Returns "" for empty/whitespace input, in which case the caller
 // skips the title write. It is called from the chat write path (prepareChat) on
 // every turn but only fills the title when the row's title is still NULL.
 func deriveSessionTitle(msg string) string {
-	t := strings.TrimSpace(guardrails.RedactPII(msg))
+	t := strings.TrimSpace(security.RedactUserConversationText(msg))
 	if t == "" {
 		return ""
 	}

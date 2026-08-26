@@ -9,6 +9,7 @@ import (
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/tools"
 )
 
@@ -79,6 +80,16 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 		return friendlyToolResultJSON(msg)
 	}
+	// Build the local-only portion before the entry card so a planner that copied
+	// a user Authorization value into Task cannot expose it on that card. The
+	// private values stay json:"-" and are handed to the runner only after the
+	// user approves entry; this step performs no platform call or SSH access.
+	modelContext := e.instanceOpsModelContext()
+	authorizations := make([]string, 0, len(modelContext.ProbeAuthorizations))
+	for _, item := range modelContext.ProbeAuthorizations {
+		authorizations = append(authorizations, item.Value)
+	}
+	task = security.RedactKnownAuthorizationText(task, authorizations)
 	// A model-authored id is not selection proof. Reuse the write-path binding
 	// rules; an expired user selection may reach a new card for the same id but is
 	// never authority by itself.
@@ -116,7 +127,9 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	}
 
 	// A decline is non-terminal so the Agent can still answer from cloud-side facts.
-	if !e.confirmFn(action, e.safeExecutor.RedactArgs(action, filtered)) {
+	confirmArgs := e.safeExecutor.RedactArgs(action, filtered)
+	confirmArgs["Task"] = task
+	if !e.confirmFn(action, confirmArgs) {
 		msg := instanceOpsUnauthorizedMessage(instanceID, e.lastConfirmationTerminalReason)
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 		return friendlyToolResultJSON(msg)
@@ -140,7 +153,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		switch p.Kind {
 		case InstanceOpsProgressBackgroundJob:
 			// Side-band session continuity only: not a command, UI step, trace event or audit row.
-			e.observeInstanceOpsBackgroundJob(instanceID, p.JobID, p.JobState)
+			e.observeInstanceOpsBackgroundJob(instanceID, p.JobID, p.JobState, p.JobPurpose)
 		case InstanceOpsProgressConnected:
 			onStep(StepEvent{
 				Type:    StepToolCall,
@@ -149,7 +162,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 				Message: fmt.Sprintf("已连接到实例 %s，开始%s", instanceID, instanceOpsPhaseNoun()),
 			})
 		case InstanceOpsProgressCommand:
-			e.observeInstanceOpsBackgroundJob(instanceID, p.JobID, p.JobState)
+			e.observeInstanceOpsBackgroundJob(instanceID, p.JobID, p.JobState, p.JobPurpose)
 			settled = append(settled, instanceOpsSettledStep{
 				Command:     p.Command,
 				Tier:        p.Tier,
@@ -177,8 +190,8 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		}
 	}
 
-	modelContext := e.instanceOpsModelContext()
 	modelContext.PendingBackgroundJob = e.backgroundJobForInstance(instanceID)
+	modelContext.BackgroundJobSlotBusy = e.backgroundJobSlotBusyForOtherInstance(instanceID)
 	verdict, err := e.instanceOps.Run(ctx, InstanceOpsRequest{
 		TurnID:       e.currentTurnID,
 		InstanceID:   instanceID,
@@ -187,6 +200,12 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		ConfirmWrite: confirmWrite,
 	}, onProgress)
 	if err != nil {
+		// A control-plane NotFound result is authoritative for this target: its guest job can no
+		// longer be polled and must not occupy the conversation's only observable-job slot forever.
+		// Clear before composing the interruption so no notice falsely promises a retained cursor.
+		if errors.Is(err, ErrInstanceOpsNotFound) {
+			e.clearBackgroundJobForInstance(instanceID)
+		}
 		// The run ended with no verdict. Whatever settled before it did is the only account the user
 		// will ever get of a box that may already have been changed — so stash it for the next turn.
 		// A run with neither a settled command nor a background-job handle stays silent, which keeps
@@ -218,6 +237,14 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		// whether the instance itself is healthy.
 		if errors.Is(err, ErrInstanceOpsAddressUnavailable) {
 			msg := "无法换算该实例的内网地址，本次没有进入实例，也没有执行任何实例内命令。当前只能确认诊断入口未建立，尚无法判断根因，也不能据此判断实例本身是否异常。请稍后重试；如需立即验证，可按控制台显示的登录地址、端口和用户名尝试登录。"
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
+			return finalReplyPrefix + msg
+		}
+		// Candidate addresses were available, but the TCP prerequisite for SSH did
+		// not connect. This is still pre-entry: no authentication and no guest command.
+		// List the possible layers without selecting one that was never observed.
+		if errors.Is(err, ErrInstanceOpsSSHPreflightUnreachable) {
+			msg := "诊断服务已尝试可用候选地址，但未能与实例的 SSH 端口建立 TCP 连接；未建立 SSH 会话、未进入实例，也没有执行任何命令。可能涉及诊断服务到实例的网络路径、端口 / 防火墙、SSH 服务或实例当时状态；仅凭本次失败无法确定具体原因，也无法判断用户原始故障是否属于实例内部。"
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 			return finalReplyPrefix + msg
 		}
@@ -479,6 +506,8 @@ func knownInstanceOpsRefusalReason(reason string) (string, bool) {
 		return "命令过长，无法完整展示在确认卡上", true
 	case "refused_precondition":
 		return "前置条件未满足，操作未执行；请按工具返回的具体原因检查参数或重新读取目标状态后重试", true
+	case "refused_no_progress":
+		return "相同只读检查的结果没有变化，已停止重复；请更换检查条件、等待真实状态变化或结束本轮排查", true
 	case "refused_mutating_phase1":
 		return "旧版只读执行器未运行这条修改命令，请重新发起实例内排查", true
 	}

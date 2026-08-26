@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/compshare-agent/internal/opscontext"
+	"github.com/compshare-agent/internal/security"
 )
 
 // Owner is the tenant identity carried into the audit row. It is NOT the credential.
@@ -40,7 +41,7 @@ const DefaultDiagnosisTask = "用户报告这台 GPU 实例\"掉卡\"（nvidia-s
 // silently discarding it and making the audit claim facts reached the model when they did not.
 // A Supervisor value satisfies it; tests inject a fake so they never spawn the real Python harness.
 // onStep fires for settled commands and the opaque pre-launch background-job handle. The latter is
-// marked JobLifecycleOnly so callers retain it in live session memory without surfacing or auditing
+// marked JobLifecycleOnly so callers retain its opaque cursor without surfacing or auditing
 // it as a command; it may be nil.
 type harnessRunner interface {
 	RunWithContext(ctx context.Context, cred Credential, task string, modelContext opscontext.Context, onStep func(Step), onConfirm ConfirmFunc) (Result, error)
@@ -97,7 +98,9 @@ func (s *Service) Diagnose(ctx context.Context, d Describer, owner Owner, instan
 
 // DiagnoseWithContext is Diagnose with a versioned, independently transported
 // reference context for the inner agent. Context is deliberately not appended to
-// task: task remains the exact value used for audit hashing and replay identity.
+// task, so changing facts or a private capability cannot change replay identity.
+// A known Authorization value is redacted before the remaining task text is used
+// for audit hashing, confirmation or the inner prompt.
 func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Owner, instanceID, task string, modelContext opscontext.Context, onStep func(Step), onConfirm ConfirmFunc) (Result, error) {
 	// Fail closed: an in-instance access we could not durably record must never happen. Refuse BEFORE
 	// the credential is fetched — no audit sink means no credential pull and no harness spawn. Production
@@ -126,6 +129,15 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 		return Result{}, fmt.Errorf("sshops: resolved instance %q != requested %q, refusing (INV-13)", cred.InstanceID, instanceID)
 	}
 	modelContext = enrichInstanceOpsContext(ctx, d, modelContext, inst, cred.InstanceID)
+	// Defense at the last pre-audit/pre-prompt boundary. Engine callers already
+	// sanitize planner Tasks, but direct/live callers also reach Service. A copied
+	// Authorization value must never enter AuditEvent, task_hash or the inner
+	// prompt merely because the outer adapter was bypassed.
+	authorizations := make([]string, 0, len(modelContext.ProbeAuthorizations))
+	for _, item := range modelContext.ProbeAuthorizations {
+		authorizations = append(authorizations, item.Value)
+	}
+	task = security.RedactKnownAuthorizationText(task, authorizations)
 
 	ev := AuditEvent{
 		RequestUUID:       owner.RequestUUID,
@@ -208,8 +220,10 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 
 // hashTask is the stable, non-reversible dedup identity of a task. Paired with the turn id it is the
 // UNIQUE(turn_id, task_hash) key that refuses a retry of the same turn (INV-9). It hashes the
-// raw task (the actual replayed input), not the redacted form the audit column stores, so replays of
-// one turn collide deterministically; being a hash, it carries nothing sensitive.
+// sanitized task actually delivered to the harness. Context facts and private
+// capabilities stay outside this identity, so replays of one turn collide
+// deterministically without putting a credential into either the hash input or
+// the audit column; being a hash, the resulting identity is non-reversible.
 func hashTask(task string) string {
 	sum := sha256.Sum256([]byte(task))
 	return hex.EncodeToString(sum[:])

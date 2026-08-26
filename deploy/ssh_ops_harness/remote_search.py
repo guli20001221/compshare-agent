@@ -40,8 +40,10 @@ TOOL_DESCRIPTION = (
     "absolute app root, a literal query, and optionally one basename glob such as *.py or *.js. It "
     "never follows symlinks, rejects broad system/home roots and credential paths, scans at most 256 "
     "directories, 512 files and 8 MiB, returns at most 100 bounded matching lines, and redacts "
-    "credential-shaped values. Use process/listener/launcher evidence to identify the app root; use "
-    "read_text_file for a full bounded window once this search identifies a file."
+    "credential-shaped values. Use this tool, not recursive grep through ssh_exec, for recursive "
+    "content search: it validates every descendant and avoids a write-confirmation card. Use "
+    "process/listener/launcher evidence to identify the app root; use read_text_file for a full "
+    "bounded window once this search identifies a file."
 )
 
 FIND_DESCRIPTION = (
@@ -300,7 +302,8 @@ def search(conn, args, secrets=(), opener=ssh_transport.open_client):
                         continue
                     clipped, line_truncated = _clip_line(
                         guardrails.scrub_output(line, secrets))
-                    matches.append({"path": path, "line_number": line_number,
+                    matches.append({"path": guardrails.scrub_output(path, secrets),
+                                    "line_number": line_number,
                                     "line": clipped, "line_truncated": line_truncated})
                     if len(matches) >= spec["max_matches"]:
                         truncated = True
@@ -341,7 +344,7 @@ def search(conn, args, secrets=(), opener=ssh_transport.open_client):
             pass
 
 
-def find_paths(conn, args, opener=ssh_transport.open_client):
+def find_paths(conn, args, secrets=(), opener=ssh_transport.open_client):
     """Find bounded path metadata below one remote application tree without following symlinks."""
     spec, err = _validated_find_args(args)
     if err:
@@ -387,7 +390,8 @@ def find_paths(conn, args, opener=ssh_transport.open_client):
                 entry_depth = depth + 1
                 candidate = entry.filename.casefold() if spec["ignore_case"] else entry.filename
                 if entry_depth <= spec["max_depth"] and fnmatch.fnmatchcase(candidate, pattern):
-                    matches.append({"path": path, "type": "directory" if is_dir else "file",
+                    matches.append({"path": guardrails.scrub_output(path, secrets),
+                                    "type": "directory" if is_dir else "file",
                                     "depth": entry_depth})
                     if len(matches) >= spec["max_results"]:
                         truncated = True

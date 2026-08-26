@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -320,6 +321,7 @@ func TestBackgroundJobSurvivesAnInterruptedTurnAndOnlyPollsOnTheSameInstance(t *
 	runner := &fakeInstanceOpsRunner{
 		progress: []InstanceOpsProgress{{
 			Kind: InstanceOpsProgressBackgroundJob, JobID: jobID, JobState: "unknown",
+			JobPurpose: " 下载 LoRA   权重 ",
 		}},
 		err: context.Canceled,
 	}
@@ -327,9 +329,11 @@ func TestBackgroundJobSurvivesAnInterruptedTurnAndOnlyPollsOnTheSameInstance(t *
 
 	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), func(StepEvent) {})
 
-	require.NotNil(t, eng.pendingInstanceOpsBackgroundJob)
-	require.Equal(t, "uhost-1", eng.pendingInstanceOpsBackgroundJob.InstanceID)
-	require.Equal(t, jobID, eng.pendingInstanceOpsBackgroundJob.Job.JobID)
+	job := eng.sessionState.PersistedInstanceOpsJob
+	require.Equal(t, "uhost-1", job.InstanceID)
+	require.Equal(t, jobID, job.JobID)
+	require.Equal(t, "下载 LoRA 权重", job.Purpose)
+	require.NotEmpty(t, job.UpdatedAt)
 	require.NotNil(t, eng.pendingInstanceOpsInterruption)
 	require.Contains(t, renderInstanceOpsInterruptionNotice(*eng.pendingInstanceOpsInterruption), jobID)
 	require.Nil(t, eng.backgroundJobForInstance("uhost-other"),
@@ -349,53 +353,122 @@ func TestBackgroundJobSurvivesAnInterruptedTurnAndOnlyPollsOnTheSameInstance(t *
 	require.NotNil(t, runner.lastReq.Context.PendingBackgroundJob)
 	require.Equal(t, jobID, runner.lastReq.Context.PendingBackgroundJob.JobID)
 	require.Equal(t, "unknown", runner.lastReq.Context.PendingBackgroundJob.State)
-	require.Nil(t, eng.pendingInstanceOpsBackgroundJob,
+	require.Equal(t, "下载 LoRA 权重", runner.lastReq.Context.PendingBackgroundJob.Purpose)
+	require.True(t, eng.sessionState.PersistedInstanceOpsJob.IsZero(),
 		"a terminal poll must clear the live handle instead of polling it forever")
 }
 
 func TestBackgroundJobUnknownStateIsPolledButMalformedStateCannotClearIt(t *testing.T) {
 	jobID := "job-" + strings.Repeat("b", 32)
 	eng := &Engine{}
-	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "unknown")
+	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "unknown", "安装依赖")
 	require.Equal(t, "unknown", eng.backgroundJobForInstance("uhost-1").State)
 
-	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "future_state")
+	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "future_state", "")
 	require.NotNil(t, eng.backgroundJobForInstance("uhost-1"),
 		"version skew must degrade to keeping an unresolved handle, not silently dropping it")
 
-	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "not_found")
+	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "not_found", "")
 	require.Nil(t, eng.backgroundJobForInstance("uhost-1"))
 
-	// This is deliberately one slot rather than a job registry. The harness prevents a second start
-	// within one diagnosis; if a later diagnosis on another instance starts one, that newer handle is
-	// the only one this minimal live-session bridge retains.
-	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "running")
+	// This is deliberately one slot rather than a job registry. An active job on
+	// A cannot be silently replaced by a later event for B.
+	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "running", "安装依赖")
 	newJobID := "job-" + strings.Repeat("d", 32)
-	eng.observeInstanceOpsBackgroundJob("uhost-2", newJobID, "unknown")
-	require.Nil(t, eng.backgroundJobForInstance("uhost-1"))
-	require.Equal(t, newJobID, eng.backgroundJobForInstance("uhost-2").JobID)
+	eng.observeInstanceOpsBackgroundJob("uhost-2", newJobID, "unknown", "另一项任务")
+	require.Equal(t, jobID, eng.backgroundJobForInstance("uhost-1").JobID)
+	require.Nil(t, eng.backgroundJobForInstance("uhost-2"))
 }
 
-func TestRehydrateHistoryDropsLiveBackgroundJobContinuity(t *testing.T) {
-	jobID := "job-" + strings.Repeat("c", 32)
+func TestBackgroundJobOnAnotherInstanceMakesTheSingleDurableSlotBusy(t *testing.T) {
+	jobID := "job-" + strings.Repeat("a", 32)
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "只读排查完成"}}
+	eng := newInstanceOpsEngine(runner, alwaysConfirm)
+	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "running", "下载模型")
+	eng.lastUserMsg = "请排查 uhost-2"
+	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: eng.lastUserMsg}
+	eng.turnContextViewReady = true
+
+	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": "uhost-2", "Task": "排查服务",
+	}, func(StepEvent) {})
+
+	require.Equal(t, 1, runner.calls)
+	require.Nil(t, runner.lastReq.Context.PendingBackgroundJob,
+		"another instance must never receive the opaque handle")
+	require.True(t, runner.lastReq.Context.BackgroundJobSlotBusy,
+		"the harness must refuse a second background launch instead of executing an untrackable job")
+	require.Equal(t, jobID, eng.sessionState.PersistedInstanceOpsJob.JobID)
+}
+
+func TestNotFoundClearsMatchingBackgroundJobAndReleasesSlot(t *testing.T) {
+	jobID := "job-" + strings.Repeat("f", 32)
+	runner := &fakeInstanceOpsRunner{err: ErrInstanceOpsNotFound}
+	eng := newInstanceOpsEngine(runner, alwaysConfirm)
+	eng.observeInstanceOpsBackgroundJob("uhost-gone", jobID, "running", "下载模型")
+	eng.lastUserMsg = "检查已经释放的 uhost-gone"
+	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: eng.lastUserMsg}
+	eng.turnContextViewReady = true
+
+	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": "uhost-gone", "Task": "检查后台任务",
+	}, func(StepEvent) {})
+
+	require.True(t, eng.sessionState.PersistedInstanceOpsJob.IsZero())
+	require.Nil(t, eng.pendingInstanceOpsInterruption,
+		"NotFound before any settled command must not promise that an unpollable job was retained")
+
+	runner.err = nil
+	runner.verdict = InstanceOpsVerdict{Text: "另一实例可以继续"}
+	eng.instanceOpsRanThisTurn = false
+	eng.lastUserMsg = "排查 uhost-next"
+	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: eng.lastUserMsg}
+	eng.turnContextViewReady = true
+	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": "uhost-next", "Task": "排查服务",
+	}, func(StepEvent) {})
+
+	require.False(t, runner.lastReq.Context.BackgroundJobSlotBusy)
+}
+
+func TestBackgroundJobPurposeIsRedactedAndRuneBounded(t *testing.T) {
+	jobID := "job-" + strings.Repeat("e", 32)
 	eng := &Engine{}
-	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "running")
-	eng.recordInstanceOpsInterruption("uhost-1", []instanceOpsSettledStep{
-		settled("poll_background_job job="+jobID, "read_only", "ran"),
-	})
-	eng.ClearSessionState()
-	require.NotNil(t, eng.pendingInstanceOpsBackgroundJob,
-		"the HTTP handler clears persisted context every turn; that is not a session replacement")
+	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "running",
+		"联系 user@example.com token=secret-value "+strings.Repeat("长", 240))
+	purpose := eng.sessionState.PersistedInstanceOpsJob.Purpose
+	require.LessOrEqual(t, len([]rune(purpose)), maxPersistedInstanceOpsJobPurposeRunes)
+	require.NotContains(t, purpose, "user@example.com")
+	require.NotContains(t, purpose, "secret-value")
+}
 
-	eng.RehydrateHistory(nil)
+func TestBackgroundJobRoundTripsAcrossEngineRebuildWithoutCommand(t *testing.T) {
+	jobID := "job-" + strings.Repeat("c", 32)
+	hot := &Engine{sessionStateHydrated: true, sessionStateVersion: 7,
+		sessionState: SessionState{SchemaVersion: SessionStateSchemaV7}}
+	hot.observeInstanceOpsBackgroundJob("uhost-1", jobID, "running", "下载 token=secret-value 模型")
+	state, version, hydrated := hot.SessionStateSnapshot()
+	require.True(t, hydrated)
+	require.Equal(t, SessionStateSchemaV8, state.SchemaVersion)
 
-	require.Nil(t, eng.pendingInstanceOpsBackgroundJob,
-		"a pooled Engine repurposed for a hydrated session must not leak another session's handle")
-	require.Nil(t, eng.pendingInstanceOpsInterruption)
+	raw, err := json.Marshal(PersistedContext{AgentSessionState: state})
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), "command")
+	require.NotContains(t, string(raw), "secret-value")
 
-	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "running")
-	eng.recordInstanceOpsInterruption("uhost-1", nil)
-	eng.InitWithContext("another isolated session")
-	require.Nil(t, eng.pendingInstanceOpsBackgroundJob)
-	require.Nil(t, eng.pendingInstanceOpsInterruption)
+	persisted, err := ParsePersistedContext(raw)
+	require.NoError(t, err)
+	cold := &Engine{}
+	cold.RehydrateHistory(nil)
+	cold.SetSessionState(persisted.AgentSessionState, version+1)
+	resumed := cold.backgroundJobForInstance("uhost-1")
+	require.NotNil(t, resumed)
+	require.Equal(t, jobID, resumed.JobID)
+	require.Contains(t, resumed.Purpose, "[REDACTED]")
+	require.Nil(t, cold.backgroundJobForInstance("uhost-2"))
+
+	// A whole-session reset clears the slot; normal HTTP hydration restores it
+	// by calling SetSessionState after this boundary.
+	cold.InitWithContext("another isolated session")
+	require.Nil(t, cold.backgroundJobForInstance("uhost-1"))
 }

@@ -42,12 +42,12 @@
       "value": "(?i)([\"']?\\b(?:access[_-]?key(?:[_-]?id|[_-]?secret)?|secret[_-]?key|api[_-]?key|x[_-]?api[_-]?key|ak|sk|access[_-]?token|security[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|token|password|passwd|pwd|private[_-]?key)\\b[\"']?\\s*[:=]\\s*[\"']?)([^\"'\\s,;}\u0026\\]]+)"
     },
     {
-      "id": "8c5e5f5be3ea712d",
+      "id": "f203693ba87257e7",
       "kind": "regex",
       "path": "internal/guardrails/output.go",
       "symbol": "init",
       "callee": "regexp.MustCompile",
-      "value": "(?i)(\\bauthorization\\s*[:=]\\s*)(?:(bearer|basic)[\\s:=]+)?([^\\s,;}\\]]+)"
+      "value": "(?i)(?:(-H|--header=)([\"'\\x60]?)authorization\\b|([\"'\\x60]?)\\bauthorization\\b)(?:\\*{1,2}|_{1,2}|~{2})?([\"'\\x60]?)[ \\t]*([:=：])(?:\\*{1,2}|_{1,2}|~{2})?[ \\t]*([\"'\\x60]?)"
     },
     {
       "id": "a569a55039742fc7",

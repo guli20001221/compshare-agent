@@ -77,6 +77,7 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 		if st.JobLifecycleOnly {
 			onProgress(engine.InstanceOpsProgress{
 				Kind: engine.InstanceOpsProgressBackgroundJob, JobID: st.JobID, JobState: st.JobState,
+				JobPurpose: st.JobPurpose,
 			})
 			return
 		}
@@ -96,6 +97,7 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 			Bytes:       st.Bytes,
 			JobID:       st.JobID,
 			JobState:    st.JobState,
+			JobPurpose:  st.JobPurpose,
 		})
 	}
 
@@ -134,6 +136,14 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 		if errors.Is(err, sshops.ErrInternalAddressUnavailable) {
 			log.Printf("ssh-ops: could not derive the internal address for instance %s: %v", req.InstanceID, err)
 			return engine.InstanceOpsVerdict{}, engine.ErrInstanceOpsAddressUnavailable
+		}
+		// Candidate addresses existed, but none accepted the TCP connection that
+		// precedes SSH authentication. Keep it separate from address derivation so
+		// the reply can state exactly how far the run got without guessing whether
+		// the route, firewall, SSH service or instance state was responsible.
+		if errors.Is(err, sshops.ErrSSHPreflightUnreachable) {
+			log.Printf("ssh-ops: no SSH candidate was reachable for instance %s: %v", req.InstanceID, err)
+			return engine.InstanceOpsVerdict{}, engine.ErrInstanceOpsSSHPreflightUnreachable
 		}
 		// Not-running is knowable and worth naming. Carry the raw upstream state
 		// through so the engine can quote it, instead of saying "please retry" about

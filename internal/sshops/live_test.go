@@ -110,6 +110,9 @@ func liveRealDescriber(t *testing.T) (Describer, context.Context) {
 	if project := os.Getenv("SSHH_PROJECT"); project != "" {
 		cfg.Agent.ProjectId = project
 	}
+	if region := os.Getenv("SSHH_REGION"); region != "" {
+		cfg.Agent.Region = region
+	}
 	top, err := strconv.ParseUint(topOrg, 10, 32)
 	if err != nil {
 		t.Fatalf("SSHH_TOP_ORG: %v", err)

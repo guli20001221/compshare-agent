@@ -252,6 +252,55 @@ func TestLeaseSerialization(t *testing.T) {
 	require.Equal(t, int32(1), atomic.LoadInt32(&secondFinished), "second Lease should complete after first releases")
 }
 
+func TestCapacityEvictionCannotDuplicateAnActivelyLeasedSession(t *testing.T) {
+	ms := &mockMessageStore{}
+	pool := agentpool.New(minimalConfig(), ms, agentpool.Options{
+		Capacity: 1,
+		IdleTTL:  5 * time.Minute,
+	})
+	defer pool.Close()
+
+	ctx := context.Background()
+	engA, releaseA, err := pool.Lease(ctx, owner1, "sess-a")
+	require.NoError(t, err)
+
+	// Capacity pressure may temporarily overflow while A is in use, but it must not evict A and
+	// create a second mutex/Engine identity for the same session.
+	_, releaseB, err := pool.Lease(ctx, owner1, "sess-b")
+	require.NoError(t, err)
+	require.Equal(t, 2, pool.SizeForTest())
+	releaseB()
+	require.Equal(t, 1, pool.SizeForTest(), "release should converge the soft capacity")
+
+	started := make(chan struct{})
+	finished := make(chan *engine.Engine, 1)
+	go func() {
+		close(started)
+		eng, release, leaseErr := pool.Lease(ctx, owner1, "sess-a")
+		if leaseErr != nil {
+			finished <- nil
+			return
+		}
+		defer release()
+		finished <- eng
+	}()
+	<-started
+	select {
+	case <-finished:
+		t.Fatal("second lease of active session did not wait for the existing per-session mutex")
+	case <-time.After(20 * time.Millisecond):
+	}
+	require.Equal(t, 2, ms.listCalls, "active sess-a must not be rebuilt under capacity pressure")
+
+	releaseA()
+	select {
+	case engA2 := <-finished:
+		require.Same(t, engA, engA2)
+	case <-time.After(time.Second):
+		t.Fatal("waiting same-session lease did not resume")
+	}
+}
+
 // TestLeaseOwnerScoping verifies that different owners with the same sessionID
 // get independent engine instances.
 func TestLeaseOwnerScoping(t *testing.T) {

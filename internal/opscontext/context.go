@@ -1,8 +1,11 @@
-// Package opscontext defines the versioned, non-secret reference context sent to
-// the in-instance operations agent. It is intentionally a leaf package: engine
-// produces user-originated context while sshops adds a narrow projection of
-// control-plane facts, and neither package may depend on the other.
+// Package opscontext defines the versioned model-visible reference context and
+// its request-local private capabilities for the in-instance operations agent.
+// Private fields are excluded from Context JSON and travel only in explicitly
+// separate supervisor handshake fields. The package is intentionally a leaf:
+// engine produces user context while sshops adds a narrow control-plane projection.
 package opscontext
+
+import "strconv"
 
 const (
 	// SchemaVersion is the current SSH context wire contract. Version 2 keeps
@@ -64,27 +67,43 @@ type Context struct {
 	// this slice under its own stdin-only handshake key, while the model receives only each target's
 	// opaque ID and non-secret label through the MCP tool schema.
 	EndpointTargets []EndpointTarget `json:"-"`
+	// ProbeAuthorizations are current-request Authorization values retained behind
+	// opaque references for the two structured endpoint probes. Like SSH passwords
+	// and private endpoint targets, values travel only in the supervisor's stdin
+	// handshake and are never part of Context JSON, prompts, confirmations, audit,
+	// session state, or durable replay. References expire with the harness process.
+	ProbeAuthorizations []ProbeAuthorization `json:"-"`
 	// PendingBackgroundJob is an opaque handle produced by the reviewed guest job tool. It is
-	// session-memory continuity, not conversation memory and not a command: the supervisor sends it
+	// session-state continuity, not conversation memory and not a command: the supervisor sends it
 	// on a separate handshake field so it cannot change the versioned reference-context schema.
 	// A resumed harness may only poll this handle; it never receives the original command.
 	PendingBackgroundJob *BackgroundJob `json:"-"`
+	// BackgroundJobSlotBusy is true when this conversation already tracks an unresolved job on a
+	// different instance. The harness receives only this boolean, never that instance's ID or handle,
+	// and uses it solely to refuse a second untrackable background launch. Reads and separately
+	// approved foreground repairs remain available.
+	BackgroundJobSlotBusy bool `json:"-"`
 }
 
 // BackgroundJob is the minimum state needed to continue observing a long guest operation after
-// the browser disconnected. JobID is opaque and State is only a lifecycle hint. Neither field is
-// sufficient to replay the command that created it, which is deliberately not retained here.
+// the browser disconnected. JobID is opaque, State is only a lifecycle hint, and Purpose is a
+// redacted bounded description for continuity. None is sufficient to replay the command that
+// created the job, which is deliberately not retained here.
 type BackgroundJob struct {
-	JobID string `json:"job_id"`
-	State string `json:"state"`
+	JobID   string `json:"job_id"`
+	State   string `json:"state"`
+	Purpose string `json:"purpose,omitempty"`
 }
 
 // Enabled reports whether this payload uses the currently supported schema.
 func (c Context) Enabled() bool { return c.SchemaVersion == SchemaVersion }
 
-// UserReport is direct user-authored text, redacted before it crosses the
-// engine-to-agent boundary. Assistant prose is deliberately not represented:
-// it can contain an outer agent's unsupported inferences or proposed commands.
+// UserReport is a redacted reference from a user turn. It contains the user's
+// own text and may append a clearly labelled screenshot-OCR excerpt. OCR remains
+// reported, untrusted evidence: authorization and target binding continue to use
+// the separately held user-authored message, never this model-visible projection.
+// Assistant prose is deliberately not represented because it can contain an
+// outer agent's unsupported inferences or proposed commands.
 type UserReport struct {
 	Text       string `json:"text"`
 	Source     string `json:"source"`
@@ -116,3 +135,17 @@ type EndpointTarget struct {
 	Host   string `json:"host,omitempty"`
 	Port   int    `json:"port,omitempty"`
 }
+
+// ProbeAuthorization binds one model-safe current-request reference to its
+// private exact HTTP Authorization header value. Reference is not a credential
+// and has no meaning outside the short-lived harness that received this record.
+type ProbeAuthorization struct {
+	Reference string `json:"ref"`
+	Value     string `json:"value"`
+}
+
+func (p ProbeAuthorization) String() string {
+	return "ProbeAuthorization{Reference:" + strconv.Quote(p.Reference) + ", Value:[REDACTED]}"
+}
+
+func (p ProbeAuthorization) GoString() string { return p.String() }

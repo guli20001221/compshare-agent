@@ -51,9 +51,17 @@ type Describer interface {
 	Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error)
 }
 
-// ErrInternalAddressUnavailable identifies an address-resolution failure rather
-// than a problem inside the target instance.
+// ErrInternalAddressUnavailable identifies a failure to derive the address the
+// diagnosis service needs. No TCP connection or SSH session was established,
+// so it is not evidence about the user's reported guest-side fault.
 var ErrInternalAddressUnavailable = errors.New("sshops: internal address unavailable")
+
+// ErrSSHPreflightUnreachable means candidate addresses were derived, but none
+// accepted the TCP connection required to start SSH. This happens before SSH
+// authentication and before any command runs. The failed vantage can be the
+// diagnosis service's route, a firewall/port, the SSH service, or transient
+// instance state; the sentinel deliberately does not choose among them.
+var ErrSSHPreflightUnreachable = errors.New("sshops: ssh preflight unreachable")
 
 // HostResolver rewrites the address an instance is dialled at, given the instance's own
 // describe payload. It exists because SshLoginCommand advertises the public EIP — right

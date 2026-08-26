@@ -1,4 +1,5 @@
 """Structured start/poll protocol for remote work that exceeds one SSH call's time bound."""
+import errno
 import re
 import shlex
 import time
@@ -10,46 +11,32 @@ import ssh_transport
 _JOB_ROOT = "/tmp/compshare-ops-jobs"
 _JOB_ID = re.compile(r"^job-[0-9a-f]{32}$")
 _RETURN_LOG_BYTES = 16000
+# Private process-identity read only; never returned to the model. A Kubernetes/GPU environment can
+# easily exceed 4 KiB, while Linux ARG_MAX is normally much larger. If even this bound truncates,
+# identity remains unknown and the durable slot stays occupied instead of declaring interruption.
+_PROCESS_IDENTITY_BYTES = 256 * 1024
 _SHELLS = {"sh", "bash", "dash", "zsh", "ksh"}
-
-START_DESCRIPTION = (
-    "Start one previously diagnosed, user-approved remote command as a durable background job when "
-    "it cannot finish inside the 25-second SSH command bound (for example package installation, a "
-    "model download, compilation, or a foreground service process that must remain running). When "
-    "no service manager exists, put the narrow stop/wait and foreground replacement start in this "
-    "one confirmed payload instead of first sending it through ssh_exec. The tool creates a private "
-    "job directory, detaches stdin and "
-    "both output streams, records the exit code, and returns a job_id. Check available disk space "
-    "before starting large work; poll returns bounded log tails even though the on-instance logs "
-    "remain complete. The "
-    "exact original command is shown on the approval card. At most one background job may be started "
-    "in a diagnosis. Use poll_background_job on later calls; "
-    "do not resend the foreground command or hand-roll nohup/redirection. This does not authorize a "
-    "broader repair, destructive operation, reboot, or substitute platform service.")
+_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=.*$")
+_ENV_OPTIONS_WITH_VALUE = {"-u", "--unset", "-C", "--chdir", "--argv0"}
+_ENV_OPTIONS_WITHOUT_VALUE = {"-i", "--ignore-environment", "-0", "--null",
+                              "-v", "--debug"}
 
 POLL_DESCRIPTION = (
     "Read the state and bounded stdout/stderr tail of a background job previously returned by "
-    "start_background_job. This is read-only. It accepts only the opaque job-NNN ID and cannot read "
+    "ssh_exec with run_in_background=true. This is read-only. It accepts only the currently active "
+    "opaque job-NNN ID and cannot read "
     "an arbitrary path. Set wait_seconds (normally 15-30) so the tool waits before checking instead "
-    "of burning model turns in a tight loop. After six running polls, stop and report partial repair, "
-    "the job_id, progress and pending verification; a later turn resumes rather than restarts it. "
+    "of burning model turns in a tight loop. Read-only diagnosis and separately approved foreground "
+    "changes remain available while it runs, but a second background job is refused until a poll "
+    "observes a terminal state. After six running polls, stop and report partial repair, the job_id, "
+    "progress and pending "
+    "verification; a later turn resumes rather than restarts it. An intentionally long-lived service "
+    "is different: once its requested endpoint/application criterion is independently proven, running "
+    "is the expected terminal observation for this diagnosis—stop polling and report the verified "
+    "outcome rather than waiting for the service to exit. "
     "Repeated calls return only new log bytes plus total byte counts and log_progress. `running` means the recorded PID still exists; `succeeded` means exit "
     "code zero; `failed` includes the non-zero exit code; `interrupted` means no completion record "
     "and no process (for example after a restart).")
-
-
-def start_schema():
-    return {
-        "type": "object",
-        "properties": {
-            "command": {"type": "string", "minLength": 1, "maxLength": 1500,
-                        "description": "Exact remote command to run in the background."},
-            "purpose": {"type": "string", "minLength": 1, "maxLength": 200,
-                        "description": "Short evidence-backed purpose; no secrets."},
-        },
-        "required": ["command", "purpose"],
-        "additionalProperties": False,
-    }
 
 
 def poll_schema():
@@ -68,7 +55,53 @@ def poll_schema():
 
 def confirmation_display(command, purpose):
     purpose = " ".join(str(purpose or "").split())[:200]
-    return "start_background_job purpose=%s command=%s" % (purpose, command)
+    return "ssh_exec run_in_background=true purpose=%s command=%s" % (purpose, command)
+
+
+def _unwrap_command_prefix(tokens):
+    """Return the executable and argv after ordinary assignment/``env`` prefixes."""
+    tokens = list(tokens)
+    while tokens and _ASSIGNMENT.fullmatch(tokens[0]):
+        tokens.pop(0)
+    if not tokens or tokens[0].rsplit("/", 1)[-1] != "env":
+        return tokens
+
+    tokens.pop(0)
+    while tokens:
+        token = tokens[0]
+        if token == "--":
+            return tokens[1:]
+        if _ASSIGNMENT.fullmatch(token) or token in _ENV_OPTIONS_WITHOUT_VALUE:
+            tokens.pop(0)
+            continue
+        if token in _ENV_OPTIONS_WITH_VALUE:
+            if len(tokens) < 2:
+                return []
+            del tokens[:2]
+            continue
+        if any(token.startswith(option + "=") for option in
+               ("--unset", "--chdir", "--argv0")):
+            tokens.pop(0)
+            continue
+        # GNU env -S changes tokenization. Re-tokenize its value so a shell hidden behind it is
+        # judged by the same rule; malformed input is rejected by the caller's normal execution.
+        if token in ("-S", "--split-string"):
+            if len(tokens) < 2:
+                return []
+            try:
+                return _unwrap_command_prefix(shlex.split(tokens[1], posix=True) + tokens[2:])
+            except ValueError:
+                return []
+        if token.startswith("--split-string="):
+            try:
+                return _unwrap_command_prefix(
+                    shlex.split(token.split("=", 1)[1], posix=True) + tokens[1:])
+            except ValueError:
+                return []
+        if token.startswith("-"):
+            return []
+        break
+    return tokens
 
 
 def command_is_self_backgrounding(command):
@@ -87,15 +120,33 @@ def command_is_self_backgrounding(command):
         return True
     if "&" in tokens:
         return True
-    if tokens and tokens[0].rsplit("/", 1)[-1] in _SHELLS:
-        for i, token in enumerate(tokens[:-1]):
-            if token == "-c" and command_is_self_backgrounding(tokens[i + 1]):
+    command_tokens = _unwrap_command_prefix(tokens)
+    # A shell may be reached after a top-level chain or a transparent wrapper (`cd ... && bash`,
+    # `timeout ... bash`, `nohup bash`, ...). Conservatively inspect every shell-looking execution
+    # segment rather than maintaining an incomplete list of wrappers. A false positive merely asks
+    # the model to rewrite the form; a false negative makes a completed job record untruthful.
+    for shell_at, executable in enumerate(command_tokens):
+        if executable.rsplit("/", 1)[-1] not in _SHELLS:
+            continue
+        for i in range(shell_at + 1, len(command_tokens) - 1):
+            token = command_tokens[i]
+            # POSIX shells permit combined short options (`-lc`, `-ec`, ...). Long options such
+            # as `--norc` are not command-string switches even though their spelling contains c.
+            if token.startswith("-") and not token.startswith("--") and "c" in token[1:] and \
+                    command_is_self_backgrounding(command_tokens[i + 1]):
                 return True
     return False
 
 
 def new_job_id():
     return "job-" + uuid.uuid4().hex
+
+
+def _completion_body(command, status_tmp, status):
+    """Run arbitrary shell text as data while keeping the completion recorder outside it."""
+    return ("bash -c %s; rc=$?; printf '%%s\\n' \"$rc\" > %s; mv %s %s" %
+            (shlex.quote(command), shlex.quote(status_tmp), shlex.quote(status_tmp),
+             shlex.quote(status)))
 
 
 def start(conn, command, purpose, secrets=(), runner=ssh_transport.run_ssh, job_id=None):
@@ -109,16 +160,16 @@ def start(conn, command, purpose, secrets=(), runner=ssh_transport.run_ssh, job_
         return {"ok": False, "error_class": "invalid_job_id", "box_may_be_changed": False}
     directory = _JOB_ROOT + "/" + job_id
     status_tmp, status = directory + "/status.tmp", directory + "/status"
-    # The original command runs in a subshell so an `exit` inside it cannot skip the completion
-    # record. The trusted wrapper is generated locally after policy/confirmation; it is never model
-    # input and is not what the audit displays. stdout/stderr are detached from the SSH session.
+    # The original command is one argv value to a nested shell so `exit`, a trailing comment or a
+    # heredoc delimiter cannot consume/corrupt the completion recorder in the outer shell. The
+    # trusted wrapper is generated locally after policy/confirmation; it is never model input and
+    # is not what the audit displays. stdout/stderr are detached from the SSH session.
     #
     # Do NOT impose RLIMIT_FSIZE here. A limit inherited by the payload applies to every file it
     # writes, not merely stdout/stderr: large wheels, model shards and compiler outputs are cut off
     # with SIGXFSZ and left partial. poll() bounds what crosses the model boundary without changing
     # the approved job's filesystem semantics.
-    body = ("( %s ); rc=$?; printf '%%s\\n' \"$rc\" > %s; mv %s %s" %
-            (command, shlex.quote(status_tmp), shlex.quote(status_tmp), shlex.quote(status)))
+    body = _completion_body(command, status_tmp, status)
     launcher = (
         "umask 077; mkdir -p %s || exit $?; "
         "nohup env COMPSHARE_OPS_JOB_ID=%s bash -c %s </dev/null >%s 2>%s & job_pid=$!; "
@@ -169,27 +220,62 @@ def _read_optional(sftp, path, limit, tail=False):
         return b"", False
 
 
-def _read_optional_since(sftp, path, limit, offset):
-    """Read a bounded tail on first observation, then only bytes appended after ``offset``."""
+def _is_missing(exc):
+    return isinstance(exc, FileNotFoundError) or getattr(exc, "errno", None) == errno.ENOENT
+
+
+def _read_if_present(sftp, path, limit):
+    """Return absent as empty, but preserve every non-ENOENT observation failure."""
+    try:
+        data, cut = _read(sftp, path, limit)
+        return data, cut, None
+    except Exception as exc:  # noqa: BLE001 — SFTP uses several ENOENT exception shapes
+        if _is_missing(exc):
+            return b"", False, None
+        return b"", False, exc
+
+
+def _read_optional_since(sftp, path, limit, offset, overlap=0):
+    """Read a bounded tail plus private prefix context; return the core start within data."""
     try:
         size = int(sftp.lstat(path).st_size)
         if offset is None or not isinstance(offset, int) or offset < 0 or offset > size:
-            data, cut = _read(sftp, path, limit, tail=True)
-            return data, cut, size
-        start = offset
-        cut = size - start > limit
+            start = max(0, size - limit)
+            cut = size > limit
+        else:
+            start = offset
+            cut = size - start > limit
         if cut:
             start = size - limit
+        read_start = max(0, start - max(0, overlap))
         with sftp.file(path, "rb") as handle:
-            handle.seek(start)
-            return handle.read(limit), cut, size
+            handle.seek(read_start)
+            return handle.read(size - read_start), cut, size, start - read_start
     except Exception:  # noqa: BLE001 — absent/unreadable is represented without remote detail
-        return b"", False, 0
+        return b"", False, 0, 0
 
 
 def _bounded_text(data, secrets):
     text = data.decode("utf-8", "replace")
     return guardrails.scrub_output(text, secrets)
+
+
+def _secret_overlap(secrets):
+    lengths = [len(value.encode("utf-8")) for value in secrets
+               if isinstance(value, str) and len(value) >= 3]
+    return max(lengths, default=1) - 1
+
+
+def _mask_known_secret_bytes(data, secrets):
+    """Equal-length masking keeps the core byte window stable after overlap reads."""
+    masked = data
+    for value in secrets:
+        if not isinstance(value, str) or len(value) < 3:
+            continue
+        raw = value.encode("utf-8")
+        if raw:
+            masked = masked.replace(raw, b"*" * len(raw))
+    return masked
 
 
 def poll(conn, job_id, secrets=(), wait_seconds=0, offsets=None,
@@ -213,34 +299,57 @@ def poll(conn, job_id, secrets=(), wait_seconds=0, offsets=None,
             attrs = sftp.lstat(directory)
             if not attrs:
                 raise FileNotFoundError()
-        except Exception:  # noqa: BLE001
-            return {"ok": False, "job_id": job_id, "error_class": "job_not_found"}
+        except Exception as exc:  # noqa: BLE001
+            if _is_missing(exc):
+                return {"ok": False, "job_id": job_id, "error_class": "job_not_found"}
+            return {"ok": False, "job_id": job_id, "error_class": "job_status_failed",
+                    "detail": type(exc).__name__}
 
-        status_b, _ = _read_optional(sftp, directory + "/status", 32)
-        pid_b, _ = _read_optional(sftp, directory + "/pid", 32)
+        status_b, _, status_error = _read_if_present(sftp, directory + "/status", 32)
+        pid_b, _, pid_error = _read_if_present(sftp, directory + "/pid", 32)
         status_text = status_b.decode("ascii", "ignore").strip()
         pid_text = pid_b.decode("ascii", "ignore").strip()
         exit_code = None
         if re.fullmatch(r"-?\d+", status_text):
             exit_code = int(status_text)
             state = "succeeded" if exit_code == 0 else "failed"
+        elif status_error is not None or pid_error is not None:
+            state = "unknown"
         elif re.fullmatch(r"\d+", pid_text):
             try:
                 sftp.lstat("/proc/%s/stat" % pid_text)
-                environ_b, _ = _read_optional(sftp, "/proc/%s/environ" % pid_text, 4096)
-                marker = ("COMPSHARE_OPS_JOB_ID=" + job_id).encode("ascii")
-                state = "running" if marker in environ_b.split(b"\0") else "interrupted"
-            except Exception:  # noqa: BLE001
-                state = "interrupted"
+            except Exception as exc:  # noqa: BLE001
+                state = "interrupted" if _is_missing(exc) else "unknown"
+            else:
+                try:
+                    environ_b, environ_cut = _read(
+                        sftp, "/proc/%s/environ" % pid_text, _PROCESS_IDENTITY_BYTES)
+                except Exception:  # noqa: BLE001 — PID exists but identity is not observable
+                    state = "unknown"
+                else:
+                    marker = ("COMPSHARE_OPS_JOB_ID=" + job_id).encode("ascii")
+                    if marker in environ_b.split(b"\0"):
+                        state = "running"
+                    else:
+                        state = "unknown" if environ_cut else "interrupted"
         else:
-            state = "interrupted"
+            # The launcher creates the directory before the detached wrapper has
+            # written its PID.  An interrupted SSH response in that narrow window
+            # leaves no safe evidence that the payload did not start, so retain
+            # the cursor and refuse to launch a duplicate.
+            state = "unknown"
 
         # Split the bounded response evenly between both streams; logs themselves remain on-box.
         offsets = offsets if isinstance(offsets, dict) else {}
-        stdout_b, stdout_cut, stdout_total = _read_optional_since(
-            sftp, directory + "/stdout.log", _RETURN_LOG_BYTES // 2, offsets.get("stdout"))
-        stderr_b, stderr_cut, stderr_total = _read_optional_since(
-            sftp, directory + "/stderr.log", _RETURN_LOG_BYTES // 2, offsets.get("stderr"))
+        overlap = _secret_overlap(secrets)
+        stdout_b, stdout_cut, stdout_total, stdout_prefix = _read_optional_since(
+            sftp, directory + "/stdout.log", _RETURN_LOG_BYTES // 2,
+            offsets.get("stdout"), overlap)
+        stderr_b, stderr_cut, stderr_total, stderr_prefix = _read_optional_since(
+            sftp, directory + "/stderr.log", _RETURN_LOG_BYTES // 2,
+            offsets.get("stderr"), overlap)
+        stdout_b = _mask_known_secret_bytes(stdout_b, secrets)[stdout_prefix:]
+        stderr_b = _mask_known_secret_bytes(stderr_b, secrets)[stderr_prefix:]
         log_progress = (stdout_total != offsets.get("stdout") or
                         stderr_total != offsets.get("stderr"))
         result = {"ok": True, "job_id": job_id, "state": state,

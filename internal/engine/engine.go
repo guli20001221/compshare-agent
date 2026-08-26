@@ -427,13 +427,6 @@ type Engine struct {
 	// is deliberately NOT reset in the per-turn block — resetting it there would clear it on the
 	// very turn that is supposed to show it. See instance_ops_interruption.go.
 	pendingInstanceOpsInterruption *instanceOpsInterruption
-	// pendingInstanceOpsBackgroundJob is the one opaque guest-job handle that may be polled on a
-	// later turn in this same live session. One handle is an intentional minimum, not a general job
-	// registry: the harness refuses a second start within one diagnosis, while a later diagnosis that
-	// starts work on another instance replaces this slot. It is not persisted into conversation
-	// history and never contains the command that created the job. Process restart/LRU eviction
-	// therefore degrades to honest unknown state instead of pretending to resume a command.
-	pendingInstanceOpsBackgroundJob *instanceOpsBackgroundJob
 	// lastConfirmationTerminalReason is why the most recent authorization card in
 	// this turn ended, in observability's closed-set spelling. It exists because
 	// ConfirmFunc answers a bool, so every non-approval — the user declining, the
@@ -752,25 +745,54 @@ func WrapScreenshotContext(recognized, userMsg string) string {
 // OCR text may itself contain a copy of the marker, but the wrapper always adds
 // the authoritative boundary after the OCR block.
 func userAuthoredText(content string) string {
-	before, remainder, wrapped := strings.Cut(content, screenshotContextPrefix)
-	if !wrapped || before != "" {
+	_, authored, envelope, valid := splitScreenshotContext(content)
+	if !envelope {
 		return strings.TrimSpace(content)
 	}
-	authored := ""
-	foundBoundary := false
+	if !valid {
+		return ""
+	}
+	return authored
+}
+
+// screenshotReferenceText recovers only the OCR reference block from a wrapped
+// conversation message. Current live turns use the separately held ImageContext
+// instead; this parser keeps prior screenshot evidence useful after the wrapped
+// message has entered canonical conversation history.
+func screenshotReferenceText(content string) string {
+	recognized, _, _, valid := splitScreenshotContext(content)
+	if !valid {
+		return ""
+	}
+	return recognized
+}
+
+// splitScreenshotContext is the one parser for the stable screenshot wrapper.
+// The final boundary is authoritative because OCR itself may contain a copied
+// boundary marker; joining earlier segments restores those copied markers as
+// OCR data. envelope distinguishes an ordinary user message from a malformed
+// wrapper, for which provenance-sensitive callers fail closed.
+func splitScreenshotContext(content string) (recognized, authored string, envelope, valid bool) {
+	before, remainder, foundPrefix := strings.Cut(content, screenshotContextPrefix)
+	if !foundPrefix || before != "" {
+		return "", "", false, false
+	}
+
+	var recognizedParts []string
 	for {
-		_, tail, found := strings.Cut(remainder, screenshotContextEnd)
-		if !found {
+		part, tail, foundBoundary := strings.Cut(remainder, screenshotContextEnd)
+		if !foundBoundary {
 			break
 		}
-		foundBoundary = true
+		recognizedParts = append(recognizedParts, part)
 		authored = tail
 		remainder = tail
 	}
-	if !foundBoundary {
-		return ""
+	if len(recognizedParts) == 0 {
+		return "", "", true, false
 	}
-	return strings.TrimSpace(authored)
+	return strings.TrimSpace(strings.Join(recognizedParts, screenshotContextEnd)),
+		strings.TrimSpace(authored), true, true
 }
 
 // ── Snapshot accessors (tests only) ──
@@ -874,7 +896,7 @@ func (e *Engine) RegistrySnapshot() entity.RegistrySnapshot {
 // InitWithContext initializes an isolated Engine with test context.
 func (e *Engine) InitWithContext(userCtx string) {
 	e.pendingInstanceOpsInterruption = nil
-	e.pendingInstanceOpsBackgroundJob = nil
+	e.sessionState.PersistedInstanceOpsJob = PersistedInstanceOpsJob{}
 	e.baseUserContext = userCtx
 	systemPrompt := prompt.BuildSystemWithOptions(userCtx, e.reactPromptBuildOptions())
 	e.messages = []openai.ChatCompletionMessage{
@@ -887,12 +909,11 @@ func (e *Engine) InitWithContext(userCtx string) {
 // prompt followed by the supplied user/assistant turns. Empty content and
 // non-user/non-assistant roles are silently skipped.
 func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
-	// RehydrateHistory is a whole-session replacement boundary. A live guest-job handle belongs to
-	// the Engine instance that observed it and must never survive if a caller repurposes that Engine
-	// for another hydrated session. The production pool already creates one Engine per session; this
-	// keeps the lower-level API just as strict.
+	// RehydrateHistory is a whole-session message replacement boundary. Durable
+	// execution state, including an opaque guest-job cursor, is installed
+	// separately through SetSessionState after this history rebuild.
 	e.pendingInstanceOpsInterruption = nil
-	e.pendingInstanceOpsBackgroundJob = nil
+	e.sessionState.PersistedInstanceOpsJob = PersistedInstanceOpsJob{}
 	e.baseUserContext = ""
 	systemPrompt := prompt.BuildSystemWithOptions("", e.reactPromptBuildOptions())
 	e.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: systemPrompt}}
@@ -996,10 +1017,19 @@ func containsVerbatimBillingObservation(messages []openai.ChatCompletionMessage)
 func (e *Engine) SetSessionState(state SessionState, version int) {
 	if e.sessionStateHydrated && version <= e.sessionStateVersion {
 		e.sessionState.VerifiedEvidence = mergeVerifiedEvidence(e.sessionState.VerifiedEvidence, state.VerifiedEvidence)
-		// SelectedInstance{ID,Name} / PendingSelection* /
+		// SelectedInstance{ID,Name} / PendingSelection* / PersistedInstanceOpsJob /
 		// SchemaVersion: keep the in-memory value. The local engine has not
 		// yet persisted, so its scalars are at-or-newer than the incoming row.
 		return
+	}
+	// The job cursor was introduced in V8. Older envelopes may contain an
+	// unknown field with the same spelling; do not grant it V8 semantics. A V8
+	// cursor is normalized again at hydration so client-supplied/unbounded text
+	// cannot bypass the persistence boundary.
+	if state.SchemaVersion != SessionStateSchemaV8 {
+		state.PersistedInstanceOpsJob = PersistedInstanceOpsJob{}
+	} else {
+		state.PersistedInstanceOpsJob = normalizePersistedInstanceOpsJob(state.PersistedInstanceOpsJob)
 	}
 	e.sessionState = state
 	e.sessionStateVersion = version
@@ -1186,6 +1216,12 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	}
 
 	e.lastUserMsg = userMsg
+	// Authorization headers are always removed from the main Agent's live view.
+	// lastUserMsg retains the current typed text just long enough for the SSH-ops
+	// lane, when wired and selected later in this turn, to mint its private opaque
+	// probe reference. Do not apply broad user-message redaction here: signed URLs
+	// have a separate established flow and are not HTTP header capabilities.
+	llmCurrentUserMsg, _ := security.CaptureUserAuthorizationHeaders(userMsg)
 	e.zoneCatalogThisTurn = nil
 	e.imageContextThisTurn = opts.ImageContext
 	e.readExpensiveCallsThisTurn = 0
@@ -1277,9 +1313,12 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// reference data (see WrapScreenshotContext) — the httpapi persist path
 	// MUST produce byte-identical text because it is rehydrated and re-fed to
 	// the LLM on later turns.
-	llmUserMsg := userMsg
+	llmUserMsg := llmCurrentUserMsg
 	if opts.ImageContext != "" {
-		llmUserMsg = WrapScreenshotContext(opts.ImageContext, userMsg)
+		// Screenshot OCR is fallible reference data and can never mint a private
+		// credential capability. Remove any credential/PII before it reaches the
+		// main model, matching the durable user-message boundary.
+		llmUserMsg = WrapScreenshotContext(security.RedactUserConversationText(opts.ImageContext), llmCurrentUserMsg)
 	}
 
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
@@ -1316,7 +1355,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// nothing groundable was retrieved (the "no evidence → refuse,
 			// never fabricate" guard). Round 0 has no tool evidence and therefore
 			// takes the refusal path.
-			if synth, ok := e.synthesizeOnBudgetExceeded(ctx, userMsg); ok {
+			if synth, ok := e.synthesizeOnBudgetExceeded(ctx, llmCurrentUserMsg); ok {
 				e.messages = append(e.messages, openai.ChatCompletionMessage{
 					Role:    openai.ChatMessageRoleAssistant,
 					Content: synth,
@@ -1423,7 +1462,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// cancellation. Empty ledger → synthesizeOnBudgetExceeded returns false →
 			// the original error still propagates (TestChat_LLMError stays green).
 			if ctx.Err() == nil {
-				if synth, ok := e.synthesizeOnBudgetExceeded(ctx, userMsg); ok {
+				if synth, ok := e.synthesizeOnBudgetExceeded(ctx, llmCurrentUserMsg); ok {
 					e.messages = append(e.messages, openai.ChatCompletionMessage{
 						Role:    openai.ChatMessageRoleAssistant,
 						Content: synth,
@@ -1564,7 +1603,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// relevance floor emptied) keeps the canned message byte-identical and never
 	// fabricates. Final text is always buffered through the response gateway, so
 	// opts.OnTextDelta(synth) is the sole emission for this recovery as well.
-	if synth, ok := e.synthesizeOnBudgetExceeded(ctx, userMsg); ok {
+	if synth, ok := e.synthesizeOnBudgetExceeded(ctx, llmCurrentUserMsg); ok {
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
 			Content: synth,

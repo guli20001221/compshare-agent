@@ -79,6 +79,10 @@ try:
     os.makedirs(disabled_plugin, exist_ok=True)
     with open(os.path.join(disabled_plugin, "__init__.py"), "w", encoding="utf-8") as handle:
         handle.write("video_x, audio_x = x[0], x[1]\n")
+    path_secret = "authorization-path-secret-012345"
+    secret_named_file = os.path.join(local_app, "trace-" + path_secret + ".log")
+    with open(secret_named_file, "w", encoding="utf-8") as handle:
+        handle.write("authorization probe marker\n")
 
     result = remote_search.search({}, {
         "root": app_root, "query": "iceServers", "file_glob": "*.js",
@@ -106,6 +110,14 @@ try:
     check("matching-lines-are-secret-scrubbed",
           redacted["ok"] is True and fake_key not in repr(redacted)
           and "REDACTED" in redacted["matches"][0]["line"])
+
+    secret_path_search = remote_search.search({}, {
+        "root": app_root, "query": "authorization probe marker", "file_glob": "*.log",
+    }, secrets=(path_secret,), opener=_open)
+    check("search-result-paths-are-secret-scrubbed",
+          secret_path_search["ok"] is True
+          and path_secret not in repr(secret_path_search)
+          and "REDACTED" in secret_path_search["matches"][0]["path"])
 
     literal = remote_search.search({}, {
         "root": app_root, "query": "a.*b", "file_glob": "*.js",
@@ -144,6 +156,13 @@ try:
     check("find-paths-skips-credential-directories",
           all("/.ssh" not in item["path"] for item in found["matches"])
           and found["skipped"]["path_not_allowed"] >= 2)
+    secret_path_find = remote_search.find_paths({}, {
+        "root": app_root, "name_glob": "trace-*", "max_depth": 1,
+    }, secrets=(path_secret,), opener=_open)
+    check("find-result-paths-are-secret-scrubbed",
+          secret_path_find["ok"] is True
+          and path_secret not in repr(secret_path_find)
+          and "REDACTED" in secret_path_find["matches"][0]["path"])
     depth_limited = remote_search.find_paths({}, {
         "root": app_root, "name_glob": "*.py", "max_depth": 1,
     }, opener=_open)

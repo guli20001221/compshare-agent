@@ -253,6 +253,57 @@ func RedactOperationalTokensInText(s string) string {
 	return redactOperationalTokens(s)
 }
 
+// UserAuthorizationReference is a request-local secret paired with the opaque
+// marker that may safely replace it in model-visible text. Value must remain on
+// the private transport path; Reference is an identifier, not an authorization
+// grant and not valid in a later turn.
+type UserAuthorizationReference struct {
+	Reference string
+	Value     string
+}
+
+// CaptureUserAuthorizationHeaders extracts valid current-request capabilities
+// while replacing every model-visible Authorization value with the ordinary
+// redaction marker. The opaque reference itself is exposed later only by the
+// short-lived probe tool schema; it is not written into conversation text, where
+// a cold replay could mistake an expired reference for a live one.
+func CaptureUserAuthorizationHeaders(s string) (string, []UserAuthorizationReference) {
+	rewritten, extracted := guardrails.ReferenceAuthorizationHeaderValues(s)
+	refs := make([]UserAuthorizationReference, 0, len(extracted))
+	for _, item := range extracted {
+		refs = append(refs, UserAuthorizationReference{Reference: item.Reference, Value: item.Value})
+		rewritten = strings.ReplaceAll(rewritten, "[AUTHORIZATION_REF:"+item.Reference+"]", redactedValue)
+	}
+	// Unsupported, over-limit, or fifth-and-later header-shaped values mint no
+	// capability but are still removed. URL query assignments are deliberately
+	// untouched here; they belong to the established signed-URL flow.
+	rewritten = strings.ReplaceAll(rewritten, "[AUTHORIZATION_REDACTED]", redactedValue)
+	return rewritten, refs
+}
+
+// RedactKnownAuthorizationText removes explicit Authorization syntax and exact
+// values already captured by the request-local capability channel. It is the
+// fail-safe for planner Tasks: even if a model copied only the token rather than
+// the whole header, that value cannot reach a confirmation, inner prompt or
+// AuditWriter. Unrelated signed URLs remain intact.
+func RedactKnownAuthorizationText(s string, authorizations []string) string {
+	s = guardrails.RedactAuthorizationHeaderValues(s, redactedValue)
+	for _, authorization := range authorizations {
+		authorization = strings.TrimSpace(authorization)
+		if len(authorization) < 4 {
+			continue
+		}
+		s = strings.ReplaceAll(s, authorization, redactedValue)
+		if parts := strings.Fields(authorization); len(parts) > 1 {
+			credential := parts[len(parts)-1]
+			if len(credential) >= 4 {
+				s = strings.ReplaceAll(s, credential, redactedValue)
+			}
+		}
+	}
+	return s
+}
+
 // RestoreUserProvidedCredentialURLs restores an exact signed URL only when it
 // was supplied by the current user and the model quoted that exact URL in its
 // draft. It lets the user copy a command built from their own one-time link

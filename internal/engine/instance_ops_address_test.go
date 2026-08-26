@@ -25,3 +25,18 @@ func TestInstanceOps_AddressUnavailableReportsTheUnresolvedEntryFailure(t *testi
 	require.Contains(t, out, "控制台", "the refusal must give the user an actionable fallback")
 	require.NotContains(t, out, "与实例本身无关")
 }
+
+// Candidate addresses that all fail TCP preflight are not an address-derivation
+// failure and do not prove which network, port, service, or instance layer failed.
+func TestInstanceOps_SSHPreflightUnreachableReportsTheObservedBoundary(t *testing.T) {
+	unreachable := newInstanceOpsEngine(
+		&fakeInstanceOpsRunner{err: ErrInstanceOpsSSHPreflightUnreachable}, alwaysConfirm,
+	).executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), noopStep)
+	require.Contains(t, unreachable, "候选地址")
+	require.Contains(t, unreachable, "SSH 端口建立 TCP 连接")
+	require.Contains(t, unreachable, "未进入实例")
+	require.Contains(t, unreachable, "无法确定具体原因")
+	require.Contains(t, unreachable, "无法判断用户原始故障是否属于实例内部")
+	require.NotContains(t, unreachable, "网络 / 安全组未放通",
+		"a failed TCP probe cannot select one unobserved cause")
+}

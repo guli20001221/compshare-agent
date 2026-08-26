@@ -114,7 +114,7 @@ func pickReachableDialHost(ctx context.Context, inst map[string]any, advertised 
 	log.Printf("ssh-ops: dial candidates for instance %s port %d: %s", id, port, report)
 	if !ok {
 		return "", fmt.Errorf("%w: no candidate address accepted a connection on port %d: %s",
-			ErrInternalAddressUnavailable, port, report)
+			ErrSSHPreflightUnreachable, port, report)
 	}
 	log.Printf("ssh-ops: dialling %s address %s for instance %s", winner.label, winner.host, id)
 	return winner.host, nil

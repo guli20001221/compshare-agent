@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -115,8 +116,12 @@ func TestLiveCreateOpsCanary(t *testing.T) {
 
 // TestLiveOpsWriteCanary runs the real write-authorized lane but approves exactly one caller-named
 // operation. It exists for reversible, dedicated-test-instance fault injection and recovery; an
-// unexpected model proposal is denied. The explicit test switch plus exact command match make it impossible for the
-// ordinary live suite to mutate a box accidentally.
+// unexpected model proposal is denied. SSHH_APPROVE_EXACT binds the whole displayed card, while
+// SSHH_APPROVE_SHELL_EXACT binds the literal shell effect of a managed-background card when the
+// model varies only its human-readable purpose. The explicit test switch plus exact effect match
+// make it impossible for the ordinary live suite to mutate a box accidentally.
+// SSHH_ASSERT_ABSENT optionally fails if one caller-supplied marker reaches the verdict or activity
+// stream; durable audit redaction remains a store/PostgreSQL test because this canary uses memory.
 func TestLiveOpsWriteCanary(t *testing.T) {
 	if os.Getenv("SSHH_WRITE_CANARY") != "1" {
 		t.Skip("set SSHH_WRITE_CANARY=1 and run this exact test")
@@ -124,8 +129,9 @@ func TestLiveOpsWriteCanary(t *testing.T) {
 	instanceID := os.Getenv("SSHH_INSTANCE")
 	task := os.Getenv("SSHH_TASK")
 	approveExact := os.Getenv("SSHH_APPROVE_EXACT")
-	if instanceID == "" || task == "" || approveExact == "" {
-		t.Fatal("SSHH_INSTANCE, SSHH_TASK and SSHH_APPROVE_EXACT are required")
+	approveShellExact := os.Getenv("SSHH_APPROVE_SHELL_EXACT")
+	if instanceID == "" || task == "" || (approveExact == "") == (approveShellExact == "") {
+		t.Fatal("SSHH_INSTANCE/SSHH_TASK plus exactly one of SSHH_APPROVE_EXACT or SSHH_APPROVE_SHELL_EXACT are required")
 	}
 	if os.Getenv("SSHH_HARNESS") == "" || os.Getenv("SSHH_API_KEY") == "" {
 		t.Fatal("SSHH_HARNESS and SSHH_API_KEY are required")
@@ -157,7 +163,15 @@ func TestLiveOpsWriteCanary(t *testing.T) {
 				step.Disposition, step.Reason)
 		},
 		func(request ConfirmRequest) ConfirmDecision {
-			if request.Command != approveExact {
+			matches := request.Command == approveExact
+			if approveShellExact != "" {
+				const marker = " command="
+				index := strings.LastIndex(request.Command, marker)
+				matches = strings.HasPrefix(request.Command, "ssh_exec run_in_background=true purpose=") &&
+					strings.Count(request.Command, marker) == 1 && index >= 0 &&
+					request.Command[index+len(marker):] == approveShellExact
+			}
+			if !matches {
 				t.Logf("DENIED_UNEXPECTED_OPERATION=%s", request.Command)
 				return ConfirmDecision{Approved: false, TerminalReason: "user_declined"}
 			}
@@ -172,6 +186,16 @@ func TestLiveOpsWriteCanary(t *testing.T) {
 	}
 	if approved != 1 {
 		t.Fatalf("approved exact operation %d times, want 1", approved)
+	}
+	if marker := os.Getenv("SSHH_ASSERT_ABSENT"); marker != "" {
+		if strings.Contains(result.Output, marker) {
+			t.Fatal("sensitive marker leaked into the live canary verdict")
+		}
+		for _, step := range result.Steps {
+			if strings.Contains(step.Command, marker) || strings.Contains(step.Reason, marker) {
+				t.Fatal("sensitive marker leaked into a live canary activity step")
+			}
+		}
 	}
 	if !result.ContextApplied {
 		t.Fatal("write canary did not deliver context to a model turn")

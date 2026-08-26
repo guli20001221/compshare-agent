@@ -225,8 +225,10 @@ func TestSupervisorRequiresSecretAndPath(t *testing.T) {
 func TestParseHarnessStream(t *testing.T) {
 	in := strings.Join([]string{
 		"claude cli starting...", // chatter -> ignored
-		`@@JOB {"job_id":"job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","job_state":"unknown"}`,
-		`@@STEP {"command":"poll_background_job","tier":"read_only","disposition":"ran","exit":0,"bytes":42,"job_id":"job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","job_state":"running"}`,
+		`@@JOB {"job_id":"job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","job_state":"unknown","purpose":"download model weights"}`,
+		`@@JOB {"job_id":"job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","job_state":"unknown","purpose":"duplicate must be ignored"}`,
+		`@@STEP {"command":"poll_background_job","tier":"read_only","disposition":"ran","exit":0,"bytes":42,"job_id":"job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","job_state":"running","purpose":"download model weights"}`,
+		`@@JOB {"job_id":"job-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","job_state":"unknown","purpose":"compile runtime"}`,
 		`@@STEP {"command":"rm -rf /","tier":"destructive","disposition":"refused","exit":null,"bytes":0}`,
 		"more chatter",
 		"<<<VERDICT>>>",
@@ -248,9 +250,12 @@ func TestParseHarnessStream(t *testing.T) {
 	}
 	// The opaque pre-launch handle is live-only: it reaches onStep first but is not returned as a
 	// command/audit step. Then each @@STEP streams in order and matches the returned Steps.
-	if len(streamed) != 3 || !streamed[0].JobLifecycleOnly ||
+	if len(streamed) != 4 || !streamed[0].JobLifecycleOnly ||
 		streamed[0].JobID != "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" ||
-		streamed[1].Command != "poll_background_job" || streamed[2].Disposition != "refused" {
+		streamed[0].JobPurpose != "download model weights" ||
+		streamed[1].Command != "poll_background_job" || !streamed[2].JobLifecycleOnly ||
+		streamed[2].JobID != "job-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" ||
+		streamed[3].Disposition != "refused" {
 		t.Fatalf("onStep did not stream steps live in order: %+v", streamed)
 	}
 	if steps[0].Command != "poll_background_job" || steps[0].Disposition != "ran" ||
@@ -259,6 +264,9 @@ func TestParseHarnessStream(t *testing.T) {
 	}
 	if steps[0].JobID != "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" || steps[0].JobState != "running" {
 		t.Fatalf("background-job continuation metadata was dropped: %+v", steps[0])
+	}
+	if steps[0].JobPurpose != "download model weights" {
+		t.Fatalf("background-job purpose was dropped: %+v", steps[0])
 	}
 	// refused command carried a null exit -> ExitCode must be nil, not 0 (0 would read as "ran clean")
 	if steps[1].Disposition != "refused" || steps[1].ExitCode != nil {

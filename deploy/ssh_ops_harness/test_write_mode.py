@@ -122,6 +122,9 @@ check("prompt-names-hard-limits",
       "Hard refusal is only" in _WRITE_PROMPT and
       "tenant/control-plane boundary" in _WRITE_PROMPT)
 check("prompt-contract::shared-core", _WRITE_PROMPT.startswith(harness._SYSTEM_PROMPT_CORE))
+check("prompt-contract::completed-read-no-progress-loop",
+      "never repeat a completed read unless state/time changed" in _WRITE_PROMPT_FLAT
+      and "Vary one input or conclude" in _WRITE_PROMPT_FLAT)
 check("prompt-contract::structured",
       all(section in _WRITE_PROMPT for section in ("## Evidence model", "## Diagnostic loop",
                                                     "## Authorization:", "## Final response")))
@@ -135,8 +138,8 @@ check("prompt-contract::actual-runtime",
 check("prompt-contract::managed-ownership-invariant",
       "controller's ownership state" in _WRITE_PROMPT and "drift rather than proof" in _WRITE_PROMPT)
 check("prompt-contract::reconciles-owner-before-start-and-polls-terminal-state",
-      "Reconcile an existing ownership conflict" in _WRITE_PROMPT and
-      "bounded-poll transitional manager states" in _WRITE_PROMPT and "terminal result" in _WRITE_PROMPT)
+      "Reconcile stale children" in _WRITE_PROMPT_FLAT and
+      "Poll manager transitions to a terminal result" in _WRITE_PROMPT_FLAT)
 check("prompt-contract::single-mode-only",
       "Authorization: diagnose, repair, verify" in _WRITE_PROMPT and
       "Authorization: diagnosis only" not in _WRITE_PROMPT)
@@ -166,10 +169,9 @@ check("tool-desc-states-execution-semantics",
 check("tool-description-prefers-the-actual-runtime",
       "application's actual interpreter" in _WRITE_DESC)
 check("tool-description-requires-managed-ownership",
-      "surviving" in _WRITE_DESC and "outside that ownership" in _WRITE_DESC)
+      "Reconcile stale children" in _WRITE_DESC)
 check("tool-description-reconciles-owner-and-polls-transition",
-      "reconcile any surviving child outside that ownership" in _WRITE_DESC and
-      "transitional manager states" in _WRITE_DESC and "terminal result" in _WRITE_DESC)
+      "Poll manager transitions" in _WRITE_DESC)
 check("tool-desc-contract-stays-general",
       all(token not in _WRITE_DESC.lower()
           for token in ("filebrowser", "main.py", "/start.d/", "8188", "python -c")))
@@ -185,15 +187,15 @@ check("gate-actually-allows-redirect",
 check("gate-actually-allows-pipe", guardrails.classify("ps aux | grep -i comfy") == "read_only")
 check("tool-desc-drops-false-shape-clause",
       "no chaining/pipes/redirection" not in _WRITE_DESC)
-# The BrokenPipe/exit-124 lesson is now executable structure rather than a shell recipe the model has
-# to reproduce. The SSH description must route long work to the two reviewed tools and must not keep
-# teaching a parallel hand-rolled protocol that can drift from them.
-check("tool-desc-routes-long-work-to-structured-job",
-      "structured background-job tools" in _WRITE_DESC and
-      "do not hand-roll detachment" in _WRITE_DESC)
-check("surface-has-start-and-poll-job-tools",
-      all(name in harness.ALLOWED_TOOLS for name in
-          ("mcp__ssh_ops__start_background_job", "mcp__ssh_ops__poll_background_job")))
+# Backgrounding is one execution mode of ssh_exec, not a parallel shell tool. The description owns
+# the lifecycle contract and must not teach a hand-rolled protocol that can drift from it.
+check("tool-desc-routes-long-work-to-ssh-exec-background-mode",
+      "run_in_background=true" in flat(_WRITE_DESC) and "do not hand-roll" in _WRITE_DESC.lower() and
+      "At most one background job may be active" in flat(_WRITE_DESC))
+check("surface-has-one-shell-tool-plus-a-read-only-poll",
+      "mcp__ssh_ops__ssh_exec" in harness.ALLOWED_TOOLS and
+      "mcp__ssh_ops__poll_background_job" in harness.ALLOWED_TOOLS and
+      all("start_background_job" not in name for name in harness.ALLOWED_TOOLS))
 
 # The lane has no skills or built-in Skill tool; policy lives in the prompt and executable tools.
 check("skills-are-gone-from-the-module", not hasattr(harness, "skills_for") and not hasattr(harness, "SKILLS"))
@@ -208,7 +210,7 @@ check("prompt-does-not-claim-skill-load", "skill" not in _WRITE_PROMPT.lower())
 # back to its original posture — no built-in exists on the control-plane host.
 check("skill-tool-no-longer-exists", harness.TOOLS_BASE == [])
 check("atomic-file-tool-exists-in-single-repair-surface",
-      "mcp__ssh_ops__atomic_text_replace" in harness.ALLOWED_TOOLS)
+      "mcp__ssh_ops__atomic_text_edit" in harness.ALLOWED_TOOLS)
 check("remote-text-tool-exists-in-single-repair-surface",
       "mcp__ssh_ops__read_text_file" in harness.ALLOWED_TOOLS)
 check("remote-search-tool-exists-in-single-repair-surface",
@@ -223,7 +225,8 @@ check("guest-endpoint-probe-exists-in-single-repair-surface",
       "mcp__ssh_ops__guest_endpoint_probe" in harness.ALLOWED_TOOLS)
 check("atomic-file-tool-is-hash-bound-and-backed-up",
       all(term in harness.atomic_file.TOOL_DESCRIPTION
-          for term in ("SHA-256", "same-directory backup", "atomically renames")))
+          for term in ("SHA-256", "same-directory temporary", "recoverable backup",
+                       "Create never overwrites")))
 check("remote-text-tool-is-bounded-read-only-and-hash-bearing",
       all(term in harness.remote_text.TOOL_DESCRIPTION
           for term in ("read-only", "32 KiB", "whole-file SHA-256", "follows no symlink")))
@@ -232,7 +235,11 @@ check("remote-text-tool-routes-known-files-away-from-shell-readers",
 check("remote-search-tool-is-bounded-and-routes-to-exact-read",
       all(term in harness.remote_search.TOOL_DESCRIPTION
           for term in ("literal text fragment", "never follows symlinks", "8 MiB",
-                       "read_text_file")))
+                       "read_text_file", "not recursive grep through ssh_exec",
+                       "validates every descendant")))
+check("prompt-routes-recursive-content-search-to-structured-tool",
+      "search_text_tree (not recursive shell grep)" in harness.SYSTEM_PROMPT
+      and "use search_text_tree, not" in flat(harness.TOOL_DESC))
 check("remote-glob-tool-is-bounded-and-does-not-run-a-shell",
       all(term in harness.remote_search.FIND_DESCRIPTION
           for term in ("basename glob", "invokes no remote shell", "never follows symlinks",
@@ -245,9 +252,11 @@ check("process-environment-tool-is-selected-and-secret-bounded",
 # separate user decision.
 for _name, _needle in [
     ("states the scope", "Repair the diagnosed fault only"),
-    ("names redeploying an app", "re-downloading an application"),
+    ("names redeploying an app", "Re-downloading an app"),
     ("names taking a service down", "disabling an unrelated service"),
-    ("routes it to the user rather than forbidding it", "separate user intent unless the task requests it"),
+    ("routes it to the user rather than forbidding it",
+     "needs explicit intent in an available user report"),
+    ("keeps prior user intent bounded to continuation", "prior reports only continue unfinished requests"),
 ]:
     check(f"tool-desc-bounds-scope::{_name}", _needle in _WRITE_DESC)
 
@@ -285,21 +294,20 @@ check("write-tool-desc-platform-boundary::forbids-invention",
 check("write-system-prompt-platform-boundary::forbids-invention",
       "invent a platform-facing" in _WRITE_PROMPT and "substitute service" in _WRITE_PROMPT)
 check("write-tool-desc-platform-boundary::names-and-hands-off-restart",
-      "Restarting the instance is unavailable" in _WRITE_DESC and
-      "ask whether the user wants the instance restarted" in _WRITE_DESC and
-      "guest-shell" in _WRITE_DESC)
+      "Instance restart is unavailable" in _WRITE_DESC and
+      "ask whether the user wants one" in _WRITE_DESC)
 check("write-system-prompt-platform-boundary::names-and-hands-off-restart",
       "需要重启实例才能继续" in _WRITE_PROMPT and
       "ask whether the user wants the instance restarted" in flat(_WRITE_PROMPT) and
       "Do not bypass those limits" in _WRITE_PROMPT)
 check("write-prompts::distinguish-service-restart-from-instance-reboot",
       "A process or service restart is not an instance reboot" in _WRITE_PROMPT_FLAT and
-      "A process or service restart is not an instance reboot" in _WRITE_DESC and
+      "A service restart is not an instance reboot" in _WRITE_DESC and
       "guest-local restart cannot recover" in _WRITE_PROMPT_FLAT and
       "guest-local restart cannot recover" in _WRITE_DESC)
 check("write-tool-desc::separates-independent-probes",
-      "Each call is classified as one effect" in _WRITE_DESC and
-      "independently useful probes in separate calls" in _WRITE_DESC)
+      "Each call is one effect" in _WRITE_DESC and
+      "split independent probes" in _WRITE_DESC)
 # The verdict is Chinese, so the sentence the user actually reads is pinned too.
 check("write-system-prompt::states-the-boundary-in-the-verdict-language",
       "需要重启实例才能继续" in _WRITE_PROMPT)
@@ -326,23 +334,28 @@ _td = _WRITE_DESC
 check("tooldesc-rule-prefer-image-launcher",
       "use its existing supervisor/launcher" in _td and "not an inner binary" in _td)
 check("tooldesc-rule-does-not-invent-manager-ownership",
-      "Do not create a new unit merely because a manager exists" in _td and
+      "do not invent a unit" in _td and
       "only a launcher exists" in _td and "report the durability gap" in _td)
 check("prompt-and-tool-do-not-invent-traceback-semantics",
       "A traceback proves a failure site, not intended" in _wp and
-      "A traceback proves failure site, not intended semantics" in _td and
+      "A traceback proves the failure site, not intended semantics" in _td and
       "local test" in _wp and "version contract" in _wp and
       "reversible rollback/disable within scope" in _wp and
       "reversible rollback/disable within scope" in _td)
 check("prompt-and-tool-align-on-managed-service-ownership",
-      "identify its existing supervisor" in _wp and "use its existing supervisor" in _td)
+      "use its existing supervisor" in _wp and "use its existing supervisor" in _td)
+check("prompt-and-tool-start-stopped-managed-definition-before-editing",
+      "Start a stopped unit unchanged" in flat(_wp) and
+      "Start a stopped unit's existing definition unchanged" in _td and
+      "STOPPED alone does not implicate" in _wp and "STOPPED alone does not implicate" in _td and
+      all(term in (_wp + _td) for term in ("manager output", "logs", "direct file check")))
 check("prompts-drop-product-specific-launcher-patches",
       all(token not in (_wp + _td).lower() for token in ("filebrowser", "main.py", "/start.d/")))
 # Replaces the before/after diff, which could not fire: in the fault under test BOTH ports start
 # down, so "was up before" is empty. This asks about the ports the LAUNCHER defines instead, which is
 # exactly the 7860 case — a port the repair never restored rather than one it broke.
 check("tooldesc-rule-verify-every-launcher-port",
-      "Verify the full service contract owned by the launcher" in _td)
+      "verify every endpoint/component it owns" in _td)
 check("prompt-no-longer-carries-port-diff", "list the listening ports" not in _wp)
 check("prompt-rule-verdict-starts-with-status",
       all(token in _wp for token in ("`已修复`", "`部分修复`", "`未修复`", "`无需修复`")) and
@@ -364,7 +377,8 @@ check("prompt-within-verified-length-band", len(_wp) < 6000)
 # rather than against a file, which is the whole point of the move.
 check("repair-rule-executed-section-survives", "In `已完成`" in _wp)
 check("repair-rule-long-job-lifecycle-survives",
-      "structured background-job tools" in _td and "timed-out foreground command" in _td)
+      "run_in_background=true" in _td and "timed-out foreground command" in _td and
+      "terminal poll frees the slot" in _td)
 check("repair-rule-own-failed-attempts-survives",
       "attempts that ran but failed" in _wp and "label it as your action" in _wp)
 

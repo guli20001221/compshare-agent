@@ -5,6 +5,7 @@ import (
 
 	"github.com/compshare-agent/internal/agentprotocol"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestRedactForLLM_RedactsSecretsRecursively(t *testing.T) {
@@ -168,4 +169,42 @@ func TestContainsToolProtocolMarkup(t *testing.T) {
 	assert.True(t, ContainsToolProtocolMarkup(`<｜DSML｜invoke name="RequestResetPassword">`))
 	assert.True(t, ContainsToolProtocolMarkup(`<tool_call>{"name":"x"}</tool_call>`))
 	assert.False(t, ContainsToolProtocolMarkup("我会先查询实例，再显示确认卡。"))
+}
+
+func TestCaptureUserAuthorizationHeadersSeparatesLiveSecretFromModelText(t *testing.T) {
+	const (
+		authorization = "Bear" + "er auth-canary-0123456789"
+		signedURL     = "https://models.example/file?token=signed-url-0123456789"
+	)
+	safe, refs := CaptureUserAuthorizationHeaders(
+		"请检查 " + signedURL + "\n-H 'Authorization: " + authorization + "'")
+	assert.Len(t, refs, 1)
+	assert.Equal(t, "current-user-authorization-1", refs[0].Reference)
+	assert.Equal(t, authorization, refs[0].Value)
+	assert.NotContains(t, safe, authorization)
+	assert.Contains(t, safe, "Authorization: [REDACTED]")
+	assert.Contains(t, safe, signedURL,
+		"the narrow live-header boundary must not regress the existing signed-URL flow")
+}
+
+func TestCaptureUserAuthorizationHeadersNeverMintsAURLQueryCapability(t *testing.T) {
+	const query = "https://example.test/check?authorization=Bearer-secret-0123456789"
+	safe, refs := CaptureUserAuthorizationHeaders(query)
+	assert.Empty(t, refs)
+	assert.Equal(t, query, safe,
+		"a signed URL is not an Authorization header and keeps its established live-turn behavior")
+	assert.NotContains(t, RedactUserConversationText(query), "Bearer-secret-0123456789",
+		"the durable boundary still removes the URL credential")
+}
+
+func TestCaptureUserAuthorizationHeadersFindsAHeaderAfterASignedURL(t *testing.T) {
+	const (
+		query  = "https://example.test/check?Authorization=signed-url-0123456789"
+		header = "Bear" + "er auth-canary-0123456789"
+	)
+	safe, refs := CaptureUserAuthorizationHeaders("下载地址 " + query + "\nAuthorization: " + header)
+	require.Len(t, refs, 1)
+	assert.Equal(t, header, refs[0].Value)
+	assert.Contains(t, safe, query)
+	assert.NotContains(t, safe, header)
 }
