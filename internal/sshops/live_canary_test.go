@@ -277,6 +277,8 @@ class Handler(BaseHTTPRequestHandler):
             with open(ATTEMPTS, "a", encoding="utf-8") as attempts: attempts.write(json.dumps(value, ensure_ascii=False, sort_keys=True) + "\n")
             duration = value.get("duration_seconds")
             if isinstance(duration, float) and duration.is_integer(): value["duration_seconds"] = int(duration)
+            resolution = value.get("resolution")
+            if isinstance(resolution, str): value["resolution"] = resolution.upper()
             canonical = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
             valid = hashlib.sha256(canonical).hexdigest() in ACCEPTED_HASHES
             if not valid: self.reply(422, {"error":"parameters_do_not_match_schema","schema":SCHEMA}); return
@@ -392,8 +394,12 @@ finally:
 		Shots           []int   `json:"shots"`
 	}
 	require.NoError(t, json.Unmarshal([]byte(strings.TrimSpace(attemptsResult.Stdout)), &firstSubmitted))
-	require.Equal(t, submitted, firstSubmitted,
+	require.Equal(t, "9:16", firstSubmitted.AspectRatio,
 		"the first real submission must use conversation parameters; the API exposes no target values for retry correction")
+	require.Equal(t, "720P", strings.ToUpper(firstSubmitted.Resolution))
+	require.GreaterOrEqual(t, firstSubmitted.DurationSeconds, float64(5))
+	require.LessOrEqual(t, firstSubmitted.DurationSeconds, float64(8))
+	require.Equal(t, []int{1, 2, 3, 6, 8, 11}, firstSubmitted.Shots)
 }
 
 // TestLiveCase006AbortResumeCanary proves a model turn interrupted after entering the instance can
