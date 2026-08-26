@@ -464,7 +464,7 @@ func TestLiveCase006AbortResumeCanary(t *testing.T) {
 
 	fullHistory := append(append([]opscontext.ConversationMessage(nil), firstHistory...),
 		opscontext.ConversationMessage{Role: opscontext.ConversationRoleUser,
-			Content: "都开始收费还是进不去\n本轮连续性标记：" + latestMarker})
+			Content: "都开始收费还是进不去。请继续排查，并在结论中原样回显上一条和本条消息里的连续性标记。\n本轮连续性标记：" + latestMarker})
 	secondContext := opscontext.Context{
 		SchemaVersion:            opscontext.SchemaVersion,
 		ConversationHistory:      fullHistory,
@@ -481,7 +481,7 @@ func TestLiveCase006AbortResumeCanary(t *testing.T) {
 		liveCtx, describer,
 		Owner{TopOrganizationID: uint32(top), OrganizationID: uint32(sub),
 			RequestUUID: "live-case006-second", TurnID: "live-case006-second-" + strconv.FormatInt(time.Now().UnixNano(), 10)},
-		instanceID, "继续完成上一轮针对同一实例的排查；在最终结论中原样回显外层两条用户消息里的连续性标记，并结合最新消息判断仍无法进入的原因。", secondContext,
+		instanceID, "继续完成上一轮针对同一实例的排查，并结合最新消息判断仍无法进入的原因。", secondContext,
 		func(step Step) {
 			if step.AgentSessionLifecycleOnly {
 				secondReceipt = step
