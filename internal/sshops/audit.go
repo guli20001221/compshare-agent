@@ -5,7 +5,7 @@ import (
 	"fmt"
 )
 
-// AuditEvent is one consented SSH-ops attempt. It NEVER carries the credential — only the tenant
+// AuditEvent is one authorized SSH-ops attempt. It NEVER carries the credential — only the tenant
 // identity, the target instance, the task text, and the outcome. The persisted row is the
 // fail-closed record that an authorized in-instance repair session happened.
 type AuditEvent struct {

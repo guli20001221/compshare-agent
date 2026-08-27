@@ -112,8 +112,8 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 		})
 	}
 
-	// The engine has already obtained one explicit task-scoped entry authorization. A new harness
-	// consumes the bit below and does not ask for command-level cards. During a rolling/mixed deploy,
+	// The engine has already verified the deployment write grant and the user-selected target. A new
+	// harness consumes the bit below and does not ask for command-level cards. During a rolling/mixed deploy,
 	// an old harness may still emit @@CONFIRM; answer those internally so the same authorized run does
 	// not regress to repeated human intervention. Without the trusted bit this stays nil and Service
 	// fails closed before a write-enabled harness can start.
@@ -304,6 +304,6 @@ func serverInstanceOpsRunner(cfg *config.Config, describer sshops.Describer, db 
 	if hostResolver != nil {
 		route = "internal IPv6 via " + cfg.Agent.STS.IAMURL
 	}
-	log.Printf("ssh-ops enabled: one-card task-scoped in-instance diagnosis and recoverable repair (per-tenant STS, fail-closed audit, dialling the %s; same-instance SDK/job cursors support bounded continuation)", route)
+	log.Printf("ssh-ops enabled: deployment-authorized in-instance diagnosis and recoverable repair for user-selected targets (per-tenant STS, fail-closed audit, dialling the %s; same-instance SDK/job cursors support bounded continuation)", route)
 	return newInstanceOpsRunner(svc, describer, limiter), nil
 }

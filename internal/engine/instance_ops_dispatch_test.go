@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -13,7 +12,6 @@ import (
 	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/llm"
-	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/opscontext"
 	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/tools"
@@ -47,7 +45,6 @@ func (f *fakeInstanceOpsRunner) Run(_ context.Context, req InstanceOpsRequest, o
 }
 
 func alwaysConfirm(string, map[string]any) bool { return true }
-func neverConfirm(string, map[string]any) bool  { return false }
 func instanceOpsArgs() map[string]any {
 	return map[string]any{"UHostId": "uhost-1", "Task": "排查掉卡"}
 }
@@ -75,9 +72,13 @@ func TestInstanceOps_ToolWindowGatedByLaneAndRoute(t *testing.T) {
 	require.NotContains(t, off, "DiagnoseInstanceInternals",
 		"lane off ⇒ tool must be absent from the window (INV-10)")
 
-	on := toolNames(centralAgentToolWindow(false, true))
+	runnerOnly := toolNames(centralAgentToolWindow(false, true))
+	require.NotContains(t, runnerOnly, "DiagnoseInstanceInternals",
+		"a wired runner without the deployment write grant must stay hidden")
+
+	on := toolNames(centralAgentToolWindow(true, true))
 	require.Contains(t, on, "DiagnoseInstanceInternals",
-		"lane on ⇒ tool must be visible to the model")
+		"runner plus deployment write grant ⇒ tool must be visible to the model")
 
 	capa, ok := tools.DefaultCapabilityRegistry().Lookup("DiagnoseInstanceInternals")
 	require.True(t, ok, "tool must be registered in the capability registry")
@@ -85,37 +86,31 @@ func TestInstanceOps_ToolWindowGatedByLaneAndRoute(t *testing.T) {
 		"tool must carry the diagnosis route so dispatch catches it before the mutating branch")
 }
 
-// 门 3 — a declined authorization card must NOT run the harness, must keep the
-// turn going (no finalReplyPrefix), and must return the DECLINE text — distinct
-// from the "already ran" text (V9).
-func TestInstanceOps_DeclineDoesNotRunAndTurnContinues(t *testing.T) {
-	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "unused"}}
-	eng := newInstanceOpsEngine(runner, neverConfirm)
+// DiagnoseInstanceInternals has no entry card. A ConfirmFunc belongs to ordinary
+// workflows and must not be consulted by this lane once the deployment write
+// grant and target proof have passed.
+func TestInstanceOps_DoesNotUseTheWorkflowConfirmationCallback(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成"}}
+	confirmCalls := 0
+	eng := newInstanceOpsEngine(runner, func(string, map[string]any) bool {
+		confirmCalls++
+		return false
+	})
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 
 	var steps []StepEvent
 	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&steps))
 
-	require.Equal(t, 0, runner.calls, "declined card must not spawn the harness")
-	require.False(t, strings.HasPrefix(out, finalReplyPrefix), "decline is non-terminal — the turn continues")
-	require.Contains(t, out, "已取消")
-	require.NotContains(t, out, "已经执行过", "decline text must differ from the already-ran text (V9)")
+	require.Equal(t, 0, confirmCalls)
+	require.Equal(t, 1, runner.calls)
+	require.True(t, strings.HasPrefix(out, finalReplyPrefix))
 	state, _, hydrated := eng.SessionStateSnapshot()
 	require.True(t, hydrated)
-	// This assertion used to read "a declined entry card is not a user selection",
-	// and it only still held because this test dispatches the tool directly and so
-	// skips turn entry: in a real turn #566 already recorded the id at turn entry
-	// from the user's own words, and TestTypedInstanceIDSurvivesACardThatWasNeverApproved
-	// asserts the opposite of what this line said. The two rules it conflated are
-	// now separated — the user WRITING "uhost-1" is the designation and survives the
-	// decline, while EXECUTION authority is what the decline withholds, asserted by
-	// runner.calls above. A designation says which box the next 「继续排查」 means; it
-	// never says the harness may enter it.
 	require.Equal(t, "uhost-1", state.SelectedInstanceID)
 	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
 }
 
-func TestInstanceOps_OneEntryAuthorizationCoversMultipleRepairsAndPersistsAgentCursor(t *testing.T) {
+func TestInstanceOps_DeploymentGrantCoversMultipleRepairsAndPersistsAgentCursor(t *testing.T) {
 	const sessionID = "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5"
 	runner := &fakeInstanceOpsRunner{
 		progress: []InstanceOpsProgress{
@@ -140,7 +135,7 @@ func TestInstanceOps_OneEntryAuthorizationCoversMultipleRepairsAndPersistsAgentC
 	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&steps))
 
 	require.True(t, strings.HasPrefix(out, finalReplyPrefix))
-	require.Equal(t, 1, confirmCalls, "multiple guest repairs must not create command-level UI cards")
+	require.Equal(t, 0, confirmCalls, "the lane must not create entry or command-level UI cards")
 	require.Equal(t, 1, runner.calls)
 	require.True(t, runner.lastReq.RepairScopeAuthorized)
 	state, _, hydrated := eng.SessionStateSnapshot()
@@ -160,7 +155,7 @@ func TestInstanceOps_OneEntryAuthorizationCoversMultipleRepairsAndPersistsAgentC
 			commandSteps++
 		}
 	}
-	require.Equal(t, 2, commandSteps, "both changes remain visible even though they share one scope card")
+	require.Equal(t, 2, commandSteps, "both changes remain visible under one deployment-authorized task")
 }
 
 func TestInstanceOps_DoesNotPersistAnUnappliedOrStaleConversationReceipt(t *testing.T) {
@@ -182,10 +177,10 @@ func TestInstanceOps_DoesNotPersistAnUnappliedOrStaleConversationReceipt(t *test
 		"a receipt must match the exact conversation digest Go sent before the cursor advances")
 }
 
-// 门 4 — with no confirm function installed the lane fails closed: no panic and
-// the harness is never run (INV-7).
-func TestInstanceOps_NilConfirmFailsClosed(t *testing.T) {
-	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "unused"}}
+// A confirmation broker is no longer a dependency of this lane. This is the
+// production case that removes the one card users frequently never received.
+func TestInstanceOps_NilConfirmStillRunsForAnExplicitTarget(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成"}}
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{}}, nil)
 	eng.SetInstanceOps(runner)
 	eng.lastUserMsg = "请排查 uhost-1"
@@ -194,16 +189,16 @@ func TestInstanceOps_NilConfirmFailsClosed(t *testing.T) {
 
 	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), noopStep)
 
-	require.Equal(t, 0, runner.calls, "nil confirm ⇒ never fetch, never spawn")
-	require.Contains(t, out, "无法进行授权确认")
+	require.Equal(t, 1, runner.calls)
+	require.True(t, strings.HasPrefix(out, finalReplyPrefix))
 }
 
-func TestInstanceOpsAuthorizationUsesPrivateContextAndNeverTheEntryCardOrTask(t *testing.T) {
+func TestInstanceOpsAuthorizationUsesPrivateContextAndNeverTheTaskOrConfirmCallback(t *testing.T) {
 	const secret = "Bear" + "er auth-canary-0123456789"
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "认证探测完成"}}
-	var confirmation map[string]any
+	confirmCalls := 0
 	eng := newInstanceOpsEngine(runner, func(_ string, args map[string]any) bool {
-		confirmation = args
+		confirmCalls++
 		return true
 	})
 	eng.lastUserMsg = "请排查 uhost-1\n**Authorization**: " + secret
@@ -218,14 +213,14 @@ func TestInstanceOpsAuthorizationUsesPrivateContextAndNeverTheEntryCardOrTask(t 
 	require.Equal(t, 1, runner.calls)
 	require.NotContains(t, runner.lastReq.Task, secret)
 	require.Contains(t, runner.lastReq.Task, "[REDACTED]")
-	require.NotContains(t, fmt.Sprint(confirmation), secret)
+	require.Zero(t, confirmCalls)
 	require.Len(t, runner.lastReq.Context.ProbeAuthorizations, 1)
 	require.Equal(t, secret, runner.lastReq.Context.ProbeAuthorizations[0].Value,
 		"the exact value exists only on the private request path")
 }
 
-func TestInstanceOps_ScreenshotInstanceIDReachesTheExistingConfirmationCard(t *testing.T) {
-	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "已完成排查"}}
+func TestInstanceOps_ScreenshotOnlyInstanceIDDoesNotAuthorizeEntry(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "must not run"}}
 	eng := newInstanceOpsEngine(runner, alwaysConfirm)
 	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: "请排查截图里的实例"}
 	eng.imageContextThisTurn = "实例详情 cpod-ocr-1 运行中"
@@ -234,9 +229,9 @@ func TestInstanceOps_ScreenshotInstanceIDReachesTheExistingConfirmationCard(t *t
 		"UHostId": "cpod-ocr-1", "Task": "排查 ComfyUI",
 	}, noopStep)
 
-	require.Equal(t, 1, runner.calls)
-	require.True(t, strings.HasPrefix(out, finalReplyPrefix))
-	require.Equal(t, "cpod-ocr-1", runner.lastReq.InstanceID)
+	require.Zero(t, runner.calls)
+	require.False(t, strings.HasPrefix(out, finalReplyPrefix))
+	require.Contains(t, out, "请先明确要排查的实例")
 }
 
 // 门 5 — on success the verdict is the deterministic final reply: it survives the
@@ -263,7 +258,7 @@ func TestInstanceOps_VerdictSurvivesAsTerminalReply(t *testing.T) {
 	require.Len(t, model.calls, 1, "finalReplyPrefix terminates the turn — no synthesis round after the verdict")
 	require.NotEmpty(t, runner.lastReq.TurnID, "the turn identity must reach the runner as the audit dedup key")
 	require.True(t, runner.lastReq.RepairScopeAuthorized,
-		"the single accepted entry card must authorize in-scope guest repair without more UI cards")
+		"the deployment grant plus target proof authorizes in-scope guest repair without UI cards")
 	require.NotEmpty(t, runner.lastReq.Context.ConversationHistory)
 	current := runner.lastReq.Context.ConversationHistory[len(runner.lastReq.Context.ConversationHistory)-1]
 	require.Equal(t, opscontext.ConversationRoleUser, current.Role)
@@ -321,12 +316,11 @@ func TestAuthorizationNeverEntersMainAgentWhenInstanceOpsIsUnavailable(t *testin
 	require.Contains(t, joined, signedURL)
 }
 
-// A successful entry-card confirmation is the user's selection of this exact
-// instance. Preserve that proof so a later "继续排查" can enter the same box
-// without making the user repeat an id that the server already showed and they
-// already approved. Drive two Chat turns and rehydrate the state between them:
+// An explicit diagnosis target is a user_selected instance. Preserve that proof
+// so a later "继续排查" can enter the same box without making the user repeat an
+// id they already wrote. Drive two Chat turns and rehydrate the state between them:
 // setting SelectedEntities by hand would miss the production persistence seam.
-func TestInstanceOps_ConfirmedDiagnosisCarriesTargetIntoNextTurn(t *testing.T) {
+func TestInstanceOps_ExplicitDiagnosisCarriesTargetIntoNextTurn(t *testing.T) {
 	const instanceID = "uhost-confirmed-1"
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "诊断完成", Ran: 1}}
 	model := &mockLLM{responses: []llm.ChatResponse{
@@ -336,22 +330,17 @@ func TestInstanceOps_ConfirmedDiagnosisCarriesTargetIntoNextTurn(t *testing.T) {
 		// tool call is rejected for lacking a carried selection proof.
 		{Content: "请先明确要排查的实例。"},
 	}}
-	confirmCalls := 0
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
 	eng.SetInstanceOps(runner)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	opts := ChatOptions{ConfirmResultFunc: func(string, map[string]any) ConfirmationResult {
-		confirmCalls++
-		return ConfirmationResult{Confirmed: true}
-	}}
 
-	_, err := eng.ChatWithOptions(context.Background(), "请排查 uhost-confirmed-1 上的 ComfyUI", noopStep, opts)
+	_, err := eng.ChatWithOptions(context.Background(), "请排查 uhost-confirmed-1 上的 ComfyUI", noopStep, ChatOptions{})
 	require.NoError(t, err)
 	state, version, hydrated := eng.SessionStateSnapshot()
 	require.True(t, hydrated)
 	require.Equal(t, instanceID, state.SelectedInstanceID)
 	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource,
-		"an approved diagnosis card is a user selection, not a mere observation")
+		"the user's explicit diagnosis target is a selection, not a mere observation")
 
 	// HTTP leases rehydrate the JSON envelope for every request. Round-trip it so
 	// this test proves the persisted proof, not an accidental in-memory carry.
@@ -361,76 +350,23 @@ func TestInstanceOps_ConfirmedDiagnosisCarriesTargetIntoNextTurn(t *testing.T) {
 	require.NoError(t, err)
 	eng.ClearSessionState()
 	eng.SetSessionState(persisted.AgentSessionState, version+1)
-	_, err = eng.ChatWithOptions(context.Background(), "继续排查", noopStep, opts)
+	_, err = eng.ChatWithOptions(context.Background(), "继续排查", noopStep, ChatOptions{})
 	require.NoError(t, err)
 	require.Equal(t, 2, runner.calls,
 		"the follow-up must reuse the user-confirmed target instead of asking again")
 	require.Equal(t, instanceID, runner.lastReq.InstanceID)
-	require.Equal(t, 2, confirmCalls, "each diagnosis still receives its own entry authorization card")
 	require.Len(t, model.calls, 2, "a valid carried selection must not first be rejected back to the model")
 }
 
 // A user selection that is older than the 30-minute automatic-execution window
-// is still useful identity, but it is no longer authority.  The safe recovery is
-// not to discard the identity and pretend the Agent forgot it: let the same id
-// reach ONE NEW card, which shows the target again and makes this turn's human
-// confirmation the new authorization.
-func TestInstanceOps_ExpiredUserSelectionGetsANewCardForTheSameInstance(t *testing.T) {
+// is still useful identity, but it is no longer authority. Without an entry card,
+// the user must explicitly restate the target before the lane can run.
+func TestInstanceOps_ExpiredUserSelectionRequiresAnExplicitCurrentTarget(t *testing.T) {
 	const instanceID = "cpod-expired-1"
 	beforeExpiry := time.Now().Add(-(selectedInstanceTTLSeconds + 60) * time.Second).Unix()
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
-	model := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{toolCall("diagnose-expired", "DiagnoseInstanceInternals", `{"UHostId":"cpod-expired-1","Task":"执行至 CLIPLoader 不动了，请检查"}`)}},
-	}}
-	var cardArgs map[string]any
-	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{}}, nil)
 	eng.SetInstanceOps(runner)
-	eng.SetSessionState(SessionState{
-		SchemaVersion:          SessionStateSchemaCurrent,
-		SelectedInstanceID:     instanceID,
-		SelectedInstanceName:   "clip-trainer",
-		SelectedInstanceSource: SelectedInstanceSourceUser,
-		SelectedInstanceAtUnix: beforeExpiry,
-	}, 1)
-
-	_, err := eng.ChatWithOptions(context.Background(), "执行至 CLIPLoader 不动了，请检查", noopStep, ChatOptions{
-		ConfirmResultFunc: func(_ string, args map[string]any) ConfirmationResult {
-			cardArgs = args
-			return ConfirmationResult{Confirmed: true}
-		},
-	})
-	require.NoError(t, err)
-	require.Equal(t, 1, runner.calls, "the renewed card, not stale authority, permits entry")
-	require.Equal(t, instanceID, runner.lastReq.InstanceID)
-	require.Equal(t, instanceID, cardArgs["UHostId"], "the card must name the exact historical instance")
-	require.Len(t, model.calls, 1, "the server must not bounce a known historical target back as a missing-context error")
-
-	// The model needs to see why it can name this exact id while still knowing the
-	// old selection is not authority by itself.  This also proves expiry happened
-	// before the first LLM request instead of being accidentally bypassed.
-	var firstRequest string
-	for _, msg := range model.calls[0].Messages {
-		firstRequest += msg.Content
-	}
-	require.Contains(t, firstRequest, "来源=user_selected")
-	require.Contains(t, firstRequest, "新鲜度=expired")
-
-	state, _, _ := eng.SessionStateSnapshot()
-	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
-	require.Equal(t, ContinuityFreshnessFresh, state.SelectedInstanceFreshness,
-		"only the new confirmed card refreshes the selection")
-	trace := eng.TraceSnapshot(time.Now())
-	require.Equal(t, SelectedInstanceSourceUser, trace.SelectedInstanceSourceAtStart)
-	require.Equal(t, ContinuityFreshnessExpired, trace.SelectedInstanceFreshnessAtStart,
-		"trace must preserve why the new card was required after it refreshes the final state")
-	require.Equal(t, ContinuityFreshnessFresh, trace.SessionState.SelectedInstanceFreshness)
-}
-
-func TestInstanceOps_ExpiredUserSelectionStillNeedsThatNewCard(t *testing.T) {
-	const instanceID = "cpod-expired-declined"
-	beforeExpiry := time.Now().Add(-(selectedInstanceTTLSeconds + 60) * time.Second).Unix()
-	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "must not run"}}
-	eng := newInstanceOpsEngine(runner, neverConfirm)
 	eng.SetSessionState(SessionState{
 		SchemaVersion:             SessionStateSchemaCurrent,
 		SelectedInstanceID:        instanceID,
@@ -439,23 +375,30 @@ func TestInstanceOps_ExpiredUserSelectionStillNeedsThatNewCard(t *testing.T) {
 		SelectedInstanceAtUnix:    beforeExpiry,
 		SelectedInstanceFreshness: ContinuityFreshnessExpired,
 	}, 1)
-	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, "继续排查", "turn-expired-decline", time.Now())
+
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, "执行至 CLIPLoader 不动了，请检查", "turn-expired", time.Now())
 	eng.turnContextViewReady = true
-
-	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
-		"UHostId": instanceID, "Task": "继续排查",
+	refused := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": instanceID, "Task": "检查 CLIPLoader",
 	}, noopStep)
+	require.Zero(t, runner.calls)
+	require.Contains(t, refused, "请先明确要排查的实例")
 
-	require.Zero(t, runner.calls, "declining the replacement card never enters the instance")
-	require.Contains(t, out, "已取消")
 	state, _, _ := eng.SessionStateSnapshot()
 	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
-	require.Equal(t, ContinuityFreshnessExpired, state.SelectedInstanceFreshness,
-		"a declined card must not silently renew an expired selection")
+	require.Equal(t, ContinuityFreshnessExpired, state.SelectedInstanceFreshness)
 	require.Equal(t, beforeExpiry, state.SelectedInstanceAtUnix)
+
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, "请继续排查 cpod-expired-1", "turn-expired-explicit", time.Now())
+	eng.turnContextViewReady = true
+	allowed := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+		"UHostId": instanceID, "Task": "继续检查 CLIPLoader",
+	}, noopStep)
+	require.Equal(t, 1, runner.calls)
+	require.True(t, strings.HasPrefix(allowed, finalReplyPrefix))
 }
 
-func TestInstanceOps_ExpiredObservedInstanceStillCannotReachACard(t *testing.T) {
+func TestInstanceOps_ExpiredObservedInstanceDoesNotAuthorizeEntry(t *testing.T) {
 	const instanceID = "cpod-expired-observed"
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "must not run"}}
 	confirmCalls := 0
@@ -479,7 +422,7 @@ func TestInstanceOps_ExpiredObservedInstanceStillCannotReachACard(t *testing.T) 
 	}, noopStep)
 
 	require.Zero(t, runner.calls)
-	require.Zero(t, confirmCalls, "a list observation is never eligible for a target-specific card")
+	require.Zero(t, confirmCalls, "instance-ops never invokes workflow confirmation")
 	require.Contains(t, out, "请先明确要排查的实例")
 }
 
@@ -570,16 +513,15 @@ func TestInstanceOps_ExpiredHistoricalTargetCannotAnswerAnUnresolvedReference(t 
 	}
 }
 
-// Regression: a cold session compiles its turn context before the model's first
-// read. If that read proves the account has exactly one instance, a vague
-// diagnostic request has no list-selection ambiguity and may enter the lane.
-// This must work in the same Chat turn; requiring a second user message merely
-// because the registry became fresh a few milliseconds late is a real UX loss.
-func TestInstanceOps_AllowsSameTurnFreshSingleRegistry(t *testing.T) {
+// Owning exactly one instance is an account fact, not a user selection. A vague
+// request must not become entry authority even when a same-turn read discovers a
+// singleton account.
+func TestInstanceOps_RejectsSameTurnAccountSingleRegistry(t *testing.T) {
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "已确认 ComfyUI 服务未运行。"}}
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("list", capability.ReadToolName(intent.IntentResourceInfo), `{}`)}},
 		{ToolCalls: []openai.ToolCall{toolCall("diagnose", "DiagnoseInstanceInternals", `{"UHostId":"uhost-only","Task":"排查 ComfyUI 无法打开"}`)}},
+		{Content: "请明确写出要排查的实例 ID 或名称。"},
 	}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"TotalCount": float64(1), "UHostSet": []any{map[string]any{
@@ -598,10 +540,10 @@ func TestInstanceOps_AllowsSameTurnFreshSingleRegistry(t *testing.T) {
 	require.NoError(t, err)
 	id, _ := eng.singleRegistryInstance()
 	require.Equal(t, "uhost-only", id, "premise: the first read must have refreshed a complete singleton registry")
-	require.Equal(t, "已确认 ComfyUI 服务未运行。", reply)
-	require.Equal(t, 1, runner.calls, "a same-turn complete singleton registry is a proof, not a list-row guess")
-	require.Equal(t, 1, confirmCalls)
-	require.Len(t, model.calls, 2)
+	require.Equal(t, "请明确写出要排查的实例 ID 或名称。", reply)
+	require.Zero(t, runner.calls, "account-single must not authorize instance entry")
+	require.Zero(t, confirmCalls)
+	require.Len(t, model.calls, 3)
 }
 
 func TestInstanceOps_SingleRegistryNeverOverridesAnUnresolvedExplicitTarget(t *testing.T) {
@@ -658,7 +600,7 @@ func TestInstanceOps_RejectsSelfElectedTargetFromAccountList(t *testing.T) {
 	}, captureSteps(&steps))
 
 	require.Zero(t, runner.calls, "an account-list row is never permission to enter that instance")
-	require.Zero(t, confirmCalls, "an ambiguous target must not show an authorization card")
+	require.Zero(t, confirmCalls, "instance-ops must not invoke workflow confirmation")
 	require.False(t, eng.instanceOpsRanThisTurn, "a rejected target did not enter the lane and must not spend the run slot")
 	require.Contains(t, out, "请先明确要排查的实例")
 	require.NotEmpty(t, steps)
@@ -690,7 +632,7 @@ func TestInstanceOps_VagueToolCallReturnsToTheAgentForTargetSelection(t *testing
 	require.NoError(t, err)
 	require.Equal(t, "请告诉我要排查哪台实例：提供实例 ID、名称，或从候选列表中选择即可。", reply)
 	require.Zero(t, runner.calls, "a vague symptom must return control to the agent before the SSH lane")
-	require.Zero(t, confirmCalls, "the user must not see an authorization card for a self-elected list row")
+	require.Zero(t, confirmCalls, "instance-ops must not invoke workflow confirmation")
 	require.Len(t, model.calls, 2, "the blocked call is a normal observation, so the agent can ask for a target")
 	secondRequest := model.calls[1]
 	var sawSelectionBlock bool
@@ -730,7 +672,7 @@ func TestInstanceOps_AllowsFreshUserSelectionButRejectsDifferentModelTarget(t *t
 		"UHostId": "uhost-picked", "Task": "排查服务",
 	}, noopStep)
 	require.Equal(t, 1, runner.calls, "a fresh user selection must keep pronoun follow-ups working")
-	require.Equal(t, 1, confirmCalls)
+	require.Zero(t, confirmCalls)
 	require.True(t, strings.HasPrefix(right, finalReplyPrefix))
 }
 
@@ -760,7 +702,7 @@ func TestInstanceOps_ObservedInstanceDoesNotAuthorizeDiagnosis(t *testing.T) {
 	}, noopStep)
 
 	require.Zero(t, runner.calls, "an observed referent is not a user selection")
-	require.Zero(t, confirmCalls, "the user must not receive a card for a model-elected observed target")
+	require.Zero(t, confirmCalls, "instance-ops must not invoke workflow confirmation")
 	require.Contains(t, out, "请先明确要排查的实例")
 }
 
@@ -889,85 +831,22 @@ func TestInstanceOps_OnePerTurnEvenWithTaskTweak(t *testing.T) {
 	require.False(t, strings.HasPrefix(out2, finalReplyPrefix), "the already-ran refusal keeps the turn going")
 }
 
-// V9/INV-11 coupling — a DECLINE still spends the turn's single slot (repeatedly
-// re-prompting the user is worse than answering once), so a second call after a
-// decline gets the already-ran text, not a fresh card.
-func TestInstanceOps_DeclineStillConsumesTurnSlot(t *testing.T) {
-	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "unused"}}
-	eng := newInstanceOpsEngine(runner, neverConfirm)
+// The server deployment grant is a real execution gate, not just a tool-window
+// hint. A blocked call neither enters the instance nor consumes the turn slot.
+func TestInstanceOps_DeploymentWriteGrantIsRequiredAtDispatch(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成"}}
+	eng := newInstanceOpsEngine(runner, alwaysConfirm)
+	eng.SetMutatingToolsEnabled(false)
 	ctx := context.Background()
 
 	out1 := eng.executeInstanceOps(ctx, "DiagnoseInstanceInternals", instanceOpsArgs(), noopStep)
+	require.Zero(t, runner.calls)
+	require.Contains(t, out1, "未在当前环境启用")
+	require.False(t, eng.instanceOpsRanThisTurn)
+
+	eng.SetMutatingToolsEnabled(true)
 	out2 := eng.executeInstanceOps(ctx, "DiagnoseInstanceInternals", instanceOpsArgs(), noopStep)
 
-	require.Equal(t, 0, runner.calls)
-	require.Contains(t, out1, "已取消")
-	require.Contains(t, out2, "已经执行过", "the declined slot is spent — the second call is not a fresh card")
-}
-
-// A card that was not approved has four different causes and they mean four
-// different things to the person reading the reply. Until 2026-08-12 all of them
-// produced 「好的，已取消」, which told a user whose card had expired that they had
-// cancelled it — the most common case in production, not the rarest: over 30 days
-// the entry card timed out 9 times against 2 genuine declines.
-//
-// Driven through Chat (not executeInstanceOps directly) so the whole chain is
-// exercised: ConfirmResultFunc -> the per-turn confirmation wrapper -> the field
-// the refusal reads. A test that set the field by hand would keep passing if the
-// wrapper stopped writing it.
-func TestInstanceOps_UnauthorizedReplyNamesTheActualCause(t *testing.T) {
-	for _, tc := range []struct {
-		name        string
-		reason      string
-		wantContain string
-		wantAbsent  string
-	}{
-		{"declined", observability.ConfirmationReasonUserDeclined, "好的，已取消", "超时"},
-		{"timeout", observability.ConfirmationReasonTimeout, "授权卡片已超时", "好的，已取消"},
-		{"disconnect", observability.ConfirmationReasonClientDisconnect, "连接已断开", "好的，已取消"},
-		{"undeliverable", observability.ConfirmationReasonDeliveryFailed, "未能送达", "好的，已取消"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "must not run"}}
-			model := &mockLLM{responses: []llm.ChatResponse{
-				{ToolCalls: []openai.ToolCall{toolCall("t1", "DiagnoseInstanceInternals",
-					`{"UHostId":"uhost-1","Task":"排查掉卡"}`)}},
-				{Content: "done"},
-			}}
-			eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
-			eng.SetInstanceOps(runner)
-
-			var steps []StepEvent
-			_, err := eng.ChatWithOptions(context.Background(), "请排查 uhost-1", captureSteps(&steps), ChatOptions{
-				ConfirmResultFunc: func(string, map[string]any) ConfirmationResult {
-					return ConfirmationResult{TerminalReason: tc.reason}
-				},
-			})
-			require.NoError(t, err)
-			require.Zero(t, runner.calls, "an unapproved card must never enter the instance")
-
-			var blocked string
-			for _, s := range steps {
-				if s.Type == StepBlocked && s.Action == "DiagnoseInstanceInternals" {
-					blocked = s.Message
-				}
-			}
-			require.NotEmpty(t, blocked, "the lane must report why it did not run")
-			require.Contains(t, blocked, tc.wantContain)
-			require.NotContains(t, blocked, tc.wantAbsent)
-			// Every branch has to say the box was untouched: that is the fact the
-			// user needs and the reason a wrong cause is worth fixing at all.
-			if tc.reason != observability.ConfirmationReasonUserDeclined {
-				require.Contains(t, blocked, "没有执行任何命令")
-			}
-		})
-	}
-}
-
-// The timeout sentence quotes a number. It must be the window the transport
-// actually enforces, not a hardcoded 60 left behind by the old budget.
-func TestInstanceOpsTimeoutReplyQuotesTheRealWindow(t *testing.T) {
-	msg := instanceOpsUnauthorizedMessage("uhost-1", observability.ConfirmationReasonTimeout)
-	require.Contains(t, msg, "等待 120 秒")
-	require.Equal(t, 120*time.Second, InstanceOpsConfirmWindow)
+	require.Equal(t, 1, runner.calls)
+	require.True(t, strings.HasPrefix(out2, finalReplyPrefix))
 }

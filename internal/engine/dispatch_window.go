@@ -40,9 +40,11 @@ func centralAgentToolWindow(mutatingEnabled, instanceOpsEnabled bool) []openai.T
 			capability.Policy.Route == tools.ActionRouteHandoff {
 			// DiagnoseInstanceInternals carries an ActionRouteDiagnosis policy (derived
 			// from its "Diagnose" prefix) so it would append unconditionally here.
-			// Gate it on the in-instance lane being wired, so with the lane off the
-			// window is byte-identical to before this tool existed (INV-10).
-			if capability.Name == "DiagnoseInstanceInternals" && !instanceOpsEnabled {
+			// Gate it on both the in-instance runner and the deployment's standing
+			// write authorization. SSH-ops diagnoses and performs reversible repairs
+			// as one autonomous task, so exposing it in a read-only window would make
+			// the visible contract disagree with the runtime (INV-10).
+			if capability.Name == "DiagnoseInstanceInternals" && (!instanceOpsEnabled || !mutatingEnabled) {
 				continue
 			}
 			out = append(out, capability.Tool)

@@ -144,7 +144,7 @@ func TestLiveOpsTaskScopeCanary(t *testing.T) {
 		modelContext.AgentSession = &opscontext.AgentSession{
 			SessionID:          requestedAgentSessionID,
 			WorkdirID:          envOr("SSHH_AGENT_WORKDIR_ID", requestedAgentSessionID),
-			Contract:           envOr("SSHH_AGENT_SESSION_CONTRACT", "sshops-agent-v2"),
+			Contract:           envOr("SSHH_AGENT_SESSION_CONTRACT", opscontext.AgentSessionContract),
 			Model:              supervisor.Model,
 			Resume:             os.Getenv("SSHH_AGENT_SESSION_RESUME") == "1",
 			ConversationAnchor: strings.TrimSpace(os.Getenv("SSHH_AGENT_SESSION_CONVERSATION_ANCHOR")),

@@ -199,8 +199,8 @@ func TestLiveKeystone(t *testing.T) {
 	}
 }
 
-// TestLiveFullFlow drives the real Service end to end against a live box. B-only: the model selects
-// the tool + UHostId and the engine's authorization card gates consent, so there is no
+// TestLiveFullFlow drives the real Service end to end against a live box. B-only: the caller supplies
+// the exact UHostId after the engine has proved the user target, so there is no
 // symptom-recognition or candidate-list step here — the instance ID comes straight from the caller,
 // then Diagnose enters over real SSH and runs the real harness. Run it against a box whose NVIDIA
 // user-space driver lib has been relocated to reproduce a "掉卡".
@@ -239,12 +239,13 @@ func TestLiveFullFlow(t *testing.T) {
 	t.Logf("[arm] context=%v model=%s", contextEnabled, sup.Model)
 	svc := NewService(sup, audit)
 
-	// The model already selected DiagnoseInstanceInternals{UHostId, Task} and the user authorized it
-	// on the engine's card. Enter the instance and diagnose (real harness, real SSH, default 掉卡 probe).
+	// The model already selected DiagnoseInstanceInternals{UHostId, Task}; the product path proves the
+	// user target and deployment grant before calling Service. Enter and diagnose here (real harness,
+	// real SSH, default 掉卡 probe).
 	// SSHH_TASK carries the REAL user phrasing for the scenario under test (the Task the model would
 	// have passed). Empty => the harness falls back to its generic diagnose-and-repair task.
 	task := os.Getenv("SSHH_TASK")
-	t.Logf("[授权后] 进入实例 %s 排查（写操作逐条拒绝）· task=%q", instanceID, task)
+	t.Logf("[目标已绑定] 进入实例 %s 排查（本测试无修复授权）· task=%q", instanceID, task)
 	owner := Owner{TopOrganizationID: 1, OrganizationID: 2, RequestUUID: "live-req-1", TurnID: "live-turn-1"}
 	modelContext := opscontext.Context{}
 	if contextEnabled {

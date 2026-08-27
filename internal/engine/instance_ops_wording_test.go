@@ -18,24 +18,24 @@ func findInstanceOpsTool(window []openai.Tool) *string {
 	return nil
 }
 
-// The lane has one production contract: one task-scope card, then autonomous guest-local diagnosis,
-// recoverable repair and verification. The hard refusals remain code gates, not repeated UI cards.
-func TestInstanceOpsDescriptionOffersConfirmationGatedRepair(t *testing.T) {
-	desc := findInstanceOpsTool(centralAgentToolWindow(false, true))
+// The lane has one production contract: deployment-authorized autonomous guest-local diagnosis,
+// recoverable repair and verification on a user-selected target, with no UI cards.
+func TestInstanceOpsDescriptionOffersCardFreeAutonomousRepair(t *testing.T) {
+	desc := findInstanceOpsTool(centralAgentToolWindow(true, true))
 	if desc == nil {
 		t.Fatal("DiagnoseInstanceInternals missing from the window with the lane on")
 	}
 	if strings.Contains(*desc, "只执行只读命令") {
 		t.Fatalf("single repair contract regressed to the removed read-only product mode: %q", *desc)
 	}
-	if !strings.Contains(*desc, "一张任务范围卡") || !strings.Contains(*desc, "不再为每条命令重复请求确认") {
-		t.Fatalf("description does not offer the single-card autonomous repair contract: %q", *desc)
+	if !strings.Contains(*desc, "不再额外弹授权卡") || !strings.Contains(*desc, "不为每条命令重复请求确认") {
+		t.Fatalf("description does not offer the card-free autonomous repair contract: %q", *desc)
 	}
 	if !strings.Contains(*desc, "绝不能从列表自行挑选") {
 		t.Fatalf("description omits the target-selection boundary: %q", *desc)
 	}
-	if !strings.Contains(*desc, "不能把它视为已授权") {
-		t.Fatalf("description omits the expired-selection reauthorization boundary: %q", *desc)
+	if !strings.Contains(*desc, "过期选择") {
+		t.Fatalf("description omits the expired-selection target boundary: %q", *desc)
 	}
 	// Still has to name the hard limits, or the model plans around commands it can never run.
 	if !strings.Contains(*desc, "始终会被拒绝") {
@@ -51,5 +51,11 @@ func TestInstanceOpsDescriptionOffersConfirmationGatedRepair(t *testing.T) {
 func TestDisabledLaneDoesNotExposeTheTool(t *testing.T) {
 	if findInstanceOpsTool(centralAgentToolWindow(false, false)) != nil {
 		t.Fatal("lane off but DiagnoseInstanceInternals is in the window (INV-10)")
+	}
+}
+
+func TestReadOnlyDeploymentDoesNotExposeTheInstanceRepairLane(t *testing.T) {
+	if findInstanceOpsTool(centralAgentToolWindow(false, true)) != nil {
+		t.Fatal("runner is wired but mutating_tools=false; the autonomous repair lane must stay hidden")
 	}
 }

@@ -1,4 +1,4 @@
-// Package sshops implements the consent-gated in-instance SSH diagnosis and repair lane:
+// Package sshops implements the deployment-authorized, user-targeted in-instance SSH diagnosis and repair lane:
 // it fetches an instance's SSH credential out-of-band and hands it to a spawned Agent-SDK
 // harness over a stdin handshake. The credential never enters an LLM prompt, a trace, the DB,
 // a reply, argv, or a log — see DESIGN-production.md (vendored under deploy/ssh_ops_harness/).
@@ -201,8 +201,8 @@ func fetchCredentialWithDialPolicy(ctx context.Context, d Describer, instanceID 
 		return Credential{}, nil, fmt.Errorf("sshops: instance %s password unavailable", instanceID)
 	}
 	// InstanceID is the id the credential was actually READ FROM, never the id
-	// that was asked for. The caller re-checks the two are equal before showing
-	// a consent card, so the box named on the card is the box entered.
+	// that was asked for. The caller re-checks the two are equal before entering,
+	// so the user-selected box is the box actually entered.
 	return Credential{InstanceID: resolvedID, Host: host, User: user, Port: port, password: string(dec)}, inst, nil
 }
 

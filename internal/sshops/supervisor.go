@@ -17,7 +17,7 @@ import (
 	"github.com/google/uuid"
 )
 
-// Supervisor spawns the Python Agent-SDK harness once per consented ops-task and feeds it the SSH
+// Supervisor spawns the Python Agent-SDK harness once per authorized, user-targeted ops task and feeds it the SSH
 // credential over a one-shot stdin handshake. Security properties:
 //   - the credential crosses ONLY via stdin (a JSON line) — never argv, never an env var. The SDK
 //     passes the wrapper's whole environment into the `claude` CLI it spawns, so the child gets an
@@ -167,7 +167,7 @@ func (s Supervisor) childEnv() []string {
 	return env
 }
 
-// Run spawns the harness for one consented task. cred must already be resolved via FetchCredential.
+// Run spawns the harness for one authorized task. cred must already be resolved via FetchCredential.
 // The harness runs in its OWN process group, so a timeout/cancel kills the WHOLE tree — the python
 // wrapper AND the claude CLI (+ node) the SDK spawns under it — not just the direct child. stdout is
 // consumed through the bounded line protocol; only the VERDICT body becomes Output. onStep, if
@@ -279,15 +279,15 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 		"model":       s.Model,
 		"task":        task, // NL request -> stdin, off the host process table
 		"context":     modelContext,
-		// Task-scoped authorization is deliberately separate from model-visible context. A new
+		// Server-proven repair-scope authorization is deliberately separate from model-visible context. A new
 		// harness uses it to execute in-scope guest repairs without command-by-command cards; an old
 		// harness ignores it and is supported by the adapter's internal confirmer.
 		"repair_scope_authorized": modelContext.RepairScopeAuthorized,
 		// SessionRoot and AgentSession are private control-plane continuation metadata. They contain
 		// no transcript or credential and never enter the prompt/audit payload.
 		"agent_session": agentSession,
-		// Echoed by a v3-aware harness only after the role-complete context reaches
-		// a genuine model turn. An older harness cannot falsely advance this cursor.
+		// Echoed by a role-complete-context-aware harness only after that context
+		// reaches a genuine model turn. An older harness cannot falsely advance this cursor.
 		"conversation_anchor": strings.TrimSpace(modelContext.BridgeConversationAnchor),
 		// Keep the full bounded conversation on the wire. Only the harness knows
 		// whether the SDK's local JSONL still exists; it applies this index solely

@@ -119,14 +119,17 @@ calls) is never persisted or executed as a normal answer.
 
 ## In-instance diagnosis
 
-`DiagnoseInstanceInternals` is an optional SSH-ops lane. It requires:
+`DiagnoseInstanceInternals` is an optional autonomous SSH-ops lane. It requires:
 
 - tenant-scoped STS credentials;
 - a configured Python/Agent-SDK harness;
 - audit migrations `0011`, `0013` and `0014`;
-- one explicit task-scope entry confirmation. After it is accepted, the lane may
-  autonomously perform guest-local, reversible repairs that directly serve the
-  stated task; it does not ask again for every command.
+- the deployment grant `agent.authorization.mutating_tools=true`; and
+- a deterministic current or non-expired `user_selected` target. OCR-only,
+  account-single, observed-only, model-selected and expired targets do not authorize entry.
+
+Once those server-owned conditions hold, the lane performs guest-local reversible
+diagnosis, repair and verification without an entry card or per-command prompts.
 
 The lane fails closed when audit storage is unavailable. A missing audit schema
 disables only this lane and logs the missing migration; it does not take chat

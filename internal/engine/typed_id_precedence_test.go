@@ -18,7 +18,7 @@ import (
 // typed B. Tier B therefore used to return A before the caller could compare B
 // with the user's literal words. Supplying the proposed target to the binder makes
 // that exact literal an unresolved explicit reference: it suppresses A, while the
-// existing point-query and confirmation card remain responsible for B.
+// existing point-query remains responsible for B.
 func TestASecondTypedIDOutranksTheFirstOneItAlreadyBound(t *testing.T) {
 	const first = "cpod-aaaa1111aaaa"
 	for _, tc := range []struct {
@@ -40,16 +40,8 @@ func TestASecondTypedIDOutranksTheFirstOneItAlreadyBound(t *testing.T) {
 			eng.SetInstanceOps(runner)
 			eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 
-			var carded []string
-			opts := ChatOptions{ConfirmResultFunc: func(_ string, args map[string]any) ConfirmationResult {
-				id, _ := args["UHostId"].(string)
-				carded = append(carded, id)
-				return ConfirmationResult{Confirmed: true}
-			}}
-
-			_, err := eng.ChatWithOptions(context.Background(), "排查 "+first+" 上的 ComfyUI", noopStep, opts)
+			_, err := eng.ChatWithOptions(context.Background(), "排查 "+first+" 上的 ComfyUI", noopStep, ChatOptions{})
 			require.NoError(t, err)
-			require.Equal(t, []string{first}, carded)
 			require.Equal(t, first, runner.lastReq.InstanceID)
 
 			state, _, _ := eng.SessionStateSnapshot()
@@ -57,10 +49,8 @@ func TestASecondTypedIDOutranksTheFirstOneItAlreadyBound(t *testing.T) {
 			require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
 
 			rehydrate(t, eng)
-			_, err = eng.ChatWithOptions(context.Background(), tc.second, noopStep, opts)
+			_, err = eng.ChatWithOptions(context.Background(), tc.second, noopStep, ChatOptions{})
 			require.NoError(t, err)
-			require.Equal(t, []string{first, tc.second}, carded,
-				"the id the user typed THIS turn must reach its own card, not the one they typed before")
 			require.Equal(t, tc.second, runner.lastReq.InstanceID)
 			require.Equal(t, 2, runner.calls)
 
@@ -151,7 +141,7 @@ func TestAWriteWorkflowCannotUseTheCarriedTargetWhenTheUserNamesAnother(t *testi
 }
 
 // A proposed target only helps the binder when the current message contains that
-// exact ID. An ID invented by the model still cannot reach a card.
+// exact ID. An ID invented by the model still cannot authorize entry.
 func TestAModelInventedIDIsStillRefusedWhenTheBinderSeesProposals(t *testing.T) {
 	const typed, invented = "cpod-aaaa1111aaaa", "cpod-9999invented9"
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "不应到达", Ran: 1}}
@@ -166,21 +156,12 @@ func TestAModelInventedIDIsStillRefusedWhenTheBinderSeesProposals(t *testing.T) 
 	eng.SetInstanceOps(runner)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 
-	var carded []string
-	opts := ChatOptions{ConfirmResultFunc: func(_ string, args map[string]any) ConfirmationResult {
-		id, _ := args["UHostId"].(string)
-		carded = append(carded, id)
-		return ConfirmationResult{Confirmed: true}
-	}}
-	_, err := eng.ChatWithOptions(context.Background(), "排查 cpod-aaaa1111aaaa 上的 ComfyUI", noopStep, opts)
+	_, err := eng.ChatWithOptions(context.Background(), "排查 cpod-aaaa1111aaaa 上的 ComfyUI", noopStep, ChatOptions{})
 	require.NoError(t, err)
-	require.Equal(t, []string{typed}, carded)
 
 	rehydrate(t, eng)
-	_, err = eng.ChatWithOptions(context.Background(), "再看看 cpod-aaaa1111aaaa 的显存", noopStep, opts)
+	_, err = eng.ChatWithOptions(context.Background(), "再看看 cpod-aaaa1111aaaa 的显存", noopStep, ChatOptions{})
 	require.NoError(t, err)
-	require.Equal(t, []string{typed}, carded,
-		"an id the user never wrote must not reach a card just because the message names another id")
 	require.Equal(t, typed, runner.lastReq.InstanceID, "and must not be the instance entered")
 
 	state, _, _ := eng.SessionStateSnapshot()
@@ -191,7 +172,7 @@ func TestAModelInventedIDIsStillRefusedWhenTheBinderSeesProposals(t *testing.T) 
 
 // When the model repeats carried A after the user types B, the ID-shaped-token
 // signal must suppress A even though the proposal signal cannot see B.
-func TestACarriedTargetTheUserDidNotNameThisTurnDoesNotReachACard(t *testing.T) {
+func TestACarriedTargetTheUserDidNotNameThisTurnDoesNotAuthorizeEntry(t *testing.T) {
 	const carried = "cpod-aaaa1111aaaa"
 	for _, second := range []string{"cpod-bbbb2222bbbb", "uhost-bbbb2222bbbb"} {
 		t.Run(second, func(t *testing.T) {
@@ -207,21 +188,12 @@ func TestACarriedTargetTheUserDidNotNameThisTurnDoesNotReachACard(t *testing.T) 
 			eng.SetInstanceOps(runner)
 			eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 
-			var carded []string
-			opts := ChatOptions{ConfirmResultFunc: func(_ string, args map[string]any) ConfirmationResult {
-				id, _ := args["UHostId"].(string)
-				carded = append(carded, id)
-				return ConfirmationResult{Confirmed: true}
-			}}
-			_, err := eng.ChatWithOptions(context.Background(), "排查 "+carried+" 上的 ComfyUI", noopStep, opts)
+			_, err := eng.ChatWithOptions(context.Background(), "排查 "+carried+" 上的 ComfyUI", noopStep, ChatOptions{})
 			require.NoError(t, err)
-			require.Equal(t, []string{carried}, carded)
 
 			rehydrate(t, eng)
-			_, err = eng.ChatWithOptions(context.Background(), "现在排查 "+second+" 上的 ComfyUI", noopStep, opts)
+			_, err = eng.ChatWithOptions(context.Background(), "现在排查 "+second+" 上的 ComfyUI", noopStep, ChatOptions{})
 			require.NoError(t, err)
-			require.Equal(t, []string{carried}, carded,
-				"the user named a different instance this turn; the carried one must not reach a second card")
 			require.Equal(t, 1, runner.calls, "and must not be entered")
 		})
 	}

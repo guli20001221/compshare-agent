@@ -30,9 +30,9 @@ type selectionBinding struct {
 	// namedID is the NARROWER half of explicit: the message contains an actual
 	// instance id. An ordinal ("第2台") is explicit and names no id, and the two
 	// must not be conflated — a reference the server cannot resolve is exactly the
-	// case the design hands to the Agent, whose inferred target then rides into the
-	// confirmation card where the user's confirm becomes the proof. Only a literal
-	// id the model then contradicts is a disagreement worth stopping for.
+	// case the design leaves unresolved. An inferred target cannot authorize SSH
+	// entry; platform-write workflows may still use their own confirmation proof.
+	// Only a literal id the model then contradicts is a disagreement worth stopping for.
 	namedID bool
 }
 
@@ -44,8 +44,8 @@ func (b selectionBinding) bound() bool { return b.id != "" && !b.conflict }
 // typed id, an ordinal against a shown candidate list, a unique exact instance
 // name, a prior EXPLICIT user pick, or the sole instance of a complete account.
 // Semantic references ("把刚才最慢的那台停掉") are left to the Agent; if the binder
-// cannot prove the reference it returns no binding, and the Agent's inferred target
-// rides into the confirmation card where the user's confirm becomes the proof.
+// cannot prove the reference it returns no binding. That never authorizes SSH entry;
+// a platform-write workflow may still establish selection through its own confirmation.
 //
 // Precedence: an explicit reference in THIS message (id / ordinal / name) wins over
 // carried context (prior pick / account-single) — a user pointing now overrides a

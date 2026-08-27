@@ -1,7 +1,7 @@
-"""Production harness wrapper — Claude Agent SDK sub-agent on a THIRD-PARTY model doing CONSENTED
+"""Production harness wrapper — Claude Agent SDK sub-agent on a THIRD-PARTY model doing AUTHORIZED
 SSH diagnosis and repair on ONE GPU instance, behind reasoning-blind guardrails.
 
-Spawned per consented ops-task by the Go server. Boundary contract:
+Spawned per deployment-authorized, user-targeted ops task by the Go server. Boundary contract:
   - The SSH credential arrives ONCE over a stdin handshake (a single JSON line) into a module
     variable. It is NEVER placed in os.environ (the SDK passes the wrapper's full environment into
     the spawned `claude` CLI), never in argv, never logged, never returned to the model.
@@ -10,7 +10,7 @@ Spawned per consented ops-task by the Go server. Boundary contract:
     names a credential.
   - Built-in tools (Bash/Read/Write/...) are stripped so only reviewed in-process operations tools
     exist, asserted by INV-9. Without this the harness's built-in Bash runs on the LOCAL host.
-  - One explicit task-scope authorization covers evidence-backed, reversible guest-local effects.
+  - One server-proven repair scope covers evidence-backed, reversible guest-local effects.
     The agent executes those effects without per-command cards. Irrecoverable and tenant/control-plane
     boundary violations and command substitution are refused. Box output is capped and secret-scrubbed.
 
@@ -40,7 +40,7 @@ import remote_search
 import remote_text
 import ssh_transport
 
-# --- the consented connection, delivered via stdin handshake. Module memory only. ---
+# --- the authorized connection, delivered via stdin handshake. Module memory only. ---
 _CONN = None          # {"host","user","port","password"|"key"}  (+ optional "instance_id","model")
 _ENDPOINT_TARGETS = {}  # opaque id -> private server-selected HTTP/TCP target; never rendered
 _PROBE_AUTHORIZATIONS = {}  # opaque current-request ref -> private Authorization value; stdin only
@@ -116,7 +116,7 @@ If the tool rejects only the command form, rewrite it into a supported plain com
 a command to bypass a policy refusal or a decision the user did not approve."""
 
 _SYSTEM_PROMPT_REPAIR_MODE = """## Authorization: diagnose, repair, verify
-The user authorized this in-instance repair. Autonomously execute the smallest evidence-backed,
+The server has authorized this user-targeted in-instance repair. Autonomously execute the smallest evidence-backed,
 reversible guest-local changes needed; do not ask again for each command. Scope remains the requested
 outcome. Replacing an app, disabling unrelated service, or changing control-plane resources is outside it
 unless explicitly requested.
@@ -225,7 +225,7 @@ _AGENT_SESSION_SETTINGS = "runtime-settings.json"
 _MAX_AGENT_SESSION_CONTRACT = 128
 _MAX_AGENT_SESSION_MODEL = 200
 _AGENT_TRANSCRIPT_RETENTION_DAYS = 1
-_AGENT_SESSION_CONTRACT = "sshops-agent-v2"
+_AGENT_SESSION_CONTRACT = "sshops-agent-v3"
 _CONVERSATION_ANCHOR = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -272,18 +272,25 @@ def prepare_resumed_reference_context(context, resume_index, resume_existing):
         resume_index = 0
     if isinstance(resume_index, bool) or not isinstance(resume_index, int) or resume_index < 0:
         raise ValueError("conversation_resume_index must be a non-negative integer")
+    # A mismatched/expired contract or a missing local transcript makes this a
+    # fresh SDK session. Go still sends the high-water index from its durable
+    # cursor, but a fresh session must receive the COMPLETE supported snapshot;
+    # applying or rejecting that stale index would either lose the antecedent or
+    # break a safe rolling deploy.
+    if not resume_existing:
+        return context
     if context is None:
         if resume_index != 0:
-            raise ValueError("conversation_resume_index requires schema v3 context")
+            raise ValueError("conversation_resume_index requires role-complete context")
         return None
-    if context.get("schema_version") != _CONTEXT_SCHEMA_VERSION:
+    if context.get("schema_version") not in (3, _CONTEXT_SCHEMA_VERSION):
         if resume_index != 0:
-            raise ValueError("conversation_resume_index requires schema v3 context")
+            raise ValueError("conversation_resume_index requires role-complete context")
         return context
     history = context.get("conversation_history", [])
     if resume_index > len(history):
         raise ValueError("conversation_resume_index exceeds conversation_history")
-    if not resume_existing or resume_index == 0:
+    if resume_index == 0:
         return context
     result = dict(context)
     result["conversation_history"] = history[resume_index:]
@@ -353,7 +360,7 @@ def normalize_agent_session(value, session_root, selected_model, instance_id="")
 # The Go side owns collection, redaction and the whole-conversation size budget. The harness
 # validates the wire shape before adding it to the prompt; an unsupported version still degrades
 # to task-only for rolling compatibility, while a malformed SUPPORTED version fails explicitly.
-_CONTEXT_SCHEMA_VERSION = 3
+_CONTEXT_SCHEMA_VERSION = 4
 _CONTEXT_STATUSES = {"known", "unknown", "not_observed", "reported"}
 _CONTEXT_ROLES = {"user", "assistant"}
 _MAX_CONTEXT_TEXT = 4096
@@ -370,10 +377,13 @@ _CONTEXT_FACT_KEYS_V2 = {
     "instance.declared_software", "platform.instance_port_hints", "platform.tcp_forwards",
     "catalog.expected_software_ports", "catalog.region_port_hints", "guest.listeners", "monitor",
 }
+_CONTEXT_FACT_KEYS_V3 = _CONTEXT_FACT_KEYS_V2
+_CONTEXT_FACT_KEYS_V4 = _CONTEXT_FACT_KEYS_V3 | {"instance.kind"}
 _CONTEXT_FACT_KEYS_BY_VERSION = {
     1: _CONTEXT_FACT_KEYS_V1,
     2: _CONTEXT_FACT_KEYS_V2,
-    3: _CONTEXT_FACT_KEYS_V2,
+    3: _CONTEXT_FACT_KEYS_V3,
+    4: _CONTEXT_FACT_KEYS_V4,
 }
 _BACKGROUND_JOB_ID = re.compile(r"^job-[0-9a-f]{32}$")
 _ACTIVE_BACKGROUND_JOB_STATES = {"started", "running", "unknown"}
@@ -448,6 +458,11 @@ def _context_fact(value, allowed_keys):
     if key not in allowed_keys and not key.startswith("monitor."):
         return None
     bounded = _context_value(value.get("value"))
+    if key == "instance.kind" and bounded not in ("vm", "pod"):
+        # This is a high-authority control-plane classification. Reject malformed
+        # producer values instead of turning an arbitrary string/object into a
+        # fact the model is told not to re-check.
+        return None
     if key == "instance.declared_software":
         # Names only, enforced HERE as well as at the producer. The sibling field on each upstream
         # Softwares[] entry is a URL that embeds a live Jupyter token, so this is the one fact whose
@@ -471,7 +486,7 @@ def normalize_reference_context(value):
     result = {"schema_version": version}
     if version >= 3:
         if "current_user_report" in value or "prior_user_reports" in value:
-            raise ValueError("schema v3 conversation must not mix legacy user-report fields")
+            raise ValueError("role-complete conversation must not mix legacy user-report fields")
         history_value = value.get("conversation_history")
         if history_value is not None and not isinstance(history_value, list):
             raise ValueError("conversation_history must be an array")
@@ -559,6 +574,12 @@ _CONTEXT_FENCE_NOTES = {
        "this box. `instance.declared_software` is a name list only, with no ports and no URLs. ",
 }
 _CONTEXT_FENCE_NOTES[3] = _CONTEXT_FENCE_NOTES[2]
+_CONTEXT_FENCE_NOTES[4] = (
+    "`instance.kind` is the control-plane resource kind: `pod` only for a `cpod-` resource, "
+    "and `vm` for a `uhost-` resource even when its image/runtime is container-based. Do not "
+    "infer the kind from guest processes, image names, or `InstanceType`. "
+    + _CONTEXT_FENCE_NOTES[2]
+)
 
 
 def _model_turn_began(msg, kind) -> bool:
@@ -660,7 +681,7 @@ def render_prepared_prompt(task, context, pending_background_job=None,
     version = context.get("schema_version")
     fence_note = _CONTEXT_FENCE_NOTES.get(version, "")
     if version >= 3 and context.get("conversation_history"):
-        # V3 is the authoritative, role-complete outer request. Do not also render the outer
+        # V3+ is the authoritative, role-complete outer request. Do not also render the outer
         # model's planner Task as a second instruction: production case 083 proved that even an
         # explicit prose priority rule does not reliably stop a model from executing conflicting
         # parameters in that lossy rewrite first. Task remains server-side routing/audit identity;
@@ -1205,10 +1226,10 @@ def _record_structured_step(display: str, tier: str, disposition: str, byte_coun
 def _request_confirm(command: str):
     """Authorize a mutation from task scope, or use the legacy per-command wire.
 
-    New servers set ``repair_scope_authorized`` only after the user accepts the single lane-entry
-    card. No command text is then sent back to the UI and no second decision can interrupt the
-    repair. Keeping the old wire for an absent/false bit makes a new harness safe behind an older
-    server during a rolling deploy.
+    New servers set ``repair_scope_authorized`` only when deployment write authority is enabled and
+    deterministic binding proves the user-selected instance. No command text is then sent back to
+    the UI and no confirmation can interrupt the repair. Keeping the old wire for an absent/false
+    bit makes a new harness safe behind an older server during a rolling deploy.
 
     On the legacy path, the literal string sent out is the SAME one run_command is about to execute - the caller
     passes it through rather than re-deriving it. If the two could differ, the approval would
@@ -1891,6 +1912,44 @@ def prepare_agent_session(value, session_root, selected_model, instance_id=""):
 DEFAULT_MAX_TURNS = 50
 
 
+# An executed guest mutation is not the end of an operations task: production case 078 showed the
+# model editing configuration and then stopping with a user-facing "restart it yourself" instruction,
+# even though the same authorized tool surface could finish and verify the repair. Claude Code's
+# official Stop hook is the narrow lifecycle point for correcting that premature stop. It is not a
+# second planner and does not inspect command text; the audited disposition is the source of truth.
+# The CLI re-enters the hook with stop_hook_active=true after a blocked Stop, which is its documented
+# recursion guard and lets the second Stop through even when the earlier mutation remains in AUDIT.
+_REPAIR_CLOSURE_REASON = (
+    "A guest-local mutation ran in this turn. Before stopping, close the authorized repair loop: "
+    "re-read the user's original success criterion, apply any remaining in-scope reversible action "
+    "that is still required, and verify the affected runtime plus the original criterion from every "
+    "available relevant vantage. Do not defer an action you can execute with the current tools. If "
+    "completion is genuinely blocked, report the concrete blocker and its evidence. Do not repeat "
+    "already-settled reads or make unrelated changes."
+)
+
+
+async def _repair_closure_stop_hook(hook_input, _tool_use_id, _context):
+    """Give one model continuation after an executed mutation, then permit the next Stop.
+
+    StopHookInput.stop_hook_active is supplied by the pinned Agent SDK/CLI specifically to prevent a
+    Stop hook from recursively blocking forever. Refused writes and read-only observations never
+    trigger this continuation because neither changed the guest and therefore neither creates a
+    repair/verification gap to close.
+    """
+    if bool((hook_input or {}).get("stop_hook_active")):
+        return {}
+    if not any(entry.get("disposition") == "ran_mutating" for entry in AUDIT):
+        return {}
+    return {"decision": "block", "reason": _REPAIR_CLOSURE_REASON}
+
+
+def _repair_closure_hooks():
+    """Build the pinned SDK's typed Stop-hook configuration without a module-level SDK import."""
+    from claude_agent_sdk import HookMatcher
+    return {"Stop": [HookMatcher(matcher=None, hooks=[_repair_closure_stop_hook])]}
+
+
 def _native_windows_cli(cli: str, platform_name=None) -> str:
     """Prefer the npm package's native executable over its cmd.exe shim on Windows.
 
@@ -1958,6 +2017,7 @@ def build_options(server, model, max_turns=DEFAULT_MAX_TURNS, pending_background
                 if agent_session is not None and agent_session["resume_existing"] else None),
         session_id=(agent_session["session_id"] if agent_session is not None else None),
         fork_session=bool(agent_session is not None and agent_session["resume_existing"]),
+        hooks=_repair_closure_hooks(),
     )
     assert_tool_surface(opts)  # fail closed before any turn
     return opts

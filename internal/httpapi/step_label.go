@@ -48,7 +48,7 @@ var stepActionLabels = map[string]string{
 	"ReadChunk":                               "查看知识原文",
 	"HandoffToCustomerSupport":                "联系人工客服",
 	"DiagnoseBilling":                         "诊断扣费异常",
-	"DiagnoseInstanceInternals": "实例内排查与修复",
+	"DiagnoseInstanceInternals":               "实例内排查与修复",
 
 	// --- internal/capability: the "ReadCapability_"+intent family -----------
 	// Second source. These ARE the model's read surface, so in a typical turn
@@ -84,10 +84,8 @@ var stepActionLabels = map[string]string{
 // stepActionLabel returns the console label for a step Action, or "" when the
 // action has none (unknown/ad-hoc actions, which the console renders raw).
 func stepActionLabel(action string) string {
-	// This is the RUNNING-ACTIVITY line, not the authorization card — an earlier
-	// version of this comment claimed it was the card, and that mistake is why the
-	// card kept saying 只读 in write mode for a while: fixing this one read as
-	// having fixed both. The card is serverOwnedConfirmLabel below.
+	// This is the running-activity line. DiagnoseInstanceInternals has no entry
+	// confirmation card; ordinary workflow card titles remain console-owned.
 	if action == "DiagnoseInstanceInternals" {
 		return "实例内排查与修复"
 	}
@@ -106,16 +104,6 @@ func stepActionLabel(action string) string {
 		if label := workflow.StepLabel(operation + "Workflow"); label != "" {
 			return "发起" + label + "请求"
 		}
-	}
-	return ""
-}
-
-// serverOwnedConfirmLabel returns labels whose wording depends on server-only
-// state. Other workflows retain the console's existing labels and wire shape.
-func serverOwnedConfirmLabel(action string) string {
-	switch action {
-	case "DiagnoseInstanceInternals":
-		return "授权本次实例内排查与可恢复修复"
 	}
 	return ""
 }

@@ -224,7 +224,7 @@ func TestSupervisorResumeKeepsFreshFallbackAndMarksTheOuterConversationDelta(t *
 		SchemaVersion:       opscontext.SchemaVersion,
 		ConversationHistory: full,
 		AgentSession: &opscontext.AgentSession{
-			SessionID: "11111111-1111-4111-8111-111111111111", Contract: "sshops-agent-v2",
+			SessionID: "11111111-1111-4111-8111-111111111111", Contract: opscontext.AgentSessionContract,
 			WorkdirID: "22222222-2222-4222-8222-222222222222",
 			Model:     "gpt-5.6-terra", Resume: true,
 			ConversationAnchor: opscontext.ConversationAnchor(bridged),
@@ -312,7 +312,7 @@ func TestSupervisorAnchorMissStartsFreshWithCompleteSnapshot(t *testing.T) {
 		SchemaVersion:       opscontext.SchemaVersion,
 		ConversationHistory: full,
 		AgentSession: &opscontext.AgentSession{
-			SessionID: oldID, Contract: "sshops-agent-v2", Model: "gpt-5.6-terra", Resume: true,
+			SessionID: oldID, Contract: opscontext.AgentSessionContract, Model: "gpt-5.6-terra", Resume: true,
 			WorkdirID:          oldID,
 			ConversationAnchor: opscontext.ConversationAnchor([]opscontext.ConversationMessage{{Role: "user", Content: "dropped prefix"}}),
 		},
@@ -323,7 +323,7 @@ func TestSupervisorAnchorMissStartsFreshWithCompleteSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("run: %v (output=%q)", err, res.Output)
 	}
-	if strings.Contains(res.Output, oldID) || !strings.Contains(res.Output, "/sshops-agent-v2/gpt-5.6-terra/False") {
+	if strings.Contains(res.Output, oldID) || !strings.Contains(res.Output, "/"+opscontext.AgentSessionContract+"/gpt-5.6-terra/False") {
 		t.Fatalf("anchor miss did not rotate to a fresh session: %s", res.Output)
 	}
 	if !strings.Contains(res.Output, `CONVERSATION=[{"role":"user","content":"bounded current snapshot"}]`) {
@@ -551,21 +551,21 @@ func TestParseHarnessStream(t *testing.T) {
 	}
 }
 
-func TestParseAgentSessionV2RequiresAppliedConversationAnchor(t *testing.T) {
+func TestParseCurrentAgentSessionRequiresAppliedConversationAnchor(t *testing.T) {
 	const id = "11111111-1111-4111-8111-111111111111"
 	const workdirID = "22222222-2222-4222-8222-222222222222"
 	without := `{"session_id":"` + id + `","workdir_id":"` + workdirID + `","contract":"` + opscontext.AgentSessionContract + `","model":"gpt-5.6-terra"}`
 	if _, ok := parseAgentSessionUpdate(without); ok {
-		t.Fatal("a v2 receipt without an applied conversation anchor must not advance continuation")
+		t.Fatal("a current-contract receipt without an applied conversation anchor must not advance continuation")
 	}
 	with := `{"session_id":"` + id + `","workdir_id":"` + workdirID + `","contract":"` + opscontext.AgentSessionContract +
 		`","model":"gpt-5.6-terra","conversation_anchor":"` + strings.Repeat("a", 64) + `"}`
 	got, ok := parseAgentSessionUpdate(with)
 	if !ok || got.AgentSessionConversationAnchor != strings.Repeat("a", 64) {
-		t.Fatalf("valid v2 receipt was rejected or lost its anchor: %+v ok=%v", got, ok)
+		t.Fatalf("valid current-contract receipt was rejected or lost its anchor: %+v ok=%v", got, ok)
 	}
 	if got.AgentSessionWorkdirID != workdirID {
-		t.Fatalf("valid v2 receipt lost its stable workdir id: %+v", got)
+		t.Fatalf("valid current-contract receipt lost its stable workdir id: %+v", got)
 	}
 	bad := strings.Replace(with, strings.Repeat("a", 64), strings.Repeat("g", 64), 1)
 	if _, ok := parseAgentSessionUpdate(bad); ok {

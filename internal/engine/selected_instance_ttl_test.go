@@ -80,9 +80,9 @@ func TestExpireStaleSelectedInstanceDowngradesUnstampedLegacyRow(t *testing.T) {
 }
 
 // An old user selection without its timestamp still carries genuine provenance,
-// but its age is unknowable. It must not bind an operation automatically; the
-// only safe continuity is one new card for that same exact id.
-func TestUnstampedUserSelectionCannotBindButMayReachANewCard(t *testing.T) {
+// but its age is unknowable. It must neither bind nor authorize instance entry;
+// the user has to restate the target in a current message.
+func TestUnstampedUserSelectionCannotAuthorizeInstanceOps(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{
 		SchemaVersion:          SessionStateSchemaCurrent,
@@ -101,14 +101,13 @@ func TestUnstampedUserSelectionCannotBindButMayReachANewCard(t *testing.T) {
 
 	binding := eng.bindInstanceTarget(view)
 	require.False(t, binding.bound(), "an unstampable legacy pick is never automatic authority")
-	require.True(t, expiredUserSelectionMatches(view, "uhost-legacy-user"))
-	require.True(t, eng.instanceOpsTargetMayReachConfirmation("uhost-legacy-user"),
-		"the card can ask the user to reselect the exact historical target")
+	require.False(t, eng.instanceOpsTargetAuthorized("uhost-legacy-user"),
+		"an expired target cannot be refreshed by a card because the lane has no entry card")
 }
 
 // A passive read of an already-expired user pick can update conversational facts,
 // but cannot turn that old selection back into authorization. The user must see a
-// new card for the target instead.
+// a current explicit target instead.
 func TestObservedReadCannotReviveExpiredUserSelection(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	then := time.Now().Add(-(selectedInstanceTTLSeconds + 60) * time.Second).Unix()
@@ -129,8 +128,8 @@ func TestObservedReadCannotReviveExpiredUserSelection(t *testing.T) {
 	assert.Equal(t, ContinuityFreshnessExpired, state.SelectedInstanceFreshness)
 }
 
-// The callers that re-record an ALREADY known instance as a user selection — the
-// approved SSH entry card, a confirmed write target — have only the id in hand.
+// The callers that re-record an ALREADY known instance as a user selection — an
+// explicit SSH target or a confirmed platform write target — have only the id in hand.
 // A rehydrated or post-mutation registry resolves nothing, so without a fallback
 // the re-record blanks a name the session already knew and the context card can
 // then name the box only by id, which reads as the agent having forgotten it.

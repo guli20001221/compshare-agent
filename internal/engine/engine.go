@@ -572,9 +572,10 @@ func (e *Engine) SetInstanceOps(r InstanceOpsRunner) {
 func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
 	return prompt.BuildOptions{
 		MutatingToolsEnabled: e.mutatingToolsEnabled,
-		// The same nil check gates the tool window, so the prompt never advertises
-		// an in-instance repair lane the runtime did not wire.
-		InstanceOpsEnabled:           e.instanceOps != nil,
+		// SSH-ops is an autonomous repair lane. It exists only when both the
+		// deployment write grant and the runner are present; read-only deployments
+		// must not advertise a tool whose product contract includes guest changes.
+		InstanceOpsEnabled:           e.mutatingToolsEnabled && e.instanceOps != nil,
 		FeishuConsoleHandoff:         e.feishuConsoleHandoffThisTurn,
 		FeishuPublicPlatformReadOnly: e.publicPlatformReadOnlyThisTurn,
 	}
@@ -3243,8 +3244,8 @@ func (e *Engine) recordSelectedInstanceIDWithSource(id, name, source string) {
 		if inst, res := e.RegistrySnapshot().ResolveByID(id); res.Status == entity.ResolveHit && inst != nil {
 			name = inst.Name
 		}
-		// Re-recording the SAME instance with no name in hand — an approved SSH
-		// entry card, a confirmed write target — must not blank a name the session
+		// Re-recording the SAME instance with no name in hand — an authorized explicit
+		// SSH target or a confirmed platform-write target — must not blank a name the session
 		// already knew. A rehydrated or post-mutation registry is cold and resolves
 		// nothing, and the context card would then be able to name the box only by
 		// id, which reads to the user as the agent having forgotten it.
@@ -3261,18 +3262,17 @@ func (e *Engine) recordSelectedInstanceIDWithSource(id, name, source string) {
 }
 
 // selectedInstanceTTLSeconds bounds how long a carried target can authorize a
-// new target-specific confirmation without fresh user designation.
+// new target-specific action without fresh user designation.
 const selectedInstanceTTLSeconds = 1800
 
 // expireStaleSelectedInstance clears the carried instance binding when it has
 // gone untouched longer than selectedInstanceTTLSeconds. Runs at turn entry,
 // before the turn-start snapshot is frozen, so a stale binding is never carried
-// into the write-target dual-proof verifier as a selection. Provenance remains
-// as historical fact: an expired user_selected item may name the SAME instance
-// on a new confirmation card, but freshness keeps it from authorizing anything
-// directly. A zero SelectedInstanceAtUnix is a legacy row whose age cannot be
-// proven; it is therefore expired for authorization while retaining its source
-// as historical provenance for a new target-specific card.
+// into a target-specific action as a selection. Provenance remains as historical
+// fact, but freshness keeps an expired user_selected item from authorizing entry
+// or a platform write. A zero SelectedInstanceAtUnix is a legacy row whose age
+// cannot be proven; it is therefore expired for authorization while retaining
+// its source as historical provenance.
 func (e *Engine) expireStaleSelectedInstance(now time.Time) {
 	if strings.TrimSpace(e.sessionState.SelectedInstanceID) == "" {
 		return

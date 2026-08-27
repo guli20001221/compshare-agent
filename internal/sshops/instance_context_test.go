@@ -39,7 +39,11 @@ func TestDiagnoseWithContextProjectsOnlyAllowlistedFacts(t *testing.T) {
 	b64 := base64.StdEncoding.EncodeToString([]byte(secretPW))
 	describer := &contextDescriber{
 		describe: map[string]any{"UHostSet": []any{map[string]any{
-			"UHostId":             "uhost-abc",
+			"UHostId": "uhost-abc",
+			// This is intentionally misleading if read as a resource kind: a UHost
+			// created from a container image remains a VM under the upstream ID
+			// contract and must not receive Pod port/entry semantics.
+			"InstanceType":        "Container",
 			"State":               "Running",
 			"SshLoginCommand":     "ssh -p 23 root@198.51.100.9",
 			"Password":            b64,
@@ -134,6 +138,7 @@ func TestDiagnoseWithContextProjectsOnlyAllowlistedFacts(t *testing.T) {
 	require.Contains(t, text, "catalog.expected_software_ports")
 	require.NotContains(t, text, "instance.reported_ports")
 	require.NotContains(t, text, "configured_ports")
+	require.Contains(t, text, `"key":"instance.kind","value":"vm"`)
 	// The region-wide catalog is correlated down to what this instance declares: FileBrowser is in
 	// the catalog and not on this box, so its port must not arrive as an expectation for this box.
 	require.NotContains(t, text, "FileBrowser")
@@ -148,11 +153,43 @@ func TestDiagnoseWithContextProjectsOnlyAllowlistedFacts(t *testing.T) {
 	require.NotZero(t, begin.ContextFactCoverage&opscontext.CoverageSoftware)
 	require.NotZero(t, begin.ContextFactCoverage&opscontext.CoverageCatalogPorts)
 	require.NotZero(t, begin.ContextFactCoverage&opscontext.CoverageMonitor)
+	require.NotZero(t, begin.ContextFactCoverage&opscontext.CoverageInstanceKind)
 	require.Equal(t, 1, done.CommandsRan)
 	require.Equal(t, 1, done.CommandsRefused)
 	require.Equal(t, "targeted_validation", done.FirstCommandClass)
 	require.Equal(t, opscontext.SchemaVersion, done.ContextSchemaVersion)
 	require.NotZero(t, done.ContextFactCoverage)
+}
+
+// TestInstanceContextKindFollowsTheResourceIDContract is both an allowlist and
+// semantic-boundary test. InstanceType and image/runtime fields are intentionally
+// ignored: a UHost with InstanceType=Container is still a VM, while only a
+// cpod-* resource is a Pod. Replacing this with a raw Describe field projection
+// would make the first assertion fail and reintroduce production case 119.
+func TestInstanceContextKindFollowsTheResourceIDContract(t *testing.T) {
+	for _, tc := range []struct {
+		name, id, instanceType, want string
+	}{
+		{name: "container image UHost stays VM", id: "uhost-container-image", instanceType: "Container", want: "vm"},
+		{name: "Pod is determined by ID", id: "cpod-real-pod", instanceType: "UHost", want: "pod"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			facts := instanceFacts(map[string]any{
+				"UHostId": tc.id, "InstanceType": tc.instanceType,
+				"ImageType": "Container", "State": "Running",
+			}, tc.id, "2026-08-27T00:00:00Z")
+			byKey := make(map[string]opscontext.Fact, len(facts))
+			for _, fact := range facts {
+				byKey[fact.Key] = fact
+			}
+			kind, ok := byKey["instance.kind"]
+			require.True(t, ok)
+			require.Equal(t, tc.want, kind.Value)
+			require.Equal(t, opscontext.StatusKnown, kind.Status)
+			require.Equal(t, instanceContextSourceDescribe, kind.Source)
+			require.NotZero(t, instanceContextCoverage(facts)&opscontext.CoverageInstanceKind)
+		})
+	}
 }
 
 func TestFinishedAuditClearsUnconfirmedContextReceipt(t *testing.T) {

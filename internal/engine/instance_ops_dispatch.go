@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/observability"
@@ -20,6 +19,40 @@ import (
 // runaway harness cannot flood the activity stream or the turn's DB writes. Beyond
 // the cap, per-command events stop; the terminal summary still reports the totals.
 const maxInstanceOpsStepEvents = 50
+
+// instanceOpsPreflightFailureData is the narrow observation emitted when the
+// diagnosis service itself cannot establish the prerequisite TCP connection.
+// It deliberately names the observer and the boundary rather than turning one
+// network vantage point into a conclusion about the instance or evidence the
+// user supplied through another path (for example an SSH -vvv transcript).
+//
+// Unlike a terminal reply, this is a normal AgentToolResult. The central Agent
+// therefore receives both this observation and the canonical conversation and
+// can reconcile independent evidence in one semantic path.
+type instanceOpsPreflightFailureData struct {
+	ObservationSource     string `json:"observation_source"`
+	ObservationScope      string `json:"observation_scope"`
+	TCPConnection         string `json:"tcp_connection"`
+	SSHSessionEstablished bool   `json:"ssh_session_established"`
+	GuestCommandsExecuted bool   `json:"guest_commands_executed"`
+	EvidenceBoundary      string `json:"evidence_boundary"`
+}
+
+func instanceOpsPreflightFailureObservation(action string) string {
+	return tools.MarshalAgentToolResult(tools.AgentToolFailure(action,
+		instanceOpsPreflightFailureData{
+			ObservationSource:     "diagnostic_service",
+			ObservationScope:      "diagnostic_service_to_instance_ssh_candidate",
+			TCPConnection:         "not_established",
+			SSHSessionEstablished: false,
+			GuestCommandsExecuted: false,
+			EvidenceBoundary: "This observation is limited to the diagnostic service path. " +
+				"It does not confirm or contradict connectivity or SSH-handshake evidence observed from another vantage point.",
+		},
+		"SSH_DIAGNOSTIC_VANTAGE_UNREACHABLE",
+		"诊断服务未能与候选 SSH 地址建立 TCP 连接；该结果仅描述诊断服务的网络视角，不能据此否定用户从其他位置观察到的连通性或 SSH 握手证据。",
+		tools.AgentToolMeta{SourceStatus: "preflight_failed"}))
+}
 
 // Target refusal text is split by audience: the activity stream gives the user
 // an actionable instruction, while the tool result explains the binding rule to
@@ -39,7 +72,7 @@ const (
 )
 
 // executeInstanceOps handles a DiagnoseInstanceInternals tool call: the
-// confirmation-gated in-instance diagnosis and repair lane. It is dispatched from executeToolOnce BEFORE the
+// deployment-authorized in-instance diagnosis and repair lane. It is dispatched from executeToolOnce BEFORE the
 // diagnosis-chain and mutating-tool branches, so it never inherits the
 // SafeToolExecutor per-attempt wall-clock ceiling. The whole lane is inert unless
 // a runner was wired (server SharedDeps.InstanceOps; tests may use SetInstanceOps) — when
@@ -50,11 +83,9 @@ const (
 // Ordering:
 //   - nil-runner  → feature disabled, inert refusal, no slot consumed (INV-10)
 //   - param check → UHostId + Task required
+//   - write grant → the deployment must have enabled autonomous mutating tools
 //   - target proof → the user named/selected this exact instance (never pick a list row)
-//   - INV-11 gate → at most one in-instance run per turn; SET before confirm so a
-//     declined card still spends the slot (repeated cards would harass the user)
-//   - INV-7       → e.confirmFn == nil fails closed (never fetch, never spawn)
-//   - confirm     → user authorizes on the card; a decline continues the turn
+//   - INV-11 gate → at most one in-instance run per turn
 //   - Run         → progress→StepEvent live; verdict → finalReplyPrefix (unrewritable)
 func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
 	// INV-10: with no runner the lane is off. The tool is absent from the window,
@@ -62,6 +93,14 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	// an inert refusal and does NOT consume the per-turn slot.
 	if e.instanceOps == nil {
 		msg := "实例内排查功能当前不可用。"
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
+		return friendlyToolResultJSON(msg)
+	}
+	// SSH-ops is one autonomous diagnose/repair task, not a read-only probe with a
+	// hidden write mode. The server-owned deployment setting is the standing grant;
+	// a model-authored tool call cannot turn the lane on when it is disabled.
+	if !e.mutatingToolsEnabled {
+		msg := "实例内排查与修复未在当前环境启用。"
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 		return friendlyToolResultJSON(msg)
 	}
@@ -76,10 +115,9 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 		return friendlyToolResultJSON(msg)
 	}
-	// Build the local-only portion before the entry card so a planner that copied
-	// a user Authorization value into Task cannot expose it on that card. The
-	// private values stay json:"-" and are handed to the runner only after the
-	// user approves entry; this step performs no platform call or SSH access.
+	// Build the local-only portion before any platform call. A planner that copied
+	// a user Authorization value into Task must not move it into audit or activity;
+	// private values stay json:"-" and are handed only to the runner.
 	modelContext := e.instanceOpsModelContext()
 	authorizations := make([]string, 0, len(modelContext.ProbeAuthorizations))
 	for _, item := range modelContext.ProbeAuthorizations {
@@ -87,25 +125,21 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	}
 	task = security.RedactKnownAuthorizationText(task, authorizations)
 	// A model-authored id is not selection proof. Reuse the write-path binding
-	// rules; an expired user selection may reach a new card for the same id but is
-	// never authority by itself.
-	if !e.instanceOpsTargetMayReachConfirmation(instanceID) {
+	// rules; an expired user selection is never authority by itself and, because
+	// this lane has no entry card, must be refreshed by an explicit user target.
+	if !e.instanceOpsTargetAuthorized(instanceID) {
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: instanceOpsTargetRefusalForUser})
 		return friendlyToolResultJSON(instanceOpsTargetRefusalForModel)
 	}
 	// A cold registry can make a literal ID provable only at this gate. Record the
-	// user's designation before confirmation so a declined or timed-out card does
-	// not erase it. Account-single and expired-selection fallbacks are not new user
-	// designations and therefore are not recorded here.
+	// user's designation before entry. Account-single, screenshot-only and expired
+	// selections do not authorize this path and are never recorded here.
 	if e.userNamedInstanceThisTurn(instanceID) || e.userResolvedInstanceThisTurn(instanceID) {
 		e.recordSelectedInstanceIDWithSource(instanceID, "", SelectedInstanceSourceUser)
 	}
 
-	// INV-11: one in-instance run per turn. Check-then-set BEFORE confirm — a user
-	// who declines the card still spends the turn's single slot, so the agent cannot
-	// re-prompt with a one-word Task tweak (which would also dodge the DB dedup key).
-	// A rejected target does NOT spend this slot: no instance was entered and no
-	// authorization card was shown.
+	// INV-11: one in-instance run per turn. A rejected target does not spend this
+	// slot because the instance was never entered.
 	if e.instanceOpsRanThisTurn {
 		msg := "本回合已经执行过一次实例内排查，不再重复进入实例。如需再次排查，请重新发送指令。"
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
@@ -113,28 +147,9 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	}
 	e.instanceOpsRanThisTurn = true
 
-	// INV-7: the confirm wrapper is conditional (engine.go:1109), so e.confirmFn can
-	// be nil on a path that never installed one. Fail closed — never fetch a
-	// credential or spawn the harness without an authorization gate.
-	if e.confirmFn == nil {
-		msg := "当前会话无法进行授权确认，已跳过实例内排查。"
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
-		return friendlyToolResultJSON(msg)
-	}
-
-	// A decline is non-terminal so the Agent can still answer from cloud-side facts.
-	confirmArgs := e.safeExecutor.RedactArgs(action, filtered)
-	confirmArgs["Task"] = task
-	if !e.confirmFn(action, confirmArgs) {
-		msg := instanceOpsUnauthorizedMessage(instanceID, e.lastConfirmationTerminalReason)
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
-		return friendlyToolResultJSON(msg)
-	}
-	// The approved entry card also establishes a genuine selection when the target
-	// came from a non-literal binding. A literal user designation is already stored
-	// at turn entry; an observed or model-elected target reaches this point only
-	// after the card. Record before Run because a failed SSH attempt does not undo
-	// what the user chose to diagnose.
+	// Deterministic binding, not a confirmation card, proves the selected target.
+	// Record before Run because a failed SSH attempt does not undo what the user
+	// chose to diagnose.
 	e.recordSelectedInstanceIDWithSource(instanceID, "", SelectedInstanceSourceUser)
 
 	// Connected and command progress become bounded activity events. Command
@@ -233,11 +248,14 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		}
 		// Candidate addresses were available, but the TCP prerequisite for SSH did
 		// not connect. This is still pre-entry: no authentication and no guest command.
-		// List the possible layers without selecting one that was never observed.
+		// This must remain a normal tool observation, rather than a deterministic
+		// final reply: the central Agent may already have independent user evidence
+		// from another network vantage point. Returning a terminal reply here used
+		// to overwrite that evidence before the Agent could reconcile it.
 		if errors.Is(err, ErrInstanceOpsSSHPreflightUnreachable) {
-			msg := "诊断服务已尝试可用候选地址，但未能与实例的 SSH 端口建立 TCP 连接；未建立 SSH 会话、未进入实例，也没有执行任何命令。可能涉及诊断服务到实例的网络路径、端口 / 防火墙、SSH 服务或实例当时状态；仅凭本次失败无法确定具体原因，也无法判断用户原始故障是否属于实例内部。"
+			msg := "诊断服务未能与候选 SSH 地址建立 TCP 连接；未建立 SSH 会话、未进入实例，也没有执行任何命令。"
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
-			return finalReplyPrefix + msg
+			return instanceOpsPreflightFailureObservation(action)
 		}
 		// The state is a current platform fact, so return it instead of a generic retry.
 		if errors.Is(err, ErrInstanceOpsNotRunning) {
@@ -267,45 +285,18 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	return finalReplyPrefix + verdict.Text
 }
 
-// instanceOpsUnauthorizedMessage reports the actual confirmation outcome. Every
-// branch is explicit that no command ran inside the instance.
-func instanceOpsUnauthorizedMessage(instanceID, terminalReason string) string {
-	switch strings.TrimSpace(terminalReason) {
-	case observability.ConfirmationReasonTimeout:
-		return fmt.Sprintf(
-			"授权卡片已超时（等待 %d 秒未收到确认），未进入实例 %s，也没有执行任何命令。需要的话请重新发送指令。",
-			int(InstanceOpsConfirmWindow.Seconds()), instanceID)
-	case observability.ConfirmationReasonClientDisconnect:
-		return fmt.Sprintf("连接已断开，授权未完成，未进入实例 %s，也没有执行任何命令。重新连接后可以再发一次指令。", instanceID)
-	case observability.ConfirmationReasonDeliveryFailed, observability.ConfirmationReasonBrokerCancelled:
-		return fmt.Sprintf("授权卡片未能送达，未进入实例 %s，也没有执行任何命令。请重新发送指令。", instanceID)
-	default:
-		// ConfirmationReasonUserDeclined, and the normalizer's fallback for a
-		// legacy boolean callback that cannot say why.
-		return fmt.Sprintf("好的，已取消对实例 %s 的实例内排查。", instanceID)
-	}
-}
-
-// InstanceOpsConfirmWindow is how long the transport gives a person to answer an
-// authorization card, quoted in the timeout message so the user learns the
-// actual window rather than a number to guess at.
+// instanceOpsTargetAuthorized decides whether the target was selected by the
+// user strongly enough for the deployment-authorized SSH lane to enter it with
+// no extra card. Authority comes from one of two deterministic sources:
 //
-// It duplicates httpapi.confirmWaitTimeout by VALUE and not by import, because
-// engine must not depend on a transport package — and the duplicate is pinned
-// by TestInstanceOpsConfirmWindowMatchesTheTransport in the httpapi package,
-// which can see both. A drift here only mis-states a number in one sentence; it
-// cannot change when the card actually expires.
-const InstanceOpsConfirmWindow = 120 * time.Second
-
-// instanceOpsTargetMayReachConfirmation decides whether an instance id may be
-// shown on the SSH entry card. A current deterministic binding reaches that card
-// normally. An expired, genuinely user-selected historical id may also reach a
-// NEW card for that same id; the card is the fresh selection proof, not the old
-// selection. An observed list row can never take either path.
+//   - an explicit current-turn ID, exact name, wrapper, or ordinal resolved
+//     against a list the user actually saw;
+//   - a non-expired user_selected instance carried by session state.
 //
-// The runner still point-checks that the id belongs to this account after the
-// card; neither branch here grants instance entry by itself.
-func (e *Engine) instanceOpsTargetMayReachConfirmation(instanceID string) bool {
+// Account-single fallback, passive reads, model choice, screenshot OCR and an
+// expired selection are deliberately excluded. The runner still point-checks
+// account ownership and instance state before fetching credentials or dialing.
+func (e *Engine) instanceOpsTargetAuthorized(instanceID string) bool {
 	if e == nil || !e.turnContextViewReady || strings.TrimSpace(instanceID) == "" {
 		return false
 	}
@@ -315,24 +306,26 @@ func (e *Engine) instanceOpsTargetMayReachConfirmation(instanceID string) bool {
 		return false
 	}
 	if binding.bound() {
-		return strings.EqualFold(strings.TrimSpace(binding.id), strings.TrimSpace(instanceID))
-	}
-	// The immutable view is intentionally compiled before the ReAct loop. A
-	// resource read may have refreshed the registry since then; a complete
-	// one-instance account is a current, unambiguous proof and is not a list-row
-	// guess. Never use it to override an explicit unresolved user reference.
-	if !binding.explicit {
-		if id, _ := e.singleRegistryInstance(); id != "" {
-			return strings.EqualFold(strings.TrimSpace(id), strings.TrimSpace(instanceID))
+		if !strings.EqualFold(strings.TrimSpace(binding.id), strings.TrimSpace(instanceID)) {
+			return false
 		}
-		if expiredUserSelectionMatches(view, instanceID) {
+		if binding.explicit {
 			return true
 		}
+		for _, selected := range view.SelectedEntities {
+			if selected.Kind == "instance" &&
+				selected.Source == SelectedInstanceSourceUser &&
+				selected.Freshness != ContinuityFreshnessExpired &&
+				strings.EqualFold(strings.TrimSpace(selected.ID), strings.TrimSpace(instanceID)) {
+				return true
+			}
+		}
+		return false
 	}
 	// A cold rehydrated session may not have a complete registry yet. An exact ID
-	// visibly authored by the user is still a choice, unlike an ID invented from a
-	// prior list; account membership is verified by the runner's point describe.
-	return e.userNamedInstanceThisTurn(instanceID) || e.userScreenshotNamesInstanceThisTurn(instanceID)
+	// visibly authored by the user is still a choice; account membership is
+	// verified by the runner's point describe.
+	return e.userNamedInstanceThisTurn(instanceID)
 }
 
 // userNamedInstanceThisTurn verifies the model-supplied ID against the user's
@@ -355,39 +348,6 @@ func (e *Engine) userResolvedInstanceThisTurn(instanceID string) bool {
 	binding := e.bindInstanceTarget(e.turnContextViewThisTurn, instanceID)
 	return binding.explicit && binding.bound() &&
 		strings.EqualFold(strings.TrimSpace(binding.id), strings.TrimSpace(instanceID))
-}
-
-// userScreenshotNamesInstanceThisTurn accepts one exact instance ID from the
-// current screenshot only as a candidate for the existing authorization card.
-// OCR remains outside CurrentQuestion, routing and write provenance; the runner
-// still verifies account ownership and state after the user confirms the card.
-func (e *Engine) userScreenshotNamesInstanceThisTurn(instanceID string) bool {
-	if e == nil || strings.TrimSpace(instanceID) == "" {
-		return false
-	}
-	tokens := e.registry.Snapshot().InstanceIDTokensInText(e.imageContextThisTurn)
-	if len(tokens) != 1 {
-		return false
-	}
-	return strings.EqualFold(strings.TrimSpace(tokens[0]), strings.TrimSpace(instanceID))
-}
-
-// expiredUserSelectionMatches is deliberately narrower than a carried selection:
-// freshness=expired excludes it from bindInstanceTarget, so it cannot silently
-// execute. This helper only lets the old, exact user choice be placed on a new
-// card. Keeping the source test here prevents an account-list observation from
-// acquiring the same privilege after its TTL elapses.
-func expiredUserSelectionMatches(view AgentContext, instanceID string) bool {
-	for _, ent := range view.SelectedEntities {
-		if ent.Kind != "instance" || ent.Source != SelectedInstanceSourceUser ||
-			ent.Freshness != ContinuityFreshnessExpired {
-			continue
-		}
-		if strings.EqualFold(strings.TrimSpace(ent.ID), strings.TrimSpace(instanceID)) {
-			return true
-		}
-	}
-	return false
 }
 
 // instanceOpsCommandStep maps one command-progress event to its StepEvent. The
@@ -471,8 +431,8 @@ func instanceOpsStateFromError(err error) string {
 }
 
 // instanceOpsPhaseNoun and instanceOpsRefusalReason keep the live activity stream truthful about
-// which product is running. Both read the same boot flag the tool description does, so the card the
-// user approved, the tool the model was offered, and the line it watches scroll all say one thing.
+// which product is running. Both share the same contract as the model-visible tool description,
+// so the offered capability and the line the user watches scroll say one thing.
 func instanceOpsPhaseNoun() string {
 	return "排查"
 }
@@ -495,7 +455,7 @@ func knownInstanceOpsRefusalReason(reason string) (string, bool) {
 	case "refused_user_declined":
 		return "你未批准这条命令，命令未执行", true
 	case "refused_confirmation_timeout":
-		return fmt.Sprintf("等待你的确认超过 %d 秒，命令未执行", int(InstanceOpsConfirmWindow.Seconds())), true
+		return "等待你的确认已超时，命令未执行", true
 	case "refused_client_disconnect":
 		return "连接已断开，命令未执行", true
 	case "refused_confirmation_delivery_failed":

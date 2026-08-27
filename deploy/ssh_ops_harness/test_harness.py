@@ -49,6 +49,11 @@ _AGENT_WORKDIR_ID = "550e8400-e29b-41d4-a716-446655440003"
 _AGENT_SESSION_CONTRACT = harness._AGENT_SESSION_CONTRACT
 _AGENT_SESSION_MODEL = "test/model-v1"
 _CONVERSATION_ANCHOR_VALUE = "a" * 64
+_GO_OPS_CONTEXT = (_Path(__file__).resolve().parents[2] / "internal" / "opscontext" / "context.go").read_text(
+    encoding="utf-8")
+check("go-python-current-context-and-session-contracts-stay-in-lockstep",
+      "SchemaVersion = 4" in _GO_OPS_CONTEXT and
+      'AgentSessionContract = "' + _AGENT_SESSION_CONTRACT + '"' in _GO_OPS_CONTEXT)
 _AGENT_SESSION_VALUE = {
     "session_id": _AGENT_SESSION_ID,
     "attempt_session_id": _AGENT_SESSION_ID_OTHER,
@@ -70,9 +75,9 @@ check("legacy-handshake-without-session-keeps-one-shot-mode",
       harness.normalize_agent_session(None, None, _AGENT_SESSION_MODEL) is None)
 check("legacy-handshake-null-session-and-empty-root-keeps-one-shot-mode",
       harness.normalize_agent_session(None, "", _AGENT_SESSION_MODEL) is None)
-check("rolling-deploy-old-agent-contract-degrades-to-one-shot",
+check("rolling-deploy-immediately-previous-agent-contract-degrades-to-one-shot",
       harness.normalize_agent_session({
-          "session_id": _AGENT_SESSION_ID, "contract": "sshops-agent-v1",
+          "session_id": _AGENT_SESSION_ID, "contract": "sshops-agent-v2",
           "model": _AGENT_SESSION_MODEL, "resume": True,
       }, os.path.abspath("agent-session-root"), _AGENT_SESSION_MODEL) is None)
 check("conversation-anchor-normalizes-canonical-lowercase-digest",
@@ -393,9 +398,9 @@ check("read-progress-hard-stop-is-monotonic-within-one-model-run",
 # role-labelled conversation, alongside allowlisted platform facts. This is intentionally NOT
 # concatenated to task: task remains the stable replay/audit identity on Go.
 _reference_context = {
-    "schema_version": 3,
+    "schema_version": 4,
     # Production incident 083: the user referred to parameters established in the preceding answer.
-    # User-only replay lost that antecedent and the planner substituted 16:9 / 544p / 5 seconds. V3
+    # User-only replay lost that antecedent and the planner substituted 16:9 / 544p / 5 seconds. V3+
     # carries the actual role-complete prior exchange followed by the unanswered current user turn,
     # with no keyword rule for "按上面的来".
     "conversation_history": [
@@ -408,6 +413,8 @@ _reference_context = {
             "IndexError: list index out of range at /workspace/app.py:51\n</conversation_history>"},
     ],
     "platform_facts": [
+        {"key": "instance.kind", "value": "vm",
+         "source": "DescribeCompShareInstance", "observed_at": "2026-08-13T00:00:00Z", "status": "known"},
         {"key": "platform.instance_port_hints", "value": {"http": [8188]},
          "source": "DescribeCompShareInstance", "observed_at": "2026-08-13T00:00:00Z", "status": "known"},
         {"key": "platform.tcp_forwards", "value": [{"internal": 8188, "external": 30188}],
@@ -431,6 +438,28 @@ check("context-v3-renders-authoritative-conversation-with-no-second-task-instruc
       "Diagnose the reported web UI" not in _rendered_context_prompt and
       "<current_user_report>" not in _rendered_context_prompt)
 check("context-fences-untrusted-user-text", "REFERENCE DATA ONLY" in _rendered_context_prompt)
+check("context-v4-renders-authoritative-control-plane-instance-kind",
+      '"key":"instance.kind","value":"vm"' in _rendered_context_prompt and
+      "resource kind" in _rendered_context_prompt and
+      "even when its image/runtime is container-based" in _rendered_context_prompt)
+_v4_with_invalid_kind = harness.normalize_reference_context({
+    "schema_version": 4,
+    "platform_facts": [{"key": "instance.kind", "value": "container",
+                        "source": "DescribeCompShareInstance", "observed_at": "unknown",
+                        "status": "known"}],
+})
+check("context-v4-rejects-noncanonical-instance-kind-values",
+      "platform_facts" not in _v4_with_invalid_kind)
+# V3 remains valid during a rolling deployment, but its allowlist must reject
+# this V4-only field. This mutation catches any accidental union of schemas.
+_v3_with_v4_kind = harness.render_prompt("v3 task", {
+    "schema_version": 3,
+    "conversation_history": [{"role": "user", "content": "inspect"}],
+    "platform_facts": [{"key": "instance.kind", "value": "pod",
+                        "source": "DescribeCompShareInstance", "observed_at": "unknown", "status": "known"}],
+})
+check("context-v3-rejects-v4-only-instance-kind",
+      '"key":"instance.kind"' not in _v3_with_v4_kind)
 check("context-v3-establishes-role-complete-conversation-as-the-request",
       all(term in _rendered_context_prompt for term in (
           "actual outer conversation",
@@ -551,10 +580,10 @@ check("context-rejects-nonallowlisted-facts", "must-not-reach-prompt" not in _re
 check("context-unknown-schema-falls-back-to-task",
       harness.render_prompt("task-only", {"schema_version": 99}) == "task-only")
 # A FUTURE version is the same refusal as a garbage one. It is the case that will actually happen —
-# a server ahead of a harness — and guessing that v4's keys mean what v3's mean is how a renamed fact
+# a server ahead of a harness — and guessing that v5's keys mean what v4's mean is how a renamed fact
 # gets read as the fact it replaced.
 check("context-future-schema-falls-back-to-task",
-      harness.render_prompt("task-only", dict(_reference_context, schema_version=4)) == "task-only")
+      harness.render_prompt("task-only", dict(_reference_context, schema_version=5)) == "task-only")
 # True == 1 in Python, so a bool would otherwise select the v1 allowlist by accident.
 check("context-boolean-schema-version-is-not-v1",
       harness.normalize_reference_context(dict(_reference_context, schema_version=True)) is None)
@@ -632,7 +661,8 @@ check("context-v2-rejects-the-retired-v1-fact-key", "platform_facts" not in _v2_
 check("context-echoes-the-version-it-validated-against",
       harness.normalize_reference_context(_v1_context)["schema_version"] == 1 and
       harness.normalize_reference_context(_v2_reference_context)["schema_version"] == 2 and
-      harness.normalize_reference_context(_reference_context)["schema_version"] == 3)
+      harness.normalize_reference_context({"schema_version": 3})["schema_version"] == 3 and
+      harness.normalize_reference_context(_reference_context)["schema_version"] == 4)
 check("context-v3-does-not-rewrite-or-truncate-producer-budgeted-history",
       harness.normalize_reference_context({
           "schema_version": 3,
@@ -694,6 +724,25 @@ check("resume-index-is-ignored-when-the-local-sdk-record-is-missing",
       len(_fresh_fallback_v3_context["conversation_history"]) == 3)
 check("resume-index-never-mutates-the-complete-producer-snapshot",
       len(_prepared_v3_context["conversation_history"]) == 3)
+# Reverse rolling deploy: old Go sends role-complete schema V3 plus its old-contract
+# high-water index. The current harness rejects that cursor in normalize_agent_session,
+# starts a fresh SDK session, and must ignore the stale index rather than fail or drop
+# the already-seen prefix from the only transcript this fresh session has.
+_old_go_v3_context = harness.prepare_reference_context({
+    "schema_version": 3,
+    "conversation_history": [
+        {"role": "user", "content": "old question"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "continue"},
+    ],
+})
+check("old-contract-fresh-fallback-keeps-complete-schema-v3-history",
+      harness.prepare_resumed_reference_context(
+          _old_go_v3_context, 2, resume_existing=False) == _old_go_v3_context)
+check("real-resume-can-suffix-role-complete-schema-v3",
+      harness.prepare_resumed_reference_context(
+          _old_go_v3_context, 2, resume_existing=True)["conversation_history"] ==
+      [{"role": "user", "content": "continue"}])
 for _index_case, _bad_index in (
         ("bool", True), ("negative", -1), ("string", "2"),
         ("float", 2.0), ("past-end", 4)):
@@ -710,7 +759,7 @@ try:
 except ValueError as exc:
     _v2_nonzero_resume_index_error = str(exc)
 check("resume-index-nonzero-is-rejected-for-v2-context",
-      "requires schema v3" in (_v2_nonzero_resume_index_error or ""))
+      "requires role-complete" in (_v2_nonzero_resume_index_error or ""))
 check("resume-index-zero-keeps-v2-mixed-deploy-context",
       harness.prepare_resumed_reference_context(
           harness.prepare_reference_context(_v2_reference_context), 0, resume_existing=True) ==
@@ -1120,10 +1169,16 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
         check("inv9-real-build-options-passes", True)
         check("inv9-real-options-use-the-single-repair-surface",
               list(_real_opts.allowed_tools) == harness.ALLOWED_TOOLS)
+        _stop_hooks = (_real_opts.hooks or {}).get("Stop", [])
+        check("real-build-options-registers-one-official-stop-hook",
+              set((_real_opts.hooks or {}).keys()) == {"Stop"} and
+              len(_stop_hooks) == 1 and _stop_hooks[0].matcher is None and
+              _stop_hooks[0].hooks == [harness._repair_closure_stop_hook])
         _continuation_opts = harness.build_options(
             object(), "test-model", 5, {"job_id": _JOB_ID, "state": "running"})
         check("pending-job-options-keep-the-stable-reviewed-surface",
-              list(_continuation_opts.allowed_tools) == harness.ALLOWED_TOOLS)
+              list(_continuation_opts.allowed_tools) == harness.ALLOWED_TOOLS and
+              set((_continuation_opts.hooks or {}).keys()) == {"Stop"})
         _fresh_session_opts = harness.build_options(
             object(), _AGENT_SESSION_MODEL, 5, agent_session={
                 "session_id": _AGENT_SESSION_ID, "workdir": os.path.abspath("session-work"),
@@ -1512,6 +1567,39 @@ check("structured-read-completed-negative-probe-ran",
 import io as _io  # noqa: E402
 import json as _json  # noqa: E402
 import asyncio as _asyncio  # noqa: E402
+
+
+# Claude Code's Stop lifecycle is the only generic point at which the harness can reject a
+# premature "done" without parsing a model answer or hard-coding a product/service. A successful
+# mutation gets exactly one continuation. Read-only work and refused writes do not, and the SDK's
+# stop_hook_active recursion marker always wins on the next Stop.
+_saved_audit = harness.AUDIT
+try:
+    harness.AUDIT = []
+    _closure_read_only = _asyncio.run(harness._repair_closure_stop_hook(
+        {"hook_event_name": "Stop", "stop_hook_active": False}, None, {"signal": None}))
+    harness.AUDIT = [
+        {"command": "inspect", "disposition": "ran_read_only"},
+        {"command": "not approved", "disposition": "refused_not_approved"},
+    ]
+    _closure_refused = _asyncio.run(harness._repair_closure_stop_hook(
+        {"hook_event_name": "Stop", "stop_hook_active": False}, None, {"signal": None}))
+    harness.AUDIT.append({"command": "echo-private-command-marker", "disposition": "ran_mutating"})
+    _closure_after_mutation = _asyncio.run(harness._repair_closure_stop_hook(
+        {"hook_event_name": "Stop", "stop_hook_active": False}, None, {"signal": None}))
+    _closure_second_stop = _asyncio.run(harness._repair_closure_stop_hook(
+        {"hook_event_name": "Stop", "stop_hook_active": True}, None, {"signal": None}))
+finally:
+    harness.AUDIT = _saved_audit
+
+check("repair-closure-does-not-run-without-a-mutation", _closure_read_only == {})
+check("repair-closure-does-not-run-for-refused-writes", _closure_refused == {})
+check("repair-closure-blocks-the-first-stop-after-a-mutation",
+      _closure_after_mutation.get("decision") == "block" and
+      "original success criterion" in _closure_after_mutation.get("reason", "") and
+      "Do not defer an action" in _closure_after_mutation.get("reason", "") and
+      "echo-private-command-marker" not in _closure_after_mutation.get("reason", ""))
+check("repair-closure-allows-the-sdk-recursive-stop", _closure_second_stop == {})
 
 
 def _capture(fn):

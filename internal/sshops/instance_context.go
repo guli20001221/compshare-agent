@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/compshare-agent/internal/opscontext"
+	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/readprojection"
 )
 
@@ -116,7 +117,18 @@ func cleanEndpointLabel(value string) string {
 }
 
 func instanceFacts(inst map[string]any, instanceID, observedAt string) []opscontext.Fact {
-	facts := make([]opscontext.Fact, 0, 9)
+	facts := make([]opscontext.Fact, 0, 10)
+
+	// `InstanceType=Container` describes an image/runtime choice for an UHost;
+	// it is not the platform resource kind. The control-plane dispatcher and
+	// access capability both use the upstream resource-ID contract, so the SSH
+	// lane uses the same source of truth instead of asking the model to infer it
+	// from guest processes such as tini or systemd.
+	kind := "vm"
+	if platform.IsPodInstanceID(instanceID) {
+		kind = "pod"
+	}
+	facts = append(facts, instanceContextFact("instance.kind", kind, instanceContextSourceDescribe, observedAt, opscontext.StatusKnown))
 
 	state := allowlistedString(inst, "State")
 	facts = append(facts, instanceContextFact("instance.state", state, instanceContextSourceDescribe, observedAt, statusForString(state)))
@@ -273,6 +285,10 @@ func instanceContextCoverage(facts []opscontext.Fact) uint32 {
 	var coverage uint32
 	for _, fact := range facts {
 		switch fact.Key {
+		case "instance.kind":
+			if fact.Status == opscontext.StatusKnown {
+				coverage |= opscontext.CoverageInstanceKind
+			}
 		case "instance.state":
 			coverage |= opscontext.CoverageInstance
 		case "instance.gpu":

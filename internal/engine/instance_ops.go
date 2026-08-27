@@ -55,7 +55,7 @@ type InstanceOpsRunner interface {
 	Run(ctx context.Context, req InstanceOpsRequest, onProgress func(InstanceOpsProgress)) (InstanceOpsVerdict, error)
 }
 
-// InstanceOpsRequest is the resolved, user-consented request handed to the runner.
+// InstanceOpsRequest is the resolved, deployment-authorized request handed to the runner.
 // TurnID is the server-side audit and retry-dedup identity.
 type InstanceOpsRequest struct {
 	TurnID     string
@@ -64,8 +64,9 @@ type InstanceOpsRequest struct {
 	// Context is the versioned, redacted reference data for the inner agent.
 	// It is independent from Task so observations cannot change the dedup hash.
 	Context opscontext.Context
-	// RepairScopeAuthorized is set only after the user accepts the lane's task-scoped entry card.
-	// It authorizes guest-local, non-destructive repair steps that remain inside InstanceID + Task;
+	// RepairScopeAuthorized is set only after the engine proves that autonomous writes are enabled
+	// and InstanceID is a current explicit or unexpired user_selected target. It authorizes
+	// guest-local, non-destructive repair steps that remain inside InstanceID + Task;
 	// the harness still hard-refuses irreversible/form/control-plane effects. Keeping the bit in the
 	// typed request makes a future direct caller fail closed instead of silently inheriting autonomy.
 	RepairScopeAuthorized bool
@@ -100,7 +101,7 @@ type InstanceOpsProgress struct {
 	// it. Every consumer must treat "" as unknown rather than as read_only.
 	Tier string
 	// Reason names WHICH gate refused, when the runner knows: the destructive tier, the shape gate,
-	// a declined/timed-out/disconnected confirmation, or a command too long to put on a card. Empty
+	// a declined/timed-out/disconnected legacy confirmation, or a command too long for the legacy wire. Empty
 	// means unknown, and every consumer must degrade to the old generic wording rather than assume a
 	// value.
 	Reason   string

@@ -168,7 +168,7 @@ func TestInstanceOpsRunner_TranslatesActivityStream(t *testing.T) {
 		steps: []sshops.Step{
 			{AgentSessionLifecycleOnly: true, AgentSessionID: "11111111-1111-4111-8111-111111111111",
 				AgentSessionWorkdirID: "22222222-2222-4222-8222-222222222222",
-				AgentSessionContract:  "sshops-agent-v2", AgentSessionModel: "gpt-5.6-terra",
+				AgentSessionContract:  opscontext.AgentSessionContract, AgentSessionModel: "gpt-5.6-terra",
 				AgentSessionConversationAnchor: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
 			{JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", JobState: "unknown", JobPurpose: "download model", JobLifecycleOnly: true},
 			{Command: "poll_background_job", Tier: "read_only", Disposition: "ran", ExitCode: intp(0), Bytes: 42,
@@ -187,7 +187,7 @@ func TestInstanceOpsRunner_TranslatesActivityStream(t *testing.T) {
 	require.Len(t, got, 6, "1 SDK cursor + 1 internal job handle + 1 connected + 3 commands")
 	require.Equal(t, engine.InstanceOpsProgressAgentSession, got[0].Kind)
 	require.Equal(t, "11111111-1111-4111-8111-111111111111", got[0].AgentSessionID)
-	require.Equal(t, "sshops-agent-v2", got[0].AgentSessionContract)
+	require.Equal(t, opscontext.AgentSessionContract, got[0].AgentSessionContract)
 	require.Equal(t, "gpt-5.6-terra", got[0].AgentSessionModel)
 	require.Equal(t, "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", got[0].AgentSessionConversationAnchor)
 	require.Equal(t, "22222222-2222-4222-8222-222222222222", got[0].AgentSessionWorkdirID)

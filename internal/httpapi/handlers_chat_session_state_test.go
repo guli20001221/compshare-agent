@@ -10,6 +10,7 @@ import (
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/opscontext"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/stretchr/testify/assert"
@@ -372,7 +373,7 @@ func TestChatStreamEveryTerminusPersistsExistingContinuationCursors(t *testing.T
 		InstanceID:         "uhost-job",
 		SessionID:          "11111111-1111-4111-8111-111111111111",
 		WorkdirID:          "22222222-2222-4222-8222-222222222222",
-		Contract:           "sshops-agent-v2",
+		Contract:           opscontext.AgentSessionContract,
 		Model:              "gpt-5.6-terra",
 		ConversationAnchor: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		UpdatedAt:          time.Now().UTC().Format(time.RFC3339Nano),
