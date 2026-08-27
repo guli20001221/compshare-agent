@@ -3791,6 +3791,15 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 			onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "工作流返回结构化缺参结果，由中央 Agent 结合上下文处理"})
 			return string(payload)
 		}
+		if action == "StartInstanceWorkflow" {
+			if reply, ok := e.cpuOnlyStartFailureReply(ctx, finalParams, result); ok {
+				// Upstream may have committed the CPU-only resize before reporting
+				// that the subsequent boot failed. Do not carry the pre-start snapshot.
+				e.markRegistryInvalidated(action)
+				onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, result.Err))
+				return finalReplyPrefix + reply
+			}
+		}
 		if action == "StartInstanceWorkflow" && ordinaryStartMode(finalParams) {
 			if apiErr, ok := tools.UpstreamAPIErrorFrom(result.Err); ok && (apiErr.Code == 8357 || apiErr.Code == 226604) {
 				msg := "该实例原带卡规格当前库存不足，本次没有启动，也不会自动改成无卡规格。可以稍后重试；如果你确实不需要 GPU，可以告诉我用途或所需 CPU、内存，我会在新的确认卡中展示合适的 CPU-only 档位。"
@@ -3799,7 +3808,7 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 			}
 		}
 		if msg, ok := friendlyMessageFromText(result.Message); ok {
-			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, nil))
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, result.Err))
 			return finalReplyPrefix + msg
 		}
 	}

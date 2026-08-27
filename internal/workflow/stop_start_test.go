@@ -391,7 +391,7 @@ func TestStartInstance_WithoutGpuSendsSpecOnStart(t *testing.T) {
 				"Region":                 "cn-bj2",
 				"GpuType":                "4090",
 				"GPU":                    float64(1),
-				"ChargeType":             "Dynamic",
+				"ChargeType":             "Postpay",
 				"SupportWithoutGpuStart": true,
 				"WithoutGpuSpec": map[string]any{
 					"Cpu":    float64(2),
@@ -430,7 +430,7 @@ func TestStartInstance_CPUOnlyModeMapsToTheUpstreamWireValue(t *testing.T) {
 	executor := startMockExecutor()
 	executor.results["DescribeCompShareInstance"] = map[string]any{"UHostSet": []any{map[string]any{
 		"UHostId": "uhost-yyy", "State": "Stopped", "Zone": "cn-bj2-04", "Region": "cn-bj2",
-		"GpuType": "4090", "GPU": float64(1), "ChargeType": "Dynamic", "SupportWithoutGpuStart": true,
+		"GpuType": "4090", "GPU": float64(1), "ChargeType": "Postpay", "SupportWithoutGpuStart": true,
 	}}}
 	result, err := NewEngine(executor, func(string, map[string]any) bool { return true }, nil).Run(
 		context.Background(), StartInstanceDef(), map[string]any{
@@ -457,7 +457,7 @@ func TestStartInstance_WithoutGpuShowsInConfirm(t *testing.T) {
 				"GPU":                    float64(1),
 				"CPU":                    float64(16),
 				"Memory":                 float64(65536),
-				"ChargeType":             "Dynamic",
+				"ChargeType":             "Postpay",
 				"SupportWithoutGpuStart": true,
 				"WithoutGpuSpec": map[string]any{
 					"Cpu":    float64(2),
@@ -575,7 +575,7 @@ func TestStartInstance_WithoutGpuUsesDefaultSpecWhenPreviewMissing(t *testing.T)
 				"Region":                 "cn-bj2",
 				"GpuType":                "4090",
 				"GPU":                    float64(1),
-				"ChargeType":             "Dynamic",
+				"ChargeType":             "Postpay",
 				"SupportWithoutGpuStart": true,
 				// No WithoutGpuSpec sub-object: this instance has never run
 				// in no-GPU mode before, so the live preview is absent — the
@@ -613,7 +613,7 @@ func TestStartInstance_WithoutGpuUnsupportedRejectedBeforeConfirm(t *testing.T) 
 				"Region":                 "cn-bj2",
 				"GpuType":                "H800",
 				"GPU":                    float64(1),
-				"ChargeType":             "Dynamic",
+				"ChargeType":             "Postpay",
 				"SupportWithoutGpuStart": false,
 			},
 		},
@@ -651,7 +651,7 @@ func TestStartInstance_PodRejectsWithoutGpuTierB(t *testing.T) {
 				"Region":                 "cn-bj2",
 				"GpuType":                "4090",
 				"GPU":                    float64(1),
-				"ChargeType":             "Dynamic",
+				"ChargeType":             "Postpay",
 				"SupportWithoutGpuStart": true,
 			},
 		},
@@ -674,4 +674,60 @@ func TestStartInstance_PodRejectsWithoutGpuTierB(t *testing.T) {
 	assert.Contains(t, result.Message, "容器实例")
 	assert.Contains(t, result.Message, "A 档")
 	assert.Len(t, executor.calls, 1)
+}
+
+func TestStartInstance_UHostSpotAndPrepaidRejectBeforeConfirmation(t *testing.T) {
+	tests := []struct {
+		name       string
+		chargeType string
+		isSpot     bool
+		want       string
+	}{
+		{name: "spot postpay", chargeType: "Postpay", isSpot: true, want: "抢占式虚机"},
+		{name: "prepaid", chargeType: "Month", want: "计费形态"},
+		{name: "legacy hourly", chargeType: "Dynamic", want: "计费形态"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			executor := startMockExecutor()
+			executor.results["DescribeCompShareInstance"] = map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-yyy", "State": "Stopped", "Zone": "cn-bj2-04", "Region": "cn-bj2",
+				"GpuType": "4090", "GPU": float64(1), "ChargeType": tt.chargeType,
+				"IsSpot": tt.isSpot, "SupportWithoutGpuStart": true,
+			}}}
+			confirmCalled := false
+			result, err := NewEngine(executor, func(string, map[string]any) bool {
+				confirmCalled = true
+				return true
+			}, nil).Run(context.Background(), StartInstanceDef(), map[string]any{
+				"UHostId": "uhost-yyy", "StartMode": "cpu_only_2c4g",
+			})
+
+			require.NoError(t, err)
+			assert.False(t, result.Success)
+			assert.False(t, confirmCalled)
+			assert.Contains(t, result.Message, tt.want)
+			assert.Len(t, executor.calls, 1)
+		})
+	}
+}
+
+func TestStartInstance_PodTierAStillUsesTheLiveEligibilityFlag(t *testing.T) {
+	executor := startMockExecutor()
+	executor.results["DescribeCompShareInstance"] = map[string]any{"UHostSet": []any{map[string]any{
+		"UHostId": "cpod-yyy", "State": "Stopped", "Zone": "cn-bj2-04", "Region": "cn-bj2",
+		"GpuType": "4090", "GPU": float64(1), "ChargeType": "Postpay",
+		"IsSpot": true, "SupportWithoutGpuStart": true,
+	}}}
+
+	result, err := NewEngine(executor, func(string, map[string]any) bool { return true }, nil).Run(
+		context.Background(), StartInstanceDef(), map[string]any{
+			"UHostId": "cpod-yyy", "StartMode": "cpu_only_2c4g",
+		})
+
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	require.Len(t, executor.calls, 2)
+	assert.Equal(t, "A", executor.calls[1].args["WithoutGpuSpec"])
 }

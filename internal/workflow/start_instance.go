@@ -293,14 +293,22 @@ func validateWithoutGPUStart(result map[string]any, spec string) CheckOutcome {
 	if _, _, ok := withoutGPUSpecResources(spec); !ok {
 		return CheckFailed("无卡开机档位无效，仅支持 A（2C/4GB）或 B（8C/16GB）。")
 	}
-	if isPodInstanceResult(result) && spec != withoutGPUSpecA {
+	isPod := isPodInstanceResult(result)
+	if isPod && spec != withoutGPUSpecA {
 		return CheckFailed("容器实例的无卡开机仅支持 A 档（2C/4GB）。")
 	}
-	if !extractFirstBool(result, "SupportWithoutGpuStart") {
-		chargeType := extractField(result, "ChargeType")
-		if chargeType != "" && chargeType != "Dynamic" && chargeType != "Postpay" {
+	// UHost applies a Spot restriction after computing its preview flag. Pod's
+	// Spot-only zone is exposed as Postpay + IsSpot=true and uses a different
+	// upstream path, so only UHost Spot is rejected here.
+	if !isPod && extractFirstBool(result, "IsSpot") {
+		return CheckFailed("抢占式虚机不支持无卡开机，请使用普通开机。")
+	}
+	if chargeType := strings.TrimSpace(extractField(result, "ChargeType")); chargeType != "" {
+		if !strings.EqualFold(chargeType, "Postpay") {
 			return CheckFailed("该实例当前计费形态不支持无卡开机。")
 		}
+	}
+	if !extractFirstBool(result, "SupportWithoutGpuStart") {
 		gpuType := extractField(result, "GpuType")
 		if gpuType != "" {
 			return CheckFailed(fmt.Sprintf("该实例当前 GPU 型号 %s 不支持无卡开机。", gpuType))
