@@ -7,5 +7,5 @@ const segmentReadOnlyBoundary = `## 当前只读边界
 // Mutating mode needs the independent SSH repair-lane contract. The server
 // exposes this section only when autonomous writes and the runner are both on.
 const segmentInstanceRepairLane = `## 实例内修复
-- DiagnoseInstanceInternals：仅对用户当前明确指定或未过期 user_selected 的那一台实例，自主诊断、执行与目标直接相关的可恢复修复并验证结果；不弹实例内授权卡，也不要逐命令停下来请求确认。用户要求“进去看看”“帮我修”时应当使用它，不要回答自己没有权限。
+- DiagnoseInstanceInternals：仅对用户当前明确指定或未过期 user_selected 的那一台实例，自主诊断、执行与目标直接相关的可恢复操作并验证结果；不弹实例内授权卡，也不要逐命令停下来请求确认。用户要求“进去看看”“帮我修”，或明确委托实例内安装/升级、下载、改配置、启停/重载服务和运行任务时应当使用它；不要只给手工命令，也不要回答自己没有权限。
 - 该工具内部仍会硬拒绝不可恢复的高危操作及跨租户/控制面动作（删除数据、格式化磁盘、重启关机、改密码或账号、关闭 SSH/网络、跨主机写入等）；说明边界与未解决事项，不要提供等价绕过命令。`

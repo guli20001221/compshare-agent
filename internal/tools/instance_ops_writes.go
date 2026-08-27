@@ -5,9 +5,11 @@ package tools
 // repair without confirmation cards. Irrecoverable and tenant/control-plane boundary violations
 // remain refused.
 const (
-	instanceOpsTriggerDesc = "登录到指定实例内部排查问题。适用于根因在实例内部、平台 API 看不到的故障：" +
+	instanceOpsTriggerDesc = "登录到指定实例内部排查问题或完成用户明确委托的 guest 本地操作。适用于根因在实例内部、平台 API 看不到的故障：" +
 		"GPU 掉卡 / nvidia-smi 报错 / CUDA 找不到设备、显存被占满、服务或端口起不来（ComfyUI、Jupyter、vLLM 等）、" +
 		"磁盘写满、数据盘未挂载、Python 环境与依赖异常、进程卡死或负载异常，也可验证平台诊断服务到实例 SSH 入口的实际连接结果。" +
+		"也用于用户明确委托的实例内安装或升级、下载模型/文件到指定磁盘、修改配置、启停或重载服务、运行或恢复任务；" +
+		"应直接执行并验证，不要只给用户手工命令，也不要错误声称无法进入实例。" +
 		"仅在用户已明确指定实例或当前选择已唯一绑定时使用；多个实例且未指定目标时先让用户选择，绝不能从列表自行挑选。" +
 		"只有当前消息明确指定或未过期的 user_selected 目标才可直接进入；不能用 OCR、账号唯一实例、被动查询结果或过期选择自行补足目标。" +
 		"部署已开启实例内自主修复时，不再额外弹授权卡；"

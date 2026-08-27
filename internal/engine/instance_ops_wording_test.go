@@ -31,6 +31,9 @@ func TestInstanceOpsDescriptionOffersCardFreeAutonomousRepair(t *testing.T) {
 	if !strings.Contains(*desc, "不再额外弹授权卡") || !strings.Contains(*desc, "不为每条命令重复请求确认") {
 		t.Fatalf("description does not offer the card-free autonomous repair contract: %q", *desc)
 	}
+	if !strings.Contains(*desc, "下载模型/文件到指定磁盘") || !strings.Contains(*desc, "不要只给用户手工命令") {
+		t.Fatalf("description does not route explicit guest-local operations into the lane: %q", *desc)
+	}
 	if !strings.Contains(*desc, "绝不能从列表自行挑选") {
 		t.Fatalf("description omits the target-selection boundary: %q", *desc)
 	}

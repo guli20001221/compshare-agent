@@ -117,7 +117,7 @@ _WRITE_PROMPT = harness.SYSTEM_PROMPT
 _WRITE_PROMPT_FLAT = flat(_WRITE_PROMPT)
 _WRITE_DESC = flat(harness.TOOL_DESC)
 check("prompt-authorizes-task-scoped-repair",
-      "authorized this in-instance repair" in _WRITE_PROMPT_FLAT and
+      "server has authorized this user-targeted in-instance repair" in _WRITE_PROMPT_FLAT.lower() and
       "do not ask again for each command" in _WRITE_PROMPT_FLAT)
 check("prompt-names-hard-limits",
       "Hard refusal is only" in _WRITE_PROMPT and

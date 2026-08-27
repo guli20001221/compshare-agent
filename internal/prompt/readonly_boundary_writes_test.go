@@ -39,6 +39,9 @@ func TestInstanceRepairLaneIsNamedWhenMutatingToolsAreOn(t *testing.T) {
 	if !strings.Contains(both, "不弹实例内授权卡") || !strings.Contains(both, "不要逐命令") {
 		t.Fatal("mutating mode must expose the card-free autonomous repair contract")
 	}
+	if !strings.Contains(both, "下载") || !strings.Contains(both, "不要只给手工命令") {
+		t.Fatal("the lane must cover explicit guest-local operations instead of handing shell commands back to the user")
+	}
 	if !strings.Contains(both, "高危操作") {
 		t.Fatal("the destructive refusals must stay named, or the agent plans around commands the harness rejects")
 	}
