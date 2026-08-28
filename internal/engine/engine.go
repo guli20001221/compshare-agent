@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -2466,6 +2467,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		})
 	}
 	if len(combined.Items) == 0 && floorDroppedCandidates && !nonFlooredCandidates {
+		belowFloorCandidates = topBelowFloorKnowledgeCandidates(belowFloorCandidates)
 		e.recordBelowFloorKnowledgeCapabilities(belowFloorCandidates)
 		return searchKnowledgeResultJSON(combined, "", map[string]any{
 			"floor_dropped_all":      true,
@@ -2484,6 +2486,7 @@ type belowFloorKnowledgeCandidate struct {
 	Title    string `json:"title,omitempty"`
 	Strength string `json:"strength"`
 	searchID string
+	score    float64
 }
 
 func appendBelowFloorKnowledgeCandidates(
@@ -2491,31 +2494,45 @@ func appendBelowFloorKnowledgeCandidates(
 	hits []knowledge.RetrievalHit,
 	searchID string,
 ) []belowFloorKnowledgeCandidate {
-	if len(candidates) >= maxBelowFloorKnowledgeCandidates {
-		return candidates
-	}
-	seen := make(map[string]struct{}, len(candidates))
-	for _, candidate := range candidates {
-		seen[candidate.ChunkID] = struct{}{}
+	byChunkID := make(map[string]int, len(candidates))
+	for i, candidate := range candidates {
+		byChunkID[candidate.ChunkID] = i
 	}
 	for _, hit := range hits {
 		chunkID := strings.TrimSpace(hit.Chunk.ChunkID)
 		if !hit.Kept || chunkID == "" {
 			continue
 		}
-		if _, exists := seen[chunkID]; exists {
+		if i, exists := byChunkID[chunkID]; exists {
+			if hit.Score > candidates[i].score {
+				candidates[i].score = hit.Score
+				candidates[i].Title = truncateRunes(strings.TrimSpace(hit.Chunk.Title), 80)
+				if nextSearchID := strings.TrimSpace(searchID); nextSearchID != "" {
+					candidates[i].searchID = nextSearchID
+				}
+			} else if candidates[i].searchID == "" {
+				candidates[i].searchID = strings.TrimSpace(searchID)
+			}
 			continue
 		}
-		seen[chunkID] = struct{}{}
+		byChunkID[chunkID] = len(candidates)
 		candidates = append(candidates, belowFloorKnowledgeCandidate{
 			ChunkID:  chunkID,
 			Title:    truncateRunes(strings.TrimSpace(hit.Chunk.Title), 80),
 			Strength: "below_floor",
 			searchID: strings.TrimSpace(searchID),
+			score:    hit.Score,
 		})
-		if len(candidates) >= maxBelowFloorKnowledgeCandidates {
-			break
-		}
+	}
+	return candidates
+}
+
+func topBelowFloorKnowledgeCandidates(candidates []belowFloorKnowledgeCandidate) []belowFloorKnowledgeCandidate {
+	sort.SliceStable(candidates, func(i, j int) bool {
+		return candidates[i].score > candidates[j].score
+	})
+	if len(candidates) > maxBelowFloorKnowledgeCandidates {
+		candidates = candidates[:maxBelowFloorKnowledgeCandidates]
 	}
 	return candidates
 }
