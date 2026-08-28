@@ -157,6 +157,12 @@ func (b *knowledgeBridge) search(req KnowledgeRequest) knowledgeReply {
 			hits = append(hits, knowledge.RetrievalHit{Chunk: chunk, Kept: true})
 		}
 	}
+	// Use the same score-scale floor as the outer Agent. A weak candidate must not be hidden from
+	// ordinary chat yet granted as a full-text capability to the in-instance Agent, whose next step
+	// may be an autonomous guest repair.
+	if knowledge.IsWeakEvidence(hits, retrieved.HybridMode, retrieved.RerankerMode != "") {
+		hits = nil
+	}
 	ledger := knowledge.BuildSubstantiveEvidenceLedger(query, hits,
 		maxKnowledgeSearchHits, knowledge.DefaultEvidenceSnippetMaxRunes)
 	resultHits := make([]knowledgeSearchHit, 0, len(ledger.Items))

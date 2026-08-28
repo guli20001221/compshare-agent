@@ -64,7 +64,7 @@ func TestInstanceOps_SSHPreflightUnreachableReturnsStructuredVantageObservation(
 // replacing the conversation with a terminal canned reply.
 func TestInstanceOps_SSHPreflightUnreachableDoesNotOverrideUserConnectivityEvidence(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{toolCall("preflight", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"排查 SSH 登录异常"}`)}},
+		{ToolCalls: []openai.ToolCall{toolCall("preflight", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"排查 SSH 登录异常","Mode":"inspect"}`)}},
 		{Content: "诊断服务所在网络未能连通候选 SSH 地址；但你提供的 SSH 日志已证明另一条路径完成了 TCP 建连，因此不能把两者混为同一个结论。"},
 	}}
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, alwaysConfirm)
@@ -96,7 +96,7 @@ func TestInstanceOps_SSHPreflightUnreachableDoesNotOverrideUserConnectivityEvide
 // the central Agent decides how to answer from the conversation it actually has.
 func TestInstanceOps_SSHPreflightUnreachableWithoutUserEvidenceUsesSameObservation(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{toolCall("preflight", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"排查无法登录"}`)}},
+		{ToolCalls: []openai.ToolCall{toolCall("preflight", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"排查无法登录","Mode":"inspect"}`)}},
 		{Content: "诊断服务未能建立 SSH 前置 TCP 连接，尚无法据此判断实例内部根因。"},
 	}}
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, alwaysConfirm)

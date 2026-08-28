@@ -1,8 +1,9 @@
-"""Offline gate for the single task-scope-authorized repair mode (no network / no SSH / no SDK).
+"""Offline gate for task-scoped repair and explicit inspection (no network / no SSH / no SDK).
 
 Run:  python test_write_mode.py   ->  exits non-zero on ANY failure.
 
-The product-level read-only/write split is deliberately gone. Three properties have to hold:
+The deployment remains repair-capable by default, while an explicit inspect tool call removes runtime
+write authority. Three repair-mode properties have to hold:
 
   1. commands positively proven read-only execute immediately;
   2. every other reversible guest-local effect runs under the one task-scope authorization;
@@ -177,6 +178,17 @@ check("tool-desc-contract-stays-general",
       all(token not in _WRITE_DESC.lower()
           for token in ("filebrowser", "main.py", "/start.d/", "8188", "python -c")))
 check("tool-desc-contract-stays-focused", len(_WRITE_DESC) < 2000)
+
+_INSPECT_PROMPT = harness.system_prompt_for_scope(False)
+_INSPECT_DESC = flat(harness.tool_desc_for_scope(False))
+check("inspection-prompt-removes-repair-authorization",
+      "Authorization: inspect only" in _INSPECT_PROMPT and
+      "server has authorized this user-targeted in-instance repair" not in _INSPECT_PROMPT.lower())
+check("inspection-prompt-keeps-shared-evidence-and-outcome-contract",
+      _INSPECT_PROMPT.startswith(harness._SYSTEM_PROMPT_CORE) and
+      "## Final response" in _INSPECT_PROMPT and "已核实" in _INSPECT_PROMPT)
+check("inspection-tool-description-forbids-mutation-and-backgrounding",
+      "observation-only" in _INSPECT_DESC and "do not request background" in _INSPECT_DESC)
 
 # --- the description must not forbid what the executor allows ------------------------------------
 # The description must match executable policy: supported chaining, pipes and redirection cannot be
@@ -593,19 +605,27 @@ for _name, _cmd, _want in [
 # A partial run lists confirmed commands without claiming that each one changed the instance.
 del harness.AUDIT[:]
 harness.AUDIT.extend([
-    {"command": "systemctl status infersvc", "tier": "read_only", "disposition": "ran_read_only"},
-    {"command": "apt-get install -y python3-tomli", "tier": "mutating", "disposition": "ran_mutating"},
-    {"command": "systemctl restart infersvc", "tier": "mutating", "disposition": "ran_mutating"},
+    {"command": "systemctl status infersvc", "tier": "read_only", "executed": True,
+     "disposition": "ran_read_only"},
+    {"command": "apt-get install -y python3-tomli", "tier": "mutating", "executed": True,
+     "disposition": "ran_mutating"},
+    {"command": "systemctl restart infersvc", "tier": "mutating", "executed": True,
+     "disposition": "ran_mutating"},
+    {"command": "pip install vllm", "tier": "mutating", "executed": True,
+     "disposition": "exec_timeout"},
     # Refused and not-approved writes changed nothing, so they must NOT be listed as changes.
-    {"command": "rm -rf /", "tier": "destructive", "disposition": "refused_destructive"},
-    {"command": "chmod 777 /etc", "tier": "mutating", "disposition": "refused_not_approved"},
+    {"command": "rm -rf /", "tier": "destructive", "executed": False,
+     "disposition": "refused_destructive"},
+    {"command": "chmod 777 /etc", "tier": "mutating", "executed": False,
+     "disposition": "refused_not_approved"},
 ])
 _note = harness._partial_note("500 fetch failed")
 check("partial-note::says-confirmed-commands-may-affect-state", "其中可能包含影响实例状态的操作" in _note)
 check("partial-note::does-not-assert-the-write-happened", "已经被改动过" not in _note)
 check("partial-note::does-not-claim-read-only", "只执行了已证明为只读的命令" not in _note)
 check("partial-note::lists-confirmed-commands-that-ran",
-      "apt-get install -y python3-tomli" in _note and "systemctl restart infersvc" in _note)
+      "apt-get install -y python3-tomli" in _note and "systemctl restart infersvc" in _note and
+      "pip install vllm" in _note)
 check("partial-note::omits-the-refused-ones",
       "rm -rf /" not in _note and "chmod 777 /etc" not in _note)
 check("partial-note::keeps-the-error", "500 fetch failed" in _note)
@@ -614,8 +634,10 @@ check("partial-note::keeps-the-error", "500 fetch failed" in _note)
 # the one direction the guardrail's verdict actually licenses.
 del harness.AUDIT[:]
 harness.AUDIT.extend([
-    {"command": "systemctl status infersvc", "tier": "read_only", "disposition": "ran_read_only"},
-    {"command": "systemctl restart infersvc", "tier": "mutating", "disposition": "refused_mutating_phase1"},
+    {"command": "systemctl status infersvc", "tier": "read_only", "executed": True,
+     "disposition": "ran_read_only"},
+    {"command": "systemctl restart infersvc", "tier": "mutating", "executed": False,
+     "disposition": "refused_mutating_phase1"},
 ])
 _note = harness._partial_note("timed out")
 check("partial-note::read-only-run-still-says-read-only", "只执行了已证明为只读的命令" in _note)

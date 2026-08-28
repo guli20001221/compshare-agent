@@ -1919,11 +1919,7 @@ func citedRefsFromChunkIDs(chunkIDs []string, refs []observability.RetrievalRefe
 // rerankerScored distinguishes qwen3_rrf reranker scores from its fallback RRF
 // scores. The latter use a different scale, so no reranker floor is applied.
 func isWeakEvidence(items []knowledge.RetrievalHit, hybridMode string, rerankerScored bool) bool {
-	floor, judged := appliedFloor(items, hybridMode, rerankerScored)
-	if !judged {
-		return false
-	}
-	return items[0].Score < floor
+	return knowledge.IsWeakEvidence(items, hybridMode, rerankerScored)
 }
 
 // appliedFloor is the SINGLE producer of "was a relevance floor applied to these
@@ -1937,16 +1933,7 @@ func isWeakEvidence(items []knowledge.RetrievalHit, hybridMode string, rerankerS
 //     scale — see normalizeRemoteScoreScale.
 //   - qwen3_rrf without reranker scores: fallback scores use the RRF scale.
 func appliedFloor(items []knowledge.RetrievalHit, hybridMode string, rerankerScored bool) (float64, bool) {
-	if len(items) == 0 {
-		return 0, false
-	}
-	if knowledge.ScoreScaleFor(hybridMode) == knowledge.ScoreScaleUnknown {
-		return 0, false
-	}
-	if hybridMode == knowledge.RetrievalModeQwen3RRF && !rerankerScored {
-		return 0, false
-	}
-	return weakEvidenceThresholdFor(hybridMode), true
+	return knowledge.AppliedEvidenceFloor(items, hybridMode, rerankerScored)
 }
 
 // isRankingAmbiguous reports whether the top two hits are close enough on the
@@ -1975,21 +1962,7 @@ func isRankingAmbiguous(items []knowledge.RetrievalHit, hybridMode string) bool 
 // the BM25 threshold so existing tests with mock RetrievalResult{} keep their
 // fixture-pinned behavior.
 func weakEvidenceThresholdFor(hybridMode string) float64 {
-	switch knowledge.ScoreScaleFor(hybridMode) {
-	case knowledge.ScoreScaleSemantic:
-		// The [0,1] cross-encoder / cosine scale. qwen3_rrf's final Score is a
-		// qwen3-reranker-8b relevance score (same reranker as qwen3_full), so it
-		// belongs here too; classifying it as BM25 would false-refuse perfectly
-		// cited cross-encoder evidence.
-		return weakEvidenceSemanticThreshold
-	default:
-		// ScoreScaleBM25 and ScoreScaleUnknown. Unknown deliberately still gets a
-		// real threshold: appliedFloor is what declines to judge it, and if this
-		// table returned 0 instead then `score < 0` would disable the floor as a
-		// side effect — the two would cover for each other and a mutation
-		// deleting the real guard would survive. It did, once.
-		return weakEvidenceBM25Threshold
-	}
+	return knowledge.WeakEvidenceThresholdFor(hybridMode)
 }
 
 // rankingAmbiguousSpreadFor maps a score scale to the spread under which the top

@@ -390,7 +390,7 @@ func TestBackgroundJobOnAnotherInstanceMakesTheSingleDurableSlotBusy(t *testing.
 	eng.turnContextViewReady = true
 
 	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
-		"UHostId": "uhost-2", "Task": "排查服务",
+		"UHostId": "uhost-2", "Task": "排查服务", "Mode": "repair",
 	}, func(StepEvent) {})
 
 	require.Equal(t, 1, runner.calls)
@@ -411,7 +411,7 @@ func TestNotFoundClearsMatchingBackgroundJobAndReleasesSlot(t *testing.T) {
 	eng.turnContextViewReady = true
 
 	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
-		"UHostId": "uhost-gone", "Task": "检查后台任务",
+		"UHostId": "uhost-gone", "Task": "检查后台任务", "Mode": "repair",
 	}, func(StepEvent) {})
 
 	require.True(t, eng.sessionState.PersistedInstanceOpsJob.IsZero())
@@ -425,7 +425,7 @@ func TestNotFoundClearsMatchingBackgroundJobAndReleasesSlot(t *testing.T) {
 	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: eng.lastUserMsg}
 	eng.turnContextViewReady = true
 	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
-		"UHostId": "uhost-next", "Task": "排查服务",
+		"UHostId": "uhost-next", "Task": "排查服务", "Mode": "repair",
 	}, func(StepEvent) {})
 
 	require.False(t, runner.lastReq.Context.BackgroundJobSlotBusy)

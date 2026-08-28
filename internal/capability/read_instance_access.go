@@ -297,10 +297,17 @@ func instanceAccessRender(resp InstanceAccessResponse) ReadResult {
 	if resp.RequestedSoftware != "" {
 		facts = append(facts,
 			envelope.Fact{SubjectID: resp.InstanceID, Key: "requested_software", Label: "查询的平台应用", Value: resp.RequestedSoftware, Source: envelope.FactSourceComputed},
-			envelope.Fact{SubjectID: resp.InstanceID, Key: "software_declarations_checked", Label: "实例详情是否返回可解析的应用声明列表", Value: resp.SoftwareListKnown, Source: envelope.FactSourceAPI},
-			envelope.Fact{SubjectID: resp.InstanceID, Key: "software_declared", Label: "实例详情是否声明该应用", Value: resp.SoftwareDeclared, Source: envelope.FactSourceAPI},
-			envelope.Fact{SubjectID: resp.InstanceID, Key: "software_entry_present", Label: "实例详情是否返回应用入口记录", Value: resp.SoftwareURLPresent, Source: envelope.FactSourceAPI},
+			envelope.Fact{SubjectID: resp.InstanceID, Key: "software_declarations_checked", Label: "实例详情是否返回完整可解析的应用声明列表", Value: resp.SoftwareListKnown, Source: envelope.FactSourceAPI},
 		)
+		// Unknown is not a pair of negative facts. When the list is absent or partly malformed,
+		// emitting declared=false/entry=false would contradict the rendered "信息不足" verdict and
+		// let the model turn missing upstream data into a confident absence.
+		if resp.SoftwareListKnown {
+			facts = append(facts,
+				envelope.Fact{SubjectID: resp.InstanceID, Key: "software_declared", Label: "实例详情是否声明该应用", Value: resp.SoftwareDeclared, Source: envelope.FactSourceAPI},
+				envelope.Fact{SubjectID: resp.InstanceID, Key: "software_entry_present", Label: "实例详情是否返回应用入口记录", Value: resp.SoftwareURLPresent, Source: envelope.FactSourceAPI},
+			)
+		}
 	}
 	if resp.JupyterToken != "" {
 		facts = append(facts, envelope.Fact{
@@ -438,19 +445,23 @@ func hostSoftwareDeclaration(host map[string]any, contains string) (bool, bool, 
 	if len(items) == 0 {
 		return false, false, true
 	}
-	validEntrySeen := false
+	allEntriesValid := true
 	for _, raw := range items {
-		entry, _ := raw.(map[string]any)
-		name := strings.TrimSpace(stringField(entry, "Name"))
-		if name == "" {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			allEntriesValid = false
 			continue
 		}
-		validEntrySeen = true
+		name := strings.TrimSpace(stringField(entry, "Name"))
+		if name == "" {
+			allEntriesValid = false
+			continue
+		}
 		if strings.EqualFold(name, contains) {
 			return true, strings.TrimSpace(stringField(entry, "URL")) != "", true
 		}
 	}
-	return false, false, validEntrySeen
+	return false, false, allEntriesValid
 }
 
 func jupyterCatalogPort(raw map[string]any) (int, string) {

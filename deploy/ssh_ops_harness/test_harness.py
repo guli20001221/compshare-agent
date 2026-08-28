@@ -145,7 +145,8 @@ check("prompt-prefers-direct-environment-interpreter",
       "invoke it directly" in _prompt_flat and
       "instead of sourcing an activation script" in _prompt_flat)
 check("prompt-verifies-platform-manual-runtime-and-ownership-scope",
-      "manual/agent scope, search platform knowledge" in _prompt_flat and
+      "unknown platform-managed contract or manual/agent ownership boundary" in _prompt_flat and
+      "search platform knowledge" in _prompt_flat and
       "resource/runtime/ownership before applying" in _prompt_flat and
       "never invent a launcher across host/guest/manager scopes" in _prompt_flat)
 check("prompt-does-not-call-reproduction-a-repair",
@@ -514,7 +515,7 @@ check("context-v3-establishes-role-complete-conversation-as-the-request",
           "Follow its latest user message",
           "use earlier user and assistant messages to resolve references, choices, parameters and work",
           "Conversation is not proof of the instance's current state",
-          "perform zero writes and answer 无需修复")))
+          "perform zero writes and follow the mode-specific final response contract")))
 check("context-keeps-labelled-ocr-as-evidence-not-effect-approval",
       "screenshot OCR may identify the symptom" in _rendered_context_prompt and
       "fallible evidence" in _rendered_context_prompt)
@@ -1239,6 +1240,11 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
               set((_real_opts.hooks or {}).keys()) == {"Stop"} and
               len(_stop_hooks) == 1 and _stop_hooks[0].matcher is None and
               _stop_hooks[0].hooks == [harness._repair_closure_stop_hook])
+        _inspect_opts = harness.build_options(
+            object(), "test-model", 5, repair_scope_authorized=False)
+        check("real-build-options-wire-inspection-prompt-without-repair-hook",
+              _inspect_opts.system_prompt == harness.system_prompt_for_scope(False) and
+              _inspect_opts.hooks is None)
         _continuation_opts = harness.build_options(
             object(), "test-model", 5, {"job_id": _JOB_ID, "state": "running"})
         check("pending-job-options-keep-the-stable-reviewed-surface",
@@ -1609,11 +1615,36 @@ check("wire-ran", harness._wire_disposition("ran_read_only") == "ran")
 check("wire-refused-destructive", harness._wire_disposition("refused_destructive") == "refused")
 check("wire-refused-mutating", harness._wire_disposition("refused_mutating_phase1") == "refused")
 check("wire-refused-no-progress", harness._wire_disposition("refused_no_progress") == "refused")
+check("wire-refused-inspection-scope",
+      harness._wire_disposition("refused_inspection_scope") == "refused")
 check("wire-no-connection", harness._wire_disposition("no_connection") == "failed")
 check("wire-auth-failed", harness._wire_disposition("auth_failed") == "failed")
 check("wire-connect-failed", harness._wire_disposition("connect_failed") == "failed")
 check("wire-empty-is-failed", harness._wire_disposition("") == "failed")
 check("wire-unknown-is-failed", harness._wire_disposition("something_new") == "failed")
+
+# Exercise the actual command-to-audit path, not only hand-built fixtures: a timed-out mutation may
+# already have changed the guest, must invalidate prior reads, and must remain visible to the closure.
+_timeout_saved_conn, _timeout_saved_run, _timeout_saved_audit = (
+    harness._CONN, harness.ssh_transport.run_ssh, harness.AUDIT)
+_timeout_state_changes = []
+try:
+    harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw",
+                      "repair_scope_authorized": True})
+    harness.AUDIT = []
+    harness.ssh_transport.run_ssh = lambda *_args, **_kwargs: {
+        "error": "exec_timeout", "detail": "25 seconds", "partial": "still running"}
+    _timeout_result = harness.run_command(
+        "systemctl restart demo", on_mutation=lambda: _timeout_state_changes.append(True))
+    _timeout_entry = dict(harness.AUDIT[-1])
+finally:
+    harness.ssh_transport.run_ssh = _timeout_saved_run
+    harness._CONN, harness.AUDIT = _timeout_saved_conn, _timeout_saved_audit
+check("timed-out-mutation-is-a-real-executed-audit-entry",
+      _timeout_result.get("executed") is True and _timeout_result.get("tier") == "mutating" and
+      _timeout_entry.get("tier") == "mutating" and _timeout_entry.get("executed") is True and
+      _timeout_entry.get("disposition") == "exec_timeout")
+check("timed-out-mutation-invalidates-prior-read-state", _timeout_state_changes == [True])
 check("structured-read-policy-refusal-is-a-precondition",
       harness._structured_read_disposition({"ok": False, "error_class": "path_not_allowed"}) ==
       "refused_precondition")
@@ -1732,13 +1763,20 @@ try:
     _closure_read_only = _asyncio.run(harness._repair_closure_stop_hook(
         {"hook_event_name": "Stop", "stop_hook_active": False}, None, {"signal": None}))
     harness.AUDIT = [
-        {"command": "inspect", "disposition": "ran_read_only"},
-        {"command": "not approved", "disposition": "refused_not_approved"},
+        {"command": "inspect", "tier": "read_only", "executed": True,
+         "disposition": "ran_read_only"},
+        {"command": "not approved", "tier": "mutating", "executed": False,
+         "disposition": "refused_not_approved"},
     ]
     _closure_refused = _asyncio.run(harness._repair_closure_stop_hook(
         {"hook_event_name": "Stop", "stop_hook_active": False}, None, {"signal": None}))
-    harness.AUDIT.append({"command": "echo-private-command-marker", "disposition": "ran_mutating"})
+    harness.AUDIT.append({"command": "echo-private-command-marker", "tier": "mutating",
+                          "executed": True, "disposition": "ran_mutating"})
     _closure_after_mutation = _asyncio.run(harness._repair_closure_stop_hook(
+        {"hook_event_name": "Stop", "stop_hook_active": False}, None, {"signal": None}))
+    harness.AUDIT[-1] = {"command": "timed-out-private-command-marker", "tier": "mutating",
+                         "executed": True, "disposition": "exec_timeout"}
+    _closure_after_timed_out_mutation = _asyncio.run(harness._repair_closure_stop_hook(
         {"hook_event_name": "Stop", "stop_hook_active": False}, None, {"signal": None}))
     _closure_second_stop = _asyncio.run(harness._repair_closure_stop_hook(
         {"hook_event_name": "Stop", "stop_hook_active": True}, None, {"signal": None}))
@@ -1752,7 +1790,50 @@ check("repair-closure-blocks-the-first-stop-after-a-mutation",
       "original success criterion" in _closure_after_mutation.get("reason", "") and
       "Do not defer an action" in _closure_after_mutation.get("reason", "") and
       "echo-private-command-marker" not in _closure_after_mutation.get("reason", ""))
+check("repair-closure-blocks-after-an-executed-mutation-times-out",
+      _closure_after_timed_out_mutation.get("decision") == "block" and
+      "timed-out-private-command-marker" not in
+          _closure_after_timed_out_mutation.get("reason", ""))
 check("repair-closure-allows-the-sdk-recursive-stop", _closure_second_stop == {})
+
+# `已核实` is a product completion state, not merely model prose. It is available only on the typed
+# inspection surface after at least one settled read and no guest mutation that reached execution.
+_saved_audit = harness.AUDIT
+try:
+    harness.AUDIT = [{"command": "inspect", "tier": "read_only", "executed": True,
+                      "disposition": "ran_read_only"}]
+    _inspection_verified = harness._enforce_inspection_outcome(
+        "已核实：目标文件存在。", repair_scope_authorized=False)
+    _repair_cannot_claim_inspection = harness._enforce_inspection_outcome(
+        "已核实：目标文件存在。", repair_scope_authorized=True)
+    harness.AUDIT = []
+    _zero_read_cannot_claim_inspection = harness._enforce_inspection_outcome(
+        "已核实：目标文件存在。", repair_scope_authorized=False)
+    harness.AUDIT = [{"command": "inspect", "tier": "read_only", "executed": False,
+                      "disposition": "ssh_failed"}]
+    _failed_read_cannot_claim_inspection = harness._enforce_inspection_outcome(
+        "已核实：目标文件存在。", repair_scope_authorized=False)
+    harness.AUDIT = [
+        {"command": "inspect", "tier": "read_only", "executed": True,
+         "disposition": "ran_read_only"},
+        {"command": "timed-out write", "tier": "mutating", "executed": True,
+         "disposition": "exec_timeout"},
+    ]
+    _mutation_cannot_claim_inspection = harness._enforce_inspection_outcome(
+        "已核实：目标文件存在。", repair_scope_authorized=False)
+finally:
+    harness.AUDIT = _saved_audit
+
+check("inspection-outcome-keeps-audited-read-only-success",
+      _inspection_verified.startswith("已核实"))
+check("repair-surface-cannot-substitute-inspection-for-the-repair-target",
+      _repair_cannot_claim_inspection.startswith("未修复"))
+check("inspection-outcome-rejects-zero-tool-success",
+      _zero_read_cannot_claim_inspection.startswith("未修复"))
+check("inspection-outcome-rejects-failed-read-success",
+      _failed_read_cannot_claim_inspection.startswith("未修复"))
+check("inspection-outcome-rejects-an-executed-timed-out-mutation",
+      _mutation_cannot_claim_inspection.startswith("部分修复"))
 
 
 def _capture(fn):
@@ -1832,7 +1913,8 @@ try:
     _main_output = _capture(lambda: _asyncio.run(harness.main()))
     sys.stdin = _io.StringIO(_json.dumps({
         "host": "10.0.0.9", "user": "root", "port": 22, "password": "context-test-password",
-        "task": "修复配置", "context": _reference_context, "allow_writes": False,
+        "task": "只读检查配置，不要修改", "context": _reference_context,
+        "repair_scope_authorized": False,
     }) + "\n")
     _main_write_output = _capture(lambda: _asyncio.run(harness.main()))
     sys.stdin = _io.StringIO(_json.dumps({
@@ -1894,9 +1976,42 @@ check("mcp-surface-version-covers-platform-knowledge-broker",
       _captured_sdk_servers[0]["version"] == "2.7.0")
 check("main-registers-exact-single-repair-tool-surface",
       [tool._test_tool_name for tool in _first_tools] == [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
-check("removed-mode-flag-cannot-change-the-tool-surface",
+check("inspection-scope-removes-the-pure-write-tool",
       [tool._test_tool_name for tool in _legacy_flag_tools] ==
-      [tool._test_tool_name for tool in _first_tools])
+      [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS
+       if not name.endswith("__atomic_text_edit")])
+_inspection_ssh_tool = next(tool for tool in _legacy_flag_tools
+                            if tool._test_tool_name == "ssh_exec")
+check("inspection-scope-describes-observation-not-repair",
+      "observation-only" in _inspection_ssh_tool._test_tool_description and
+      "guest-local repairs" not in _inspection_ssh_tool._test_tool_description)
+# Explicit inspect is a runtime capability boundary, not merely a smaller prompt. Even a fabricated
+# approval reply must not reach either foreground SSH or the background launcher, and it must not
+# emit a confirmation card. Missing repair_scope_authorized remains the rolling-deploy legacy path.
+_inspect_saved_conn, _inspect_saved_stdin = harness._CONN, sys.stdin
+_inspect_saved_run, _inspect_saved_start = harness.ssh_transport.run_ssh, harness.remote_job.start
+_inspect_transport_calls = []
+try:
+    harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw",
+                      "repair_scope_authorized": False})
+    harness.ssh_transport.run_ssh = lambda *_args, **_kwargs: _inspect_transport_calls.append("ssh")
+    harness.remote_job.start = lambda *_args, **_kwargs: _inspect_transport_calls.append("job")
+    sys.stdin = _io.StringIO('{"id":"c999","approved":true}\n')
+    _inspect_mutating_wire = _capture(lambda: _asyncio.run(_inspection_ssh_tool({
+        "command": "systemctl restart demo", "run_in_background": False,
+    })))
+    _inspect_background_wire = _capture(lambda: _asyncio.run(_inspection_ssh_tool({
+        "command": "pip install demo", "run_in_background": True, "purpose": "install demo",
+    })))
+finally:
+    harness.ssh_transport.run_ssh, harness.remote_job.start = _inspect_saved_run, _inspect_saved_start
+    harness._CONN, sys.stdin = _inspect_saved_conn, _inspect_saved_stdin
+check("inspection-scope-hard-refuses-foreground-mutation-without-a-card",
+      "refused_inspection_scope" in _inspect_mutating_wire and
+      "@@CONFIRM " not in _inspect_mutating_wire and not _inspect_transport_calls)
+check("inspection-scope-hard-refuses-background-mutation-without-a-card",
+      "refused_inspection_scope" in _inspect_background_wire and
+      "@@CONFIRM " not in _inspect_background_wire and not _inspect_transport_calls)
 check("pending-job-main-keeps-the-reviewed-surface-for-read-only-and-post-terminal-work",
       [tool._test_tool_name for tool in _pending_tools] ==
       [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])

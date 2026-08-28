@@ -59,7 +59,8 @@ func TestKnowledgeBridgeBoundsSearchAndKeepsCapabilityPrivate(t *testing.T) {
 	secretHint := "hint-secret-must-not-reach-kb"
 	retriever := &bridgeRetriever{result: knowledge.RetrievalResult{
 		Enabled: true, KBVersion: "kb-v1", SearchID: secretCapability,
-		HitItems: bridgeHits(4, strings.Repeat("证据", 300)),
+		HybridMode: knowledge.RetrievalModeHybridCosine,
+		HitItems:   bridgeHits(4, strings.Repeat("证据", 300)),
 	}}
 	bridge := newKnowledgeBridge(context.Background(), retriever)
 	reply := bridge.handle(KnowledgeRequest{
@@ -97,6 +98,46 @@ func TestKnowledgeBridgeBoundsSearchAndKeepsCapabilityPrivate(t *testing.T) {
 	}
 }
 
+func TestKnowledgeBridgeUsesTheSharedWeakEvidenceFloorBeforeGrantingRead(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mode    string
+		score   float64
+		wantHit bool
+	}{
+		{name: "weak semantic", mode: knowledge.RetrievalModeHybridCosine, score: 0.2},
+		{name: "weak bm25", mode: knowledge.RetrievalModeBM25Only, score: 10},
+		{name: "unknown scale stays unjudged", mode: "future_scale", score: 0.01, wantHit: true},
+		{name: "raw rrf stays unjudged", mode: knowledge.RetrievalModeQwen3RRF, score: 0.01, wantHit: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			retriever := &bridgeRetriever{result: knowledge.RetrievalResult{
+				Enabled: true, SearchID: "private-search", HybridMode: tc.mode,
+				HitItems: []knowledge.RetrievalHit{{Kept: true, Score: tc.score,
+					Chunk: knowledge.KBChunk{ChunkID: "chunk-a", Title: "候选", Content: "证据"}}},
+			}}
+			bridge := newKnowledgeBridge(context.Background(), retriever)
+			reply := bridge.handle(KnowledgeRequest{ID: "s", Operation: "search", Query: "平台契约"})
+			if !reply.OK {
+				t.Fatalf("search failed: %+v", reply)
+			}
+			result := reply.Result.(knowledgeSearchResult)
+			if tc.wantHit {
+				if len(result.Hits) != 1 {
+					t.Fatalf("unjudged score scale lost its hit: %#v", result.Hits)
+				}
+				return
+			}
+			if len(result.Hits) != 0 || !result.Empty {
+				t.Fatalf("weak evidence reached the inner model: %#v", result)
+			}
+			if got := bridge.handle(KnowledgeRequest{ID: "r", Operation: "read", ChunkIDs: []string{"chunk-a"}}); got.OK || got.ErrorClass != "not_authorized" {
+				t.Fatalf("weak hit gained a full-text capability: %+v", got)
+			}
+		})
+	}
+}
+
 func TestKnowledgeBridgeRejectsOverlongSearchInputsWithoutCallingRetriever(t *testing.T) {
 	for name, req := range map[string]KnowledgeRequest{
 		"query": {
@@ -125,6 +166,7 @@ func TestKnowledgeBridgeSearchDoesNotExposeUnreadableChunkIDsOrUnboundedProductA
 	longArea := strings.Repeat("领域", maxKnowledgeProductAreaRunes)
 	retriever := &bridgeRetriever{result: knowledge.RetrievalResult{
 		Enabled: true, KBVersion: "kb-v1", SearchID: "private-search-id",
+		HybridMode: knowledge.RetrievalModeHybridCosine,
 		HitItems: []knowledge.RetrievalHit{
 			{Kept: true, Score: 0.9, Chunk: knowledge.KBChunk{
 				ChunkID: overlongID, Title: "unreadable", Content: "不应暴露",
@@ -156,7 +198,8 @@ func TestKnowledgeBridgeReadIsSearchBoundAndPerCallRuneBounded(t *testing.T) {
 	content := strings.Repeat("界", 3000)
 	retriever := &bridgeRetriever{
 		result: knowledge.RetrievalResult{Enabled: true, KBVersion: "kb-v1", SearchID: searchID,
-			HitItems: bridgeHits(3, "摘要")},
+			HybridMode: knowledge.RetrievalModeHybridCosine,
+			HitItems:   bridgeHits(3, "摘要")},
 		chunks: map[string]knowledge.KBChunk{
 			"chunk-a": {ChunkID: "chunk-a", Content: content},
 			"chunk-b": {ChunkID: "chunk-b", Content: content},
@@ -245,7 +288,8 @@ func TestSupervisorKnowledgeSidebandRoundTripIsNotAGuestCommand(t *testing.T) {
 	retriever := &bridgeRetriever{
 		result: knowledge.RetrievalResult{
 			Enabled: true, KBVersion: "kb-v1", SearchID: searchID,
-			HitItems: bridgeHits(1, "平台负责该运行时的监控采集。"),
+			HybridMode: knowledge.RetrievalModeHybridCosine,
+			HitItems:   bridgeHits(1, "平台负责该运行时的监控采集。"),
 		},
 		chunks: map[string]knowledge.KBChunk{
 			"chunk-a": {ChunkID: "chunk-a", Title: "容器监控", Content: "完整平台监控契约。"},

@@ -32,9 +32,9 @@ func TestASecondTypedIDOutranksTheFirstOneItAlreadyBound(t *testing.T) {
 			runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
 			model := &mockLLM{responses: []llm.ChatResponse{
 				{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
-					`{"UHostId":"cpod-aaaa1111aaaa","Task":"排查 ComfyUI 打不开"}`)}},
+					`{"UHostId":"cpod-aaaa1111aaaa","Task":"排查 ComfyUI 打不开","Mode":"repair"}`)}},
 				{ToolCalls: []openai.ToolCall{toolCall("d2", "DiagnoseInstanceInternals",
-					`{"UHostId":"`+tc.second+`","Task":"排查这台"}`)}},
+					`{"UHostId":"`+tc.second+`","Task":"排查这台","Mode":"repair"}`)}},
 			}}
 			eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
 			eng.SetInstanceOps(runner)
@@ -147,9 +147,9 @@ func TestAModelInventedIDIsStillRefusedWhenTheBinderSeesProposals(t *testing.T) 
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "不应到达", Ran: 1}}
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
-			`{"UHostId":"cpod-aaaa1111aaaa","Task":"排查 ComfyUI"}`)}},
+			`{"UHostId":"cpod-aaaa1111aaaa","Task":"排查 ComfyUI","Mode":"repair"}`)}},
 		{ToolCalls: []openai.ToolCall{toolCall("d2", "DiagnoseInstanceInternals",
-			`{"UHostId":"cpod-9999invented9","Task":"排查这台"}`)}},
+			`{"UHostId":"cpod-9999invented9","Task":"排查这台","Mode":"repair"}`)}},
 		{Content: "请确认要排查哪台实例。"},
 	}}
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
@@ -179,9 +179,9 @@ func TestACarriedTargetTheUserDidNotNameThisTurnDoesNotAuthorizeEntry(t *testing
 			runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
 			model := &mockLLM{responses: []llm.ChatResponse{
 				{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
-					`{"UHostId":"cpod-aaaa1111aaaa","Task":"排查 ComfyUI"}`)}},
+					`{"UHostId":"cpod-aaaa1111aaaa","Task":"排查 ComfyUI","Mode":"repair"}`)}},
 				{ToolCalls: []openai.ToolCall{toolCall("d2", "DiagnoseInstanceInternals",
-					`{"UHostId":"cpod-aaaa1111aaaa","Task":"排查这台"}`)}},
+					`{"UHostId":"cpod-aaaa1111aaaa","Task":"排查这台","Mode":"repair"}`)}},
 				{Content: "请确认要排查哪台实例。"},
 			}}
 			eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)

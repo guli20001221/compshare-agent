@@ -125,9 +125,36 @@ func TestInstanceAccessSoftwareDoesNotTurnMissingUpstreamDataIntoAbsence(t *test
 		assert.Contains(t, result.Reply, "没有返回可解析的平台应用声明列表")
 		assert.NotContains(t, result.Reply, "实时实例详情未声明")
 		assert.Equal(t, false, factValue(result.Envelope, "software_declarations_checked"))
+		assert.Nil(t, factValue(result.Envelope, "software_declared"),
+			"unknown upstream data must not be projected as a negative declaration fact")
+		assert.Nil(t, factValue(result.Envelope, "software_entry_present"),
+			"unknown upstream data must not be projected as a negative entry fact")
 		assert.NotContains(t, result.Reply, "secret.invalid")
 		assert.NotContains(t, result.Reply, "token=")
 	}
+}
+
+func TestInstanceAccessSoftwareMixedMalformedListCannotProveAbsence(t *testing.T) {
+	exec := &accessReadExec{results: map[string]map[string]any{
+		instanceAccessDescribeAction: describeFixture(accessHost("cpod-a", "Container", map[string]any{
+			"Softwares": []any{
+				map[string]any{"Name": "KnownApp", "URL": "https://known.invalid"},
+				map[string]any{"URL": "https://unknown.invalid/?token=must-not-leak"},
+			},
+		})),
+	}}
+
+	result := runInstanceAccess(t, exec, InstanceAccessRequest{
+		Targets: accessTarget("cpod-a"), AccessType: accessTypeSoftware, Software: "RequestedApp",
+	})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Contains(t, result.Reply, "云侧信息不足")
+	assert.Equal(t, false, factValue(result.Envelope, "software_declarations_checked"))
+	assert.Nil(t, factValue(result.Envelope, "software_declared"))
+	assert.Nil(t, factValue(result.Envelope, "software_entry_present"))
+	assert.NotContains(t, result.Reply, "unknown.invalid")
+	assert.NotContains(t, result.Reply, "token=")
 }
 
 func TestInstanceAccessSSHReturnsTheLiveLoginCommand(t *testing.T) {

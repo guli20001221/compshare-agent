@@ -26,6 +26,7 @@ func TestEachRefusalReasonIsDistinguishable(t *testing.T) {
 		"refused_precondition",
 		"refused_no_progress",
 		"refused_mutating_phase1",
+		"refused_inspection_scope",
 	}
 	seen := map[string]string{}
 	for _, r := range reasons {

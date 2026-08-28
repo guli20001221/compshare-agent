@@ -315,7 +315,7 @@ func TestLiveFullFlow(t *testing.T) {
 	t.Logf("[arm] context=%v model=%s", contextEnabled, sup.Model)
 	svc := NewService(sup, audit)
 
-	// The model already selected DiagnoseInstanceInternals{UHostId, Task}; the product path proves the
+	// The model already selected DiagnoseInstanceInternals{UHostId, Task, Mode}; the product path proves the
 	// user target and deployment grant before calling Service. Enter and diagnose here (real harness,
 	// real SSH, default 掉卡 probe).
 	// SSHH_TASK carries the REAL user phrasing for the scenario under test (the Task the model would

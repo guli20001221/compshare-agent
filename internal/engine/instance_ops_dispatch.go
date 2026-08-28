@@ -108,10 +108,25 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	filtered := e.safeExecutor.FilterArgs(action, args)
 	instanceIDArg, _ := filtered["UHostId"].(string)
 	taskArg, _ := filtered["Task"].(string)
+	modeArg, _ := filtered["Mode"].(string)
 	instanceID := strings.TrimSpace(instanceIDArg)
 	task := strings.TrimSpace(taskArg)
 	if instanceID == "" || task == "" {
 		msg := "请提供要排查的实例 ID 和本次排查目标。"
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
+		return friendlyToolResultJSON(msg)
+	}
+	// Mode is a capability boundary, not merely prompt wording. Explicit inspection reaches the
+	// same SSH/read surface while the private repair bit stays false, so every mutation is refused
+	// by the harness at runtime. Missing and unknown values fail closed instead of silently granting
+	// repair authority to a malformed/replayed model call.
+	repairScopeAuthorized := false
+	switch strings.ToLower(strings.TrimSpace(modeArg)) {
+	case "repair":
+		repairScopeAuthorized = true
+	case "inspect":
+	default:
+		msg := "实例内任务模式无效；只支持 inspect（只读）或 repair（可恢复修复）。"
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 		return friendlyToolResultJSON(msg)
 	}
@@ -211,7 +226,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		InstanceID:            instanceID,
 		Task:                  task,
 		Context:               modelContext,
-		RepairScopeAuthorized: true,
+		RepairScopeAuthorized: repairScopeAuthorized,
 	}, onProgress)
 	if err != nil {
 		// A control-plane NotFound result is authoritative for this target: its guest job can no
@@ -489,6 +504,8 @@ func knownInstanceOpsRefusalReason(reason string) (string, bool) {
 		return "相同只读检查的结果没有变化，已停止重复；请更换检查条件、等待真实状态变化或结束本轮排查", true
 	case "refused_mutating_phase1":
 		return "旧版只读执行器未运行这条修改命令，请重新发起实例内排查", true
+	case "refused_inspection_scope":
+		return "本轮是只读核查，修改操作未执行；我会继续使用只读证据完成核查", true
 	}
 	return "", false
 }
