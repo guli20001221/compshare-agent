@@ -301,7 +301,11 @@ func (e *Engine) recordReadChunksAsEvidence(chunks []knowledge.KBChunk) {
 	}
 	hits := make([]knowledge.RetrievalHit, 0, len(chunks))
 	for _, chunk := range chunks {
-		hits = append(hits, knowledge.RetrievalHit{Chunk: chunk, Kept: true})
+		score := float64(0)
+		if _, belowFloor := e.belowFloorKnowledgeIDsThisTurn[strings.TrimSpace(chunk.ChunkID)]; belowFloor {
+			score = 0.01
+		}
+		hits = append(hits, knowledge.RetrievalHit{Chunk: chunk, Kept: true, Score: score})
 	}
 	e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
 	question := e.searchKnowledgeLedgerThisTurn.Query

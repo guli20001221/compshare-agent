@@ -477,7 +477,8 @@ func TestInventoryToolDescriptionsSetRoutingBoundaries(t *testing.T) {
 	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "Pod 区内部用 zone_id")
 	mustContain(t, descriptions["CheckCompShareResourceCapacity"], "不要手填 zone_id/az_group")
 
-	mustContain(t, descriptions["CreateInstanceWorkflow"], "创建算力实例")
+	mustContain(t, descriptions["CreateInstanceWorkflow"], "创建实例及所选镜像")
+	mustContain(t, descriptions["CreateInstanceWorkflow"], "不会安装镜像外软件")
 	mustNotContain(t, descriptions["CreateInstanceWorkflow"], "必须使用此工具")
 	mustContain(t, descriptions["DiagnoseBilling"], "再次询问当前费用时重新调用本工具")
 	mustContain(t, descriptions["DiagnoseInstanceInternals"], "绝不能从列表自行挑选")

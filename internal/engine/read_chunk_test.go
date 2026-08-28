@@ -205,6 +205,42 @@ func TestReadChunkRemoteUsesOnlyCurrentTurnSearchCapability(t *testing.T) {
 	assert.Equal(t, []string{"visible"}, retriever.reads[0].chunkIDs)
 }
 
+func TestReadChunkRemoteCanReviewBelowFloorCandidateAsLowEvidence(t *testing.T) {
+	retriever := &remoteChunkStoreRetriever{
+		scriptedKnowledgeRetriever: scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+			Enabled: true, SearchID: "weak-search-id", HybridMode: "qwen3_rrf", RerankerMode: "qwen3-reranker-8b",
+			HitItems: []knowledge.RetrievalHit{{
+				Kept: true, Score: 0.26,
+				Chunk: knowledge.KBChunk{ChunkID: "weak-workbuddy", Title: "WorkBuddy 配置", Content: "搜索节选不应进入证据。"},
+			}},
+		}}},
+		chunks: map[string]knowledge.KBChunk{
+			"weak-workbuddy": {ChunkID: "weak-workbuddy", Title: "WorkBuddy 配置", Content: "读取后的完整配置正文。", SourceType: "faq"},
+		},
+	}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+
+	search := readChunkResult(t, eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "WorkBuddy 怎么配置"}, noopStep))
+	assert.Empty(t, search["EvidenceLedger"].(map[string]any)["items"])
+	require.Len(t, search["below_floor_candidates"].([]any), 1)
+	assert.Empty(t, eng.searchKnowledgeLedgerThisTurn.Items)
+	assert.Empty(t, eng.searchKnowledgeHitsThisTurn)
+
+	read := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"weak-workbuddy"}}, noopStep))
+	item := read["chunks"].([]any)[0].(map[string]any)
+	assert.Equal(t, readChunkStatusRead, item["status"])
+	assert.Equal(t, "读取后的完整配置正文。", item["content"])
+	require.Len(t, retriever.reads, 1)
+	assert.Equal(t, "weak-search-id", retriever.reads[0].searchID)
+
+	require.Len(t, eng.searchKnowledgeLedgerThisTurn.Items, 1)
+	evidence := eng.searchKnowledgeLedgerThisTurn.Items[0]
+	assert.Equal(t, "weak-workbuddy", evidence.ChunkID)
+	assert.Equal(t, "low", evidence.ScoreBucket)
+	assert.Contains(t, evidence.Snippet, "读取后的完整配置正文")
+}
+
 func TestReadChunkRemoteExpiredCapabilityRequiresNewSearch(t *testing.T) {
 	retriever := &remoteChunkStoreRetriever{err: fmt.Errorf("%w: test", knowledge.ErrSearchCapabilityInvalid)}
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)

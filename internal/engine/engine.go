@@ -239,6 +239,10 @@ type Engine struct {
 	// engine-local: sharing it through the process-wide retriever would let one
 	// user's capability authorize another user's evidence read.
 	searchKnowledgeCapabilitiesThisTurn map[string]string
+	// belowFloorKnowledgeIDsThisTurn marks only weak candidates SearchKnowledge
+	// explicitly exposed for optional full-body review. They are not evidence
+	// until ReadChunk succeeds, and then remain low-confidence.
+	belowFloorKnowledgeIDsThisTurn map[string]struct{}
 	// searchKnowledgeCallsThisTurn counts how many times the agent chose to call
 	// SearchKnowledge this turn. The ReAct loop withdraws the capability at
 	// maxSearchKnowledgeCallsPerTurn, preventing search thrash.
@@ -613,7 +617,8 @@ func (e *Engine) SetAuthorizationTraceObserver(observer func(observability.Autho
 }
 
 // SetConfirmationTraceObserver wires the terminal observation for each human
-// confirmation card. The trace contains no arguments, IDs or user content.
+// confirmation card. Guided cards carry bounded step metadata; only an approved
+// final create card carries a redacted projection of its displayed contract.
 func (e *Engine) SetConfirmationTraceObserver(observer func(observability.ConfirmationTrace)) {
 	e.confirmationTraceObserver = observer
 }
@@ -1209,7 +1214,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			} else if confirm != nil {
 				result.Confirmed = confirm(action, args)
 			}
-			e.recordConfirmationResult(action, result, started)
+			e.recordConfirmationResult(action, result, started, nil, nil)
 			// Same value trace records, kept for the user-facing sentence. Set on
 			// the approval path too, so a later refusal can never inherit an
 			// earlier card's reason.
@@ -1236,7 +1241,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			e.recordConfirmationResult(action, ConfirmationResult{
 				Confirmed:      resolution.Confirmed,
 				TerminalReason: resolution.TerminalReason,
-			}, started)
+			}, started, args, form)
 			return resolution
 		}
 		defer func() { e.confirmEditsFn = origEdits }()
@@ -1275,6 +1280,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.readChunkCallsThisTurn = 0
 	e.readChunkIDsThisTurn = nil
 	e.searchKnowledgeCapabilitiesThisTurn = nil
+	e.belowFloorKnowledgeIDsThisTurn = nil
 	e.searchKnowledgeCallsThisTurn = 0
 	e.searchKnowledgeQueriesThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
@@ -2382,6 +2388,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	// non-empty result was rejected by the relevance floor.
 	floorDroppedCandidates := false
 	nonFlooredCandidates := false
+	belowFloorCandidates := []belowFloorKnowledgeCandidate{}
 	for _, plannedQuery := range plan.SearchQueries {
 		if e.searchKnowledgeQueriesThisTurn >= maxRetrievalQueriesPerTurn {
 			droppedQueries = len(plan.SearchQueries) - executedQueries
@@ -2408,6 +2415,9 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		}
 		if floorDroppedAll {
 			floorDroppedCandidates = true
+			belowFloorCandidates = appendBelowFloorKnowledgeCandidates(
+				belowFloorCandidates, rawHits, retrieved.SearchID,
+			)
 		} else if len(rawHits) > 0 {
 			nonFlooredCandidates = true
 		}
@@ -2456,12 +2466,77 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		})
 	}
 	if len(combined.Items) == 0 && floorDroppedCandidates && !nonFlooredCandidates {
+		e.recordBelowFloorKnowledgeCapabilities(belowFloorCandidates)
 		return searchKnowledgeResultJSON(combined, "", map[string]any{
-			"floor_dropped_all": true,
-			"note":              "候选内容均低于相关性门槛，未形成可引用证据。请改写或收窄查询后再次检索；不得据此确认平台事实。",
+			"floor_dropped_all":      true,
+			"below_floor_candidates": belowFloorCandidates,
+			"note": "候选内容均低于相关性门槛，尚未形成可引用证据。可先用 ReadChunk 读取待核验候选全文，或改写后重新检索；" +
+				"读取前不得引用；读取后仍按低置信证据使用，必要时说明不确定性，不得当成高置信证据。",
 		})
 	}
 	return searchKnowledgeResultJSON(combined, "", nil)
+}
+
+const maxBelowFloorKnowledgeCandidates = 3
+
+type belowFloorKnowledgeCandidate struct {
+	ChunkID  string `json:"chunk_id"`
+	Title    string `json:"title,omitempty"`
+	Strength string `json:"strength"`
+	searchID string
+}
+
+func appendBelowFloorKnowledgeCandidates(
+	candidates []belowFloorKnowledgeCandidate,
+	hits []knowledge.RetrievalHit,
+	searchID string,
+) []belowFloorKnowledgeCandidate {
+	if len(candidates) >= maxBelowFloorKnowledgeCandidates {
+		return candidates
+	}
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		seen[candidate.ChunkID] = struct{}{}
+	}
+	for _, hit := range hits {
+		chunkID := strings.TrimSpace(hit.Chunk.ChunkID)
+		if !hit.Kept || chunkID == "" {
+			continue
+		}
+		if _, exists := seen[chunkID]; exists {
+			continue
+		}
+		seen[chunkID] = struct{}{}
+		candidates = append(candidates, belowFloorKnowledgeCandidate{
+			ChunkID:  chunkID,
+			Title:    truncateRunes(strings.TrimSpace(hit.Chunk.Title), 80),
+			Strength: "below_floor",
+			searchID: strings.TrimSpace(searchID),
+		})
+		if len(candidates) >= maxBelowFloorKnowledgeCandidates {
+			break
+		}
+	}
+	return candidates
+}
+
+func (e *Engine) recordBelowFloorKnowledgeCapabilities(candidates []belowFloorKnowledgeCandidate) {
+	for _, candidate := range candidates {
+		if candidate.ChunkID == "" {
+			continue
+		}
+		if e.belowFloorKnowledgeIDsThisTurn == nil {
+			e.belowFloorKnowledgeIDsThisTurn = map[string]struct{}{}
+		}
+		e.belowFloorKnowledgeIDsThisTurn[candidate.ChunkID] = struct{}{}
+		if candidate.searchID == "" {
+			continue
+		}
+		if e.searchKnowledgeCapabilitiesThisTurn == nil {
+			e.searchKnowledgeCapabilitiesThisTurn = map[string]string{}
+		}
+		e.searchKnowledgeCapabilitiesThisTurn[candidate.ChunkID] = candidate.searchID
+	}
 }
 
 func (e *Engine) recordSearchKnowledgeCapabilities(searchID string, ledger knowledge.EvidenceLedger) {
@@ -3791,6 +3866,15 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 			onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "工作流返回结构化缺参结果，由中央 Agent 结合上下文处理"})
 			return string(payload)
 		}
+		if action == "StartInstanceWorkflow" {
+			if reply, ok := e.cpuOnlyStartFailureReply(ctx, finalParams, result); ok {
+				// Upstream may have committed the CPU-only resize before reporting
+				// that the subsequent boot failed. Do not carry the pre-start snapshot.
+				e.markRegistryInvalidated(action)
+				onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, result.Err))
+				return finalReplyPrefix + reply
+			}
+		}
 		if action == "StartInstanceWorkflow" && ordinaryStartMode(finalParams) {
 			if apiErr, ok := tools.UpstreamAPIErrorFrom(result.Err); ok && (apiErr.Code == 8357 || apiErr.Code == 226604) {
 				msg := "该实例原带卡规格当前库存不足，本次没有启动，也不会自动改成无卡规格。可以稍后重试；如果你确实不需要 GPU，可以告诉我用途或所需 CPU、内存，我会在新的确认卡中展示合适的 CPU-only 档位。"
@@ -3799,7 +3883,7 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 			}
 		}
 		if msg, ok := friendlyMessageFromText(result.Message); ok {
-			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, nil))
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, result.Err))
 			return finalReplyPrefix + msg
 		}
 	}

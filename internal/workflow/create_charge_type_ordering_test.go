@@ -76,6 +76,8 @@ func TestGuidedFinalCardDoesNotOfferChargeTypeEdit(t *testing.T) {
 	require.NotNil(t, form)
 	require.NotNil(t, form.Step)
 	assert.True(t, form.Step.Final, "premise: this is the final guided card")
+	assert.Contains(t, form.Step.Description, "镜像已包含的软件会随实例提供")
+	assert.Contains(t, form.Step.Description, "其他软件不会自动安装")
 
 	assert.Nil(t, form.Field("ChargeType"),
 		"the final card must not re-open the charge type; its edit does not re-run the "+
