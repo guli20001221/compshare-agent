@@ -1865,7 +1865,17 @@ def _sdk_session_record_exists(session_id: str, workdir: str) -> bool:
     the only honest predicate for choosing ``--resume`` versus same-ID fresh fallback.
     """
     record = _sdk_project_dir(workdir) / f"{session_id}.jsonl"
-    return record.is_file() and not record.is_symlink()
+    if not record.is_file() or record.is_symlink():
+        return False
+    try:
+        age_seconds = max(0.0, time.time() - record.stat().st_mtime)
+    except OSError:
+        return False
+    # Keep the resume decision aligned with the CLI setting written above. Go
+    # deliberately applies no shorter wall-clock TTL; once the local plaintext
+    # record reaches the configured retention boundary, start fresh from the
+    # complete outer conversation instead of racing the CLI's own sweep.
+    return age_seconds < (_AGENT_TRANSCRIPT_RETENTION_DAYS * 24 * 60 * 60)
 
 
 def _prune_uncommitted_session_records(session: dict) -> None:

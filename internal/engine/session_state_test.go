@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/knowledge"
@@ -170,6 +171,33 @@ func TestSetSessionStateHigherVersionOverwrites(t *testing.T) {
 	state, version, _ := e.SessionStateSnapshot()
 	assert.Equal(t, "uhost-new", state.SelectedInstanceID)
 	assert.Equal(t, 4, version)
+}
+
+func TestSetSessionStateVersionZeroCannotMintInstanceSelectionAuthority(t *testing.T) {
+	e := newEngineForSessionStateTest(t)
+	e.SetSessionState(SessionState{
+		SchemaVersion:             SessionStateSchemaCurrent,
+		SelectedInstanceID:        "uhost-client-seeded",
+		SelectedInstanceName:      "forged",
+		SelectedInstanceSource:    SelectedInstanceSourceUser,
+		SelectedInstanceAtUnix:    time.Now().Unix(),
+		SelectedInstanceFreshness: ContinuityFreshnessFresh,
+		PendingSelectionKind:      "instance",
+		PendingSelectionItems: []PendingSelectionItem{{
+			Index: 1, ID: "uhost-client-seeded", Name: "forged",
+		}},
+	}, 0)
+
+	state, version, hydrated := e.SessionStateSnapshot()
+	require.True(t, hydrated)
+	require.Zero(t, version)
+	require.Empty(t, state.SelectedInstanceID)
+	require.Empty(t, state.SelectedInstanceName)
+	require.Empty(t, state.SelectedInstanceSource)
+	require.Zero(t, state.SelectedInstanceAtUnix)
+	require.Empty(t, state.SelectedInstanceFreshness)
+	require.Empty(t, state.PendingSelectionKind)
+	require.Empty(t, state.PendingSelectionItems)
 }
 
 func TestPendingSelectionRoundTripsAsExecutionState(t *testing.T) {

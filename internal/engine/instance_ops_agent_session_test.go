@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestInstanceOpsAgentSessionResumesOnlyFreshSameTarget(t *testing.T) {
+func TestInstanceOpsAgentSessionResumesSameTargetWithoutWallClockExpiry(t *testing.T) {
 	const sessionID = "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5"
 	const anchor = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	e := &Engine{sessionState: SessionState{PersistedInstanceOpsAgent: PersistedInstanceOpsAgentSession{
@@ -18,7 +18,7 @@ func TestInstanceOpsAgentSessionResumesOnlyFreshSameTarget(t *testing.T) {
 		Contract:           instanceOpsAgentSessionContract,
 		Model:              "gpt-5.6-terra",
 		ConversationAnchor: anchor,
-		UpdatedAt:          time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano),
+		UpdatedAt:          time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339Nano),
 	}}}
 
 	got := e.instanceOpsAgentSessionForRun("uhost-a")
@@ -37,13 +37,13 @@ func TestInstanceOpsAgentSessionResumesOnlyFreshSameTarget(t *testing.T) {
 	require.Empty(t, other.Model)
 }
 
-func TestInstanceOpsAgentSessionExpiredOrMalformedStartsFresh(t *testing.T) {
+func TestInstanceOpsAgentSessionMalformedOrFutureStartsFresh(t *testing.T) {
 	for _, persisted := range []PersistedInstanceOpsAgentSession{
 		{
 			InstanceID: "uhost-a", SessionID: "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5",
 			WorkdirID: "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5",
 			Contract:  instanceOpsAgentSessionContract,
-			UpdatedAt: time.Now().UTC().Add(-instanceOpsAgentSessionTTL - time.Minute).Format(time.RFC3339Nano),
+			UpdatedAt: time.Now().UTC().Add(2 * time.Minute).Format(time.RFC3339Nano),
 		},
 		{
 			InstanceID: "uhost-a", SessionID: "not-a-uuid", Contract: instanceOpsAgentSessionContract,

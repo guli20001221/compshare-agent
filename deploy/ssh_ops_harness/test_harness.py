@@ -1304,10 +1304,17 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
             _record_dir = (_fake_projects_dir /
                            _sdk_sessions.project_key_for_directory(_record_workdir))
             _record_dir.mkdir(parents=True)
-            (_record_dir / f"{_AGENT_SESSION_ID}.jsonl").write_text("{}\n", encoding="utf-8")
+            _source_record = _record_dir / f"{_AGENT_SESSION_ID}.jsonl"
+            _source_record.write_text("{}\n", encoding="utf-8")
             check("sdk-session-record-check-finds-the-exact-cwd-and-id",
                   harness._sdk_session_record_exists(_AGENT_SESSION_ID, _record_workdir) is True and
                   harness._sdk_session_record_exists(_AGENT_SESSION_ID_OTHER, _record_workdir) is False)
+            _expired_mtime = (time.time() -
+                              (harness._AGENT_TRANSCRIPT_RETENTION_DAYS * 24 * 60 * 60) - 1)
+            os.utime(_source_record, (_expired_mtime, _expired_mtime))
+            check("sdk-session-record-past-cli-retention-starts-fresh",
+                  harness._sdk_session_record_exists(_AGENT_SESSION_ID, _record_workdir) is False)
+            _source_record.write_text("{}\n", encoding="utf-8")
             _orphan = _record_dir / f"{_AGENT_SESSION_ID_OTHER}.jsonl"
             _orphan.write_text("failed fork\n", encoding="utf-8")
             harness._prune_uncommitted_session_records({
@@ -1317,7 +1324,7 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
             check("failed-fork-pruning-keeps-only-the-db-committed-source",
                   (_record_dir / f"{_AGENT_SESSION_ID}.jsonl").is_file() and
                   not _orphan.exists())
-            (_record_dir / f"{_AGENT_SESSION_ID}.jsonl").unlink()
+            _source_record.unlink()
             _orphan.write_text("failed fresh fallback\n", encoding="utf-8")
             harness._prune_uncommitted_session_records({
                 "workdir": _record_workdir, "resume_requested": True,

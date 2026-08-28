@@ -89,6 +89,51 @@ func TestColdTypedIDSurvivesAProseOnlyAcknowledgement(t *testing.T) {
 	require.Equal(t, instanceID, runner.lastReq.InstanceID)
 }
 
+// A long pause normally evicts the pooled Engine, so the rehydrated session has
+// target A but no live name catalog. The instance-operations dispatch refresh
+// must let a current exact name select B before carried A can fill the model's
+// tool call.
+func TestLongPausedSelectionRefreshesColdRegistryBeforeANameSwitch(t *testing.T) {
+	const oldID, newID = "cpod-old-1", "cpod-new-2"
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
+	model := &mockLLM{responses: []llm.ChatResponse{{ToolCalls: []openai.ToolCall{
+		toolCall("switch-by-name", "DiagnoseInstanceInternals", `{"UHostId":"cpod-new-2","Task":"排查新训练机"}`),
+	}}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"TotalCount": float64(2),
+			"UHostSet": []any{
+				map[string]any{"UHostId": oldID, "Name": "旧训练机", "State": "Running"},
+				map[string]any{"UHostId": newID, "Name": "新训练机", "State": "Running"},
+			},
+		},
+	}}
+	eng := NewWithDeps(model, executor, nil)
+	eng.SetInstanceOps(runner)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:             SessionStateSchemaCurrent,
+		SelectedInstanceID:        oldID,
+		SelectedInstanceName:      "旧训练机",
+		SelectedInstanceSource:    SelectedInstanceSourceUser,
+		SelectedInstanceAtUnix:    time.Now().Add(-2 * time.Hour).Unix(),
+		SelectedInstanceFreshness: ContinuityFreshnessExpired,
+	}, 7)
+	require.True(t, eng.registry.NeedsRefresh(time.Now()), "premise: the rehydrated engine has no catalog")
+
+	reply, err := eng.ChatWithOptions(context.Background(), "现在排查「新训练机」", noopStep, ChatOptions{})
+	require.NoError(t, err)
+	debugState, _, _ := eng.SessionStateSnapshot()
+	debugBinding := eng.bindInstanceTarget(eng.turnContextViewThisTurn, newID)
+	require.Equal(t, 1, runner.calls, "reply=%q model_calls=%d executor_calls=%v state=%+v binding=%+v", reply, len(model.calls), executor.calls, debugState, debugBinding)
+	require.Equal(t, newID, runner.lastReq.InstanceID)
+	require.Contains(t, executor.calls, "DescribeCompShareInstance")
+
+	state, _, _ := eng.SessionStateSnapshot()
+	require.Equal(t, newID, state.SelectedInstanceID)
+	require.Equal(t, "新训练机", state.SelectedInstanceName)
+	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
+}
+
 // Production case 124 warmed the registry through resource_info in the same
 // turn, after the immutable context view had been compiled. The access hostname
 // contains the exact account ID, so that fresh deterministic proof must authorize

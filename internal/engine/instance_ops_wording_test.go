@@ -37,8 +37,8 @@ func TestInstanceOpsDescriptionOffersCardFreeAutonomousRepair(t *testing.T) {
 	if !strings.Contains(*desc, "绝不能从列表自行挑选") {
 		t.Fatalf("description omits the target-selection boundary: %q", *desc)
 	}
-	if !strings.Contains(*desc, "过期选择") {
-		t.Fatalf("description omits the expired-selection target boundary: %q", *desc)
+	if !strings.Contains(*desc, "同一会话") || !strings.Contains(*desc, "不因时间间隔失效") {
+		t.Fatalf("description omits long-pause target continuity: %q", *desc)
 	}
 	// Still has to name the hard limits, or the model plans around commands it can never run.
 	if !strings.Contains(*desc, "始终会被拒绝") {

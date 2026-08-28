@@ -325,6 +325,7 @@ func TestDispatchChatWritesTraceWithTenantAndSession(t *testing.T) {
 				TopOrganizationID: 7,
 				OrganizationID:    8,
 				Context:           stateRaw,
+				ContextVersion:    1,
 				CreatedAt:         time.Now(),
 				UpdatedAt:         time.Now(),
 			},
@@ -356,9 +357,9 @@ func TestDispatchChatWritesTraceWithTenantAndSession(t *testing.T) {
 	assert.Greater(t, trace.Outcome.PromptMessagesAssembledPeak, 0)
 	assert.GreaterOrEqual(t, trace.Outcome.TotalLatencyMS, int64(0))
 	assert.Equal(t, engine.SelectedInstanceSourceUser, trace.State.SelectedInstanceSource)
-	assert.Equal(t, "expired", trace.State.SelectedInstanceFreshness)
+	assert.Equal(t, "stale", trace.State.SelectedInstanceFreshness)
 	assert.Equal(t, engine.SelectedInstanceSourceUser, trace.State.SelectedInstanceSourceAtTurnStart)
-	assert.Equal(t, "expired", trace.State.SelectedInstanceFreshnessAtTurnStart)
+	assert.Equal(t, "stale", trace.State.SelectedInstanceFreshnessAtTurnStart)
 	assert.Equal(t, int64(7), tenant.TopOrgID)
 	assert.Equal(t, int64(8), tenant.OrgID)
 	assert.Equal(t, "sess-trace", tenant.ConnectionID)

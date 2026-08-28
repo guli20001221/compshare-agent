@@ -243,6 +243,7 @@ func extractResourceSelectionOrdinal(input string) (int, bool) {
 	}
 	compact := compactResourceSelectionText(query)
 	numerals := chineseResourceSelectionNumerals()
+	matched := 0
 	for i := len(numerals) - 1; i >= 0; i-- {
 		n := i + 1
 		numeral := numerals[i]
@@ -260,11 +261,17 @@ func extractResourceSelectionOrdinal(input string) (int, bool) {
 			"\u7b2c" + arabic + "\u4e3b\u673a",
 		} {
 			if strings.Contains(compact, token) {
-				return n, true
+				if matched != 0 && matched != n {
+					// More than one ordinal is a genuine multi-target reference. The
+					// negative sentinel keeps existing callers fail-closed, while the
+					// binder below reports an explicit conflict instead of choosing one.
+					return -1, true
+				}
+				matched = n
 			}
 		}
 	}
-	return 0, false
+	return matched, matched != 0
 }
 
 func compactResourceSelectionText(input string) string {

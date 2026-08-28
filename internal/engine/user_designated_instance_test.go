@@ -188,6 +188,37 @@ func TestOnlyTheUsersOwnWordsBecomeADesignation(t *testing.T) {
 	}
 }
 
+func TestConflictingOrUnresolvedCurrentTargetClearsCarriedSelection(t *testing.T) {
+	for _, question := range []string{
+		"排查 cpod-typed-1 和 cpod-does-not-exist",
+		"排查 cpod-does-not-exist",
+		"第 7 台还是连不上",
+	} {
+		t.Run(question, func(t *testing.T) {
+			eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+			eng.SetSessionState(SessionState{
+				SchemaVersion:          SessionStateSchemaCurrent,
+				SelectedInstanceID:     "cpod-typed-1",
+				SelectedInstanceName:   "old",
+				SelectedInstanceSource: SelectedInstanceSourceUser,
+				SelectedInstanceAtUnix: time.Now().Add(-2 * time.Hour).Unix(),
+			}, 1)
+			twoInstanceRegistry(t, eng)
+			eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+				eng, question, "turn-clear-old", time.Now())
+			eng.turnContextViewReady = true
+
+			eng.recordUserDesignatedInstance()
+			state, _, _ := eng.SessionStateSnapshot()
+			require.Empty(t, state.SelectedInstanceID,
+				"a later vague turn must not resurrect the old target after an explicit miss or conflict")
+
+			view := (ContextCompiler{}).CompileForTurn(eng, "继续排查", "turn-after-clear", time.Now())
+			require.False(t, eng.bindInstanceTarget(view).bound())
+		})
+	}
+}
+
 // The account's sole instance is a deterministic BINDING, and deliberately not a
 // designation. Tier B produces it for a message that names nothing, so a writer
 // that accepted any bound id would stamp "the user chose this" onto a turn where
@@ -213,9 +244,8 @@ func TestTheAccountsSoleInstanceIsNotADesignation(t *testing.T) {
 	require.Empty(t, state.SelectedInstanceID)
 }
 
-// A carried designation must not renew its own TTL just by being carried. If it
-// did, a session that keeps talking about anything at all would hold an entry
-// proof forever and the 30-minute window would never elapse.
+// Carrying a designation must not rewrite when the user selected it. The binding
+// is conversation-scoped, while the timestamp remains truthful observability.
 func TestCarriedDesignationDoesNotRefreshItsOwnClock(t *testing.T) {
 	then := time.Now().Add(-20 * time.Minute).Unix()
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)

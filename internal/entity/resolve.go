@@ -256,11 +256,26 @@ func (s RegistrySnapshot) ResolveInstanceRefsInText(text string) ([]*InstanceSna
 	if len(tokens) == 0 {
 		return nil, nil
 	}
+	// A platform URL or shell prompt can wrap an exact live account ID inside a
+	// longer token (for example 8188-cpod-abc-s1). AccountInstanceIDsInText applies
+	// the entity-specific boundary rule; use the same proof to avoid reporting the
+	// wrapper itself as a second, unresolved target.
+	accountHits := s.AccountInstanceIDsInText(text)
 	hits := make([]*InstanceSnapshot, 0, len(tokens))
 	unresolved := make([]string, 0)
 	for _, token := range tokens {
 		if inst, res := s.ResolveByID(token); res.Status == ResolveHit && inst != nil {
 			hits = append(hits, inst)
+			continue
+		}
+		wrappedAccountID := false
+		for _, inst := range accountHits {
+			if inst != nil && containsLiteralInstanceIDSpan(token, inst.UHostId) {
+				wrappedAccountID = true
+				break
+			}
+		}
+		if wrappedAccountID {
 			continue
 		}
 		unresolved = append(unresolved, token)

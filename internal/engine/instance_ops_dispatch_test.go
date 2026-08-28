@@ -358,10 +358,10 @@ func TestInstanceOps_ExplicitDiagnosisCarriesTargetIntoNextTurn(t *testing.T) {
 	require.Len(t, model.calls, 2, "a valid carried selection must not first be rejected back to the model")
 }
 
-// A user selection that is older than the 30-minute automatic-execution window
-// is still useful identity, but it is no longer authority. Without an entry card,
-// the user must explicitly restate the target before the lane can run.
-func TestInstanceOps_ExpiredUserSelectionRequiresAnExplicitCurrentTarget(t *testing.T) {
+// A long pause must not strand a repair after the entry card was removed. The
+// latest genuine user_selected target remains SSH-lane authority in this
+// conversation; runner-side ownership/state checks still happen on every entry.
+func TestInstanceOps_LongPausedUserSelectionStillAuthorizesSameTarget(t *testing.T) {
 	const instanceID = "cpod-expired-1"
 	beforeExpiry := time.Now().Add(-(selectedInstanceTTLSeconds + 60) * time.Second).Unix()
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
@@ -378,24 +378,17 @@ func TestInstanceOps_ExpiredUserSelectionRequiresAnExplicitCurrentTarget(t *test
 
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, "执行至 CLIPLoader 不动了，请检查", "turn-expired", time.Now())
 	eng.turnContextViewReady = true
-	refused := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
-		"UHostId": instanceID, "Task": "检查 CLIPLoader",
-	}, noopStep)
-	require.Zero(t, runner.calls)
-	require.Contains(t, refused, "请先明确要排查的实例")
-
-	state, _, _ := eng.SessionStateSnapshot()
-	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
-	require.Equal(t, ContinuityFreshnessExpired, state.SelectedInstanceFreshness)
-	require.Equal(t, beforeExpiry, state.SelectedInstanceAtUnix)
-
-	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, "请继续排查 cpod-expired-1", "turn-expired-explicit", time.Now())
-	eng.turnContextViewReady = true
 	allowed := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
-		"UHostId": instanceID, "Task": "继续检查 CLIPLoader",
+		"UHostId": instanceID, "Task": "检查 CLIPLoader",
 	}, noopStep)
 	require.Equal(t, 1, runner.calls)
 	require.True(t, strings.HasPrefix(allowed, finalReplyPrefix))
+
+	state, _, _ := eng.SessionStateSnapshot()
+	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
+	require.Equal(t, ContinuityFreshnessFresh, state.SelectedInstanceFreshness,
+		"a successful entry refreshes observability freshness without requiring the user to repeat the id")
+	require.Greater(t, state.SelectedInstanceAtUnix, beforeExpiry)
 }
 
 func TestInstanceOps_ExpiredObservedInstanceDoesNotAuthorizeEntry(t *testing.T) {
@@ -460,14 +453,14 @@ func TestInstanceOps_ExpiredHistoricalTargetCannotOverrideANewExplicitTarget(t *
 }
 
 // The sibling test above names a RESOLVABLE new target, so it exits at the bound
-// branch and never reaches the expired lookup — it cannot tell whether that
+// branch and never reaches the sticky-selection lookup — it cannot tell whether that
 // lookup respects the explicit-reference rule. These two do: the user points at
 // something the server cannot resolve to one id (a typo'd id, an out-of-range
 // ordinal), which the binder reports as explicit-but-unbound. Carried context —
-// including an expired historical pick — must never quietly answer a reference
+// including a long-paused user pick — must never quietly answer a reference
 // the user made to something else. Without this, moving the expired lookup out
 // of the !explicit branch passes the whole suite.
-func TestInstanceOps_ExpiredHistoricalTargetCannotAnswerAnUnresolvedReference(t *testing.T) {
+func TestInstanceOps_StickyHistoricalTargetCannotAnswerAnUnresolvedReference(t *testing.T) {
 	for _, tc := range []struct{ name, question string }{
 		{"typoed id", "排查 cpod-currnt"},
 		{"out of range ordinal", "第 3 台还是连不上"},
@@ -795,6 +788,12 @@ func TestInstanceOps_NoSSHTargetRefusedHonestly(t *testing.T) {
 func TestInstanceOps_NotFoundRefusedHonestly(t *testing.T) {
 	runner := &fakeInstanceOpsRunner{err: ErrInstanceOpsNotFound}
 	eng := newInstanceOpsEngine(runner, alwaysConfirm)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:          SessionStateSchemaCurrent,
+		SelectedInstanceID:     "uhost-1",
+		SelectedInstanceSource: SelectedInstanceSourceUser,
+		SelectedInstanceAtUnix: time.Now().Unix(),
+	}, 1)
 
 	var steps []StepEvent
 	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&steps))
@@ -803,6 +802,9 @@ func TestInstanceOps_NotFoundRefusedHonestly(t *testing.T) {
 	require.Contains(t, out, "找不到实例", "the refusal must name the real cause")
 	require.Contains(t, out, "uhost-", "and the id the user asked about")
 	require.NotContains(t, out, "请稍后重试", "retrying an id that is not in the account can never succeed")
+	state, _, _ := eng.SessionStateSnapshot()
+	require.Empty(t, state.SelectedInstanceID,
+		"an authoritative account NotFound must end the sticky target instead of reviving it next turn")
 
 	// A generic runner error must still keep the retry advice: only a well-formed response that
 	// did not contain the id is non-retryable. Collapsing the two would make the new branch a

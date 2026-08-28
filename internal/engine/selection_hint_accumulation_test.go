@@ -57,9 +57,10 @@ func turnEntry(e *Engine, now time.Time) AgentContext {
 	return (ContextCompiler{}).CompileForTurn(e, "关掉它", "t", now)
 }
 
-// An expired selection may remain visible for conversation continuity, but it
-// must not authorize a bare reference.
-func TestSinglePickPastItsTTLDoesNotBind(t *testing.T) {
+// A genuine user selection is conversation-scoped. A long pause changes its
+// observability freshness to stale but must not make a bare continuation lose
+// the selected instance.
+func TestSinglePickPastItsTTLStillBinds(t *testing.T) {
 	base := time.Now()
 	e := selectionEngine()
 
@@ -68,13 +69,13 @@ func TestSinglePickPastItsTTLDoesNotBind(t *testing.T) {
 	later := base.Add(time.Duration(selectedInstanceTTLSeconds+60) * time.Second)
 	view := turnEntry(e, later)
 
-	// Non-vacuity: the TTL must actually have fired, or this proves nothing.
-	require.Equal(t, ContinuityFreshnessExpired, e.sessionState.SelectedInstanceFreshness)
+	// Non-vacuity: the wall-clock threshold must actually have fired.
+	require.Equal(t, ContinuityFreshnessStale, e.sessionState.SelectedInstanceFreshness)
 
 	binding := e.bindInstanceTarget(view)
-	require.Empty(t, binding.id,
-		"a pick older than selectedInstanceTTLSeconds still bound a bare pronoun")
-	require.False(t, binding.conflict, "an expired pick should simply not bind, not become a conflict")
+	require.Equal(t, "inst-AAA", binding.id,
+		"elapsed time alone turned a genuine user selection into lost context")
+	require.False(t, binding.conflict)
 }
 
 // Older rows may contain fields the current schema no longer models. Decode them

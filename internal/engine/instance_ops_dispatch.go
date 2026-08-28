@@ -124,16 +124,24 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		authorizations = append(authorizations, item.Value)
 	}
 	task = security.RedactKnownAuthorizationText(task, authorizations)
-	// A model-authored id is not selection proof. Reuse the write-path binding
-	// rules; an expired user selection is never authority by itself and, because
-	// this lane has no entry card, must be refreshed by an explicit user target.
+	// A long pause may outlive the pooled Engine that originally knew the
+	// account's instance names. Refresh only when this lane is actually invoked,
+	// before target binding, so a current exact name can switch A to B without an
+	// account-wide read on every unrelated chat turn. Failure remains best-effort:
+	// exact current IDs still go through the runner's tenant-scoped point lookup.
+	e.refreshInstanceRegistryForStickySelection(ctx)
+	// A model-authored id is not selection proof. The proof is either an explicit
+	// current-turn target or the same conversation's last genuine user_selected
+	// target. The latter is intentionally not revoked by elapsed wall-clock time:
+	// this lane has no entry card, and real users routinely resume the same repair
+	// after a long-running download, training job, or an overnight pause.
 	if !e.instanceOpsTargetAuthorized(instanceID) {
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: instanceOpsTargetRefusalForUser})
 		return friendlyToolResultJSON(instanceOpsTargetRefusalForModel)
 	}
 	// A cold registry can make a literal ID provable only at this gate. Record the
-	// user's designation before entry. Account-single, screenshot-only and expired
-	// selections do not authorize this path and are never recorded here.
+	// user's designation before entry. Account-single, screenshot-only and
+	// passively observed targets do not authorize this path and are never recorded here.
 	if e.userNamedInstanceThisTurn(instanceID) || e.userResolvedInstanceThisTurn(instanceID) {
 		e.recordSelectedInstanceIDWithSource(instanceID, "", SelectedInstanceSourceUser)
 	}
@@ -211,6 +219,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		// Clear before composing the interruption so no notice falsely promises a retained cursor.
 		if errors.Is(err, ErrInstanceOpsNotFound) {
 			e.clearBackgroundJobForInstance(instanceID)
+			e.clearSelectedInstanceIfMatches(instanceID)
 		}
 		// The run ended with no verdict. Whatever settled before it did is the only account the user
 		// will ever get of a box that may already have been changed — so stash it for the next turn.
@@ -291,11 +300,13 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 //
 //   - an explicit current-turn ID, exact name, wrapper, or ordinal resolved
 //     against a list the user actually saw;
-//   - a non-expired user_selected instance carried by session state.
+//   - the latest genuine user_selected instance carried by this conversation.
 //
 // Account-single fallback, passive reads, model choice, screenshot OCR and an
-// expired selection are deliberately excluded. The runner still point-checks
-// account ownership and instance state before fetching credentials or dialing.
+// unresolved/conflicting current reference are deliberately excluded. Time alone
+// does not revoke a user's selection: a newer explicit target replaces it, while
+// the runner still point-checks account ownership and instance state before
+// fetching credentials or dialing.
 func (e *Engine) instanceOpsTargetAuthorized(instanceID string) bool {
 	if e == nil || !e.turnContextViewReady || strings.TrimSpace(instanceID) == "" {
 		return false
@@ -322,10 +333,14 @@ func (e *Engine) instanceOpsTargetAuthorized(instanceID string) bool {
 		}
 		return false
 	}
-	// A cold rehydrated session may not have a complete registry yet. An exact ID
-	// visibly authored by the user is still a choice; account membership is
-	// verified by the runner's point describe.
-	return e.userNamedInstanceThisTurn(instanceID)
+	// An explicit but unresolved current reference (a typo, an out-of-range
+	// ordinal, or a different cold-registry ID) must never fall back to the old
+	// selection. An exact current-turn ID can still authorize through the cold
+	// registry path; account membership is verified by the runner's point describe.
+	if binding.explicit {
+		return e.userNamedInstanceThisTurn(instanceID)
+	}
+	return false
 }
 
 // userNamedInstanceThisTurn verifies the model-supplied ID against the user's
