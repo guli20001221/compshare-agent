@@ -98,7 +98,7 @@ type IntakeSpec struct {
 	Mode              IntakeMode
 	CollectableFields []string
 	// UserSuppliedOptionalFields are optional fields the form does NOT collect and
-	// therefore accepts only with verified current-user evidence. Agent-inferred
+	// therefore accepts only with verified current or recent user-authored evidence. Agent-inferred
 	// values are omitted so the workflow can derive its platform default. See
 	// workflow.Definition.UserSuppliedOptionalFields for why this is a separate
 	// list from CollectableFields and never derived from the schema.

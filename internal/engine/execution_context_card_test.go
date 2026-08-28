@@ -34,7 +34,8 @@ var semanticBlockLabels = []string{
 func TestContextCardKeepsOnlyLiveExecutionState(t *testing.T) {
 	card := renderAgentContextCard(fullyPopulatedContext())
 
-	require.Contains(t, card, "【本轮执行上下文；不授权任何写操作】")
+	require.Contains(t, card, "【本轮执行上下文（仅用于目标指代）】")
+	assert.NotContains(t, card, "不授权任何写操作")
 	for _, id := range []string{"inst-LIVE", "inst-SOLE", "inst-CAND", "inst-SEEN"} {
 		assert.Contains(t, card, id, "live execution state must survive")
 	}

@@ -88,7 +88,7 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 		}
 		// Guided forms cannot re-confirm fields outside their controls. For the
 		// explicitly declared optional exceptions, keep a value only when it came
-		// from the user's own current-message evidence; otherwise let the workflow
+		// from verified current or recent user-authored evidence; otherwise let the workflow
 		// derive its live platform default. This prevents model placeholder values
 		// from silently becoming part of a sealed create contract.
 		if candidate.Source == SourceAgentInference &&
