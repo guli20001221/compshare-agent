@@ -30,9 +30,9 @@ type selectionBinding struct {
 	// namedID is the NARROWER half of explicit: the message contains an actual
 	// instance id. An ordinal ("第2台") is explicit and names no id, and the two
 	// must not be conflated — a reference the server cannot resolve is exactly the
-	// case the design hands to the Agent, whose inferred target then rides into the
-	// confirmation card where the user's confirm becomes the proof. Only a literal
-	// id the model then contradicts is a disagreement worth stopping for.
+	// case the design leaves unresolved. An inferred target cannot authorize SSH
+	// entry; platform-write workflows may still use their own confirmation proof.
+	// Only a literal id the model then contradicts is a disagreement worth stopping for.
 	namedID bool
 }
 
@@ -44,8 +44,8 @@ func (b selectionBinding) bound() bool { return b.id != "" && !b.conflict }
 // typed id, an ordinal against a shown candidate list, a unique exact instance
 // name, a prior EXPLICIT user pick, or the sole instance of a complete account.
 // Semantic references ("把刚才最慢的那台停掉") are left to the Agent; if the binder
-// cannot prove the reference it returns no binding, and the Agent's inferred target
-// rides into the confirmation card where the user's confirm becomes the proof.
+// cannot prove the reference it returns no binding. That never authorizes SSH entry;
+// a platform-write workflow may still establish selection through its own confirmation.
 //
 // Precedence: an explicit reference in THIS message (id / ordinal / name) wins over
 // carried context (prior pick / account-single) — a user pointing now overrides a
@@ -72,6 +72,8 @@ func (e *Engine) bindInstanceTarget(view AgentContext, proposedIDs ...string) se
 	// context only when the exact ID appears in the current user message.
 	explicit := textMentionsProposedInstanceID(text, proposedIDs)
 	conflict := false
+	unresolvedRefs := map[string]struct{}{}
+	ordinalResolved := false
 
 	if pending, ok := e.pendingResourceSelectionFromSession(); ok {
 		if m, _ := matchResourceSelectionReference(text, *pending); m.ok {
@@ -95,6 +97,16 @@ func (e *Engine) bindInstanceTarget(view AgentContext, proposedIDs ...string) se
 		}
 		if len(unresolved) > 0 {
 			explicit = true
+			for _, token := range unresolved {
+				unresolvedRefs[strings.ToLower(token)] = struct{}{}
+			}
+		}
+		if ordinal, ok := extractResourceSelectionOrdinal(text); ok {
+			if ordinal < 0 {
+				conflict = true
+			} else if ordinal > 0 && ordinal <= len(pending.candidates) {
+				ordinalResolved = true
+			}
 		}
 		if id, ambiguous, present := uniqueRegistryNameInText(text, pending.snapshot); present {
 			explicit = true
@@ -108,8 +120,13 @@ func (e *Engine) bindInstanceTarget(view AgentContext, proposedIDs ...string) se
 	// An ordinal phrase ("第2台") is an explicit reference even when it does not
 	// resolve to a candidate (no list, or out of range): the user pointed at a
 	// position, so account-single must not silently complete the command instead.
-	if _, ok := extractResourceSelectionOrdinal(text); ok {
+	if ordinal, ok := extractResourceSelectionOrdinal(text); ok {
 		explicit = true
+		if ordinal < 0 {
+			conflict = true
+		} else if !ordinalResolved {
+			unresolvedRefs["ordinal"] = struct{}{}
+		}
 	}
 
 	if snap.FreshAndCompleteAt(now) {
@@ -122,6 +139,9 @@ func (e *Engine) bindInstanceTarget(view AgentContext, proposedIDs ...string) se
 		}
 		if len(unresolved) > 0 {
 			explicit = true // a typed id we can't resolve is still an explicit reference
+			for _, token := range unresolved {
+				unresolvedRefs[strings.ToLower(token)] = struct{}{}
+			}
 		}
 		// Tokenization intentionally consumes identifier-like suffixes, so an
 		// ingress hostname such as "<port>-<account-id>-<suffix>" produces one
@@ -142,12 +162,22 @@ func (e *Engine) bindInstanceTarget(view AgentContext, proposedIDs ...string) se
 				refs = appendDistinctID(refs, id)
 			}
 		}
-	} else if len(snap.InstanceIDTokensInText(text)) > 0 {
+	} else if tokens := snap.InstanceIDTokensInText(text); len(tokens) > 0 {
 		// A cold/stale registry cannot resolve, but an id-shaped token is still an
 		// explicit reference. Recognition alone never binds or authorizes it.
 		explicit = true
+		for _, token := range tokens {
+			unresolvedRefs[strings.ToLower(token)] = struct{}{}
+		}
 	}
 
+	// One unresolved reference cannot silently coexist with a different resolved
+	// target, and two unresolved references cannot be reduced to "pick one". A
+	// wrapper token that contains an exact ID from the complete account snapshot
+	// is excluded above; its embedded account ID already contributes to refs.
+	if len(unresolvedRefs) > 1 || (len(unresolvedRefs) > 0 && len(refs) > 0) {
+		conflict = true
+	}
 	if conflict || len(refs) > 1 {
 		return selectionBinding{conflict: true, explicit: explicit, namedID: namedID}
 	}

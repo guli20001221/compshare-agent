@@ -79,10 +79,10 @@ func TestExpireStaleSelectedInstanceDowngradesUnstampedLegacyRow(t *testing.T) {
 	assert.Equal(t, ContinuityFreshnessExpired, state.SelectedInstanceFreshness)
 }
 
-// An old user selection without its timestamp still carries genuine provenance,
-// but its age is unknowable. It must not bind an operation automatically; the
-// only safe continuity is one new card for that same exact id.
-func TestUnstampedUserSelectionCannotBindButMayReachANewCard(t *testing.T) {
+// An old user selection without its timestamp cannot prove that it came through
+// the current server-owned selection path. Same-conversation continuity applies
+// only to stamped user_selected state.
+func TestUnstampedUserSelectionCannotAuthorizeInstanceOps(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{
 		SchemaVersion:          SessionStateSchemaCurrent,
@@ -100,16 +100,15 @@ func TestUnstampedUserSelectionCannotBindButMayReachANewCard(t *testing.T) {
 	eng.turnContextViewReady = true
 
 	binding := eng.bindInstanceTarget(view)
-	require.False(t, binding.bound(), "an unstampable legacy pick is never automatic authority")
-	require.True(t, expiredUserSelectionMatches(view, "uhost-legacy-user"))
-	require.True(t, eng.instanceOpsTargetMayReachConfirmation("uhost-legacy-user"),
-		"the card can ask the user to reselect the exact historical target")
+	require.False(t, binding.bound(), "an unstamped legacy pick is never automatic authority")
+	require.False(t, eng.instanceOpsTargetAuthorized("uhost-legacy-user"),
+		"conversation continuity must not turn an incomplete legacy row into authority")
 }
 
-// A passive read of an already-expired user pick can update conversational facts,
-// but cannot turn that old selection back into authorization. The user must see a
-// new card for the target instead.
-func TestObservedReadCannotReviveExpiredUserSelection(t *testing.T) {
+// A passive read must not replace the user's current target, even when it observes
+// another instance after a long pause. Only a new explicit user designation may
+// switch a conversation-scoped selection.
+func TestObservedReadCannotReplaceLongPausedUserSelection(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	then := time.Now().Add(-(selectedInstanceTTLSeconds + 60) * time.Second).Unix()
 	eng.SetSessionState(SessionState{
@@ -121,16 +120,39 @@ func TestObservedReadCannotReviveExpiredUserSelection(t *testing.T) {
 	}, 1)
 	eng.expireStaleSelectedInstance(time.Now())
 
-	eng.recordObservedInstanceID("uhost-a", "alpha")
+	eng.recordObservedInstanceID("uhost-b", "beta")
 
 	state, _, _ := eng.SessionStateSnapshot()
+	assert.Equal(t, "uhost-a", state.SelectedInstanceID)
+	assert.Equal(t, "alpha", state.SelectedInstanceName)
 	assert.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
-	assert.Equal(t, then, state.SelectedInstanceAtUnix, "a read must not reset the TTL clock")
-	assert.Equal(t, ContinuityFreshnessExpired, state.SelectedInstanceFreshness)
+	assert.Equal(t, then, state.SelectedInstanceAtUnix, "a read must not reset the selection timestamp")
+	assert.Equal(t, ContinuityFreshnessStale, state.SelectedInstanceFreshness)
 }
 
-// The callers that re-record an ALREADY known instance as a user selection — the
-// approved SSH entry card, a confirmed write target — have only the id in hand.
+func TestLongPausedUserSelectionRemainsStaleButBindable(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	base := time.Now().Add(-(selectedInstanceTTLSeconds + 60) * time.Second)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:             SessionStateSchemaCurrent,
+		SelectedInstanceID:        "uhost-a",
+		SelectedInstanceName:      "alpha",
+		SelectedInstanceSource:    SelectedInstanceSourceUser,
+		SelectedInstanceAtUnix:    base.Unix(),
+		SelectedInstanceFreshness: ContinuityFreshnessExpired, // persisted by an older binary
+	}, 1)
+
+	eng.expireStaleSelectedInstance(time.Now())
+	view := (ContextCompiler{}).CompileForTurn(eng, "为什么启动不了", "turn-long-pause", time.Now())
+	binding := eng.bindInstanceTarget(view)
+
+	require.Equal(t, ContinuityFreshnessStale, eng.sessionState.SelectedInstanceFreshness)
+	require.Equal(t, "uhost-a", binding.id)
+	require.False(t, binding.explicit)
+}
+
+// The callers that re-record an ALREADY known instance as a user selection — an
+// explicit SSH target or a confirmed platform write target — have only the id in hand.
 // A rehydrated or post-mutation registry resolves nothing, so without a fallback
 // the re-record blanks a name the session already knew and the context card can
 // then name the box only by id, which reads as the agent having forgotten it.

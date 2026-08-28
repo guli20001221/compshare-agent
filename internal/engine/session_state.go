@@ -143,8 +143,9 @@ func (j PersistedInstanceOpsJob) IsZero() bool {
 
 // PersistedInstanceOpsAgentSession points at an SDK-owned local transcript without copying any
 // transcript entry into sessions.context. A session is resumed only for the same target and current
-// contract/model inside a short freshness window; each attempt forks away from this committed cursor,
-// and otherwise the harness starts a fresh SDK session.
+// contract/model; each attempt forks away from this committed cursor. Wall-clock time alone does not
+// break continuity. If the SDK-local record is gone, the harness starts fresh from the complete outer
+// conversation snapshot.
 type PersistedInstanceOpsAgentSession struct {
 	InstanceID         string `json:"instance_id,omitempty"`
 	SessionID          string `json:"session_id,omitempty"`
@@ -177,10 +178,9 @@ const (
 	SelectedInstanceSourceObserved = "observed"
 	// SelectedInstanceSourceUser marks a binding the user genuinely established
 	// this session — an explicit id they typed, a pick from a shown selection
-	// card, or the sole result of a create they confirmed. While fresh, only this
-	// (and a shown-card pick / the account's sole
-	// instance) is a SelectionProof; after expiry it remains provenance for a new
-	// target-specific card but never authorizes entry or a write on its own.
+	// card, or the sole result of a create they confirmed. A stamped value remains
+	// the conversation's current target until another explicit user selection
+	// replaces it; a client-provided version-0 Context can never mint this source.
 	SelectedInstanceSourceUser = "user_selected"
 )
 

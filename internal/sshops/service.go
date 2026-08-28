@@ -31,8 +31,8 @@ const DefaultDiagnosisTask = "用户报告这台 GPU 实例\"掉卡\"（nvidia-s
 	"cat /etc/os-release 核对，判断是宿主机驱动问题，还是容器内用户态 NVIDIA 驱动 / 库（如 libnvidia-ml）" +
 	"缺失或版本不匹配。若根因可在实例内安全修复，在本次任务范围授权内执行最小可恢复修复并验证结果。"
 
-// Service is the transport-agnostic core of the consent-gated SSH-ops repair lane. The HTTP
-// Action (and any future entry) calls it AFTER verifying consent. It owns: out-of-band
+// Service is the transport-agnostic core of the deployment-authorized SSH-ops repair lane. The
+// engine calls it only after proving the user-selected target. It owns: out-of-band
 // credential fetch, the fail-closed audit, and the per-task harness spawn. It never holds, logs,
 // or returns the credential — that lives only inside FetchCredential's Credential value and the
 // supervisor's one-shot stdin handshake.
@@ -87,7 +87,7 @@ func NewService(sup harnessRunner, audit AuditWriter, opts ...ServiceOption) *Se
 	return s
 }
 
-// Diagnose runs ONE consented in-instance diagnosis and task-scoped repair. Consent MUST already be verified
+// Diagnose runs ONE deployment-authorized in-instance diagnosis and task-scoped repair. Authorization MUST already be verified
 // by the caller for autonomous repair (the dedicated Action sets the private scope bit). Audit is fail-closed: if the start
 // record cannot be written, the harness does not run. onStep streams each command's metadata as it
 // settles (nil to opt out). The returned Result.Output is the harness's already-scrubbed verdict;
@@ -110,8 +110,8 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 		return Result{}, fmt.Errorf("sshops: no audit writer configured, refusing to run (fail-closed)")
 	}
 	// A missing confirmer is not implicit repair authority. Direct/legacy callers may still diagnose,
-	// while every compatibility confirmation receives Approved=false. The product path supplies one
-	// trusted task-scope authorization and an internal confirmer only for rolling-version compatibility.
+	// while every compatibility confirmation receives Approved=false. The product path supplies the
+	// engine-verified repair scope and an internal confirmer only for rolling-version compatibility.
 	if strings.TrimSpace(task) == "" {
 		task = DefaultDiagnosisTask
 	}
@@ -120,8 +120,8 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 	if err != nil {
 		return Result{}, err // credential-free error (see credential.go)
 	}
-	// INV-13: the box named on the consent card, the box the credential was read from, and the box
-	// written to the audit row must be ONE instance. resolveInstance already requires an exact id
+	// INV-13: the user-selected target, the box the credential was read from, and the box written to
+	// the audit row must be ONE instance. resolveInstance already requires an exact id
 	// match (the arr[0] fallback is gone — see credential.go), so this holds structurally; assert it
 	// explicitly as fail-closed defense-in-depth against any future regression that reintroduces a
 	// mismatch. The audit records the RESOLVED id so "which box did we enter" has one producer.

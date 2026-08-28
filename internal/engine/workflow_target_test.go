@@ -174,6 +174,21 @@ func TestCorrectOrdinalAuthorizesChosenCandidate(t *testing.T) {
 	require.Equal(t, "uhost-b", resolved.action.Arguments["UHostId"])
 }
 
+func TestTwoOrdinalsAreAConflictInsteadOfChoosingOne(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	primeOrdinalSelection(t, eng, "第1台和第2台都要看", "turn-two-ordinals")
+
+	binding := eng.bindInstanceTarget(eng.turnContextViewThisTurn)
+	require.True(t, binding.conflict)
+	require.False(t, binding.bound())
+
+	resolved, err := eng.resolveActionProposal(context.Background(),
+		stopInstanceProposal("turn-two-ordinals", "uhost-a"))
+	require.NoError(t, err)
+	require.False(t, resolved.action.ReadyForConfirmation)
+	require.NotEmpty(t, resolved.action.Conflicts)
+}
+
 // A user reference giving BOTH an id and an ordinal that point at DIFFERENT
 // instances is a conflict the binder refuses to resolve — the agent must ask, never
 // pick one.

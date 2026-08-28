@@ -84,16 +84,11 @@ type stepEvent struct {
 // emitted only when the client opts in through SendCSAgentChat Features
 // ("confirm_form_v1"). A client that received a Form may
 // attach select-only Overrides to its ConfirmCSAgentAction.
-// Label is the card's title when the server is the only party that can know it
-// (serverOwnedConfirmLabel). Absent for every workflow, whose title the console
-// already has right — so those frames stay byte-identical. A client that does not
-// read Label is unaffected; one that does must prefer it over its own map.
 type confirmationEvent struct {
 	ConfirmationID string                `json:"ConfirmationId"`
 	Action         string                `json:"Action"`
 	Summary        map[string]any        `json:"Summary,omitempty"`
 	TimeoutSeconds int                   `json:"TimeoutSeconds"`
-	Label          string                `json:"Label,omitempty"`
 	Form           *workflow.ConfirmForm `json:"Form,omitempty"`
 }
 
@@ -552,14 +547,11 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			}
 			confirmID, ch := h.confirmBroker.Register(sessionID, base.Owner)
 			defer h.confirmBroker.Cancel(confirmID)
-			// Both in-instance lane cards come through HERE (the plain y/N path); the
-			// form path below is create-flow only, so it has nothing to label.
 			if err := writeVisibleEvent(sw, traceRecorder, "confirmation", confirmationEvent{
 				ConfirmationID: confirmID,
 				Action:         action,
 				Summary:        sanitizeConfirmArgs(args),
 				TimeoutSeconds: confirmTimeoutSeconds,
-				Label:          serverOwnedConfirmLabel(action),
 			}); err != nil {
 				return engine.ConfirmationResult{TerminalReason: observability.ConfirmationReasonDeliveryFailed}
 			}

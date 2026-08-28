@@ -9,9 +9,9 @@ import (
 const auditFirstCommandNone = "none"
 
 // maxAuditStepCommandRunes bounds one persisted display command, MARKER INCLUDED — a stored command
-// is never longer than this, so the number can be stated without a footnote. The confirm card already
-// refuses anything over 300 chars (_MAX_CONFIRMABLE_COMMAND in guardrails.py), so a real repair
-// command is well under it; the bound exists so a pathological read command cannot make the Finish
+// is never longer than this, so the number can be stated without a footnote. The legacy confirmation
+// wire refuses anything over 300 chars (_MAX_CONFIRMABLE_COMMAND in guardrails.py), while the current
+// autonomous path has its own command cap; this bound exists so a pathological read cannot make the Finish
 // UPDATE large, and it is counted in RUNES rather than bytes because a CJK path would otherwise be
 // cut mid-character.
 const maxAuditStepCommandRunes = 200

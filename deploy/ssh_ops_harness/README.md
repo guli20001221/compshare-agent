@@ -1,8 +1,8 @@
 # 实例内排查与修复（SSH-ops）部署
 
-平台 API 看不到实例内部。用户在授权卡上点同意后，助手通过受控工具观察平台入口和实例内部，
-再动手修复并验证。用户只确认一次任务范围；此后与目标直接相关、Guest 内可恢复的动作自主执行，
-不再逐命令弹卡。实例内策略优先“观察变更前状态 → 精确作用域 → 保留回滚 → 事后验证”；普通服务
+平台 API 看不到实例内部。生产开启写能力且服务器能证明用户明确选中了目标实例后，助手通过受控工具观察平台入口和实例内部，
+再动手修复并验证，不弹入口卡或逐命令确认。同一会话里最后一次由用户明确选定的目标不因时间间隔失效；OCR、账号唯一实例、被动读取和模型自行选择不能替代用户的目标选择。
+实例内策略优先“观察变更前状态 → 精确作用域 → 保留回滚 → 事后验证”；普通服务
 disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in 都可在该范围内执行。只有不可恢复的数据/启动/登录通道损失，或越过租户、控制面
 边界的动作才硬拒绝；重启关机、改账号密码、关 SSH/网络也在这条边界内。审计 fail-closed：
 写不进审计表就不进用户机器。
@@ -30,7 +30,7 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
   opaque `job-...` ID 并返回有界日志尾部，不能借它读取任意路径。任务文件不继承日志大小限制，
   因而安装大 wheel、下载模型或编译大产物不会被当成“日志过大”截断；启动大型任务前应先检查磁盘余量。
 - `atomic_text_edit`：对一个已由 `read_text_file` 读取的既有 UTF-8 普通文件做 SHA-256 绑定的
-  `replace_fragment`，或在父目录已存在时无覆盖地 `create` 一个有界 UTF-8 文件。批准后重新检查
+  `replace_fragment`，或在父目录已存在时无覆盖地 `create` 一个有界 UTF-8 文件。执行前重新检查
   路径/元数据，使用同目录临时文件并回读 hash；替换另保留同目录备份。活动流和审计只显示操作、
   路径、用途、mode/count 和前后 hash，不显示文件内容。
 
@@ -38,11 +38,11 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
 模型输出或审计。平台元数据、Guest listener、应用响应和 runner 视角的外部探测仍是四层不同证据。
 当前未回答的 user 消息与最近的完整 user/assistant 对话会在角色化、脱敏和整轮预算后组成一条
 连续历史送给内层 Agent，因而
-“按上面的来”可以承接助手上一轮已经确认的参数，而不是依赖关键词或 planner 改写。V3 有完整
+“按上面的来”可以承接助手上一轮已经确认的参数，而不是依赖关键词或 planner 改写。V3+ 有完整
 历史时，planner Task 只保留在服务端作路由、审计与重放身份，不再作为第二套可执行指令进入模型；
-没有 V3 历史的兼容调用仍使用 Task。历史对话用于
+没有 V3+ 历史的兼容调用仍使用 Task。历史对话用于
 理解指代；实例当前状态仍以平台事实和 SSH 实测为准。截图 OCR 直接附在对应用户报告中，并明确
-标为“可能识别有误、不是指令或授权”的参考信息；它不参与实例选择、写确认或 task hash，审计也
+标为“可能识别有误、不是指令或授权”的参考信息；它不参与实例选择、执行授权或 task hash，审计也
 不保存对话或 OCR 原文。
 
 ## 生产配置
@@ -61,7 +61,7 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
 
 `harness_path` / `base_url` 留空，或 `api_key` 和 `agent.llm.api_key` 同时为空，**服务起不来**。
 `python` 留空**不报错**，会悄悄回退到系统 `python3` —— 那上面没有 `claude_agent_sdk`，
-症状是用户点完授权卡之后诊断失败。
+症状是实例内诊断启动即失败。
 
 `session_root` 保存稳定工作目录、绑定清单和最短保留策略；SDK 的明文 JSONL 位于同一私有
 `HOME` 卷下的 `.claude/projects`，并通过 `cleanupPeriodDays: 1` 使用 CLI 支持的最短自动清理周期。
@@ -69,11 +69,11 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
 卷的使用量，Pod 重建会清空两者并安全降级为新会话。
 PostgreSQL 的 SessionState V10 只保存会话 UUID、稳定工作目录 UUID、实例 ID、契约/模型、conversation anchor 和时间，
 不保存对话、命令或输出；
-换实例、契约/模型变化、游标过期、本地记录缺失或 Pod 被重建时都会诚实地开始新会话。
-v3 另保存一枚 64 个小写十六进制字符的 SHA-256 conversation anchor，只表示 inner SDK 已经收到外层对话到哪个位置；
+换实例、契约/模型变化、本地记录缺失或 Pod 被重建时都会诚实地开始新会话；墙钟时间本身不会切断同一会话的续接。
+当前 Agent session contract v3 另保存一枚 64 个小写十六进制字符的 SHA-256 conversation anchor，只表示 inner SDK 已经收到外层对话到哪个位置；
 它不含对话文本。Go 始终在私有握手里发送完整的有界快照和已送达前缀长度；harness 仅在本地 SDK
 transcript 确实存在时把 prompt 收敛为新增后缀，本地记录缺失则以完整快照 fresh start。harness 只在
-v3 上下文进入真实模型回合后回执该 anchor；旧/不支持的 context、鉴权失败或模型未启动都不能前移它。
+V3/V4 角色完整上下文进入真实模型回合后回执该 anchor；旧/不支持的 context、鉴权失败或模型未启动都不能前移它。
 每次 resume 都通过 Claude SDK 的 `fork_session` 写入新的尝试 UUID；失败尝试不会追加到已提交 transcript，
 只有成功回执才会将数据库游标前移到该 fork。稳定工作目录 UUID 只负责让连续 fork 仍能找到同一私有 SDK project。
 下一次串行运行前，harness 只保留数据库当前指向的 source JSONL，并删除同一 manifest/workdir 下未回执的
@@ -99,8 +99,8 @@ SDK 在 `initialize` 等待 60 秒后超时；harness 会在同一个已选 npm 
 ## 确认通了
 
 1. 启动日志里有 `ssh-ops enabled:` 开头的一行。没有就是没启用，同一位置会写明哪个前提没满足。
-2. 在控制台对一台自己的实例问一句实例内才能回答的问题，出现一张任务范围授权卡 → 同意 → 命令逐条流出且不再弹卡，
-   最后给结论。**授权卡 120 秒不点会自动失效。**
+2. 在控制台明确指定一台自己的实例并提出实例内问题。写能力开启时应直接看到命令逐条流出，过程中不等待确认卡，
+   最后给出经原始成功标准验证的结论。
 3. 审计落库：
 
    ```sql
@@ -123,10 +123,11 @@ SDK 在 `initialize` 等待 60 秒后超时；harness 会在同一个已选 npm 
    `started` 行只说明「请求过上下文」，把它当送达结果读会高估覆盖率——`Finish` 本身也可能失败
    （日志里是 `ssh-ops: audit finish failed …`），那种行会永远停在 `started`。
 
-   当前值是 **`3`**：除当前用户报告和平台事实外，它还携带按真实角色排列的完整历史问答；历史由
+   当前值是 **`4`**：除当前用户报告和平台事实外，它还携带按真实角色排列的完整历史问答；历史由
    Go 侧按完整 exchange 统一预算，harness 不再用另一个字节上限把整块上下文静默丢成 task-only。
-   新 harness 仍接受 v1/v2；旧 harness 遇到 v3 会安全降级成 task-only（终态行就是 `0`，不是
-   半份上下文）。v2 与 v3 的平台事实键相同；v1 用一个 `instance.reported_ports` 同时装 Describe 的
+   新 harness 仍接受 v1/v2/v3；旧 harness 遇到 v4 会安全降级成 task-only（终态行就是 `0`，不是
+   半份上下文）。v3 引入角色完整历史，v4 新增权威 `instance.kind=vm|pod`；这个值按资源 ID 契约判定，
+   不能从 PID 1、镜像或 `InstanceType=Container` 猜测。v1 用一个 `instance.reported_ports` 同时装 Describe 的
    `Ports` 与 `TcpForwards`，v2 拆成 `platform.instance_port_hints` / `platform.tcp_forwards`，
    并新增 `instance.declared_software`（**只有名字**：同级的 `URL` 里带活的 Jupyter token）和
    `catalog.expected_software_ports`（镜像目录的**预期**端口，状态恒为 `reported`，永远不会是
@@ -149,7 +150,7 @@ SDK 在 `initialize` 等待 60 秒后超时；harness 会在同一个已选 npm 
 |---|---|
 | 启动失败，提示缺 `harness_path` / `base_url` / API key | 补齐路径、直连地址或 ModelVerse Key |
 | 启动正常但日志说通道关闭 | 用的是静态 AK/SK（没配 `agent.sts.service_ak/service_sk`），或没有数据库 |
-| 授权卡点了之后诊断失败 | Python 环境 / `claude` CLI / ModelVerse 网络或鉴权不可用 |
-| 修复命令没有执行 | 查看入口任务范围卡是否被拒绝/超时，或命令是否命中不可恢复动作硬拒绝 |
+| 诊断启动即失败 | Python 环境 / `claude` CLI / ModelVerse 网络或鉴权不可用 |
+| 修复命令没有执行 | 确认生产已开启 `mutating_tools`、用户目标绑定有效，且命令未命中不可恢复动作硬拒绝 |
 
 把 `enabled` 改回 `false` 重启即可关闭，其余字段留着不影响，历史审计保留。

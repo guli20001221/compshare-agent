@@ -14,7 +14,6 @@ const (
 	// incompatibly. A prior SDK transcript then becomes reference history rather than executable
 	// continuation and is not resumed.
 	instanceOpsAgentSessionContract = opscontext.AgentSessionContract
-	instanceOpsAgentSessionTTL      = 30 * time.Minute
 	maxInstanceOpsAgentTextBytes    = 128
 	maxInstanceOpsAgentModelBytes   = 200
 )
@@ -48,7 +47,7 @@ func normalizePersistedInstanceOpsAgentSession(in PersistedInstanceOpsAgentSessi
 	return in
 }
 
-func persistedInstanceOpsAgentSessionFresh(in PersistedInstanceOpsAgentSession, now time.Time) bool {
+func persistedInstanceOpsAgentSessionResumable(in PersistedInstanceOpsAgentSession, now time.Time) bool {
 	in = normalizePersistedInstanceOpsAgentSession(in)
 	if in.IsZero() {
 		return false
@@ -57,16 +56,21 @@ func persistedInstanceOpsAgentSessionFresh(in PersistedInstanceOpsAgentSession, 
 	if err != nil || updated.After(now.Add(time.Minute)) {
 		return false
 	}
-	return now.Sub(updated) <= instanceOpsAgentSessionTTL
+	// Wall-clock age is not a continuation boundary. The cursor is already bound
+	// to this product session, instance, prompt/tool contract and model. The
+	// harness additionally checks its private manifest and the SDK-local JSONL;
+	// when the CLI retention sweep or a Pod rebuild removes that record it
+	// automatically starts fresh with the full outer conversation snapshot.
+	return true
 }
 
-// instanceOpsAgentSessionForRun returns either a same-instance fresh resume cursor or a new
+// instanceOpsAgentSessionForRun returns either a same-instance resumable cursor or a new
 // server-chosen UUID. It does not persist the new UUID: only a lifecycle event proving that the SDK
 // model turn began may do that.
 func (e *Engine) instanceOpsAgentSessionForRun(instanceID string) *opscontext.AgentSession {
 	now := time.Now().UTC()
 	current := e.sessionState.PersistedInstanceOpsAgent
-	if persistedInstanceOpsAgentSessionFresh(current, now) &&
+	if persistedInstanceOpsAgentSessionResumable(current, now) &&
 		strings.EqualFold(current.InstanceID, strings.TrimSpace(instanceID)) {
 		return &opscontext.AgentSession{
 			SessionID:          current.SessionID,

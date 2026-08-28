@@ -64,7 +64,7 @@ func (e *Engine) emitTurnCompletion() {
 		ModelIDs:              append([]string(nil), e.turnModelIDsThisTurn...),
 		ProviderFinishReasons: finishReasons,
 		ModelAttempts:         attempts,
-		ToolNames:             centralAgentToolNames(e.mutatingToolsEnabled, e.instanceOps != nil),
+		ToolNames:             centralAgentToolNames(e.mutatingToolsEnabled, e.mutatingToolsEnabled && e.instanceOps != nil),
 	}
 
 	trace.Class, trace.Reason = e.classifyTurnCompletion()

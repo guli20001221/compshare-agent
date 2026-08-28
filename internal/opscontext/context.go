@@ -8,10 +8,16 @@ package opscontext
 import "strconv"
 
 const (
-	// SchemaVersion is the current SSH context wire contract. Version 3 carries
-	// the canonical role-preserving outer conversation instead of a user-only
-	// approximation, while keeping live platform facts separate.
-	SchemaVersion = 3
+	// SchemaVersion is the current SSH context wire contract. Version 4 adds a
+	// control-plane-authoritative instance kind (vm or pod). It deliberately
+	// derives that classification from the resource-ID contract, rather than
+	// from the guest image or process topology.
+	SchemaVersion = 4
+
+	// SchemaVersionRoleComplete is v3, retained during a mixed deployment. It
+	// carried the canonical role-preserving outer conversation but not the
+	// authoritative instance kind fact.
+	SchemaVersionRoleComplete = 3
 
 	// SchemaVersionUserOnly is v2, retained because the harness accepts it during
 	// a mixed deploy. It carried current/prior user reports but no assistant side.
@@ -22,8 +28,11 @@ const (
 	SchemaVersionPortsMerged = 1
 
 	// AgentSessionContract is the prompt/tool/context contract bound to an opaque
-	// Claude SDK continuation cursor. All transport layers compare this one value.
-	AgentSessionContract = "sshops-agent-v2"
+	// Claude SDK continuation cursor. Version 3 includes the autonomous repair-
+	// closure semantics; a v2 transcript must start fresh rather than inherit the
+	// former stop-before-runtime-verification behavior. All transport layers compare
+	// this one value.
+	AgentSessionContract = "sshops-agent-v3"
 
 	StatusKnown       = "known"
 	StatusUnknown     = "unknown"
@@ -55,6 +64,10 @@ const (
 	// a name that says so. Separate bits because the two support different conclusions.
 	CoverageCatalogPorts
 	CoverageRegionPortHints
+	// CoverageInstanceKind means the model received the control-plane resource
+	// kind. It is distinct from image type: an UHost created from a container
+	// image is still a VM for access and port semantics.
+	CoverageInstanceKind
 )
 
 // Context is independent from the planner-produced Task. Keeping the two

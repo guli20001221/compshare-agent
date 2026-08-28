@@ -42,6 +42,17 @@ func continuityFreshness(at int64, ttl int, now time.Time) string {
 }
 
 func normalizedSelectedInstanceFreshness(state SessionState) string {
+	// A stamped user_selected row is an explicit conversation binding, not a
+	// short-lived observation. Older binaries may have persisted it as expired;
+	// normalize that wire value to stale so the same conversation can resume
+	// without pretending the selection was just made. Unstamped legacy rows stay
+	// expired because their provenance cannot be tied to the current state shape.
+	if state.SelectedInstanceSource == SelectedInstanceSourceUser && state.SelectedInstanceAtUnix > 0 {
+		if state.SelectedInstanceFreshness == "" || state.SelectedInstanceFreshness == ContinuityFreshnessFresh {
+			return ContinuityFreshnessFresh
+		}
+		return ContinuityFreshnessStale
+	}
 	if state.SelectedInstanceFreshness != "" {
 		return state.SelectedInstanceFreshness
 	}
@@ -49,9 +60,8 @@ func normalizedSelectedInstanceFreshness(state SessionState) string {
 		return ""
 	}
 	if state.SelectedInstanceAtUnix <= 0 {
-		// A legacy row with no timestamp has no bounded authorization window.
-		// Treat it as expired: it may remain conversational provenance, but it
-		// cannot silently bind an operation before a fresh confirmation.
+		// A legacy row with no timestamp cannot prove it came through the current
+		// explicit-selection path. Keep it for conversation, not execution binding.
 		return ContinuityFreshnessExpired
 	}
 	return ContinuityFreshnessFresh

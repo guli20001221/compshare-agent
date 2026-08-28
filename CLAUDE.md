@@ -119,14 +119,18 @@ calls) is never persisted or executed as a normal answer.
 
 ## In-instance diagnosis
 
-`DiagnoseInstanceInternals` is an optional SSH-ops lane. It requires:
+`DiagnoseInstanceInternals` is an optional autonomous SSH-ops lane. It requires:
 
 - tenant-scoped STS credentials;
 - a configured Python/Agent-SDK harness;
 - audit migrations `0011`, `0013` and `0014`;
-- one explicit task-scope entry confirmation. After it is accepted, the lane may
-  autonomously perform guest-local, reversible repairs that directly serve the
-  stated task; it does not ask again for every command.
+- the deployment grant `agent.authorization.mutating_tools=true`; and
+- a deterministic current or conversation-bound `user_selected` target. Elapsed
+  wall-clock time does not revoke that explicit choice; a newer user target replaces it. OCR-only,
+  account-single, observed-only, model-selected and expired passive/legacy hints do not authorize entry.
+
+Once those server-owned conditions hold, the lane performs guest-local reversible
+diagnosis, repair and verification without an entry card or per-command prompts.
 
 The lane fails closed when audit storage is unavailable. A missing audit schema
 disables only this lane and logs the missing migration; it does not take chat
@@ -149,13 +153,13 @@ Engine LRU eviction or process restart; neither the command nor its output enter
 conversation/audit storage. One unresolved handle occupies the session's single
 durable job slot until a matching terminal observation clears it.
 
-SessionState V10 keeps a short-lived, same-instance opaque Agent SDK session UUID,
+SessionState V10 keeps a same-instance opaque Agent SDK session UUID,
 a stable opaque workdir UUID, and a content-free SHA-256 high-water mark for the outer conversation already
 bridged into it. The SDK transcript stays in its existing local ephemeral store
 and never enters PostgreSQL. A fresh inner session receives the canonical bounded
 user/assistant conversation plus the current user turn; a resume receives only
 the new role-labelled suffix. A different instance, changed prompt/tool contract,
-changed model, expired cursor, missing local transcript or a compacted-away anchor
+changed model, missing local transcript or a compacted-away anchor
 starts fresh with the complete currently available snapshot.
 Every resume forks the committed transcript into a new attempt UUID. Only a genuine
 model-event receipt advances the persisted cursor, so authentication/transport failures

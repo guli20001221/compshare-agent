@@ -572,9 +572,10 @@ func (e *Engine) SetInstanceOps(r InstanceOpsRunner) {
 func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
 	return prompt.BuildOptions{
 		MutatingToolsEnabled: e.mutatingToolsEnabled,
-		// The same nil check gates the tool window, so the prompt never advertises
-		// an in-instance repair lane the runtime did not wire.
-		InstanceOpsEnabled:           e.instanceOps != nil,
+		// SSH-ops is an autonomous repair lane. It exists only when both the
+		// deployment write grant and the runner are present; read-only deployments
+		// must not advertise a tool whose product contract includes guest changes.
+		InstanceOpsEnabled:           e.mutatingToolsEnabled && e.instanceOps != nil,
 		FeishuConsoleHandoff:         e.feishuConsoleHandoffThisTurn,
 		FeishuPublicPlatformReadOnly: e.publicPlatformReadOnlyThisTurn,
 	}
@@ -674,7 +675,8 @@ func (e *Engine) SelectedInstanceIDAtTurnStart() string { return e.selectedInsta
 // SelectedInstanceProvenanceAtTurnStart returns the carried instance source and
 // freshness captured with SelectedInstanceIDAtTurnStart. The trace needs the
 // pair at turn entry: the same id can be an intentionally blocked observed or
-// expired selection before a later card re-binds it to a fresh user selection.
+// legacy unstamped selection before a later explicit action re-binds it to a
+// fresh user selection.
 func (e *Engine) SelectedInstanceProvenanceAtTurnStart() (source, freshness string) {
 	return e.selectedInstanceSourceAtTurnStart, e.selectedInstanceFreshnessAtTurnStart
 }
@@ -1044,6 +1046,22 @@ func (e *Engine) SetSessionState(state SessionState, version int) {
 		state.PersistedInstanceOpsAgent = PersistedInstanceOpsAgentSession{}
 	} else {
 		state.PersistedInstanceOpsAgent = normalizePersistedInstanceOpsAgentSession(state.PersistedInstanceOpsAgent)
+	}
+	// The same version-0 Context boundary applies to target-selection authority.
+	// A client may preserve arbitrary JSON, but it cannot mint the server-owned
+	// user_selected provenance that lets a later vague request bind to an instance.
+	// The first explicit user target or server-rendered selection writes these
+	// fields through the normal CAS path at a positive version.
+	if version <= 0 {
+		state.SelectedInstanceID = ""
+		state.SelectedInstanceName = ""
+		state.SelectedInstanceSource = ""
+		state.SelectedInstanceAtUnix = 0
+		state.SelectedInstanceFreshness = ""
+		state.PendingSelectionKind = ""
+		state.PendingSelectionProducedAtUnix = 0
+		state.PendingSelectionTTLSeconds = 0
+		state.PendingSelectionItems = nil
 	}
 	e.sessionState = state
 	e.sessionStateVersion = version
@@ -3148,7 +3166,14 @@ func (e *Engine) recordUserDesignatedInstance() {
 		return
 	}
 	binding := e.bindInstanceTarget(e.turnContextViewThisTurn)
-	if binding.conflict || !binding.explicit {
+	if binding.conflict {
+		// The user referred to more than one target. Do not let a later bare
+		// "继续" resurrect the previously selected instance after this turn was
+		// correctly refused as ambiguous.
+		e.clearSelectedInstance()
+		return
+	}
+	if !binding.explicit {
 		return
 	}
 	if binding.bound() {
@@ -3164,14 +3189,56 @@ func (e *Engine) recordUserDesignatedInstance() {
 	// mistaken for IDs because their consumed token is not a complete-name span.
 	snap := e.RegistrySnapshot()
 	if snap.FreshAndCompleteAt(time.Now()) {
+		e.clearSelectedInstance()
 		return
 	}
 	tokens := snap.InstanceIDTokensInText(e.turnContextViewThisTurn.CurrentQuestion)
 	if len(tokens) != 1 || !entity.TextExplicitlyMentionsName(
 		e.turnContextViewThisTurn.CurrentQuestion, tokens[0]) {
+		e.clearSelectedInstance()
 		return
 	}
 	e.recordSelectedInstanceIDWithSource(tokens[0], "", SelectedInstanceSourceUser)
+}
+
+// refreshInstanceRegistryForStickySelection restores only the deterministic
+// name-resolution data lost when an idle Engine is evicted. It is invoked only
+// when the model actually requests a target-specific in-instance operation, not
+// on unrelated chat turns. It neither selects an account singleton nor records a
+// passive observation as user authority.
+func (e *Engine) refreshInstanceRegistryForStickySelection(ctx context.Context) {
+	if e == nil || e.registry == nil ||
+		e.sessionState.SelectedInstanceSource != SelectedInstanceSourceUser ||
+		e.sessionState.SelectedInstanceAtUnix <= 0 ||
+		!e.registry.NeedsRefresh(time.Now()) {
+		return
+	}
+	raw, ok := e.querySafeReadResult(ctx, "DescribeCompShareInstance", map[string]any{"Limit": 100})
+	if !ok {
+		return
+	}
+	e.syncRegistryFromDescribe(raw)
+}
+
+// clearSelectedInstance removes conversation target authority while preserving
+// unrelated session continuity (background jobs, agent cursor, evidence and any
+// still-useful displayed selection list).
+func (e *Engine) clearSelectedInstance() {
+	if e == nil || !e.sessionStateHydrated {
+		return
+	}
+	e.sessionState.SelectedInstanceID = ""
+	e.sessionState.SelectedInstanceName = ""
+	e.sessionState.SelectedInstanceSource = ""
+	e.sessionState.SelectedInstanceAtUnix = 0
+	e.sessionState.SelectedInstanceFreshness = ""
+	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
+}
+
+func (e *Engine) clearSelectedInstanceIfMatches(id string) {
+	if strings.EqualFold(strings.TrimSpace(e.sessionState.SelectedInstanceID), strings.TrimSpace(id)) {
+		e.clearSelectedInstance()
+	}
 }
 
 // recordObservedInstanceID records one instance as read-only conversational
@@ -3224,18 +3291,15 @@ func (e *Engine) recordSelectedInstanceIDWithSource(id, name, source string) {
 		return
 	}
 	// Observing the instance the user already chose does not un-choose it: an
-	// observed record of the SAME id must not downgrade a genuine user selection
-	// (the workflow's own Describe step would otherwise erase it mid-turn). Keep
-	// the stronger provenance, just refresh its freshness — but never revive an
-	// already-expired selection from a passive read. After expiry the user must
-	// see and approve a new card for that exact instance.
+	// observed record must never replace a genuine user selection, even when the
+	// read happened to inspect another instance. A passive Describe is evidence,
+	// not the user switching targets. It may fill a missing name for the same id,
+	// but it does not rewrite provenance, timestamp, or freshness.
 	if source == SelectedInstanceSourceObserved &&
-		e.sessionState.SelectedInstanceID == id &&
 		e.sessionState.SelectedInstanceSource == SelectedInstanceSourceUser {
-		if e.sessionState.SelectedInstanceAtUnix > 0 &&
-			continuityFreshness(e.sessionState.SelectedInstanceAtUnix, selectedInstanceTTLSeconds, time.Now()) != ContinuityFreshnessExpired {
-			e.sessionState.SelectedInstanceAtUnix = time.Now().Unix()
-			e.sessionState.SelectedInstanceFreshness = ContinuityFreshnessFresh
+		if e.sessionState.SelectedInstanceID == id && e.sessionState.SelectedInstanceName == "" && name != "" {
+			e.sessionState.SelectedInstanceName = name
+			e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 		}
 		return
 	}
@@ -3243,8 +3307,8 @@ func (e *Engine) recordSelectedInstanceIDWithSource(id, name, source string) {
 		if inst, res := e.RegistrySnapshot().ResolveByID(id); res.Status == entity.ResolveHit && inst != nil {
 			name = inst.Name
 		}
-		// Re-recording the SAME instance with no name in hand — an approved SSH
-		// entry card, a confirmed write target — must not blank a name the session
+		// Re-recording the SAME instance with no name in hand — an authorized explicit
+		// SSH target or a confirmed platform-write target — must not blank a name the session
 		// already knew. A rehydrated or post-mutation registry is cold and resolves
 		// nothing, and the context card would then be able to name the box only by
 		// id, which reads to the user as the agent having forgotten it.
@@ -3260,19 +3324,17 @@ func (e *Engine) recordSelectedInstanceIDWithSource(id, name, source string) {
 	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 }
 
-// selectedInstanceTTLSeconds bounds how long a carried target can authorize a
-// new target-specific confirmation without fresh user designation.
+// selectedInstanceTTLSeconds bounds passively observed target hints. A stamped
+// user_selected target is conversation-scoped and remains bindable until the
+// user explicitly selects another target.
 const selectedInstanceTTLSeconds = 1800
 
-// expireStaleSelectedInstance clears the carried instance binding when it has
-// gone untouched longer than selectedInstanceTTLSeconds. Runs at turn entry,
-// before the turn-start snapshot is frozen, so a stale binding is never carried
-// into the write-target dual-proof verifier as a selection. Provenance remains
-// as historical fact: an expired user_selected item may name the SAME instance
-// on a new confirmation card, but freshness keeps it from authorizing anything
-// directly. A zero SelectedInstanceAtUnix is a legacy row whose age cannot be
-// proven; it is therefore expired for authorization while retaining its source
-// as historical provenance for a new target-specific card.
+// expireStaleSelectedInstance classifies the carried instance at turn entry.
+// Observed hints expire after selectedInstanceTTLSeconds. A stamped
+// user_selected target becomes stale for observability but never expired merely
+// because time passed: same-conversation continuity ends only when the user
+// selects another target. An unstamped legacy row remains expired because the
+// current state shape cannot prove how it was selected.
 func (e *Engine) expireStaleSelectedInstance(now time.Time) {
 	if strings.TrimSpace(e.sessionState.SelectedInstanceID) == "" {
 		return
@@ -3283,12 +3345,21 @@ func (e *Engine) expireStaleSelectedInstance(now time.Time) {
 		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 		return
 	}
-	if now.Unix()-at > selectedInstanceTTLSeconds {
+	freshness := continuityFreshness(at, selectedInstanceTTLSeconds, now)
+	if e.sessionState.SelectedInstanceSource == SelectedInstanceSourceUser {
+		if freshness == ContinuityFreshnessExpired {
+			freshness = ContinuityFreshnessStale
+		}
+		e.sessionState.SelectedInstanceFreshness = freshness
+		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
+		return
+	}
+	if freshness == ContinuityFreshnessExpired {
 		e.sessionState.SelectedInstanceFreshness = ContinuityFreshnessExpired
 		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 		return
 	}
-	e.sessionState.SelectedInstanceFreshness = continuityFreshness(at, selectedInstanceTTLSeconds, now)
+	e.sessionState.SelectedInstanceFreshness = freshness
 }
 
 func (e *Engine) markRegistryInvalidated(action string) {

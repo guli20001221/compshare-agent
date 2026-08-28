@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/llm"
-	"github.com/compshare-agent/internal/observability"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
 )
@@ -41,77 +40,36 @@ func rehydrate(t *testing.T, eng *Engine) {
 	eng.SetSessionState(persisted.AgentSessionState, version+1)
 }
 
-// The reported production loop, end to end.
-//
-// A user typed an exact instance id, the entry card was never approved, and the
-// id was then GONE: the write of user_selected lived after the confirmation, so a
-// declined, timed-out or disconnected card discarded a designation the user had
-// made in plain text. The next turn carried only an `observed` row, the target
-// gate correctly refused it, and nothing the user could say next satisfied the
-// gate — the agent asked for 「确认」, which carries no identifier, and the exchange
-// looped with no exit.
-//
-// Both non-approval reasons are covered because they are not the same event: a
-// timeout means the user never even declined, and losing their choice to a clock
-// is worse than losing it to their own refusal.
-func TestTypedInstanceIDSurvivesACardThatWasNeverApproved(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		reason string
-	}{
-		{"user declined", observability.ConfirmationReasonUserDeclined},
-		{"card timed out", observability.ConfirmationReasonTimeout},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			const instanceID = "cpod-typed-1"
-			runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
-			model := &mockLLM{responses: []llm.ChatResponse{
-				// Turn 1: the model elects the lane for the id the user just typed.
-				{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
-					`{"UHostId":"cpod-typed-1","Task":"排查 ComfyUI 打不开"}`)}},
-				// A declined card is non-terminal, so the turn continues and the model
-				// answers from cloud-side facts.
-				{Content: "已取消，本次没有进入实例。"},
-				// Turn 2: 继续排查 — the user names nothing, and the only thing that can
-				// carry the target is the designation made in turn 1.
-				{ToolCalls: []openai.ToolCall{toolCall("d2", "DiagnoseInstanceInternals",
-					`{"UHostId":"cpod-typed-1","Task":"继续排查 ComfyUI"}`)}},
-			}}
-			eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
-			eng.SetInstanceOps(runner)
-			eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-			twoInstanceRegistry(t, eng)
+// A current typed ID enters without a card and becomes the fresh selection for
+// a later pronoun follow-up.
+func TestTypedInstanceIDAuthorizesEntryAndCarriesAcrossTurns(t *testing.T) {
+	const instanceID = "cpod-typed-1"
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
+			`{"UHostId":"cpod-typed-1","Task":"排查 ComfyUI 打不开"}`)}},
+		{ToolCalls: []openai.ToolCall{toolCall("d2", "DiagnoseInstanceInternals",
+			`{"UHostId":"cpod-typed-1","Task":"继续排查 ComfyUI"}`)}},
+	}}
+	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
+	eng.SetInstanceOps(runner)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	twoInstanceRegistry(t, eng)
 
-			cards := 0
-			opts := ChatOptions{ConfirmResultFunc: func(_ string, args map[string]any) ConfirmationResult {
-				cards++
-				if cards == 1 {
-					return ConfirmationResult{Confirmed: false, TerminalReason: tc.reason}
-				}
-				require.Equal(t, instanceID, args["UHostId"],
-					"the replacement card must name the same instance the user typed")
-				return ConfirmationResult{Confirmed: true}
-			}}
+	_, err := eng.ChatWithOptions(context.Background(),
+		"排查 cpod-typed-1 上的 ComfyUI", noopStep, ChatOptions{})
+	require.NoError(t, err)
+	require.Equal(t, 1, runner.calls)
 
-			_, err := eng.ChatWithOptions(context.Background(),
-				"排查 cpod-typed-1 上的 ComfyUI", noopStep, opts)
-			require.NoError(t, err)
-			require.Zero(t, runner.calls, "a card that was not approved never enters the instance")
+	state, _, _ := eng.SessionStateSnapshot()
+	require.Equal(t, instanceID, state.SelectedInstanceID)
+	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
 
-			state, _, _ := eng.SessionStateSnapshot()
-			require.Equal(t, instanceID, state.SelectedInstanceID)
-			require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource,
-				"typing the id IS the designation; it does not depend on approving the card")
-
-			rehydrate(t, eng)
-			_, err = eng.ChatWithOptions(context.Background(), "继续排查", noopStep, opts)
-			require.NoError(t, err)
-
-			require.Equal(t, 2, cards, "the second turn must reach a real card, not a refusal")
-			require.Equal(t, 1, runner.calls, "and that approved card enters the instance")
-			require.Equal(t, instanceID, runner.lastReq.InstanceID)
-		})
-	}
+	rehydrate(t, eng)
+	_, err = eng.ChatWithOptions(context.Background(), "继续排查", noopStep, ChatOptions{})
+	require.NoError(t, err)
+	require.Equal(t, 2, runner.calls)
+	require.Equal(t, instanceID, runner.lastReq.InstanceID)
 }
 
 // The same designation, made the other two ways the server can verify against the
@@ -230,6 +188,37 @@ func TestOnlyTheUsersOwnWordsBecomeADesignation(t *testing.T) {
 	}
 }
 
+func TestConflictingOrUnresolvedCurrentTargetClearsCarriedSelection(t *testing.T) {
+	for _, question := range []string{
+		"排查 cpod-typed-1 和 cpod-does-not-exist",
+		"排查 cpod-does-not-exist",
+		"第 7 台还是连不上",
+	} {
+		t.Run(question, func(t *testing.T) {
+			eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+			eng.SetSessionState(SessionState{
+				SchemaVersion:          SessionStateSchemaCurrent,
+				SelectedInstanceID:     "cpod-typed-1",
+				SelectedInstanceName:   "old",
+				SelectedInstanceSource: SelectedInstanceSourceUser,
+				SelectedInstanceAtUnix: time.Now().Add(-2 * time.Hour).Unix(),
+			}, 1)
+			twoInstanceRegistry(t, eng)
+			eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+				eng, question, "turn-clear-old", time.Now())
+			eng.turnContextViewReady = true
+
+			eng.recordUserDesignatedInstance()
+			state, _, _ := eng.SessionStateSnapshot()
+			require.Empty(t, state.SelectedInstanceID,
+				"a later vague turn must not resurrect the old target after an explicit miss or conflict")
+
+			view := (ContextCompiler{}).CompileForTurn(eng, "继续排查", "turn-after-clear", time.Now())
+			require.False(t, eng.bindInstanceTarget(view).bound())
+		})
+	}
+}
+
 // The account's sole instance is a deterministic BINDING, and deliberately not a
 // designation. Tier B produces it for a message that names nothing, so a writer
 // that accepted any bound id would stamp "the user chose this" onto a turn where
@@ -255,9 +244,8 @@ func TestTheAccountsSoleInstanceIsNotADesignation(t *testing.T) {
 	require.Empty(t, state.SelectedInstanceID)
 }
 
-// A carried designation must not renew its own TTL just by being carried. If it
-// did, a session that keeps talking about anything at all would hold an entry
-// proof forever and the 30-minute window would never elapse.
+// Carrying a designation must not rewrite when the user selected it. The binding
+// is conversation-scoped, while the timestamp remains truthful observability.
 func TestCarriedDesignationDoesNotRefreshItsOwnClock(t *testing.T) {
 	then := time.Now().Add(-20 * time.Minute).Unix()
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)

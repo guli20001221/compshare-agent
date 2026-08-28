@@ -654,18 +654,19 @@ func TestRecordUserSelectedTargetsPersistsOnlyInstanceKind(t *testing.T) {
 	require.Equal(t, "uhost-a", eng.sessionState.SelectedInstanceID, "a disk resize persists the parent instance, never the disk id")
 }
 
-func TestConfirmedFollowUpInheritsOneFreshSelectedTarget(t *testing.T) {
+func TestConfirmedFollowUpInheritsConversationBoundSelectedTargetAfterLongPause(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	// A prior turn recorded a genuine USER selection (not a mere observation), and
 	// the instance still exists in a fresh registry — both proofs the dual-proof
 	// requires for the "确认关机" follow-up to inherit the target.
 	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{"TotalCount": float64(1), "UHostSet": []any{map[string]any{"UHostId": "uhost-1", "Name": "host", "State": "Running"}}}, "test"))
 	eng.SetSessionState(SessionState{
-		SchemaVersion:          SessionStateSchemaCurrent,
-		SelectedInstanceID:     "uhost-1",
-		SelectedInstanceName:   "host",
-		SelectedInstanceSource: SelectedInstanceSourceUser,
-		SelectedInstanceAtUnix: time.Now().Unix(),
+		SchemaVersion:             SessionStateSchemaCurrent,
+		SelectedInstanceID:        "uhost-1",
+		SelectedInstanceName:      "host",
+		SelectedInstanceSource:    SelectedInstanceSourceUser,
+		SelectedInstanceAtUnix:    time.Now().Add(-2 * time.Hour).Unix(),
+		SelectedInstanceFreshness: ContinuityFreshnessExpired,
 	}, 1)
 	eng.lastUserMsg = "确认关机"
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-confirm", time.Now())

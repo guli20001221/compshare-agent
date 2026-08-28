@@ -39,7 +39,7 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc, db *sql.D
 	if err := applySharedDepsFromEnv(deps, cfg, getenv); err != nil {
 		return nil, false, fmt.Errorf("apply shared deps from env: %w", err)
 	}
-	// Wire the consent-gated SSH-ops runner when a harness path is configured.
+	// Wire the user-targeted SSH-ops runner when a harness path is configured.
 	// deps.ExternalExecutor (a tools.ToolExecutor) satisfies sshops.Describer for the credential fetch.
 	instanceOps, err := serverInstanceOpsRunner(cfg, deps.ExternalExecutor, db)
 	if err != nil {

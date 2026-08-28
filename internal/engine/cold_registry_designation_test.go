@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/llm"
-	"github.com/compshare-agent/internal/observability"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
 )
@@ -22,17 +21,15 @@ import (
 // empty snapshot for its whole life, and the shape this lane exists for lists
 // nothing: 「ComfyUI 打不开」, then a bare 「cpod-…」, straight into the lane.
 //
-// So on 2026-08-17, with #566 already deployed, the loop came back: the entry card
-// was shown (the target gate has its own last-resort check on the user's literal
-// words), the card timed out, nothing was recorded, and the next 「继续排查」 was
-// refused — again with nothing the user could say that would clear it.
+// The current rule must work without either a warm registry or a confirmation
+// callback: a literal ID in the current message is target proof, and the recorded
+// user_selected target carries a follow-up turn.
 func TestATypedIDIsADesignationEvenWhenTheRegistryIsEmpty(t *testing.T) {
 	const instanceID = "cpod-typed-1"
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
 			`{"UHostId":"cpod-typed-1","Task":"排查 ComfyUI 打不开"}`)}},
-		{Content: "授权卡片已超时，本次没有进入实例。"},
 		{ToolCalls: []openai.ToolCall{toolCall("d2", "DiagnoseInstanceInternals",
 			`{"UHostId":"cpod-typed-1","Task":"继续排查 ComfyUI"}`)}},
 	}}
@@ -43,21 +40,10 @@ func TestATypedIDIsADesignationEvenWhenTheRegistryIsEmpty(t *testing.T) {
 	// session carries, not a contrived state.
 	require.True(t, eng.registry.NeedsRefresh(time.Now()), "the premise is a cold registry")
 
-	cards := 0
-	opts := ChatOptions{ConfirmResultFunc: func(_ string, args map[string]any) ConfirmationResult {
-		cards++
-		if cards == 1 {
-			return ConfirmationResult{Confirmed: false, TerminalReason: observability.ConfirmationReasonTimeout}
-		}
-		require.Equal(t, instanceID, args["UHostId"],
-			"the replacement card must name the same instance the user typed")
-		return ConfirmationResult{Confirmed: true}
-	}}
-
 	_, err := eng.ChatWithOptions(context.Background(),
-		"排查 cpod-typed-1 上的 ComfyUI", noopStep, opts)
+		"排查 cpod-typed-1 上的 ComfyUI", noopStep, ChatOptions{})
 	require.NoError(t, err)
-	require.Zero(t, runner.calls, "a card that timed out never enters the instance")
+	require.Equal(t, 1, runner.calls)
 
 	state, _, _ := eng.SessionStateSnapshot()
 	require.Equal(t, instanceID, state.SelectedInstanceID,
@@ -65,10 +51,9 @@ func TestATypedIDIsADesignationEvenWhenTheRegistryIsEmpty(t *testing.T) {
 	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
 
 	rehydrate(t, eng)
-	_, err = eng.ChatWithOptions(context.Background(), "继续排查", noopStep, opts)
+	_, err = eng.ChatWithOptions(context.Background(), "继续排查", noopStep, ChatOptions{})
 	require.NoError(t, err)
-	require.Equal(t, 2, cards, "the second turn must reach a real card, not the refusal")
-	require.Equal(t, 1, runner.calls)
+	require.Equal(t, 2, runner.calls)
 	require.Equal(t, instanceID, runner.lastReq.InstanceID)
 }
 
@@ -98,27 +83,69 @@ func TestColdTypedIDSurvivesAProseOnlyAcknowledgement(t *testing.T) {
 	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
 
 	rehydrate(t, eng)
-	_, err = eng.ChatWithOptions(context.Background(), "查一下这台的 GPU", noopStep,
-		ChatOptions{ConfirmResultFunc: func(string, map[string]any) ConfirmationResult {
-			return ConfirmationResult{Confirmed: true}
-		}})
+	_, err = eng.ChatWithOptions(context.Background(), "查一下这台的 GPU", noopStep, ChatOptions{})
 	require.NoError(t, err)
 	require.Equal(t, 1, runner.calls)
 	require.Equal(t, instanceID, runner.lastReq.InstanceID)
 }
 
+// A long pause normally evicts the pooled Engine, so the rehydrated session has
+// target A but no live name catalog. The instance-operations dispatch refresh
+// must let a current exact name select B before carried A can fill the model's
+// tool call.
+func TestLongPausedSelectionRefreshesColdRegistryBeforeANameSwitch(t *testing.T) {
+	const oldID, newID = "cpod-old-1", "cpod-new-2"
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
+	model := &mockLLM{responses: []llm.ChatResponse{{ToolCalls: []openai.ToolCall{
+		toolCall("switch-by-name", "DiagnoseInstanceInternals", `{"UHostId":"cpod-new-2","Task":"排查新训练机"}`),
+	}}}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"TotalCount": float64(2),
+			"UHostSet": []any{
+				map[string]any{"UHostId": oldID, "Name": "旧训练机", "State": "Running"},
+				map[string]any{"UHostId": newID, "Name": "新训练机", "State": "Running"},
+			},
+		},
+	}}
+	eng := NewWithDeps(model, executor, nil)
+	eng.SetInstanceOps(runner)
+	eng.SetSessionState(SessionState{
+		SchemaVersion:             SessionStateSchemaCurrent,
+		SelectedInstanceID:        oldID,
+		SelectedInstanceName:      "旧训练机",
+		SelectedInstanceSource:    SelectedInstanceSourceUser,
+		SelectedInstanceAtUnix:    time.Now().Add(-2 * time.Hour).Unix(),
+		SelectedInstanceFreshness: ContinuityFreshnessExpired,
+	}, 7)
+	require.True(t, eng.registry.NeedsRefresh(time.Now()), "premise: the rehydrated engine has no catalog")
+
+	reply, err := eng.ChatWithOptions(context.Background(), "现在排查「新训练机」", noopStep, ChatOptions{})
+	require.NoError(t, err)
+	debugState, _, _ := eng.SessionStateSnapshot()
+	debugBinding := eng.bindInstanceTarget(eng.turnContextViewThisTurn, newID)
+	require.Equal(t, 1, runner.calls, "reply=%q model_calls=%d executor_calls=%v state=%+v binding=%+v", reply, len(model.calls), executor.calls, debugState, debugBinding)
+	require.Equal(t, newID, runner.lastReq.InstanceID)
+	require.Contains(t, executor.calls, "DescribeCompShareInstance")
+
+	state, _, _ := eng.SessionStateSnapshot()
+	require.Equal(t, newID, state.SelectedInstanceID)
+	require.Equal(t, "新训练机", state.SelectedInstanceName)
+	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
+}
+
 // Production case 124 warmed the registry through resource_info in the same
 // turn, after the immutable context view had been compiled. The access hostname
-// contains the exact account ID, so that fresh deterministic proof must reach the
-// entry card and survive a declined card just like a directly typed ID.
+// contains the exact account ID, so that fresh deterministic proof must authorize
+// the same target without a confirmation card.
 func TestWrappedAccountIDBecomesDesignationAfterSameTurnRegistryWarmup(t *testing.T) {
 	const instanceID = "cpod-1uivn2vwu842"
-	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "must not run"}}
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成"}}
 	cards := 0
 	eng := newInstanceOpsEngine(runner, func(_ string, args map[string]any) bool {
 		cards++
 		require.Equal(t, instanceID, args["UHostId"])
-		return false
+		return true
 	})
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 	query := "ComfyUI 上传报错：8188-" + instanceID + "-s1.pod.compshare.cn 显示 413"
@@ -143,12 +170,12 @@ func TestWrappedAccountIDBecomesDesignationAfterSameTurnRegistryWarmup(t *testin
 		"UHostId": instanceID, "Task": "排查上传 413",
 	}, noopStep)
 	require.NotContains(t, out, instanceOpsTargetRefusalForModel)
-	require.Equal(t, 1, cards, "the uniquely resolved wrapper must reach the entry card")
-	require.Zero(t, runner.calls, "the test deliberately declines the card")
+	require.Zero(t, cards, "the uniquely resolved wrapper must not create an entry card")
+	require.Equal(t, 1, runner.calls)
 	state, _, _ = eng.SessionStateSnapshot()
 	require.Equal(t, instanceID, state.SelectedInstanceID)
 	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource,
-		"a declined card must not erase the user's deterministic wrapped reference")
+		"the user's deterministic wrapped reference becomes the selected target")
 }
 
 // The #546 boundary on the cold path: the model may not manufacture a designation.
@@ -171,20 +198,20 @@ func TestAnIDTheUserNeverWroteIsNotADesignationOnAColdRegistry(t *testing.T) {
 	}}
 	_, err := eng.ChatWithOptions(context.Background(), "ComfyUI 打不开", noopStep, opts)
 	require.NoError(t, err)
-	require.Zero(t, cards, "an id the user never wrote must not reach an authorization card")
+	require.Zero(t, cards, "instance-ops must not invoke workflow confirmation")
 
 	state, _, _ := eng.SessionStateSnapshot()
 	require.Empty(t, state.SelectedInstanceID, "and must not become a designation either")
 	require.Empty(t, state.SelectedInstanceSource)
 }
 
-// The account's sole instance may complete a bare command, but that is the
-// ACCOUNT's fact, not something the user pointed at. Recording it as user_selected
+// The account's sole instance is the ACCOUNT's fact, not something the user
+// pointed at. Recording it as user_selected
 // would make "I happen to own one box" indistinguishable from "I named this box",
 // and the lane's whole target rule is built on that distinction. This is the
 // control that keeps the new record site honest: it fires on the user's literal
-// words, not on every id that reaches a card.
-func TestTheSoleInstanceReachingACardIsStillNotADesignation(t *testing.T) {
+// words, not on every id the model can infer.
+func TestTheSoleInstanceDoesNotAuthorizeInstanceOps(t *testing.T) {
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
@@ -200,11 +227,9 @@ func TestTheSoleInstanceReachingACardIsStillNotADesignation(t *testing.T) {
 		},
 	}, "test"))
 
-	opts := ChatOptions{ConfirmResultFunc: func(string, map[string]any) ConfirmationResult {
-		return ConfirmationResult{Confirmed: false, TerminalReason: observability.ConfirmationReasonTimeout}
-	}}
-	_, err := eng.ChatWithOptions(context.Background(), "ComfyUI 打不开", noopStep, opts)
+	_, err := eng.ChatWithOptions(context.Background(), "ComfyUI 打不开", noopStep, ChatOptions{})
 	require.NoError(t, err)
+	require.Zero(t, runner.calls)
 
 	state, _, _ := eng.SessionStateSnapshot()
 	require.NotEqual(t, SelectedInstanceSourceUser, state.SelectedInstanceSource,

@@ -5,7 +5,6 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/config"
-	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/workflow"
 )
 
@@ -141,15 +140,5 @@ func TestWSConnLifetimeWithoutConfig(t *testing.T) {
 	}
 	if got := (&Handlers{}).wsConnLifetime(); got != minWSMachineLifetime+wsInteractionAllowance {
 		t.Fatalf("wsConnLifetime() = %v, want %v", got, minWSMachineLifetime+wsInteractionAllowance)
-	}
-}
-
-// The engine phrases the timeout message with its own copy of the card budget, because engine must
-// not import a transport package. That copy has to say the same number the transport enforces, or
-// the reply tells a user to answer within a window that is not the one the server is counting.
-func TestInstanceOpsConfirmWindowMatchesTheTransport(t *testing.T) {
-	if engine.InstanceOpsConfirmWindow != confirmWaitTimeout {
-		t.Fatalf("engine quotes a %v confirmation window, transport enforces %v",
-			engine.InstanceOpsConfirmWindow, confirmWaitTimeout)
 	}
 }

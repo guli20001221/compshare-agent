@@ -5,10 +5,8 @@ import (
 	"testing"
 )
 
-// This pins the RUNNING-ACTIVITY label, not the authorization card — the card is
-// covered by TestLaneConfirmCardFollowsTheWriteGate. The original version of this
-// comment said "the sentence on the card the user clicks", and believing it is why
-// the card went unfixed: making this test green read as having fixed consent too.
+// This pins the running-activity label. DiagnoseInstanceInternals no longer has
+// an entry card; ordinary workflow confirmations are tested separately.
 func TestInstanceOpsLabelStatesTheSingleRepairContract(t *testing.T) {
 	got := stepActionLabel("DiagnoseInstanceInternals")
 	if got != "实例内排查与修复" {

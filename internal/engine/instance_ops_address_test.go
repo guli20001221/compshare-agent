@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/tools"
+	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,15 +31,82 @@ func TestInstanceOps_AddressUnavailableReportsTheUnresolvedEntryFailure(t *testi
 
 // Candidate addresses that all fail TCP preflight are not an address-derivation
 // failure and do not prove which network, port, service, or instance layer failed.
-func TestInstanceOps_SSHPreflightUnreachableReportsTheObservedBoundary(t *testing.T) {
-	unreachable := newInstanceOpsEngine(
+// Crucially, it is a normal structured observation, so it cannot terminate the
+// central Agent before it can reconcile a user's independent evidence.
+func TestInstanceOps_SSHPreflightUnreachableReturnsStructuredVantageObservation(t *testing.T) {
+	raw := newInstanceOpsEngine(
 		&fakeInstanceOpsRunner{err: ErrInstanceOpsSSHPreflightUnreachable}, alwaysConfirm,
 	).executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), noopStep)
-	require.Contains(t, unreachable, "候选地址")
-	require.Contains(t, unreachable, "SSH 端口建立 TCP 连接")
-	require.Contains(t, unreachable, "未进入实例")
-	require.Contains(t, unreachable, "无法确定具体原因")
-	require.Contains(t, unreachable, "无法判断用户原始故障是否属于实例内部")
-	require.NotContains(t, unreachable, "网络 / 安全组未放通",
+	require.False(t, strings.HasPrefix(raw, finalReplyPrefix), "the central Agent must receive this observation")
+
+	result, ok := tools.ParseAgentToolResult(raw)
+	require.True(t, ok, raw)
+	require.Equal(t, tools.AgentToolStatusFailed, result.Status)
+	require.Equal(t, "SSH_DIAGNOSTIC_VANTAGE_UNREACHABLE", result.Error.Code)
+	require.Equal(t, tools.AgentToolNextAnswerUser, result.NextStep)
+	data, ok := result.Data.(map[string]any)
+	require.True(t, ok, "%#v", result.Data)
+	require.Equal(t, "diagnostic_service", data["observation_source"])
+	require.Equal(t, "diagnostic_service_to_instance_ssh_candidate", data["observation_scope"])
+	require.Equal(t, "not_established", data["tcp_connection"])
+	require.Equal(t, false, data["ssh_session_established"])
+	require.Equal(t, false, data["guest_commands_executed"])
+	require.Contains(t, data["evidence_boundary"], "another vantage point")
+	require.Contains(t, result.Error.Message, "不能据此否定用户")
+	require.NotContains(t, raw, "网络 / 安全组未放通",
 		"a failed TCP probe cannot select one unobserved cause")
+}
+
+// A user can already have evidence from a different path (the production case
+// supplied an ssh -vvv transcript whose TCP phase reached "Connection
+// established"). The diagnosis service's failed preflight is still useful, but
+// it must reach the same central Agent as a bounded observation instead of
+// replacing the conversation with a terminal canned reply.
+func TestInstanceOps_SSHPreflightUnreachableDoesNotOverrideUserConnectivityEvidence(t *testing.T) {
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("preflight", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"排查 SSH 登录异常"}`)}},
+		{Content: "诊断服务所在网络未能连通候选 SSH 地址；但你提供的 SSH 日志已证明另一条路径完成了 TCP 建连，因此不能把两者混为同一个结论。"},
+	}}
+	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, alwaysConfirm)
+	eng.SetInstanceOps(&fakeInstanceOpsRunner{err: ErrInstanceOpsSSHPreflightUnreachable})
+
+	reply, err := eng.Chat(context.Background(), "uhost-1 的 ssh -vvv 日志显示 Connection established；请排查为什么后续 SSH 握手失败。", noopStep)
+	require.NoError(t, err)
+	require.Contains(t, reply, "另一条路径完成了 TCP 建连")
+	require.Len(t, model.calls, 2, "preflight is a normal observation, so the central Agent gets a synthesis round")
+
+	var observation string
+	sawUserEvidence := false
+	for _, message := range model.calls[1].Messages {
+		if message.Role == openai.ChatMessageRoleUser && strings.Contains(message.Content, "Connection established") {
+			sawUserEvidence = true
+		}
+		if message.Role == openai.ChatMessageRoleTool && message.ToolCallID == "preflight" {
+			observation = message.Content
+		}
+	}
+	require.True(t, sawUserEvidence, "the central Agent must retain the user's independent connectivity evidence")
+	result, ok := tools.ParseAgentToolResult(observation)
+	require.True(t, ok, observation)
+	require.Equal(t, "SSH_DIAGNOSTIC_VANTAGE_UNREACHABLE", result.Error.Code)
+}
+
+// With no independent user evidence, the exact same structured observation is
+// still returned. This pins that the fix is not a keyword-triggered exception:
+// the central Agent decides how to answer from the conversation it actually has.
+func TestInstanceOps_SSHPreflightUnreachableWithoutUserEvidenceUsesSameObservation(t *testing.T) {
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("preflight", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"排查无法登录"}`)}},
+		{Content: "诊断服务未能建立 SSH 前置 TCP 连接，尚无法据此判断实例内部根因。"},
+	}}
+	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, alwaysConfirm)
+	eng.SetInstanceOps(&fakeInstanceOpsRunner{err: ErrInstanceOpsSSHPreflightUnreachable})
+
+	reply, err := eng.Chat(context.Background(), "请排查 uhost-1 无法登录。", noopStep)
+	require.NoError(t, err)
+	require.Contains(t, reply, "尚无法据此判断实例内部根因")
+	require.Len(t, model.calls, 2)
+	for _, message := range model.calls[1].Messages {
+		require.NotContains(t, message.Content, "Connection established")
+	}
 }

@@ -5,33 +5,17 @@ import (
 	"testing"
 )
 
-// An authorized in-instance repair lane is the narrow exception to platform read-only mode.
-func TestReadOnlyBoundaryYieldsToTheInstanceRepairLane(t *testing.T) {
+// A read-only deployment cannot expose the autonomous repair lane even if a
+// caller accidentally sets the secondary flag.
+func TestReadOnlyBoundaryNeverAdvertisesTheInstanceRepairLane(t *testing.T) {
 	plain := BuildSystemWithOptions("ctx", BuildOptions{MutatingToolsEnabled: false})
 	withLane := BuildSystemWithOptions("ctx", BuildOptions{MutatingToolsEnabled: false, InstanceOpsEnabled: true})
 
 	if !strings.Contains(plain, "不执行资源变更") {
 		t.Fatal("plain read-only boundary lost its blanket claim")
 	}
-	if strings.Contains(withLane, "当前工具只允许查询和诊断，不执行资源变更") {
-		t.Fatal("lane authorized but the prompt still tells the agent it can change nothing")
-	}
-	if !strings.Contains(withLane, "DiagnoseInstanceInternals") {
-		t.Fatal("lane authorized but the boundary never names the exception")
-	}
-	if !strings.Contains(withLane, "不要回答自己没有权限") {
-		t.Fatal("the boundary must answer the observed failure directly, not just soften the wording")
-	}
-	if !strings.Contains(withLane, "任务范围授权卡") || !strings.Contains(withLane, "不要逐命令") {
-		t.Fatal("the central agent must promise the single-card autonomous repair contract")
-	}
-	// The exception is narrow: platform writes stay unavailable, and the hard refusals stay named,
-	// or the agent plans around commands the harness will reject and burns the turn.
-	if !strings.Contains(withLane, "平台侧操作") {
-		t.Fatal("platform-level writes must still be described as unavailable")
-	}
-	if !strings.Contains(withLane, "高危操作") {
-		t.Fatal("the destructive refusals must stay named in the prompt")
+	if withLane != plain {
+		t.Fatal("InstanceOpsEnabled must not weaken a read-only prompt without the deployment write grant")
 	}
 
 	// With platform writes on there is no read-only boundary at all; the lane flag must not add one.
@@ -52,8 +36,14 @@ func TestInstanceRepairLaneIsNamedWhenMutatingToolsAreOn(t *testing.T) {
 	if !strings.Contains(both, "不要回答自己没有权限") {
 		t.Fatal("the mutating-mode copy must answer the observed refusal directly, like the read-only one")
 	}
-	if !strings.Contains(both, "任务范围授权卡") || !strings.Contains(both, "不要逐命令") {
-		t.Fatal("mutating mode must expose the same single-card autonomous repair contract")
+	if !strings.Contains(both, "不弹实例内授权卡") || !strings.Contains(both, "不要逐命令") {
+		t.Fatal("mutating mode must expose the card-free autonomous repair contract")
+	}
+	if !strings.Contains(both, "下载") || !strings.Contains(both, "不要只给手工命令") {
+		t.Fatal("the lane must cover explicit guest-local operations instead of handing shell commands back to the user")
+	}
+	if !strings.Contains(both, "同一会话") || !strings.Contains(both, "不因时间间隔失效") {
+		t.Fatal("a long pause must not revoke the conversation's user-selected SSH target")
 	}
 	if !strings.Contains(both, "高危操作") {
 		t.Fatal("the destructive refusals must stay named, or the agent plans around commands the harness rejects")

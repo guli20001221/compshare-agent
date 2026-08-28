@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestInstanceOpsAgentSessionResumesOnlyFreshSameTarget(t *testing.T) {
+func TestInstanceOpsAgentSessionResumesSameTargetWithoutWallClockExpiry(t *testing.T) {
 	const sessionID = "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5"
 	const anchor = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	e := &Engine{sessionState: SessionState{PersistedInstanceOpsAgent: PersistedInstanceOpsAgentSession{
@@ -18,7 +18,7 @@ func TestInstanceOpsAgentSessionResumesOnlyFreshSameTarget(t *testing.T) {
 		Contract:           instanceOpsAgentSessionContract,
 		Model:              "gpt-5.6-terra",
 		ConversationAnchor: anchor,
-		UpdatedAt:          time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano),
+		UpdatedAt:          time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339Nano),
 	}}}
 
 	got := e.instanceOpsAgentSessionForRun("uhost-a")
@@ -33,16 +33,17 @@ func TestInstanceOpsAgentSessionResumesOnlyFreshSameTarget(t *testing.T) {
 	require.NotEqual(t, sessionID, other.SessionID)
 	require.NoError(t, uuid.Validate(other.SessionID))
 	require.Equal(t, other.SessionID, other.WorkdirID)
+	require.Equal(t, instanceOpsAgentSessionContract, other.Contract)
 	require.Empty(t, other.Model)
 }
 
-func TestInstanceOpsAgentSessionExpiredOrMalformedStartsFresh(t *testing.T) {
+func TestInstanceOpsAgentSessionMalformedOrFutureStartsFresh(t *testing.T) {
 	for _, persisted := range []PersistedInstanceOpsAgentSession{
 		{
 			InstanceID: "uhost-a", SessionID: "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5",
 			WorkdirID: "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5",
 			Contract:  instanceOpsAgentSessionContract,
-			UpdatedAt: time.Now().UTC().Add(-instanceOpsAgentSessionTTL - time.Minute).Format(time.RFC3339Nano),
+			UpdatedAt: time.Now().UTC().Add(2 * time.Minute).Format(time.RFC3339Nano),
 		},
 		{
 			InstanceID: "uhost-a", SessionID: "not-a-uuid", Contract: instanceOpsAgentSessionContract,
@@ -61,7 +62,31 @@ func TestInstanceOpsAgentSessionExpiredOrMalformedStartsFresh(t *testing.T) {
 		require.NoError(t, uuid.Validate(got.SessionID))
 		require.NotEqual(t, persisted.SessionID, got.SessionID)
 		require.Equal(t, got.SessionID, got.WorkdirID)
+		require.Equal(t, instanceOpsAgentSessionContract, got.Contract)
 	}
+}
+
+func TestInstanceOpsAgentSessionV2CursorStartsFreshUnderV3Contract(t *testing.T) {
+	const oldSessionID = "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5"
+	const anchor = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	e := &Engine{sessionState: SessionState{PersistedInstanceOpsAgent: PersistedInstanceOpsAgentSession{
+		InstanceID:         "uhost-a",
+		SessionID:          oldSessionID,
+		WorkdirID:          oldSessionID,
+		Contract:           "sshops-agent-v2",
+		Model:              "gpt-5.6-terra",
+		ConversationAnchor: anchor,
+		UpdatedAt:          time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano),
+	}}}
+
+	got := e.instanceOpsAgentSessionForRun("uhost-a")
+	require.False(t, got.Resume, "a transcript created under the v2 prompt/tool contract must not be resumed")
+	require.NotEqual(t, oldSessionID, got.SessionID)
+	require.NoError(t, uuid.Validate(got.SessionID))
+	require.Equal(t, got.SessionID, got.WorkdirID)
+	require.Equal(t, "sshops-agent-v3", got.Contract)
+	require.Empty(t, got.Model)
+	require.Empty(t, got.ConversationAnchor)
 }
 
 func TestObserveInstanceOpsAgentSessionPersistsOnlyValidatedCursor(t *testing.T) {
@@ -81,11 +106,13 @@ func TestObserveInstanceOpsAgentSessionPersistsOnlyValidatedCursor(t *testing.T)
 	require.Equal(t, SessionStateSchemaCurrent, e.sessionState.SchemaVersion)
 	require.NotEmpty(t, got.UpdatedAt)
 
-	// A malformed or cross-contract receipt cannot replace the last proven cursor.
-	e.observeInstanceOpsAgentSession("uhost-a", uuid.NewString(), sessionID, "future-contract", "gpt-5.6-terra", anchor)
-	require.Equal(t, got, e.sessionState.PersistedInstanceOpsAgent)
+	// A stale v2 or otherwise cross-contract receipt cannot replace the last proven cursor.
+	for _, contract := range []string{"sshops-agent-v2", "future-contract"} {
+		e.observeInstanceOpsAgentSession("uhost-a", uuid.NewString(), sessionID, contract, "gpt-5.6-terra", anchor)
+		require.Equal(t, got, e.sessionState.PersistedInstanceOpsAgent)
+	}
 
-	// A v2 session receipt without proof that the role-complete context reached
+	// A current-contract session receipt without proof that the role-complete context reached
 	// the model cannot advance the cursor (old harness during a mixed deploy).
 	e.observeInstanceOpsAgentSession("uhost-a", uuid.NewString(), sessionID, instanceOpsAgentSessionContract, "gpt-5.6-terra", "")
 	require.Equal(t, got, e.sessionState.PersistedInstanceOpsAgent)
