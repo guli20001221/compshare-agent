@@ -16,11 +16,6 @@ func StopInstanceDef() *Definition {
 		},
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Step definitions
-// ---------------------------------------------------------------------------
-
 func stepQueryInstance() Step {
 	return Step{
 		Name: "查询实例",
@@ -86,11 +81,6 @@ func stepStopInstance() Step {
 		},
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 // extractInstanceZone returns the Zone from the first UHostSet entry, or defaultVal.
 func extractInstanceZone(result map[string]any, defaultVal string) string {
 	if result == nil {

@@ -1016,8 +1016,9 @@ func TestChat_LLMRateLimitAllowPreservesBehavior(t *testing.T) {
 }
 
 func TestChat_LLMRateLimitDecisionObserverReceivesHashedSubject(t *testing.T) {
-	rawTenantIdentity := "top=12345;org=67890"
-	subjectHash := governance.SubjectKeyFromTenant(12345, 67890)
+	rawTenantIdentity := "12345:67890"
+	subjectHash, ok := governance.SubjectKeyFromOrganization(12345, 67890)
+	require.True(t, ok)
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.rateLimiter = &scriptedRateLimiter{decisions: []governance.Decision{{

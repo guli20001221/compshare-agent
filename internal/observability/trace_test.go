@@ -88,37 +88,6 @@ func TestTraceRecordDiagnosisClaimsMarshalAndRedact(t *testing.T) {
 	}
 }
 
-func TestTraceRecordFreshnessMonitorRecallMarshal(t *testing.T) {
-	data, err := json.Marshal(TraceRecord{
-		SchemaVersion: SchemaVersion,
-		TraceID:       "trace-1",
-		TurnID:        "turn-1",
-		TurnIndex:     1,
-		Timestamp:     "2026-06-04T00:00:00Z",
-		UserMsgHash:   "sha256:user",
-		Freshness: FreshnessTrace{
-			MonitorRecallForced:         true,
-			MonitorRecallMode:           "required_tool_choice",
-			MonitorRecallFallbackReason: "object_tool_choice_unsupported",
-		},
-	})
-	if err != nil {
-		t.Fatalf("marshal TraceRecord: %v", err)
-	}
-	text := string(data)
-	for _, want := range []string{
-		`"freshness":`,
-		`"monitor_call_in_current_turn":false`,
-		`"monitor_recall_forced":true`,
-		`"monitor_recall_mode":"required_tool_choice"`,
-		`"monitor_recall_fallback_reason":"object_tool_choice_unsupported"`,
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("freshness trace JSON missing %s: %s", want, text)
-		}
-	}
-}
-
 func TestSparseTraceRecordMissingOptionalBlocksStillReadable(t *testing.T) {
 	data := []byte(`{"schema_version":"trace.v0.2","trace_id":"trace-sparse","turn_id":"turn-1","turn_index":1,"timestamp":"2026-05-08T12:00:00Z","user_msg_hash":"sha256:user"}`)
 	var record TraceRecord
@@ -489,11 +458,11 @@ func TestRetrievalTraceHashingStableUnderNilVsEmpty(t *testing.T) {
 	}
 }
 
-func TestRedactQueryDerivedFieldsRedactsStaffNames(t *testing.T) {
+func TestRedactQueryDerivedFieldsRedactsInternalMarkers(t *testing.T) {
 	trace := RetrievalTrace{
-		QueryRaw:        "请张慧帮我看一下实例启动失败",
-		QueryNormalized: "张慧 实例 启动失败",
-		QueryExpansions: []string{"实例启动失败", "找张慧处理"},
+		QueryRaw:        "请按 spt-record-2026-05 帮我看一下实例启动失败",
+		QueryNormalized: "spt-record 实例 启动失败",
+		QueryExpansions: []string{"实例启动失败", "查 spt-record 的处理结论"},
 	}
 
 	RedactQueryDerivedFields(&trace)

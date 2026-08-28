@@ -26,6 +26,14 @@
       "value": "(?i)/(?:admin|workorder|internal)(?:/|$)"
     },
     {
+      "id": "f203693ba87257e7",
+      "kind": "regex",
+      "path": "internal/guardrails/output.go",
+      "symbol": "init",
+      "callee": "regexp.MustCompile",
+      "value": "(?i)(?:(-H|--header=)([\"'\\x60]?)authorization\\b|([\"'\\x60]?)\\bauthorization\\b)(?:\\*{1,2}|_{1,2}|~{2})?([\"'\\x60]?)[ \\t]*([:=：])(?:\\*{1,2}|_{1,2}|~{2})?[ \\t]*([\"'\\x60]?)"
+    },
+    {
       "id": "3c6d733589954be3",
       "kind": "regex",
       "path": "internal/guardrails/output.go",
@@ -40,14 +48,6 @@
       "symbol": "init",
       "callee": "regexp.MustCompile",
       "value": "(?i)([\"']?\\b(?:access[_-]?key(?:[_-]?id|[_-]?secret)?|secret[_-]?key|api[_-]?key|x[_-]?api[_-]?key|ak|sk|access[_-]?token|security[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|token|password|passwd|pwd|private[_-]?key)\\b[\"']?\\s*[:=]\\s*[\"']?)([^\"'\\s,;}\u0026\\]]+)"
-    },
-    {
-      "id": "f203693ba87257e7",
-      "kind": "regex",
-      "path": "internal/guardrails/output.go",
-      "symbol": "init",
-      "callee": "regexp.MustCompile",
-      "value": "(?i)(?:(-H|--header=)([\"'\\x60]?)authorization\\b|([\"'\\x60]?)\\bauthorization\\b)(?:\\*{1,2}|_{1,2}|~{2})?([\"'\\x60]?)[ \\t]*([:=：])(?:\\*{1,2}|_{1,2}|~{2})?[ \\t]*([\"'\\x60]?)"
     },
     {
       "id": "a569a55039742fc7",
@@ -304,30 +304,6 @@
       "value": "}"
     },
     {
-      "id": "48517647dbc21ceb",
-      "kind": "string_heuristic",
-      "path": "internal/config/config.go",
-      "symbol": "resolveOptionalDSN",
-      "callee": "strings.HasPrefix",
-      "value": "$"
-    },
-    {
-      "id": "f58549146244f6bd",
-      "kind": "string_heuristic",
-      "path": "internal/config/config.go",
-      "symbol": "resolveOptionalDSN",
-      "callee": "strings.HasPrefix",
-      "value": "${"
-    },
-    {
-      "id": "b50a12f11d5b6c87",
-      "kind": "string_heuristic",
-      "path": "internal/config/config.go",
-      "symbol": "resolveOptionalDSN",
-      "callee": "strings.HasSuffix",
-      "value": "}"
-    },
-    {
       "id": "ee934c13eac04604",
       "kind": "string_heuristic",
       "path": "internal/config/config.go",
@@ -489,13 +465,6 @@
       "symbol": "cappedTraceForFriendlyError",
       "callee": "strings.Contains",
       "ordinal": 5
-    },
-    {
-      "id": "54cbeb449ddd8b75",
-      "kind": "string_heuristic",
-      "path": "internal/engine/engine.go",
-      "symbol": "containsAnyKeyword",
-      "callee": "strings.Contains"
     },
     {
       "id": "2bb20d01a9b7885c",
@@ -956,22 +925,6 @@
       "value": "["
     },
     {
-      "id": "dffea00a35a724bd",
-      "kind": "string_heuristic",
-      "path": "internal/guardrails/output.go",
-      "symbol": "redactAuthorizationKeepMarkerNormalized",
-      "callee": "strings.HasPrefix",
-      "value": "["
-    },
-    {
-      "id": "c171faa1d04c60ae",
-      "kind": "string_heuristic",
-      "path": "internal/guardrails/output.go",
-      "symbol": "redactAuthorizationKeepMarkerWith",
-      "callee": "strings.HasPrefix",
-      "value": "["
-    },
-    {
       "id": "6bda607b2defb425",
       "kind": "string_heuristic",
       "path": "internal/knowledge/evidence_adapter.go",
@@ -1250,22 +1203,6 @@
       "path": "internal/policy/leakage.go",
       "symbol": "ContainsQueryLeakage",
       "callee": "strings.Contains"
-    },
-    {
-      "id": "83c81665a2ce9bba",
-      "kind": "string_heuristic",
-      "path": "internal/policy/leakage.go",
-      "symbol": "ContainsQueryLeakage",
-      "callee": "strings.Contains",
-      "ordinal": 2
-    },
-    {
-      "id": "fc791ddd802aa766",
-      "kind": "string_heuristic",
-      "path": "internal/policy/leakage.go",
-      "symbol": "loadStaffNames",
-      "callee": "strings.HasPrefix",
-      "value": "#"
     },
     {
       "id": "13acf66d4f5db286",

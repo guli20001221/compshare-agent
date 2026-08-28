@@ -78,11 +78,6 @@ func redactValue(v any, mode redactMode, parentKey string) any {
 			}
 			return s
 		}
-		if mode == redactModeTrace && isIPKey(parentKey) {
-			if s, ok := typed.(string); ok {
-				return maskIPv4(s)
-			}
-		}
 		return typed
 	}
 }

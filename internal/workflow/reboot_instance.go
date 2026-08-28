@@ -13,11 +13,6 @@ func RebootInstanceDef() *Definition {
 		},
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Step definitions
-// ---------------------------------------------------------------------------
-
 func stepQueryForReboot() Step {
 	return Step{
 		Name: "查询实例",

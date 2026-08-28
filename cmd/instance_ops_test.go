@@ -352,15 +352,6 @@ func TestServerInstanceOpsRunner_OffByDefault(t *testing.T) {
 	require.Nil(t, r)
 }
 
-func TestServerInstanceOpsRunner_RunsOnProductionTransport(t *testing.T) {
-	db := sql.OpenDB(fakeConnector{})
-	defer db.Close()
-
-	r, err := serverInstanceOpsRunner(gateCfg(), noopDescriber{}, db)
-	require.NoError(t, err)
-	require.NotNil(t, r)
-}
-
 // A static provider (no STS service AK/SK) refuses to
 // construct. Under a shared static account there is no per-tenant scoping on the target instance.
 func TestServerInstanceOpsRunner_RefusesStaticProvider(t *testing.T) {

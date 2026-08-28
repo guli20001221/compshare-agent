@@ -90,7 +90,7 @@ func New(cfg *config.Config, ms store.MessageStore, opts Options) *Pool {
 
 // NewWithDeps creates a Pool from process-wide shared engine dependencies.
 // HTTP server mode uses this so every session shares one LLM client, limiter,
-// configured planner/retriever/renderer, and credential provider.
+// configured retriever/renderer, and credential provider.
 func NewWithDeps(deps *engine.SharedDeps, ms store.MessageStore, opts Options) *Pool {
 	if deps == nil {
 		panic("agentpool.NewWithDeps: deps is nil")

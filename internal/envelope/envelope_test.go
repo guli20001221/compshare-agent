@@ -34,15 +34,3 @@ func TestHashEnvelopeIsStableAndRedactsSecrets(t *testing.T) {
 	assert.Equal(t, first, second)
 	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, first)
 }
-
-func TestAllowedSubjectSets(t *testing.T) {
-	env := Envelope{Subjects: []Subject{
-		{ID: "uhost-a", Name: "train-a", Type: SubjectInstance},
-		{ID: "uhost-b", Name: "", Type: SubjectInstance},
-	}}
-
-	assert.Contains(t, AllowedIDs(env), "uhost-a")
-	assert.Contains(t, AllowedIDs(env), "uhost-b")
-	assert.Contains(t, AllowedNames(env), "train-a")
-	assert.NotContains(t, AllowedNames(env), "")
-}

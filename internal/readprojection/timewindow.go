@@ -5,9 +5,6 @@ import (
 	"time"
 )
 
-func IsCurrentMonitorTimeWindow(window *TimeWindow) bool {
-	return window == nil
-}
 
 var monitorNowFunc = time.Now
 

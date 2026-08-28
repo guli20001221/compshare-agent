@@ -506,7 +506,7 @@ func TestFailedOrNonImageReadEvidenceCannotGroundExactID(t *testing.T) {
 }
 
 func TestHistoricalImageIDEvidenceRequiresTokenBoundary(t *testing.T) {
-	assert.True(t, containsStandaloneValue("镜像 ID：img-1。", "img-1"))
-	assert.False(t, containsStandaloneValue("镜像 ID：img-10。", "img-1"),
+	assert.True(t, containsStandaloneImageID("镜像 ID：img-1。", "img-1"))
+	assert.False(t, containsStandaloneImageID("镜像 ID：img-10。", "img-1"),
 		"短 ID 不能借更长 ID 的子串获得历史证据")
 }

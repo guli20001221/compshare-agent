@@ -339,10 +339,6 @@ func (w *MySQLWriter) sweepExpired() {
 	}
 }
 
-// insertBatch builds a single multi-VALUES INSERT for the batch. We rely on
-// MySQL's INSERT IGNORE behavior on duplicate request_uuid (the unique key)
-// so retries don't fail loudly; the engine reply path can re-enqueue
-// without coordination.
 // Column lists + per-row placeholders for the two INSERT shapes. The legacy 12-
 // column form is the floor (always valid against a 0002 schema); the promoted form
 // appends the 0004 outcome columns AFTER trace_json — so the order here must match

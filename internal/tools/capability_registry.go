@@ -9,44 +9,26 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
-type ResultContract string
-
-const (
-	ResultContractModelObservation ResultContract = "model_observation"
-	ResultContractGroundedAnswer   ResultContract = "grounded_answer"
-	ResultContractWorkflowResult   ResultContract = "workflow_result"
-)
-
 type CapabilityDefinition struct {
 	Tool           openai.Tool
 	ExposedToAgent bool
 }
 
 // Capability is the runtime-owned contract for one tool or internal action.
-// Tool schema, execution policy, risk, confirmation and result ownership are
-// read together so callers cannot accidentally authorize from one table and
-// execute using another.
+// Tool schema, execution policy, risk and confirmation are read together so
+// callers cannot accidentally authorize from one table and execute using
+// another.
 type Capability struct {
 	Name             string
 	Tool             openai.Tool
 	ExposedToAgent   bool
 	Policy           ToolExecutionPolicy
-	ResultContract   ResultContract
-	ResultOwner      string
 	AgentInstruction string
 }
 
 type CapabilityRegistry struct {
 	ordered []Capability
 	byName  map[string]Capability
-}
-
-func BuildCapabilityRegistry(toolDefinitions []openai.Tool, policies map[string]ToolExecutionPolicy) (*CapabilityRegistry, error) {
-	definitions := make([]CapabilityDefinition, 0, len(toolDefinitions))
-	for _, tool := range toolDefinitions {
-		definitions = append(definitions, CapabilityDefinition{Tool: tool, ExposedToAgent: true})
-	}
-	return BuildCapabilityRegistryFromDefinitions(definitions, policies)
 }
 
 func BuildCapabilityRegistryFromDefinitions(definitions []CapabilityDefinition, policies map[string]ToolExecutionPolicy) (*CapabilityRegistry, error) {
@@ -88,17 +70,7 @@ func BuildCapabilityRegistryFromDefinitions(definitions []CapabilityDefinition, 
 }
 
 func capabilityFromPolicy(name string, policy ToolExecutionPolicy) Capability {
-	contract := ResultContractModelObservation
-	owner := "agent"
-	switch policy.Route {
-	case ActionRouteKnowledge:
-		contract = ResultContractGroundedAnswer
-		owner = "grounding"
-	case ActionRouteWorkflow:
-		contract = ResultContractWorkflowResult
-		owner = "workflow"
-	}
-	return Capability{Name: name, Policy: policy, ResultContract: contract, ResultOwner: owner}
+	return Capability{Name: name, Policy: policy}
 }
 
 func (r *CapabilityRegistry) Lookup(name string) (Capability, bool) {

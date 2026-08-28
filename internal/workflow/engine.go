@@ -231,7 +231,7 @@ func (e *Engine) verifySealedContract(step Step, i, total int, wfCtx *Context, r
 // It enforces the one invariant that gives the step type its meaning: a resolve step
 // MUST NOT write Params. The check is a before/after digest, always on, rather
 // than the narrower "don't break a live seal" — because the two paths differ.
-// Under a live seal (the guided create runs this step after six選択 gates have
+// Under a live seal (the guided create runs this step after six selection gates have
 // each sealed), a write would be caught by the next tool step's
 // verifySealedContract; on the plain create there is no seal yet, and
 // verifySealedContract fails OPEN on a nil seal, so a write there would sail

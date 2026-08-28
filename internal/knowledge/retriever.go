@@ -355,31 +355,6 @@ func NewRetriever(corpus Corpus, opts RetrieverOptions) *Retriever {
 	}
 }
 
-// Chunk returns the corpus chunk with this id so a caller can read its FULL body
-// after retrieval surfaced only a bounded snippet.
-//
-// It applies the same admissibility filters as collectBM25Candidates — expired
-// (valid_to) and low-confidence chunks are invisible here too. Reading by id must
-// not become a way around the rules that decide what retrieval is allowed to
-// surface; a chunk retrieval refuses to return is not a chunk an answer may use.
-func (r *Retriever) Chunk(chunkID string) (KBChunk, bool) {
-	chunkID = strings.TrimSpace(chunkID)
-	if r == nil || chunkID == "" {
-		return KBChunk{}, false
-	}
-	now := r.now()
-	for _, chunk := range r.corpus.Chunks {
-		if chunk.ChunkID != chunkID {
-			continue
-		}
-		if !chunkActiveAt(chunk, now) || chunk.Confidence == confidenceLow {
-			return KBChunk{}, false
-		}
-		return chunk, true
-	}
-	return KBChunk{}, false
-}
-
 // hybridEnabled reports whether the retriever should take the BM25-top-20
 // then embedding-rerank path. True when the configured mode includes a
 // cosine stage AND the embedder+sidecar are wired.
@@ -406,14 +381,6 @@ func (r *Retriever) rerankerEnabled() bool {
 		return true
 	}
 	return false
-}
-
-// RetrieveContext keeps the in-process retriever usable by offline tests and
-// evaluation callers while satisfying the engine's cancellation-aware seam.
-// Its local work already propagates context to embedding and reranking calls
-// through the Retriever's bounded internal contexts.
-func (r *Retriever) RetrieveContext(_ context.Context, question, productArea string) RetrievalResult {
-	return r.Retrieve(question, productArea)
 }
 
 func (r *Retriever) Retrieve(question, productArea string) RetrievalResult {

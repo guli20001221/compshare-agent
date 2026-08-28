@@ -7,7 +7,6 @@ type Kind string
 const (
 	KindResourceInfo      Kind = "resource_info"
 	KindMonitorQuery      Kind = "monitor_query"
-	KindBillingInstance   Kind = "billing_instance"
 	KindGPUSpecsQuery     Kind = "gpu_specs_query"
 	KindStockAvailability Kind = "stock_availability"
 	KindImageList         Kind = "image_list"
@@ -25,7 +24,6 @@ const (
 	SubjectInstance   SubjectType = "instance"
 	SubjectGPUModel   SubjectType = "gpu_model"
 	SubjectImage      SubjectType = "image"
-	SubjectImageGroup SubjectType = "image_group"
 	SubjectZone       SubjectType = "zone"
 )
 
@@ -73,24 +71,4 @@ type Constraints struct {
 
 func Hash(env Envelope) (string, error) {
 	return observability.HashTracePayload(env)
-}
-
-func AllowedIDs(env Envelope) map[string]struct{} {
-	out := make(map[string]struct{}, len(env.Subjects))
-	for _, subject := range env.Subjects {
-		if subject.ID != "" {
-			out[subject.ID] = struct{}{}
-		}
-	}
-	return out
-}
-
-func AllowedNames(env Envelope) map[string]struct{} {
-	out := make(map[string]struct{}, len(env.Subjects))
-	for _, subject := range env.Subjects {
-		if subject.Name != "" {
-			out[subject.Name] = struct{}{}
-		}
-	}
-	return out
 }

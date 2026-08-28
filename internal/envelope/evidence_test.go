@@ -39,12 +39,10 @@ func TestEvidenceFieldsAreUnexportedAndVisibilityTagged(t *testing.T) {
 }
 
 func TestEvidenceProjectionFieldSetsAreStable(t *testing.T) {
-	assert.Equal(t, []string{"SourceTitle", "Snippet", "SurfaceURL", "EvidenceKind"}, exportedFieldNames[UserView]())
 	assert.Equal(t, []string{"SourceTitle", "EvidenceKind", "ChunkID", "KBVersion", "RetrievalScore", "QueryNormalized", "APIRefs", "ToolCallID", "ProducedAt", "SurfaceURL", "SurfaceURLRejectionReason"}, exportedFieldNames[TraceView]())
-	assert.Equal(t, []string{"SourceTitle", "Snippet", "EvidenceKind"}, exportedFieldNames[LLMView]())
 }
 
-func TestEvidenceViewsDoNotExposeInternalOrTraceFieldsToWrongBoundary(t *testing.T) {
+func TestEvidenceTraceViewDoesNotExposeInternalFields(t *testing.T) {
 	surfaceURL := "https://console.compshare.cn/light-gpu/console/resources"
 	internalSourceID := "feishu-doc-internal"
 	approvalHash := "sha256:approval"
@@ -68,27 +66,16 @@ func TestEvidenceViewsDoNotExposeInternalOrTraceFieldsToWrongBoundary(t *testing
 	})
 	require.NoError(t, err)
 
-	user := e.ForUser()
-	assert.Equal(t, "Windows login", user.SourceTitle)
-	assert.Equal(t, "Use the console RDP entry.", user.Snippet)
-	require.NotNil(t, user.SurfaceURL)
-	assert.Equal(t, surfaceURL, *user.SurfaceURL)
-	assertNoFields(t, user, "ChunkID", "KBVersion", "RetrievalScore", "InternalSourceID", "ApprovalRecordHash", "OriginalCaseID", "DebugReason")
-
 	trace := e.ForTrace()
 	assert.Equal(t, "Windows login", trace.SourceTitle)
 	assert.Equal(t, "w0-login-001", trace.ChunkID)
 	assert.Equal(t, "kb.stage2b.w0.2026-05-13", trace.KBVersion)
 	assert.InDelta(t, 0.82, trace.RetrievalScore, 0.0001)
 	assertNoFields(t, trace, "Snippet", "InternalSourceID", "ApprovalRecordHash", "OriginalCaseID", "DebugReason")
-
-	llm := e.ForLLM()
-	assert.Equal(t, "Windows login", llm.SourceTitle)
-	assert.Equal(t, "Use the console RDP entry.", llm.Snippet)
-	assertNoFields(t, llm, "ChunkID", "KBVersion", "RetrievalScore", "QueryNormalized", "SurfaceURL", "InternalSourceID", "ApprovalRecordHash", "OriginalCaseID", "DebugReason")
+	assert.Equal(t, surfaceURL, *trace.SurfaceURL)
 }
 
-func TestEvidenceSurfaceURLPolicyInUserAndTraceViews(t *testing.T) {
+func TestEvidenceSurfaceURLPolicyInTraceView(t *testing.T) {
 	allowedConsole := "https://console.compshare.cn/instances"
 	allowedDocs := "https://www.compshare.cn/docs/gpus/login"
 	deniedGitLab := "https://gitlab.example.com/group/project"
@@ -98,7 +85,6 @@ func TestEvidenceSurfaceURLPolicyInUserAndTraceViews(t *testing.T) {
 	for _, rawURL := range []string{allowedConsole, allowedDocs} {
 		t.Run(rawURL, func(t *testing.T) {
 			e := mustKnowledgeEvidence(t, rawURL)
-			require.NotNil(t, e.ForUser().SurfaceURL)
 			require.NotNil(t, e.ForTrace().SurfaceURL)
 			assert.Nil(t, e.ForTrace().SurfaceURLRejectionReason)
 		})
@@ -114,7 +100,6 @@ func TestEvidenceSurfaceURLPolicyInUserAndTraceViews(t *testing.T) {
 	} {
 		t.Run(tc.rawURL, func(t *testing.T) {
 			e := mustKnowledgeEvidence(t, tc.rawURL)
-			assert.Nil(t, e.ForUser().SurfaceURL)
 			trace := e.ForTrace()
 			assert.Nil(t, trace.SurfaceURL)
 			require.NotNil(t, trace.SurfaceURLRejectionReason)

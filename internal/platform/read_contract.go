@@ -62,7 +62,6 @@ const (
 	ReadFallbackAmbiguousTarget  ReadFallbackReason = "ambiguous_target"
 	ReadFallbackTimeWindow       ReadFallbackReason = "time_window"
 	ReadFallbackValidation       ReadFallbackReason = "validation"
-	ReadFallbackActionNotAllowed ReadFallbackReason = "action_not_allowed"
 )
 
 // RouteStatus is the dispatch outcome emitted with a typed read observation.

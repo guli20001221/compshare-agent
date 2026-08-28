@@ -7,11 +7,7 @@ import "strings"
 // read-only reference data — the exact shape the zone convergence introduced for
 // availability zones.
 //
-// It is the single authority for "which images exist and what they are". Before
-// this type there were three independent interpreters (create's matchPlatformImage,
-// the 230 recovery's rankCreateImageCandidates, reinstall's reinstallImageMatches),
-// each re-querying and re-ranking the raw DescribeCompShareImages response with its
-// own keyword table. One snapshot, resolved once, replaces all three.
+// It is the single authority for "which images exist and what they are".
 //
 // Available()==false means the engine could not obtain the catalog this turn. That
 // is NOT an empty catalog: an unavailable snapshot holds no entries AND refuses
@@ -20,8 +16,7 @@ import "strings"
 //
 // It keeps ONE row per image id (id + display name + runtime form + structured
 // software facts together), so the name a card shows can never drift from the id
-// that executes — the id/name divergence catalogImageName papered over cannot be
-// reintroduced inside the type meant to end it. It is immutable from the outside:
+// that executes. It is immutable from the outside:
 // accessors return an ImageCatalogEntry (all-scalar, with fresh slices) by value.
 type ImageCatalogSnapshot struct {
 	available bool

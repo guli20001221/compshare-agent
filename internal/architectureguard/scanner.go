@@ -73,7 +73,7 @@ func Scan(root string) (Baseline, error) {
 		}
 		rel = filepath.ToSlash(rel)
 		if filepath.Ext(path) != ".go" || strings.HasSuffix(path, "_test.go") ||
-			strings.HasSuffix(path, "registry_gen.go") || strings.HasPrefix(rel, "internal/architectureguard/") {
+			strings.HasPrefix(rel, "internal/architectureguard/") {
 			return nil
 		}
 		file, err := parser.ParseFile(fset, path, nil, 0)

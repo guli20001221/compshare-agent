@@ -108,25 +108,8 @@ func imageIDAppearsInAgentContext(view AgentContext, imageID string) bool {
 	return false
 }
 
-func containsStandaloneValue(text, value string) bool {
-	textRunes := []rune(text)
-	valueRunes := []rune(strings.TrimSpace(value))
-	if len(valueRunes) == 0 || len(valueRunes) > len(textRunes) {
-		return false
-	}
-	for offset := 0; offset+len(valueRunes) <= len(textRunes); offset++ {
-		end := offset + len(valueRunes)
-		if string(textRunes[offset:end]) == string(valueRunes) &&
-			standaloneSpan(textRunes, offset, end) {
-			return true
-		}
-	}
-	return false
-}
-
 // containsStandaloneImageID uses the image codec's opaque-identifier boundary:
 // Chinese grammar may be adjacent to an ASCII id without becoming part of it.
-// Keep the generic value helper above unchanged for ordinary words and names.
 func containsStandaloneImageID(text, value string) bool {
 	textRunes := []rune(text)
 	valueRunes := []rune(strings.TrimSpace(value))

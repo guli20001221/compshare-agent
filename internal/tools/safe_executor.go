@@ -27,7 +27,6 @@ var (
 	ErrNonExternalAction            = errors.New("non-external action cannot be executed by API executor")
 	ErrToolCapExceeded              = errors.New("tool cap exceeded")
 	ErrHistoryWindowExceeded        = errors.New("history window exceeded")
-	ErrHistoricalMonitorUnsupported = errors.New("historical monitor unsupported")
 	ErrMutatingActionDisabled       = errors.New("mutating action disabled")
 	// ErrCFSZoneUnresolved is returned when GetCompShareCFSUpgradePrice cannot
 	// resolve the internal zone_id. The upstream otherwise returns a misleading
@@ -861,7 +860,6 @@ func copyMap(in map[string]any) map[string]any {
 func shouldRetry(err error, retryOn []ErrorClass) bool {
 	if errors.Is(err, ErrToolCapExceeded) ||
 		errors.Is(err, ErrHistoryWindowExceeded) ||
-		errors.Is(err, ErrHistoricalMonitorUnsupported) ||
 		errors.Is(err, governance.ErrRateLimited) {
 		return false
 	}

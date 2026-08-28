@@ -149,11 +149,6 @@ func formatRelativeDuration(d time.Duration) string {
 	}
 	return fmt.Sprintf("约 %d 小时 %d 分钟后", hours, remainMin)
 }
-
-// ---------------------------------------------------------------------------
-// SetStopScheduler workflow
-// ---------------------------------------------------------------------------
-
 // SetStopSchedulerDef returns the 3-step workflow definition for setting a
 // scheduled stop on a CompShare GPU instance: query state, confirm, then set.
 func SetStopSchedulerDef() *Definition {
@@ -283,11 +278,6 @@ func shutdownDraftFromValue(raw any) (map[string]any, error) {
 	}
 	return map[string]any{"unix": unix, "display": display}, nil
 }
-
-// ---------------------------------------------------------------------------
-// CancelStopScheduler workflow
-// ---------------------------------------------------------------------------
-
 // CancelStopSchedulerDef returns the 3-step workflow definition for cancelling
 // a scheduled stop on a CompShare GPU instance: query state, confirm, then
 // delete the scheduler task.

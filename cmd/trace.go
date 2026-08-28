@@ -70,13 +70,6 @@ func mutatingToolsEnabledFromEnv(getenv getenvFunc) (bool, string) {
 	}
 }
 
-func mutatingToolsRuntimeLine(enabled bool) string {
-	if enabled {
-		return "mutating=enabled"
-	}
-	return "mutating=disabled (read-only mode)"
-}
-
 func knowledgeMCPTimeoutFromEnv(getenv getenvFunc) time.Duration {
 	raw := strings.TrimSpace(getenv("COMPSHARE_KB_MCP_TIMEOUT_MS"))
 	if raw == "" {
