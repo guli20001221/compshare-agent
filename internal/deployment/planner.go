@@ -123,11 +123,9 @@ func ExplicitChargeTypePhrase(value string) (string, bool) {
 func ExplicitChargeTypeFromPhrase(phrase string) (string, bool) {
 	value := ""
 	for _, item := range explicitChargeTypeVocabulary {
-		// platform.ContainsLiteralSpan is the repo's single reviewed primitive
-		// for "is this a literal span of that" (architectureguard/scanner.go
-		// exempts it by name). Using it here keeps this a provenance check
-		// rather than a new string-heuristic site, and it already applies the
-		// shared whitespace/case folding.
+		// platform.ContainsLiteralSpan is the shared "is this a literal span of
+		// that" primitive: it applies the same whitespace/case folding every
+		// other provenance check uses.
 		if !platform.ContainsLiteralSpan(phrase, item.Phrase) {
 			continue
 		}
