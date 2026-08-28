@@ -681,7 +681,7 @@ func TestLiveOpsWriteCanary(t *testing.T) {
 		Owner{TopOrganizationID: uint32(top), OrganizationID: uint32(sub),
 			RequestUUID: "live-write-canary", TurnID: fmt.Sprintf("live-write-%d", time.Now().UnixNano())},
 		instanceID, task,
-		opscontext.Context{SchemaVersion: opscontext.SchemaVersion,
+		opscontext.Context{SchemaVersion: opscontext.SchemaVersion, RepairScopeAuthorized: true,
 			ConversationHistory: []opscontext.ConversationMessage{{Role: opscontext.ConversationRoleUser, Content: task}}},
 		func(step Step) {
 			t.Logf("step=%s tier=%s disposition=%s reason=%s", step.Command, step.Tier,
