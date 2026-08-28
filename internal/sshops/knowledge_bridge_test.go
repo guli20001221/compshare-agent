@@ -98,43 +98,119 @@ func TestKnowledgeBridgeBoundsSearchAndKeepsCapabilityPrivate(t *testing.T) {
 	}
 }
 
-func TestKnowledgeBridgeUsesTheSharedWeakEvidenceFloorBeforeGrantingRead(t *testing.T) {
+func TestKnowledgeBridgeUsesTheSharedWeakEvidenceFloorAndKeepsCandidatesReviewable(t *testing.T) {
 	for _, tc := range []struct {
-		name    string
-		mode    string
-		score   float64
-		wantHit bool
+		name     string
+		mode     string
+		score    float64
+		wantWeak bool
 	}{
-		{name: "weak semantic", mode: knowledge.RetrievalModeHybridCosine, score: 0.2},
-		{name: "weak bm25", mode: knowledge.RetrievalModeBM25Only, score: 10},
-		{name: "unknown scale stays unjudged", mode: "future_scale", score: 0.01, wantHit: true},
-		{name: "raw rrf stays unjudged", mode: knowledge.RetrievalModeQwen3RRF, score: 0.01, wantHit: true},
+		{name: "weak semantic", mode: knowledge.RetrievalModeHybridCosine, score: 0.2, wantWeak: true},
+		{name: "weak bm25", mode: knowledge.RetrievalModeBM25Only, score: 10, wantWeak: true},
+		{name: "unknown scale stays unjudged", mode: "future_scale", score: 0.01},
+		{name: "raw rrf stays unjudged", mode: knowledge.RetrievalModeQwen3RRF, score: 0.01},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			retriever := &bridgeRetriever{result: knowledge.RetrievalResult{
-				Enabled: true, SearchID: "private-search", HybridMode: tc.mode,
-				HitItems: []knowledge.RetrievalHit{{Kept: true, Score: tc.score,
-					Chunk: knowledge.KBChunk{ChunkID: "chunk-a", Title: "候选", Content: "证据"}}},
-			}}
+			retriever := &bridgeRetriever{
+				result: knowledge.RetrievalResult{
+					Enabled: true, SearchID: "private-search", HybridMode: tc.mode,
+					HitItems: []knowledge.RetrievalHit{{Kept: true, Score: tc.score,
+						Chunk: knowledge.KBChunk{
+							ChunkID: "chunk-a", Title: "候选", SourceType: "official_doc",
+							ProductArea: "network", Content: "搜索正文不得作为候选元数据泄露",
+						}}},
+				},
+				chunks: map[string]knowledge.KBChunk{
+					"chunk-a": {ChunkID: "chunk-a", Title: "候选", Content: "读取后的完整正文"},
+				},
+			}
 			bridge := newKnowledgeBridge(context.Background(), retriever)
 			reply := bridge.handle(KnowledgeRequest{ID: "s", Operation: "search", Query: "平台契约"})
 			if !reply.OK {
 				t.Fatalf("search failed: %+v", reply)
 			}
 			result := reply.Result.(knowledgeSearchResult)
-			if tc.wantHit {
+			if !tc.wantWeak {
 				if len(result.Hits) != 1 {
 					t.Fatalf("unjudged score scale lost its hit: %#v", result.Hits)
 				}
+				if result.FloorDroppedAll || len(result.BelowFloorCandidates) != 0 {
+					t.Fatalf("unjudged score scale was mislabeled weak: %#v", result)
+				}
 				return
 			}
-			if len(result.Hits) != 0 || !result.Empty {
-				t.Fatalf("weak evidence reached the inner model: %#v", result)
+			if len(result.Hits) != 0 || !result.Empty || !result.FloorDroppedAll {
+				t.Fatalf("weak evidence became a normal hit: %#v", result)
 			}
-			if got := bridge.handle(KnowledgeRequest{ID: "r", Operation: "read", ChunkIDs: []string{"chunk-a"}}); got.OK || got.ErrorClass != "not_authorized" {
-				t.Fatalf("weak hit gained a full-text capability: %+v", got)
+			if len(result.BelowFloorCandidates) != 1 {
+				t.Fatalf("weak search lead was hidden: %#v", result.BelowFloorCandidates)
+			}
+			candidate := result.BelowFloorCandidates[0]
+			if candidate.ChunkID != "chunk-a" || candidate.Title != "候选" || candidate.Strength != "below_floor" {
+				t.Fatalf("weak candidate metadata = %#v", candidate)
+			}
+			wire, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, forbidden := range []string{
+				"搜索正文", "official_doc", "network", "snippet", "source_type", "product_area",
+			} {
+				if strings.Contains(string(wire), forbidden) {
+					t.Fatalf("weak search candidate exposed %q: %s", forbidden, wire)
+				}
+			}
+			read := bridge.handle(KnowledgeRequest{ID: "r", Operation: "read", ChunkIDs: []string{"chunk-a"}})
+			if !read.OK {
+				t.Fatalf("current-run weak candidate was not reviewable: %+v", read)
+			}
+			items := read.Result.(knowledgeReadResult).Chunks
+			if len(items) != 1 || items[0].Content != "读取后的完整正文" || items[0].Strength != "below_floor" {
+				t.Fatalf("weak full-text read lost its strength: %#v", items)
+			}
+			fresh := newKnowledgeBridge(context.Background(), retriever)
+			if got := fresh.handle(KnowledgeRequest{ID: "fresh-read", Operation: "read", ChunkIDs: []string{"chunk-a"}}); got.OK || got.ErrorClass != "not_authorized" {
+				t.Fatalf("weak read capability escaped its search run: %+v", got)
 			}
 		})
+	}
+}
+
+func TestKnowledgeBridgeBoundsBelowFloorCandidatesAndReadCapabilities(t *testing.T) {
+	overlongID := strings.Repeat("x", maxKnowledgeChunkIDRunes+1)
+	hits := []knowledge.RetrievalHit{{
+		Kept: true, Score: 0.2,
+		Chunk: knowledge.KBChunk{ChunkID: overlongID, Title: "不可暴露", Content: "不可暴露正文"},
+	}}
+	chunks := map[string]knowledge.KBChunk{}
+	for i := 0; i < maxKnowledgeSearchHits+1; i++ {
+		id := "weak-" + string(rune('a'+i))
+		hits = append(hits, knowledge.RetrievalHit{Kept: true, Score: 0.2 - float64(i)*0.01,
+			Chunk: knowledge.KBChunk{ChunkID: id, Title: "候选 " + id, Content: "不随搜索返回"}})
+		chunks[id] = knowledge.KBChunk{ChunkID: id, Content: "read " + id}
+	}
+	retriever := &bridgeRetriever{result: knowledge.RetrievalResult{
+		Enabled: true, SearchID: "private-search", HybridMode: knowledge.RetrievalModeHybridCosine,
+		HitItems: hits,
+	}, chunks: chunks}
+	bridge := newKnowledgeBridge(context.Background(), retriever)
+	reply := bridge.handle(KnowledgeRequest{ID: "s", Operation: "search", Query: "平台契约"})
+	if !reply.OK {
+		t.Fatalf("search failed: %+v", reply)
+	}
+	result := reply.Result.(knowledgeSearchResult)
+	if len(result.BelowFloorCandidates) != maxKnowledgeSearchHits {
+		t.Fatalf("candidate count = %d, want %d: %#v",
+			len(result.BelowFloorCandidates), maxKnowledgeSearchHits, result.BelowFloorCandidates)
+	}
+	if result.BelowFloorCandidates[0].ChunkID != "weak-a" {
+		t.Fatalf("invalid candidate consumed the bounded window: %#v", result.BelowFloorCandidates)
+	}
+	if got := bridge.handle(KnowledgeRequest{ID: "r-overlong", Operation: "read", ChunkIDs: []string{overlongID}}); got.OK || got.ErrorClass != "invalid_request" {
+		t.Fatalf("overlong candidate id reached capability lookup: %+v", got)
+	}
+	if got := bridge.handle(KnowledgeRequest{ID: "r-omitted", Operation: "read", ChunkIDs: []string{"weak-d"}}); got.OK || got.ErrorClass != "not_authorized" {
+		t.Fatalf("unexposed bounded candidate became readable: %+v", got)
 	}
 }
 
@@ -221,6 +297,9 @@ func TestKnowledgeBridgeReadIsSearchBoundAndPerCallRuneBounded(t *testing.T) {
 	total := 0
 	for _, item := range result.Chunks {
 		total += utf8.RuneCountInString(item.Content)
+		if item.Strength != "" {
+			t.Fatalf("normal evidence read was mislabeled weak: %#v", item)
+		}
 	}
 	if total != maxKnowledgeReadRunes {
 		t.Fatalf("read body total = %d runes, want %d", total, maxKnowledgeReadRunes)

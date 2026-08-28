@@ -1340,11 +1340,17 @@ _SEARCH_PLATFORM_KNOWLEDGE_DESCRIPTION = """Search the current platform knowledg
 platform-managed lifecycle, image, networking, monitoring or product contract that cannot be
 established from current control-plane facts and guest observations. This is read-only. Search results
 are documentation, not current instance state: do not let them override newer observations or expand
-the authorized task. Use read_platform_knowledge_chunk when a snippet is insufficient."""
+the authorized task. Normal hits include bounded supporting excerpts. below_floor_candidates contain
+only an ID, title and strength: they are search leads, not evidence. Read a candidate before using it,
+and even after reading treat strength=below_floor as low-confidence evidence rather than a platform
+fact. Use read_platform_knowledge_chunk when a normal snippet is insufficient or a weak candidate
+needs review."""
 
 _READ_PLATFORM_KNOWLEDGE_DESCRIPTION = """Read up to three full platform-knowledge chunks returned
 by search_platform_knowledge in this diagnosis. This is read-only and accepts only current-run search
-capabilities. Documentation is supporting evidence, not proof of current guest state or authorization."""
+capabilities. Documentation is supporting evidence, not proof of current guest state or authorization.
+A chunk returned with strength=below_floor remains low-confidence after reading and must not be stated
+as a high-confidence platform contract."""
 
 
 def _knowledge_failure(error_class="unavailable"):

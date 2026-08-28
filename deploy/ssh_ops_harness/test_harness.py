@@ -1704,6 +1704,17 @@ check("knowledge-search-wire-is-bounded-and-operation-specific",
           "id": "k1", "operation": "search",
           "query": "UHost Container 的平台监控由哪一层提供", "context_hint": "monitoring"})
 
+_knowledge_weak_result, _ = _knowledge_call(
+    '{"id":"k1","ok":true,"result":{"hits":[],"empty":true,'
+    '"floor_dropped_all":true,"below_floor_candidates":['
+    '{"chunk_id":"weak-doc","title":"待核验文档","strength":"below_floor"}]}}\n',
+    "search", {"query": "Pod UDP 平台契约"})
+check("knowledge-broker-preserves-reviewable-below-floor-candidates",
+      _knowledge_weak_result.get("hits") == [] and
+      _knowledge_weak_result.get("floor_dropped_all") is True and
+      _knowledge_weak_result.get("below_floor_candidates") == [{
+          "chunk_id": "weak-doc", "title": "待核验文档", "strength": "below_floor"}])
+
 _knowledge_read_result, _knowledge_read_wire = _knowledge_call(
     '{"id":"k1","ok":true,"result":{"chunks":[{"chunk_id":"doc-1","content":"full"}]}}\n',
     "read", {"chunk_ids": ["doc-1"]})
@@ -2060,7 +2071,10 @@ check("platform-knowledge-tools-are-read-only-and-bounded",
 check("platform-knowledge-descriptions-preserve-evidence-and-authorization-boundaries",
       "not current instance state" in " ".join(_knowledge_search_tool._test_tool_description.split()) and
       "expand the authorized task" in " ".join(_knowledge_search_tool._test_tool_description.split()) and
-      "current-run search" in " ".join(_knowledge_read_tool._test_tool_description.split()))
+      "current-run search" in " ".join(_knowledge_read_tool._test_tool_description.split()) and
+      "search leads, not evidence" in " ".join(_knowledge_search_tool._test_tool_description.split()) and
+      "strength=below_floor" in " ".join(_knowledge_search_tool._test_tool_description.split()) and
+      "low-confidence" in " ".join(_knowledge_read_tool._test_tool_description.split()))
 check("ssh-exec-schema-owns-the-optional-background-mode",
       _first_ssh_tool._test_tool_schema["required"] == ["command"] and
       set(_first_ssh_tool._test_tool_schema["properties"]) ==

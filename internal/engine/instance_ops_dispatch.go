@@ -20,18 +20,19 @@ import (
 // the cap, per-command events stop; the terminal summary still reports the totals.
 const maxInstanceOpsStepEvents = 50
 
-// instanceOpsPreflightFailureData is the narrow observation emitted when the
-// diagnosis service itself cannot establish the prerequisite TCP connection.
-// It deliberately names the observer and the boundary rather than turning one
-// network vantage point into a conclusion about the instance or evidence the
-// user supplied through another path (for example an SSH -vvv transcript).
+// instanceOpsEntryBoundaryData is the narrow observation emitted when this lane
+// cannot cross a prerequisite Guest-entry boundary. It deliberately names the
+// observer and the boundary rather than turning one access limitation into a
+// conclusion about the instance or evidence supplied through another path.
 //
 // Unlike a terminal reply, this is a normal AgentToolResult. The central Agent
 // therefore receives both this observation and the canonical conversation and
 // can reconcile independent evidence in one semantic path.
-type instanceOpsPreflightFailureData struct {
+type instanceOpsEntryBoundaryData struct {
 	ObservationSource     string `json:"observation_source"`
 	ObservationScope      string `json:"observation_scope"`
+	ExecutionBoundary     string `json:"execution_boundary"`
+	SSHEntrypoint         string `json:"ssh_entrypoint"`
 	TCPConnection         string `json:"tcp_connection"`
 	SSHSessionEstablished bool   `json:"ssh_session_established"`
 	GuestCommandsExecuted bool   `json:"guest_commands_executed"`
@@ -40,9 +41,11 @@ type instanceOpsPreflightFailureData struct {
 
 func instanceOpsPreflightFailureObservation(action string) string {
 	return tools.MarshalAgentToolResult(tools.AgentToolFailure(action,
-		instanceOpsPreflightFailureData{
+		instanceOpsEntryBoundaryData{
 			ObservationSource:     "diagnostic_service",
 			ObservationScope:      "diagnostic_service_to_instance_ssh_candidate",
+			ExecutionBoundary:     "pre_ssh_tcp",
+			SSHEntrypoint:         "candidate_available",
 			TCPConnection:         "not_established",
 			SSHSessionEstablished: false,
 			GuestCommandsExecuted: false,
@@ -52,6 +55,28 @@ func instanceOpsPreflightFailureObservation(action string) string {
 		"SSH_DIAGNOSTIC_VANTAGE_UNREACHABLE",
 		"诊断服务未能与候选 SSH 地址建立 TCP 连接；该结果仅描述诊断服务的网络视角，不能据此否定用户从其他位置观察到的连通性或 SSH 握手证据。",
 		tools.AgentToolMeta{SourceStatus: "preflight_failed"}))
+}
+
+// instanceOpsNoSSHTargetObservation keeps a missing SSH entrypoint as one
+// bounded observation instead of ending the central Agent turn. The SSH lane
+// cannot enter the Guest, but platform reads and knowledge retrieval observe
+// different layers and can still answer or narrow the user's request.
+func instanceOpsNoSSHTargetObservation(action string) string {
+	return tools.MarshalAgentToolResult(tools.AgentToolFailure(action,
+		instanceOpsEntryBoundaryData{
+			ObservationSource:     "platform_instance_access",
+			ObservationScope:      "instance_guest_ssh_entry",
+			ExecutionBoundary:     "no_ssh_entrypoint",
+			SSHEntrypoint:         "not_available",
+			TCPConnection:         "not_attempted",
+			SSHSessionEstablished: false,
+			GuestCommandsExecuted: false,
+			EvidenceBoundary: "This observation only proves that the instance has no SSH entrypoint available to this diagnostic lane. " +
+				"It does not prevent the central agent from using platform read capabilities or knowledge evidence.",
+		},
+		"INSTANCE_GUEST_SSH_UNAVAILABLE",
+		"该实例没有可用的 SSH 登录入口；未建立 SSH 会话、未进入 Guest，也没有执行 Guest 命令。仍可继续查询平台实时事实和知识证据。",
+		tools.AgentToolMeta{SourceStatus: "no_ssh_target"}))
 }
 
 // Target refusal text is split by audience: the activity stream gives the user
@@ -246,14 +271,13 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		// detached process may have survived the killed harness. Stashed BEFORE the branches rather
 		// than inside each, so a future branch cannot return without considering it.
 		e.recordInstanceOpsInterruption(instanceID, settled)
-		// No SSH entrypoint (empty SshLoginCommand — e.g. a Windows instance): the box
-		// can never be entered, so this is honest and NON-retryable. Never the generic
-		// "请稍后重试" text, which wrongly implies a transient failure the user should
-		// retry. Confirmed live against a CompShare Windows GPU instance.
+		// No SSH entrypoint is an authoritative boundary for this lane, but not for the
+		// whole central Agent. Return it as a structured observation so platform reads
+		// and knowledge retrieval remain available; never imply that Guest commands ran.
 		if errors.Is(err, ErrInstanceOpsNoSSHTarget) {
-			msg := "该实例没有 SSH 登录入口（如 Windows 实例），暂不支持实例内排查。"
+			msg := "该实例没有可用的 SSH 登录入口；未建立 SSH 会话、未进入 Guest，也没有执行 Guest 命令。"
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
-			return finalReplyPrefix + msg
+			return instanceOpsNoSSHTargetObservation(action)
 		}
 		// A well-formed account response that omits the id is permanent for this
 		// request; tell the user to correct the target rather than retry blindly.

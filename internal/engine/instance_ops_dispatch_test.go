@@ -791,11 +791,10 @@ func TestInstanceOps_StepEventsBoundedByCap(t *testing.T) {
 	require.LessOrEqual(t, len(over), maxInstanceOpsStepEvents+2)
 }
 
-// 门 8b — a no-SSH-target instance (e.g. Windows: empty SshLoginCommand) is refused
-// HONESTLY and NON-retryably. The card was authorized, so the runner IS reached and
-// returns ErrInstanceOpsNoSSHTarget; the engine must NOT surface the generic
-// "请稍后重试" text for a box that can never be entered.
-func TestInstanceOps_NoSSHTargetRefusedHonestly(t *testing.T) {
+// 门 8b — a no-SSH-target instance is an authoritative boundary for the Guest
+// lane, not a terminal answer for the central Agent. Keep the target selection,
+// report that no Guest command ran, and leave platform reads / RAG available.
+func TestInstanceOps_NoSSHTargetReturnsStructuredBoundaryObservation(t *testing.T) {
 	runner := &fakeInstanceOpsRunner{err: ErrInstanceOpsNoSSHTarget}
 	eng := newInstanceOpsEngine(runner, alwaysConfirm)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
@@ -804,9 +803,27 @@ func TestInstanceOps_NoSSHTargetRefusedHonestly(t *testing.T) {
 	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&steps))
 
 	require.Equal(t, 1, runner.calls, "the card was authorized, so the runner is reached")
-	require.True(t, strings.HasPrefix(out, finalReplyPrefix), "an unenterable box is a terminal refusal")
-	require.Contains(t, out, "没有 SSH 登录入口", "the refusal must name the real cause")
+	require.False(t, strings.HasPrefix(out, finalReplyPrefix), "the central Agent must be able to use other observation layers")
+	result, ok := tools.ParseAgentToolResult(out)
+	require.True(t, ok, out)
+	require.Equal(t, tools.AgentToolStatusFailed, result.Status)
+	require.Equal(t, "INSTANCE_GUEST_SSH_UNAVAILABLE", result.Error.Code)
+	require.Equal(t, tools.AgentToolNextAnswerUser, result.NextStep)
+	require.Equal(t, "no_ssh_target", result.Meta.SourceStatus)
+	data, ok := result.Data.(map[string]any)
+	require.True(t, ok, "%#v", result.Data)
+	require.Equal(t, "no_ssh_entrypoint", data["execution_boundary"])
+	require.Equal(t, "not_available", data["ssh_entrypoint"])
+	require.Equal(t, "not_attempted", data["tcp_connection"])
+	require.Equal(t, false, data["ssh_session_established"])
+	require.Equal(t, false, data["guest_commands_executed"])
+	require.Contains(t, data["evidence_boundary"], "platform read capabilities")
+	require.Contains(t, result.Error.Message, "继续查询平台")
 	require.NotContains(t, out, "请稍后重试", "must not imply a transient, retryable failure")
+	require.Len(t, steps, 1)
+	require.Equal(t, StepBlocked, steps[0].Type)
+	require.Contains(t, steps[0].Message, "未进入 Guest")
+	require.Contains(t, steps[0].Message, "没有执行 Guest 命令")
 	state, _, hydrated := eng.SessionStateSnapshot()
 	require.True(t, hydrated)
 	require.Equal(t, "uhost-1", state.SelectedInstanceID,

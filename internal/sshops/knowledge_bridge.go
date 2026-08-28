@@ -69,9 +69,21 @@ type knowledgeSearchHit struct {
 }
 
 type knowledgeSearchResult struct {
-	KBVersion string               `json:"kb_version,omitempty"`
-	Hits      []knowledgeSearchHit `json:"hits"`
-	Empty     bool                 `json:"empty"`
+	KBVersion            string                         `json:"kb_version,omitempty"`
+	Hits                 []knowledgeSearchHit           `json:"hits"`
+	Empty                bool                           `json:"empty"`
+	FloorDroppedAll      bool                           `json:"floor_dropped_all,omitempty"`
+	BelowFloorCandidates []knowledgeBelowFloorCandidate `json:"below_floor_candidates,omitempty"`
+	Note                 string                         `json:"note,omitempty"`
+}
+
+// knowledgeBelowFloorCandidate deliberately carries no snippet or document
+// metadata. It is a reviewable search lead, not evidence. The full body becomes
+// available only through the capability-bound read operation in this run.
+type knowledgeBelowFloorCandidate struct {
+	ChunkID  string `json:"chunk_id"`
+	Title    string `json:"title,omitempty"`
+	Strength string `json:"strength"`
 }
 
 type knowledgeReadItem struct {
@@ -81,6 +93,7 @@ type knowledgeReadItem struct {
 	ProductArea string `json:"product_area,omitempty"`
 	Content     string `json:"content,omitempty"`
 	Truncated   bool   `json:"truncated,omitempty"`
+	Strength    string `json:"strength,omitempty"`
 }
 
 type knowledgeReadResult struct {
@@ -90,6 +103,7 @@ type knowledgeReadResult struct {
 
 type knowledgeReadCapability struct {
 	searchID string
+	strength string
 }
 
 // knowledgeBridge is created once per Supervisor.RunWithContext. Its counters
@@ -150,20 +164,55 @@ func (b *knowledgeBridge) search(req KnowledgeRequest) knowledgeReply {
 	if retrieved.Unavailable {
 		return knowledgeFailure(req.ID, "unavailable")
 	}
-	hits := retrieved.HitItems
-	if len(hits) == 0 && len(retrieved.Hits) > 0 {
-		hits = make([]knowledge.RetrievalHit, 0, len(retrieved.Hits))
+	rawHits := retrieved.HitItems
+	if len(rawHits) == 0 && len(retrieved.Hits) > 0 {
+		rawHits = make([]knowledge.RetrievalHit, 0, len(retrieved.Hits))
 		for _, chunk := range retrieved.Hits {
-			hits = append(hits, knowledge.RetrievalHit{Chunk: chunk, Kept: true})
+			rawHits = append(rawHits, knowledge.RetrievalHit{Chunk: chunk, Kept: true})
 		}
 	}
-	// Use the same score-scale floor as the outer Agent. A weak candidate must not be hidden from
-	// ordinary chat yet granted as a full-text capability to the in-instance Agent, whose next step
-	// may be an autonomous guest repair.
-	if knowledge.IsWeakEvidence(hits, retrieved.HybridMode, retrieved.RerankerMode != "") {
-		hits = nil
+	// Keep the outer and inner retrieval contracts identical. A judged weak result is not citable
+	// evidence, but up to three IDs remain reviewable in this run. Search never exposes their body;
+	// a subsequent capability-bound read labels the body below_floor as well.
+	if knowledge.IsWeakEvidence(rawHits, retrieved.HybridMode, retrieved.RerankerMode != "") {
+		candidates := make([]knowledgeBelowFloorCandidate, 0, maxKnowledgeSearchHits)
+		seen := make(map[string]struct{}, maxKnowledgeSearchHits)
+		for _, hit := range rawHits {
+			chunkID := strings.TrimSpace(hit.Chunk.ChunkID)
+			if !hit.Kept || chunkID == "" || utf8.RuneCountInString(chunkID) > maxKnowledgeChunkIDRunes {
+				continue
+			}
+			if _, exists := seen[chunkID]; exists {
+				continue
+			}
+			seen[chunkID] = struct{}{}
+			b.capabilities[chunkID] = knowledgeReadCapability{
+				searchID: strings.TrimSpace(retrieved.SearchID),
+				strength: "below_floor",
+			}
+			candidates = append(candidates, knowledgeBelowFloorCandidate{
+				ChunkID:  chunkID,
+				Title:    truncateRunes(strings.TrimSpace(hit.Chunk.Title), 80),
+				Strength: "below_floor",
+			})
+			if len(candidates) >= maxKnowledgeSearchHits {
+				break
+			}
+		}
+		return knowledgeReply{
+			ID: req.ID,
+			OK: true,
+			Result: knowledgeSearchResult{
+				KBVersion:            strings.TrimSpace(retrieved.KBVersion),
+				Hits:                 []knowledgeSearchHit{},
+				Empty:                true,
+				FloorDroppedAll:      len(rawHits) > 0,
+				BelowFloorCandidates: candidates,
+				Note:                 "Candidates are below the relevance floor and are not evidence. Read a candidate before using it; a read candidate remains low-confidence evidence.",
+			},
+		}
 	}
-	ledger := knowledge.BuildSubstantiveEvidenceLedger(query, hits,
+	ledger := knowledge.BuildSubstantiveEvidenceLedger(query, rawHits,
 		maxKnowledgeSearchHits, knowledge.DefaultEvidenceSnippetMaxRunes)
 	resultHits := make([]knowledgeSearchHit, 0, len(ledger.Items))
 	for _, item := range ledger.Items {
@@ -250,6 +299,7 @@ func (b *knowledgeBridge) read(req KnowledgeRequest) knowledgeReply {
 			ProductArea: truncateRunes(strings.TrimSpace(chunk.ProductArea), maxKnowledgeProductAreaRunes),
 			Content:     content,
 			Truncated:   truncated,
+			Strength:    b.capabilities[id].strength,
 		})
 	}
 	return knowledgeReply{ID: req.ID, OK: true, Result: knowledgeReadResult{
