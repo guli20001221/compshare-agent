@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/entity"
@@ -432,6 +433,165 @@ func ExtractMonitorScalars(payload map[string]any, metrics []Metric) []MonitorSc
 		})
 	}
 	return out
+}
+
+// ExtractMonitorScalarsForSubject extracts only the requested instance and also
+// reports whether the response shape can truthfully support an empty result for
+// that instance. A successful API call is not enough: a missing Data block,
+// schema drift, or a non-empty list containing only other instance IDs must not
+// be presented as "the platform returned no metrics for this instance".
+func ExtractMonitorScalarsForSubject(payload map[string]any, metrics []Metric, subjectID string) ([]MonitorScalar, bool) {
+	if subjectID == "" {
+		return nil, false
+	}
+	all := ExtractMonitorScalars(payload, metrics)
+	out := make([]MonitorScalar, 0, len(all))
+	for _, scalar := range all {
+		if scalar.SubjectID == subjectID {
+			out = append(out, scalar)
+		}
+	}
+	if len(out) > 0 {
+		return out, true
+	}
+	return nil, monitorSubjectEmptyResponseRecognized(payload, subjectID)
+}
+
+func monitorSubjectEmptyResponseRecognized(payload map[string]any, subjectID string) bool {
+	data, ok := payload["Data"].(map[string]any)
+	if !ok {
+		return false
+	}
+	branchSeen := false
+	nonEmptyBranchSeen := false
+
+	if raw, present := data["List"]; present {
+		items, valid := raw.([]any)
+		if !valid {
+			return false
+		}
+		branchSeen = true
+		nonEmptyBranchSeen = nonEmptyBranchSeen || len(items) > 0
+		for _, rawItem := range items {
+			item, _ := rawItem.(map[string]any)
+			itemID, _ := item["UHostId"].(string)
+			if item == nil || strings.TrimSpace(itemID) != subjectID {
+				continue
+			}
+			rawMetrics, present := item["Metrics"]
+			metricItems, valid := rawMetrics.([]any)
+			if !present || !valid {
+				return false
+			}
+			if len(metricItems) == 0 {
+				return true
+			}
+			for _, rawMetric := range metricItems {
+				metric, _ := rawMetric.(map[string]any)
+				if metric == nil {
+					continue
+				}
+				metricKey, _ := metric["MetricKey"].(string)
+				if _, recognized := monitorMetricDefinitions[metricKey]; recognized && monitorResultsShapeRecognized(metric["Results"]) {
+					return true
+				}
+			}
+			return false
+		}
+	}
+
+	if raw, present := data["PodList"]; present {
+		items, valid := raw.([]any)
+		if !valid {
+			return false
+		}
+		branchSeen = true
+		nonEmptyBranchSeen = nonEmptyBranchSeen || len(items) > 0
+		for _, rawItem := range items {
+			item, _ := rawItem.(map[string]any)
+			itemID, _ := item["UHostId"].(string)
+			if item == nil || strings.TrimSpace(itemID) != subjectID {
+				continue
+			}
+			rawMetrics, present := item["Metrics"]
+			metricItems, valid := rawMetrics.(map[string]any)
+			if !present || !valid {
+				return false
+			}
+			if len(metricItems) == 0 {
+				return true
+			}
+			for key, values := range metricItems {
+				if key == "Gpu" && podGPUShapeRecognized(values) {
+					return true
+				}
+				if _, recognized := podMonitorMetricDefinitions[key]; recognized && monitorValueSeriesShapeRecognized(values) {
+					return true
+				}
+			}
+			return false
+		}
+	}
+
+	// An explicitly present, typed, empty result branch is the upstream's
+	// successful-empty representation for a query scoped to this subject. Once
+	// any record is present, however, absence of the requested ID is ambiguous.
+	return branchSeen && !nonEmptyBranchSeen
+}
+
+func monitorResultsShapeRecognized(raw any) bool {
+	results, ok := raw.([]any)
+	if !ok {
+		return false
+	}
+	if len(results) == 0 {
+		return true
+	}
+	for _, rawResult := range results {
+		result, _ := rawResult.(map[string]any)
+		if result != nil && monitorValueSeriesShapeRecognized(result["Values"]) {
+			return true
+		}
+	}
+	return false
+}
+
+func monitorValueSeriesShapeRecognized(raw any) bool {
+	values, ok := raw.([]any)
+	if !ok {
+		return false
+	}
+	if len(values) == 0 {
+		return true
+	}
+	point, _ := values[len(values)-1].(map[string]any)
+	if point == nil {
+		return false
+	}
+	_, valid := monitorNumberString(point["Value"])
+	return valid
+}
+
+func podGPUShapeRecognized(raw any) bool {
+	gpus, ok := raw.([]any)
+	if !ok {
+		return false
+	}
+	if len(gpus) == 0 {
+		return true
+	}
+	for _, rawGPU := range gpus {
+		gpu, _ := rawGPU.(map[string]any)
+		if gpu == nil {
+			continue
+		}
+		for _, key := range []string{"Util", "Memory"} {
+			if values, present := gpu[key]; present && monitorValueSeriesShapeRecognized(values) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func monitorMetricRequested(metric Metric, requested []Metric) bool {

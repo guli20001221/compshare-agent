@@ -28,7 +28,7 @@ func TestPublicIPv6PrefixWithoutInternalIPv6FailsTheBoot(t *testing.T) {
 	sc.PublicIPv6Prefix = "2002:a40:2e05::"
 	sc.InternalIPv6 = false
 
-	_, err := buildSSHOpsService(sc, "m", "k", sshops.AuditWriter(nil))
+	_, err := buildSSHOpsService(sc, "m", "k", nil, sshops.AuditWriter(nil))
 	if err == nil {
 		t.Fatal("want a boot error, got a service that would silently ignore the prefix")
 	}
@@ -44,7 +44,7 @@ func TestMalformedPublicIPv6PrefixFailsTheBoot(t *testing.T) {
 		sc.PublicIPv6Prefix = prefix
 		sc.InternalIPv6 = true
 
-		if _, err := buildSSHOpsService(sc, "m", "k", sshops.AuditWriter(nil)); err == nil {
+		if _, err := buildSSHOpsService(sc, "m", "k", nil, sshops.AuditWriter(nil)); err == nil {
 			t.Errorf("prefix %q must fail the boot", prefix)
 		}
 	}
@@ -55,7 +55,7 @@ func TestNoPublicIPv6PrefixBootsUnchanged(t *testing.T) {
 	sc := baseSSHOpsConfig()
 	sc.InternalIPv6 = true
 
-	svc, err := buildSSHOpsService(sc, "m", "k", sshops.AuditWriter(nil))
+	svc, err := buildSSHOpsService(sc, "m", "k", nil, sshops.AuditWriter(nil))
 	if err != nil {
 		t.Fatalf("a lane without a prefix must still boot: %v", err)
 	}

@@ -139,6 +139,7 @@ func TestDiagnoseWithContextProjectsOnlyAllowlistedFacts(t *testing.T) {
 	require.NotContains(t, text, "instance.reported_ports")
 	require.NotContains(t, text, "configured_ports")
 	require.Contains(t, text, `"key":"instance.kind","value":"vm"`)
+	require.Contains(t, text, `"key":"instance.runtime_type","value":"Container"`)
 	// The region-wide catalog is correlated down to what this instance declares: FileBrowser is in
 	// the catalog and not on this box, so its port must not arrive as an expectation for this box.
 	require.NotContains(t, text, "FileBrowser")
@@ -154,6 +155,8 @@ func TestDiagnoseWithContextProjectsOnlyAllowlistedFacts(t *testing.T) {
 	require.NotZero(t, begin.ContextFactCoverage&opscontext.CoverageCatalogPorts)
 	require.NotZero(t, begin.ContextFactCoverage&opscontext.CoverageMonitor)
 	require.NotZero(t, begin.ContextFactCoverage&opscontext.CoverageInstanceKind)
+	require.NotZero(t, begin.ContextFactCoverage&opscontext.CoverageInstanceRuntimeType)
+	require.NotZero(t, begin.ContextFactCoverage&opscontext.CoverageMonitorProvenance)
 	require.Equal(t, 1, done.CommandsRan)
 	require.Equal(t, 1, done.CommandsRefused)
 	require.Equal(t, "targeted_validation", done.FirstCommandClass)
@@ -161,12 +164,11 @@ func TestDiagnoseWithContextProjectsOnlyAllowlistedFacts(t *testing.T) {
 	require.NotZero(t, done.ContextFactCoverage)
 }
 
-// TestInstanceContextKindFollowsTheResourceIDContract is both an allowlist and
-// semantic-boundary test. InstanceType and image/runtime fields are intentionally
-// ignored: a UHost with InstanceType=Container is still a VM, while only a
-// cpod-* resource is a Pod. Replacing this with a raw Describe field projection
-// would make the first assertion fail and reintroduce production case 119.
-func TestInstanceContextKindFollowsTheResourceIDContract(t *testing.T) {
+// TestInstanceContextKindAndRuntimeStayIndependent is both an allowlist and
+// semantic-boundary test. InstanceType is projected as runtime evidence but
+// cannot override the ID-derived resource kind: a UHost Container remains a VM
+// for access semantics, while only a cpod-* resource is a Pod.
+func TestInstanceContextKindAndRuntimeStayIndependent(t *testing.T) {
 	for _, tc := range []struct {
 		name, id, instanceType, want string
 	}{
@@ -188,6 +190,98 @@ func TestInstanceContextKindFollowsTheResourceIDContract(t *testing.T) {
 			require.Equal(t, opscontext.StatusKnown, kind.Status)
 			require.Equal(t, instanceContextSourceDescribe, kind.Source)
 			require.NotZero(t, instanceContextCoverage(facts)&opscontext.CoverageInstanceKind)
+			runtimeType, ok := byKey["instance.runtime_type"]
+			require.True(t, ok)
+			require.Equal(t, tc.instanceType, runtimeType.Value)
+			require.Equal(t, opscontext.StatusKnown, runtimeType.Status)
+			require.Equal(t, instanceContextSourceDescribe, runtimeType.Source)
+			require.NotZero(t, instanceContextCoverage(facts)&opscontext.CoverageInstanceRuntimeType)
+		})
+	}
+}
+
+func TestInstanceContextRuntimeTypeRejectsValuesOutsideUpstreamContract(t *testing.T) {
+	const unexpected = "Container-with-private-detail"
+	facts := instanceFacts(map[string]any{
+		"InstanceType": unexpected,
+		"State":        "Running",
+	}, "uhost-a", "2026-08-28T00:00:00Z")
+	byKey := make(map[string]opscontext.Fact, len(facts))
+	for _, fact := range facts {
+		byKey[fact.Key] = fact
+	}
+
+	require.Equal(t, "", byKey["instance.runtime_type"].Value)
+	require.Equal(t, opscontext.StatusUnknown, byKey["instance.runtime_type"].Status)
+	require.Zero(t, instanceContextCoverage(facts)&opscontext.CoverageInstanceRuntimeType)
+	raw, err := json.Marshal(facts)
+	require.NoError(t, err)
+	require.NotContains(t, string(raw), unexpected)
+}
+
+func TestMonitorContextDistinguishesDataQueryAndUnrecognizedOutcomes(t *testing.T) {
+	const observedAt = "2026-08-28T00:00:00Z"
+	uhostMetric := map[string]any{
+		"Data": map[string]any{"List": []any{map[string]any{
+			"UHostId": "uhost-a",
+			"Metrics": []any{map[string]any{
+				"MetricKey": "uhost_cpu_used",
+				"Results":   []any{map[string]any{"Values": []any{map[string]any{"Value": float64(12)}}}},
+			}},
+		}}},
+	}
+	podMetric := map[string]any{
+		"Data": map[string]any{"PodList": []any{map[string]any{
+			"UHostId": "cpod-a",
+			"Metrics": map[string]any{"Cpu": []any{map[string]any{"Value": float64(7)}}},
+		}}},
+	}
+
+	for _, tc := range []struct {
+		name           string
+		instanceID     string
+		monitor        map[string]any
+		monitorErr     error
+		wantDataStatus string
+		wantMetric     bool
+	}{
+		{name: "uhost metrics", instanceID: "uhost-a", monitor: uhostMetric, wantDataStatus: monitorDataAvailable, wantMetric: true},
+		{name: "pod metrics", instanceID: "cpod-a", monitor: podMetric, wantDataStatus: monitorDataAvailable, wantMetric: true},
+		{name: "successful empty uhost list", instanceID: "uhost-a", monitor: map[string]any{"Data": map[string]any{"List": []any{}}}, wantDataStatus: monitorDataEmpty},
+		{name: "successful empty pod list", instanceID: "cpod-a", monitor: map[string]any{"Data": map[string]any{"PodList": []any{}}}, wantDataStatus: monitorDataEmpty},
+		{name: "target metric series with no points", instanceID: "uhost-a", monitor: map[string]any{"Data": map[string]any{"List": []any{map[string]any{"UHostId": "uhost-a", "Metrics": []any{map[string]any{"MetricKey": "uhost_cpu_used", "Results": []any{}}}}}}}, wantDataStatus: monitorDataEmpty},
+		{name: "successful unrecognized shape", instanceID: "uhost-a", monitor: map[string]any{"Data": map[string]any{}}, wantDataStatus: monitorDataUnrecognized},
+		{name: "different instance is not empty", instanceID: "uhost-a", monitor: map[string]any{"Data": map[string]any{"List": []any{map[string]any{"UHostId": "uhost-b", "Metrics": []any{}}}}}, wantDataStatus: monitorDataUnrecognized},
+		{name: "unknown target metric schema is not empty", instanceID: "uhost-a", monitor: map[string]any{"Data": map[string]any{"List": []any{map[string]any{"UHostId": "uhost-a", "Metrics": []any{map[string]any{"MetricKey": "future_metric"}}}}}}, wantDataStatus: monitorDataUnrecognized},
+		{name: "malformed target metric series is not empty", instanceID: "uhost-a", monitor: map[string]any{"Data": map[string]any{"List": []any{map[string]any{"UHostId": "uhost-a", "Metrics": []any{map[string]any{"MetricKey": "uhost_cpu_used", "Results": "changed-schema"}}}}}}, wantDataStatus: monitorDataUnrecognized},
+		{name: "query failed", instanceID: "uhost-a", monitorErr: errors.New("upstream unavailable"), wantDataStatus: monitorDataQueryFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &contextDescriber{monitor: tc.monitor, monitorErr: tc.monitorErr}
+			facts := monitorFacts(context.Background(), d, tc.instanceID, observedAt)
+			byKey := make(map[string]opscontext.Fact, len(facts))
+			for _, fact := range facts {
+				byKey[fact.Key] = fact
+			}
+
+			_, backendPresent := byKey["monitor.backend"]
+			require.False(t, backendPresent, "a response family must not be promoted into a backend fact")
+			require.Equal(t, tc.wantDataStatus, byKey["monitor.data_status"].Value)
+			if tc.wantDataStatus == monitorDataUnrecognized {
+				require.Equal(t, opscontext.StatusUnknown, byKey["monitor.data_status"].Status)
+			} else {
+				require.Equal(t, opscontext.StatusKnown, byKey["monitor.data_status"].Status)
+			}
+			require.Equal(t, monitorObservationScope, byKey["monitor.observation_scope"].Value)
+			require.Equal(t, instanceContextSourceMonitor, byKey["monitor.observation_scope"].Source)
+			coverage := instanceContextCoverage(facts)
+			require.NotZero(t, coverage&opscontext.CoverageMonitorProvenance)
+			if tc.wantMetric {
+				require.NotZero(t, coverage&opscontext.CoverageMonitor)
+			} else {
+				require.Zero(t, coverage&opscontext.CoverageMonitor,
+					"provenance and a legacy unavailable marker are not metric data")
+			}
 		})
 	}
 }

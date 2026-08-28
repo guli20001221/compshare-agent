@@ -15,6 +15,10 @@
 //	SSHH_INSTANCE (default "uhost-livetest")  SSHH_TASK (default: 掉卡 root-cause probe)
 //	SSHH_CONTEXT=0 disables the reference-context arm; any other value enables it (the default).
 //	SSHH_CONTEXT_CURRENT_REPORT optionally supplies the raw user wording for the enabled arm.
+//	SSHH_KB_MCP_URL optionally supplies the real read-only knowledge MCP endpoint.
+//	SSHH_KB_MCP_BEARER_TOKEN supplies its optional read token.
+//	SSHH_KB_CORPUS is the offline fallback: an immutable local JSONL corpus snapshot served through
+//	the same broker. Exactly one source may be configured.
 //
 // What these tests do NOT cover, so nobody reads a green live run as broader than it is:
 //   - The ordinary TestLiveFullFlow and TestLiveKeystone deny every proposed write. A separate,
@@ -34,10 +38,12 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/compshare-agent/internal/config"
+	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/opscontext"
 	"github.com/compshare-agent/internal/tools"
 )
@@ -59,6 +65,50 @@ func envOr(k, d string) string {
 		return v
 	}
 	return d
+}
+
+type liveKnowledgeProbe struct {
+	retriever *knowledge.Retriever
+	searches  atomic.Int32
+	reads     atomic.Int32
+}
+
+type liveRemoteKnowledgeProbe struct {
+	retriever *knowledge.MCPRetriever
+	searches  atomic.Int32
+	reads     atomic.Int32
+}
+
+type liveKnowledgeUsage interface {
+	knowledgeUsage() (searches, reads int32)
+}
+
+func (p *liveKnowledgeProbe) RetrieveContext(ctx context.Context, question, hint string) knowledge.RetrievalResult {
+	p.searches.Add(1)
+	return p.retriever.RetrieveContext(ctx, question, hint)
+}
+
+func (p *liveKnowledgeProbe) Chunk(chunkID string) (knowledge.KBChunk, bool) {
+	p.reads.Add(1)
+	return p.retriever.Chunk(chunkID)
+}
+
+func (p *liveKnowledgeProbe) knowledgeUsage() (int32, int32) {
+	return p.searches.Load(), p.reads.Load()
+}
+
+func (p *liveRemoteKnowledgeProbe) RetrieveContext(ctx context.Context, question, hint string) knowledge.RetrievalResult {
+	p.searches.Add(1)
+	return p.retriever.RetrieveContext(ctx, question, hint)
+}
+
+func (p *liveRemoteKnowledgeProbe) ReadChunks(ctx context.Context, searchID string, chunkIDs []string) ([]knowledge.KBChunk, error) {
+	p.reads.Add(1)
+	return p.retriever.ReadChunks(ctx, searchID, chunkIDs)
+}
+
+func (p *liveRemoteKnowledgeProbe) knowledgeUsage() (int32, int32) {
+	return p.searches.Load(), p.reads.Load()
 }
 
 // liveContextEnabled deliberately has an explicit off switch so one known fault can be run in
@@ -143,8 +193,9 @@ func liveRealDescriber(t *testing.T) (Describer, context.Context) {
 	return tools.NewExternalExecutor(cfg.Agent), ctx
 }
 
-func liveSupervisor() Supervisor {
-	return Supervisor{
+func liveSupervisor(t *testing.T) Supervisor {
+	t.Helper()
+	sup := Supervisor{
 		Python:      envOr("SSHH_PYTHON", "python"),
 		HarnessPath: os.Getenv("SSHH_HARNESS"),
 		BaseURL:     envOr("SSHH_BASE_URL", "https://api.modelverse.cn"),
@@ -152,6 +203,31 @@ func liveSupervisor() Supervisor {
 		Model:       envOr("SSHH_MODEL", "gpt-5.6-terra"),
 		Timeout:     12 * time.Minute, // sized for the whole command sequence, see Supervisor.Run
 	}
+	corpusPath := strings.TrimSpace(os.Getenv("SSHH_KB_CORPUS"))
+	mcpURL := strings.TrimSpace(os.Getenv("SSHH_KB_MCP_URL"))
+	if corpusPath != "" && mcpURL != "" {
+		t.Fatal("configure only one of SSHH_KB_CORPUS or SSHH_KB_MCP_URL")
+	}
+	if mcpURL != "" {
+		retriever, err := knowledge.NewMCPRetriever(knowledge.MCPRetrieverOptions{
+			Endpoint:    mcpURL,
+			BearerToken: strings.TrimSpace(os.Getenv("SSHH_KB_MCP_BEARER_TOKEN")),
+			Timeout:     12 * time.Second,
+		})
+		if err != nil {
+			t.Fatalf("configure SSHH_KB_MCP_URL: %v", err)
+		}
+		sup.KnowledgeRetriever = &liveRemoteKnowledgeProbe{retriever: retriever}
+	} else if corpusPath != "" {
+		corpus, err := knowledge.LoadCorpus(corpusPath)
+		if err != nil {
+			t.Fatalf("load SSHH_KB_CORPUS: %v", err)
+		}
+		sup.KnowledgeRetriever = &liveKnowledgeProbe{
+			retriever: knowledge.NewRetriever(corpus, knowledge.RetrieverOptions{}),
+		}
+	}
+	return sup
 }
 
 // TestLiveKeystone proves the full Go->harness->SDK->ModelVerse->SSH chain end to end:
@@ -180,7 +256,7 @@ func TestLiveKeystone(t *testing.T) {
 
 	// nil ConfirmFunc on purpose: this direct harness keystone has no human confirmation channel, so
 	// every mutating command is refused rather than waved through.
-	res, err := liveSupervisor().Run(context.Background(), cred, task, func(st Step) {
+	res, err := liveSupervisor(t).Run(context.Background(), cred, task, func(st Step) {
 		t.Logf("[活动流] %s → %s (exit=%v, %d B)", st.Command, st.Disposition, st.ExitCode, st.Bytes)
 	}, nil)
 	t.Logf("\n========== HARNESS OUTPUT ==========\n%s\n====================================", res.Output)
@@ -232,7 +308,7 @@ func TestLiveFullFlow(t *testing.T) {
 		d = liveDescriber(host, port, user, pass, instanceID)
 	}
 	audit := &MemAuditWriter{}
-	sup := liveSupervisor()
+	sup := liveSupervisor(t)
 	// Log the remaining A/B arm. The removed product-level read-only/write split no longer changes
 	// the prompt or tool surface; only reference-context delivery is varied here.
 	contextEnabled := liveContextEnabled()
@@ -264,6 +340,13 @@ func TestLiveFullFlow(t *testing.T) {
 		t.Logf("[拒绝测试中的写操作] %s", request.Command)
 		return ConfirmDecision{Approved: false, TerminalReason: "user_declined"}
 	})
+	if probe, ok := sup.KnowledgeRetriever.(liveKnowledgeUsage); ok {
+		searches, reads := probe.knowledgeUsage()
+		t.Logf("[knowledge] searches=%d chunks_read=%d", searches, reads)
+		if os.Getenv("SSHH_REQUIRE_KB_USE") == "1" && searches == 0 {
+			t.Fatal("candidate arm did not call search_platform_knowledge")
+		}
+	}
 	t.Logf("\n========== [beat 4] 进入实例排查 · 诊断结论 ==========\n%s\n====================================================", res.Output)
 	if err != nil {
 		t.Fatalf("Diagnose: %v (timedOut=%v)", err, res.TimedOut)

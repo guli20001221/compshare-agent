@@ -118,7 +118,7 @@ func TestLiveOpsTaskScopeCanary(t *testing.T) {
 	}
 	describer, ctx := liveRealDescriber(t)
 	audit := &MemAuditWriter{}
-	supervisor := liveSupervisor()
+	supervisor := liveSupervisor(t)
 	if root := os.Getenv("SSHH_SESSION_ROOT"); root != "" {
 		supervisor.SessionRoot = root
 	}
@@ -339,7 +339,7 @@ finally:
 			SessionID: sessionID, WorkdirID: sessionID, Contract: opscontext.AgentSessionContract,
 		},
 	}
-	supervisor := liveSupervisor()
+	supervisor := liveSupervisor(t)
 	supervisor.SessionRoot = liveCanarySessionRoot(t)
 	// Reproduce the actual failure, not merely a vague continuation: the planner task carries the
 	// stale/conflicting 16:9, 544p, 5-second, 8-step rewrite from production, while the role-complete
@@ -418,7 +418,7 @@ func TestLiveCase006AbortResumeCanary(t *testing.T) {
 	sub, err := strconv.ParseUint(os.Getenv("SSHH_ORG"), 10, 32)
 	require.NoError(t, err)
 	describer, liveCtx := liveRealDescriber(t)
-	supervisor := liveSupervisor()
+	supervisor := liveSupervisor(t)
 	supervisor.SessionRoot = liveCanarySessionRoot(t)
 	workdirID := uuid.NewString()
 	continuityMarker := "CASE006-UNPAIRED-" + strings.ToUpper(strings.ReplaceAll(uuid.NewString()[:8], "-", ""))
@@ -674,7 +674,7 @@ func TestLiveOpsWriteCanary(t *testing.T) {
 	}
 	describer, ctx := liveRealDescriber(t)
 	audit := &MemAuditWriter{}
-	supervisor := liveSupervisor()
+	supervisor := liveSupervisor(t)
 	approved := 0
 	result, err := NewService(supervisor, audit).DiagnoseWithContext(
 		ctx, describer,

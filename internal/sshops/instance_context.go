@@ -27,6 +27,11 @@ const (
 	maxInstanceContextSoftware     = 12
 	maxInstanceContextCatalogPorts = 16
 	maxInstanceEndpointTargets     = 16
+	monitorDataAvailable           = "available"
+	monitorDataEmpty               = "empty"
+	monitorDataQueryFailed         = "query_failed"
+	monitorDataUnrecognized        = "unrecognized"
+	monitorObservationScope        = "platform_monitor_api"
 )
 
 // enrichInstanceOpsContext adds a deliberately small allowlist projection of
@@ -117,7 +122,7 @@ func cleanEndpointLabel(value string) string {
 }
 
 func instanceFacts(inst map[string]any, instanceID, observedAt string) []opscontext.Fact {
-	facts := make([]opscontext.Fact, 0, 10)
+	facts := make([]opscontext.Fact, 0, 11)
 
 	// `InstanceType=Container` describes an image/runtime choice for an UHost;
 	// it is not the platform resource kind. The control-plane dispatcher and
@@ -129,6 +134,14 @@ func instanceFacts(inst map[string]any, instanceID, observedAt string) []opscont
 		kind = "pod"
 	}
 	facts = append(facts, instanceContextFact("instance.kind", kind, instanceContextSourceDescribe, observedAt, opscontext.StatusKnown))
+
+	// InstanceType is a runtime fact, not a resource-kind override. In particular,
+	// an uhost-* resource may report Container here while still using VM control-
+	// plane access and port semantics. Project only this bounded scalar; the raw
+	// Describe object also contains credentials and endpoints that cannot cross.
+	runtimeType := instanceRuntimeType(inst)
+	facts = append(facts, instanceContextFact("instance.runtime_type", runtimeType,
+		instanceContextSourceDescribe, observedAt, statusForString(runtimeType)))
 
 	state := allowlistedString(inst, "State")
 	facts = append(facts, instanceContextFact("instance.state", state, instanceContextSourceDescribe, observedAt, statusForString(state)))
@@ -181,9 +194,20 @@ func instanceFacts(inst map[string]any, instanceID, observedAt string) []opscont
 	return facts
 }
 
+func instanceRuntimeType(inst map[string]any) string {
+	switch runtimeType := allowlistedString(inst, "InstanceType"); runtimeType {
+	case "UHost", "Container":
+		return runtimeType
+	default:
+		return ""
+	}
+}
+
 func monitorFacts(ctx context.Context, d Describer, instanceID, observedAt string) []opscontext.Fact {
 	if d == nil {
-		return []opscontext.Fact{instanceContextFact("monitor", "unavailable", instanceContextSourceMonitor, observedAt, opscontext.StatusUnknown)}
+		return []opscontext.Fact{
+			instanceContextFact("monitor", "unavailable", instanceContextSourceMonitor, observedAt, opscontext.StatusUnknown),
+		}
 	}
 	monitorCtx, cancel := context.WithTimeout(ctx, instanceContextMonitorTimeout)
 	defer cancel()
@@ -191,42 +215,70 @@ func monitorFacts(ctx context.Context, d Describer, instanceID, observedAt strin
 	raw, err := d.Execute(monitorCtx, instanceContextSourceMonitor, map[string]any{"UHostIds": []string{instanceID}})
 	elapsed := time.Since(started)
 	if err != nil {
-		// Three different failures collapse into the same "unavailable" fact for the model — it can
-		// act on none of them — but they need different fixes and the fact cannot tell them apart:
-		// a deadline says the budget is short, an upstream error says the call is wrong or refused,
-		// and an empty-but-successful payload (logged below) says neither, which is exactly the one
-		// that got misread as a deadline. Elapsed is logged on every path so the budget stays
-		// measured. INV-6 holds: this endpoint returns monitor scalars, never a credential.
+		// The model-visible v5 outcome is query_failed rather than a guessed network or guest-agent
+		// cause. Logs retain the narrower operational distinction between a deadline and an upstream
+		// error, while a successful empty payload follows the separate empty path below. Elapsed is
+		// logged on every path so the budget stays measured. INV-6 holds: this endpoint returns
+		// monitor scalars, never a credential.
 		reason := "upstream_error"
 		if monitorCtx.Err() == context.DeadlineExceeded {
 			reason = "deadline_exceeded"
 		}
 		log.Printf("ssh-ops: instance context monitor %s for instance %s after %s (budget %s): %v",
 			reason, instanceID, elapsed.Round(time.Millisecond), instanceContextMonitorTimeout, err)
-		return []opscontext.Fact{instanceContextFact("monitor", "unavailable", instanceContextSourceMonitor, observedAt, opscontext.StatusUnknown)}
+		return append(monitorProvenanceFacts(monitorDataQueryFailed, observedAt),
+			instanceContextFact("monitor", "unavailable", instanceContextSourceMonitor, observedAt, opscontext.StatusUnknown))
 	}
-	scalars := readprojection.ExtractMonitorScalars(raw, nil)
-	if len(scalars) == 0 {
+	scalars, recognized := readprojection.ExtractMonitorScalarsForSubject(raw, nil, instanceID)
+	if !recognized {
+		// A successful HTTP/API return does not prove a successful monitor observation. A missing or
+		// changed response shape, or a payload containing only other instance IDs, is explicitly
+		// unknown rather than being rewritten as "this instance had no metric points".
+		log.Printf("ssh-ops: instance context monitor unrecognized_result for instance %s in %s (budget %s)",
+			instanceID, elapsed.Round(time.Millisecond), instanceContextMonitorTimeout)
+	} else if len(scalars) == 0 {
 		// RetCode 0 with an empty metric list. Named explicitly so it is never read as "the call
 		// failed" or "the box reports 0%" — it is the upstream having no points for this window.
 		log.Printf("ssh-ops: instance context monitor empty_result for instance %s in %s (budget %s): RetCode 0, no metrics",
 			instanceID, elapsed.Round(time.Millisecond), instanceContextMonitorTimeout)
 	}
-	facts := make([]opscontext.Fact, 0, len(scalars))
+	metricFacts := make([]opscontext.Fact, 0, len(scalars))
 	for _, scalar := range scalars {
-		if scalar.SubjectID != instanceID || len(facts) >= maxInstanceContextMonitorFact {
+		if scalar.SubjectID != instanceID || len(metricFacts) >= maxInstanceContextMonitorFact {
 			continue
 		}
 		value := map[string]any{"value": scalar.Value}
 		if scalar.Unit != "" {
 			value["unit"] = scalar.Unit
 		}
-		facts = append(facts, instanceContextFact("monitor."+scalar.Key, value, instanceContextSourceMonitor, observedAt, opscontext.StatusKnown))
+		metricFacts = append(metricFacts, instanceContextFact("monitor."+scalar.Key, value, instanceContextSourceMonitor, observedAt, opscontext.StatusKnown))
 	}
-	if len(facts) == 0 {
-		return []opscontext.Fact{instanceContextFact("monitor", "unavailable", instanceContextSourceMonitor, observedAt, opscontext.StatusUnknown)}
+	dataStatus := monitorDataUnrecognized
+	if recognized && len(metricFacts) > 0 {
+		dataStatus = monitorDataAvailable
+	} else if recognized {
+		dataStatus = monitorDataEmpty
 	}
-	return facts
+	facts := monitorProvenanceFacts(dataStatus, observedAt)
+	if len(metricFacts) == 0 {
+		// Retain the legacy unknown fact for consumers that do not yet interpret
+		// v5 provenance. The new data_status fact is what distinguishes this
+		// successful-empty response from a query failure.
+		return append(facts,
+			instanceContextFact("monitor", "unavailable", instanceContextSourceMonitor, observedAt, opscontext.StatusUnknown))
+	}
+	return append(facts, metricFacts...)
+}
+
+func monitorProvenanceFacts(dataStatus, observedAt string) []opscontext.Fact {
+	status := opscontext.StatusKnown
+	if dataStatus == monitorDataUnrecognized {
+		status = opscontext.StatusUnknown
+	}
+	return []opscontext.Fact{
+		instanceContextFact("monitor.data_status", dataStatus, instanceContextSourceMonitor, observedAt, status),
+		instanceContextFact("monitor.observation_scope", monitorObservationScope, instanceContextSourceMonitor, observedAt, opscontext.StatusKnown),
+	}
 }
 
 // catalogFacts projects the image application-port catalog: what the software on this image is
@@ -289,6 +341,10 @@ func instanceContextCoverage(facts []opscontext.Fact) uint32 {
 			if fact.Status == opscontext.StatusKnown {
 				coverage |= opscontext.CoverageInstanceKind
 			}
+		case "instance.runtime_type":
+			if fact.Status == opscontext.StatusKnown {
+				coverage |= opscontext.CoverageInstanceRuntimeType
+			}
 		case "instance.state":
 			coverage |= opscontext.CoverageInstance
 		case "instance.gpu":
@@ -329,8 +385,10 @@ func instanceContextCoverage(facts []opscontext.Fact) uint32 {
 			if fact.Status == opscontext.StatusReported {
 				coverage |= opscontext.CoverageRegionPortHints
 			}
+		case "monitor.data_status", "monitor.observation_scope":
+			coverage |= opscontext.CoverageMonitorProvenance
 		default:
-			if instanceContextMonitorKey(fact.Key) {
+			if instanceContextMonitorMetricKey(fact.Key) {
 				coverage |= opscontext.CoverageMonitor
 			}
 		}
@@ -529,9 +587,17 @@ func instanceContextInt(value any) (int, bool) {
 
 func validInstanceContextPort(port int) bool { return port >= 1 && port <= 65535 }
 
-func instanceContextMonitorKey(key string) bool {
+func instanceContextMonitorMetricKey(key string) bool {
 	const prefix = "monitor."
-	return len(key) >= len(prefix) && key[:len(prefix)] == prefix
+	if len(key) < len(prefix) || key[:len(prefix)] != prefix {
+		return false
+	}
+	switch key {
+	case "monitor.data_status", "monitor.observation_scope":
+		return false
+	default:
+		return true
+	}
 }
 
 func instanceContextSlice(raw any) []any {

@@ -52,7 +52,7 @@ _CONVERSATION_ANCHOR_VALUE = "a" * 64
 _GO_OPS_CONTEXT = (_Path(__file__).resolve().parents[2] / "internal" / "opscontext" / "context.go").read_text(
     encoding="utf-8")
 check("go-python-current-context-and-session-contracts-stay-in-lockstep",
-      "SchemaVersion = 4" in _GO_OPS_CONTEXT and
+      "SchemaVersion = 5" in _GO_OPS_CONTEXT and
       'AgentSessionContract = "' + _AGENT_SESSION_CONTRACT + '"' in _GO_OPS_CONTEXT)
 _AGENT_SESSION_VALUE = {
     "session_id": _AGENT_SESSION_ID,
@@ -144,6 +144,10 @@ check("prompt-stops-discovery-after-repair-path-is-proven",
 check("prompt-prefers-direct-environment-interpreter",
       "Invoke that executable directly" in _prompt_flat and
       "instead of sourcing an activation script" in _prompt_flat)
+check("prompt-verifies-platform-manual-runtime-and-ownership-scope",
+      "manual/agent scope, search platform knowledge" in _prompt_flat and
+      "resource/runtime/ownership before applying" in _prompt_flat and
+      "never invent a launcher across host/guest/manager scopes" in _prompt_flat)
 check("prompt-does-not-call-reproduction-a-repair",
       "reproduction, compatibility probe, or fault injection is not a repair" in _prompt_flat and
       "corrected the user's original fault" in _prompt_flat and
@@ -398,7 +402,7 @@ check("read-progress-hard-stop-is-monotonic-within-one-model-run",
 # role-labelled conversation, alongside allowlisted platform facts. This is intentionally NOT
 # concatenated to task: task remains the stable replay/audit identity on Go.
 _reference_context = {
-    "schema_version": 4,
+    "schema_version": 5,
     # Production incident 083: the user referred to parameters established in the preceding answer.
     # User-only replay lost that antecedent and the planner substituted 16:9 / 544p / 5 seconds. V3+
     # carries the actual role-complete prior exchange followed by the unanswered current user turn,
@@ -415,6 +419,12 @@ _reference_context = {
     "platform_facts": [
         {"key": "instance.kind", "value": "vm",
          "source": "DescribeCompShareInstance", "observed_at": "2026-08-13T00:00:00Z", "status": "known"},
+        {"key": "instance.runtime_type", "value": "Container",
+         "source": "DescribeCompShareInstance", "observed_at": "2026-08-13T00:00:00Z", "status": "known"},
+        {"key": "monitor.data_status", "value": "available",
+         "source": "GetCompShareInstanceMonitor", "observed_at": "2026-08-13T00:00:00Z", "status": "known"},
+        {"key": "monitor.observation_scope", "value": "platform_monitor_api",
+         "source": "GetCompShareInstanceMonitor", "observed_at": "2026-08-13T00:00:00Z", "status": "known"},
         {"key": "platform.instance_port_hints", "value": {"http": [8188]},
          "source": "DescribeCompShareInstance", "observed_at": "2026-08-13T00:00:00Z", "status": "known"},
         {"key": "platform.tcp_forwards", "value": [{"internal": 8188, "external": 30188}],
@@ -438,10 +448,13 @@ check("context-v3-renders-authoritative-conversation-with-no-second-task-instruc
       "Diagnose the reported web UI" not in _rendered_context_prompt and
       "<current_user_report>" not in _rendered_context_prompt)
 check("context-fences-untrusted-user-text", "REFERENCE DATA ONLY" in _rendered_context_prompt)
-check("context-v4-renders-authoritative-control-plane-instance-kind",
+check("context-v5-separates-resource-kind-runtime-and-monitor-provenance",
       '"key":"instance.kind","value":"vm"' in _rendered_context_prompt and
-      "resource kind" in _rendered_context_prompt and
-      "even when its image/runtime is container-based" in _rendered_context_prompt)
+      '"key":"instance.runtime_type","value":"Container"' in _rendered_context_prompt and
+      '"key":"monitor.data_status","value":"available"' in _rendered_context_prompt and
+      '"key":"monitor.observation_scope","value":"platform_monitor_api"' in _rendered_context_prompt and
+      "independent Describe runtime classification" in _rendered_context_prompt and
+      "which host or namespace a platform-managed component uses" in _rendered_context_prompt)
 _v4_with_invalid_kind = harness.normalize_reference_context({
     "schema_version": 4,
     "platform_facts": [{"key": "instance.kind", "value": "container",
@@ -450,6 +463,37 @@ _v4_with_invalid_kind = harness.normalize_reference_context({
 })
 check("context-v4-rejects-noncanonical-instance-kind-values",
       "platform_facts" not in _v4_with_invalid_kind)
+_v4_with_v5_facts = harness.normalize_reference_context({
+    "schema_version": 4,
+    "platform_facts": [
+        {"key": "instance.runtime_type", "value": "Container",
+         "source": "DescribeCompShareInstance", "observed_at": "unknown", "status": "known"},
+        {"key": "monitor.data_status", "value": "available",
+         "source": "GetCompShareInstanceMonitor", "observed_at": "unknown", "status": "known"},
+    ],
+})
+check("context-v4-rejects-v5-only-runtime-and-monitor-provenance",
+      "platform_facts" not in _v4_with_v5_facts)
+for _key, _value in (
+        ("instance.runtime_type", "Normal"),
+        ("monitor.data_status", "healthy"),
+        ("monitor.observation_scope", "inner-container")):
+    _invalid_v5 = harness.normalize_reference_context({
+        "schema_version": 5,
+        "platform_facts": [{"key": _key, "value": _value,
+                            "source": "test", "observed_at": "unknown", "status": "known"}],
+    })
+    check("context-v5-rejects-noncanonical-" + _key.replace(".", "-"),
+          "platform_facts" not in _invalid_v5)
+_unrecognized_monitor = harness.normalize_reference_context({
+    "schema_version": 5,
+    "platform_facts": [{"key": "monitor.data_status", "value": "unrecognized",
+                        "source": "GetCompShareInstanceMonitor", "observed_at": "unknown",
+                        "status": "unknown"}],
+})
+check("context-v5-keeps-unrecognized-monitor-response-as-unknown",
+      _unrecognized_monitor["platform_facts"][0]["value"] == "unrecognized" and
+      _unrecognized_monitor["platform_facts"][0]["status"] == "unknown")
 # V3 remains valid during a rolling deployment, but its allowlist must reject
 # this V4-only field. This mutation catches any accidental union of schemas.
 _v3_with_v4_kind = harness.render_prompt("v3 task", {
@@ -583,7 +627,7 @@ check("context-unknown-schema-falls-back-to-task",
 # a server ahead of a harness — and guessing that v5's keys mean what v4's mean is how a renamed fact
 # gets read as the fact it replaced.
 check("context-future-schema-falls-back-to-task",
-      harness.render_prompt("task-only", dict(_reference_context, schema_version=5)) == "task-only")
+      harness.render_prompt("task-only", dict(_reference_context, schema_version=6)) == "task-only")
 # True == 1 in Python, so a bool would otherwise select the v1 allowlist by accident.
 check("context-boolean-schema-version-is-not-v1",
       harness.normalize_reference_context(dict(_reference_context, schema_version=True)) is None)
@@ -662,7 +706,8 @@ check("context-echoes-the-version-it-validated-against",
       harness.normalize_reference_context(_v1_context)["schema_version"] == 1 and
       harness.normalize_reference_context(_v2_reference_context)["schema_version"] == 2 and
       harness.normalize_reference_context({"schema_version": 3})["schema_version"] == 3 and
-      harness.normalize_reference_context(_reference_context)["schema_version"] == 4)
+      harness.normalize_reference_context({"schema_version": 4})["schema_version"] == 4 and
+      harness.normalize_reference_context(_reference_context)["schema_version"] == 5)
 check("context-v3-does-not-rewrite-or-truncate-producer-budgeted-history",
       harness.normalize_reference_context({
           "schema_version": 3,
@@ -1094,13 +1139,17 @@ check("transport-keeps-benign", "role pw" in _res["stdout"])
 
 
 # --- INV-9: permit only reviewed SDK MCP tools; load no built-ins or filesystem settings. ---
-def opts(allowed, disallowed, sources, tools="DEFAULT", skills="DEFAULT"):
+def opts(allowed, disallowed, sources, tools="DEFAULT", skills="DEFAULT",
+         mcp_servers="DEFAULT"):
     if tools == "DEFAULT":
         tools = list(harness.TOOLS_BASE)                 # valid: no built-in exists at all
     if skills == "DEFAULT":
         skills = []                                      # valid: explicit skills-off
+    if mcp_servers == "DEFAULT":
+        mcp_servers = {"ssh_ops": object()}
     return types.SimpleNamespace(tools=tools, allowed_tools=allowed, disallowed_tools=disallowed,
-                                 setting_sources=sources, skills=skills)
+                                 setting_sources=sources, skills=skills,
+                                 mcp_servers=mcp_servers)
 
 
 good = opts(harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [])
@@ -1142,6 +1191,15 @@ for name, bad in [
     ("inv9-rejects-skills-missing", types.SimpleNamespace(
         tools=list(harness.TOOLS_BASE), allowed_tools=harness.ALLOWED_TOOLS,
         disallowed_tools=harness.DISALLOWED_TOOLS, setting_sources=[])),
+    ("inv9-rejects-raw-knowledge-mcp", opts(
+        harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [],
+        mcp_servers={"ssh_ops": object(), "knowledge": {"type": "http", "url": "https://kb.invalid/mcp"}})),
+    ("inv9-rejects-only-raw-knowledge-mcp", opts(
+        harness.ALLOWED_TOOLS, harness.DISALLOWED_TOOLS, [],
+        mcp_servers={"knowledge": object()})),
+    ("inv9-rejects-mcp-servers-missing", types.SimpleNamespace(
+        tools=list(harness.TOOLS_BASE), allowed_tools=harness.ALLOWED_TOOLS,
+        disallowed_tools=harness.DISALLOWED_TOOLS, setting_sources=[], skills=[])),
 ]:
     try:
         harness.assert_tool_surface(bad)
@@ -1169,6 +1227,9 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
         check("inv9-real-build-options-passes", True)
         check("inv9-real-options-use-the-single-repair-surface",
               list(_real_opts.allowed_tools) == harness.ALLOWED_TOOLS)
+        check("inv9-real-options-have-only-the-in-process-ssh-ops-mcp",
+              isinstance(_real_opts.mcp_servers, dict) and
+              set(_real_opts.mcp_servers) == {"ssh_ops"})
         _stop_hooks = (_real_opts.hooks or {}).get("Stop", [])
         check("real-build-options-registers-one-official-stop-hook",
               set((_real_opts.hooks or {}).keys()) == {"Stop"} and
@@ -1576,6 +1637,87 @@ import json as _json  # noqa: E402
 import asyncio as _asyncio  # noqa: E402
 
 
+# --- parent-brokered platform knowledge: one reviewed MCP server, bounded sideband ---------------
+def _knowledge_call(reply, operation, args):
+    saved_stdin, saved_stdout = sys.stdin, sys.stdout
+    saved_seq = harness._KNOWLEDGE_SEQ
+    saved_conn = harness._CONN
+    wire = _io.StringIO()
+    try:
+        harness._KNOWLEDGE_SEQ = 0
+        harness._CONN = {"knowledge_bridge_available": True}
+        sys.stdin = _io.StringIO(reply)
+        sys.stdout = wire
+        result = harness._request_platform_knowledge(operation, args)
+        return result, wire.getvalue()
+    finally:
+        harness._KNOWLEDGE_SEQ = saved_seq
+        harness._CONN = saved_conn
+        sys.stdin, sys.stdout = saved_stdin, saved_stdout
+
+
+_knowledge_search_result, _knowledge_search_wire = _knowledge_call(
+    '{"id":"k1","ok":true,"result":{"search_id":"opaque-search","hits":[],"empty":true}}\n',
+    "search", {"query": "UHost Container 的平台监控由哪一层提供", "context_hint": "monitoring"})
+check("knowledge-search-roundtrips-through-the-parent-broker",
+      _knowledge_search_result.get("search_id") == "opaque-search" and
+      _knowledge_search_result.get("empty") is True and
+      _knowledge_search_wire.startswith("@@KNOWLEDGE "))
+_knowledge_search_request = _json.loads(_knowledge_search_wire.split(" ", 1)[1])
+check("knowledge-search-wire-is-bounded-and-operation-specific",
+      _knowledge_search_request == {
+          "id": "k1", "operation": "search",
+          "query": "UHost Container 的平台监控由哪一层提供", "context_hint": "monitoring"})
+
+_knowledge_read_result, _knowledge_read_wire = _knowledge_call(
+    '{"id":"k1","ok":true,"result":{"chunks":[{"chunk_id":"doc-1","content":"full"}]}}\n',
+    "read", {"chunk_ids": ["doc-1"]})
+check("knowledge-read-accepts-only-current-search-chunk-ids",
+      _knowledge_read_result.get("chunks", [{}])[0].get("content") == "full" and
+      _json.loads(_knowledge_read_wire.split(" ", 1)[1]) ==
+      {"id": "k1", "operation": "read", "chunk_ids": ["doc-1"]})
+
+for _name, _reply in (
+        ("eof", ""),
+        ("bad-json", "not-json\n"),
+        ("wrong-id", '{"id":"k-old","ok":true,"result":{}}\n'),
+        ("bad-result", '{"id":"k1","ok":true,"result":[]}\n')):
+    _failed_knowledge, _ = _knowledge_call(_reply, "search", {"query": "platform contract"})
+    check("knowledge-" + _name + "-is-structured-unavailable-not-an-exception",
+          _failed_knowledge.get("ok") is False and
+          _failed_knowledge.get("error_class") == "unavailable")
+
+_known_knowledge_failure, _ = _knowledge_call(
+    '{"id":"k1","ok":false,"error_class":"not_authorized"}\n',
+    "search", {"query": "platform contract"})
+_unknown_knowledge_failure, _ = _knowledge_call(
+    '{"id":"k1","ok":false,"error_class":"remote-secret-message"}\n',
+    "search", {"query": "platform contract"})
+check("knowledge-parent-failures-use-only-the-closed-error-classes",
+      _known_knowledge_failure.get("error_class") == "not_authorized" and
+      _unknown_knowledge_failure.get("error_class") == "unavailable" and
+      "remote-secret-message" not in _json.dumps(_unknown_knowledge_failure))
+
+_invalid_knowledge, _invalid_knowledge_wire = _knowledge_call(
+    '{"id":"k1","ok":true,"result":{}}\n', "read", {"chunk_ids": ["dup", "dup"]})
+check("knowledge-invalid-model-arguments-do-not-reach-the-parent",
+      _invalid_knowledge.get("error_class") == "invalid_request" and
+      _invalid_knowledge_wire == "")
+
+_saved_knowledge_conn, _saved_knowledge_stdout = harness._CONN, sys.stdout
+_mixed_deploy_wire = _io.StringIO()
+try:
+    harness._CONN = {"host": "legacy-supervisor"}
+    sys.stdout = _mixed_deploy_wire
+    _mixed_deploy_result = harness._request_platform_knowledge(
+        "search", {"query": "platform contract"})
+finally:
+    harness._CONN, sys.stdout = _saved_knowledge_conn, _saved_knowledge_stdout
+check("knowledge-old-supervisor-degrades-locally-without-writing-sideband",
+      _mixed_deploy_result.get("error_class") == "unavailable" and
+      _mixed_deploy_wire.getvalue() == "")
+
+
 # Claude Code's Stop lifecycle is the only generic point at which the harness can reject a
 # premature "done" without parsing a model answer or hard-coding a product/service. A successful
 # mutation gets exactly one continuation. Read-only work and refused writes do not, and the SDK's
@@ -1744,8 +1886,8 @@ _busy_tools = _captured_sdk_servers[3]["tools"]
 _scope_tools = _captured_sdk_servers[4]["tools"]
 _duplicate_guard_tools = _captured_sdk_servers[5]["tools"]
 _parallel_guard_tools = _captured_sdk_servers[6]["tools"]
-check("mcp-surface-version-covers-endpoint-method-and-background-lifecycle",
-      _captured_sdk_servers[0]["version"] == "2.6.0")
+check("mcp-surface-version-covers-platform-knowledge-broker",
+      _captured_sdk_servers[0]["version"] == "2.7.0")
 check("main-registers-exact-single-repair-tool-surface",
       [tool._test_tool_name for tool in _first_tools] == [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
 check("removed-mode-flag-cannot-change-the-tool-surface",
@@ -1786,6 +1928,20 @@ _first_atomic_tool = next(tool for tool in _first_tools
 _scope_ssh_tool = next(tool for tool in _scope_tools if tool._test_tool_name == "ssh_exec")
 _scope_atomic_tool = next(tool for tool in _scope_tools
                           if tool._test_tool_name == "atomic_text_edit")
+_knowledge_search_tool = next(tool for tool in _first_tools
+                              if tool._test_tool_name == "search_platform_knowledge")
+_knowledge_read_tool = next(tool for tool in _first_tools
+                            if tool._test_tool_name == "read_platform_knowledge_chunk")
+check("platform-knowledge-tools-are-read-only-and-bounded",
+      _knowledge_search_tool._test_tool_annotations.readOnlyHint is True and
+      _knowledge_read_tool._test_tool_annotations.readOnlyHint is True and
+      _knowledge_search_tool._test_tool_schema["required"] == ["query"] and
+      _knowledge_search_tool._test_tool_schema["properties"]["query"]["maxLength"] == 1024 and
+      _knowledge_read_tool._test_tool_schema["properties"]["chunk_ids"]["maxItems"] == 3)
+check("platform-knowledge-descriptions-preserve-evidence-and-authorization-boundaries",
+      "not current instance state" in " ".join(_knowledge_search_tool._test_tool_description.split()) and
+      "expand the authorized task" in " ".join(_knowledge_search_tool._test_tool_description.split()) and
+      "current-run search" in " ".join(_knowledge_read_tool._test_tool_description.split()))
 check("ssh-exec-schema-owns-the-optional-background-mode",
       _first_ssh_tool._test_tool_schema["required"] == ["command"] and
       set(_first_ssh_tool._test_tool_schema["properties"]) ==

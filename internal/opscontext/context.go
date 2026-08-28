@@ -8,11 +8,16 @@ package opscontext
 import "strconv"
 
 const (
-	// SchemaVersion is the current SSH context wire contract. Version 4 adds a
-	// control-plane-authoritative instance kind (vm or pod). It deliberately
-	// derives that classification from the resource-ID contract, rather than
-	// from the guest image or process topology.
-	SchemaVersion = 4
+	// SchemaVersion is the current SSH context wire contract. Version 5 adds
+	// the upstream runtime type and explicit platform-monitor provenance. The
+	// resource kind remains the independent, ID-derived v4 fact.
+	SchemaVersion = 5
+
+	// SchemaVersionInstanceKind is v4, retained during a mixed deployment. It
+	// added the control-plane-authoritative resource kind (vm or pod), but did
+	// not distinguish an UHost's guest runtime or successful-empty monitor data
+	// from a failed monitor query.
+	SchemaVersionInstanceKind = 4
 
 	// SchemaVersionRoleComplete is v3, retained during a mixed deployment. It
 	// carried the canonical role-preserving outer conversation but not the
@@ -28,11 +33,11 @@ const (
 	SchemaVersionPortsMerged = 1
 
 	// AgentSessionContract is the prompt/tool/context contract bound to an opaque
-	// Claude SDK continuation cursor. Version 3 includes the autonomous repair-
-	// closure semantics; a v2 transcript must start fresh rather than inherit the
-	// former stop-before-runtime-verification behavior. All transport layers compare
-	// this one value.
-	AgentSessionContract = "sshops-agent-v3"
+	// Claude SDK continuation cursor. Version 4 includes the v5 platform-fact
+	// vocabulary; a v3 transcript must start fresh rather than interpret the new
+	// runtime and monitor-provenance facts under the old contract. All transport
+	// layers compare this one value.
+	AgentSessionContract = "sshops-agent-v4"
 
 	StatusKnown       = "known"
 	StatusUnknown     = "unknown"
@@ -68,6 +73,14 @@ const (
 	// kind. It is distinct from image type: an UHost created from a container
 	// image is still a VM for access and port semantics.
 	CoverageInstanceKind
+	// CoverageInstanceRuntimeType means the model received the allowlisted
+	// DescribeCompShareInstance.InstanceType value. It describes the guest
+	// runtime and must never replace the ID-derived resource kind above.
+	CoverageInstanceRuntimeType
+	// CoverageMonitorProvenance means the model received the monitor query outcome
+	// and observation scope. It is deliberately separate from
+	// CoverageMonitor, which continues to mean that metric values were supplied.
+	CoverageMonitorProvenance
 )
 
 // Context is independent from the planner-produced Task. Keeping the two

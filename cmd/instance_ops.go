@@ -189,7 +189,7 @@ func tallySteps(steps []sshops.Step) (ran, refused int) {
 
 // buildSSHOpsService constructs the sshops.Service (Supervisor + audit) from config. It validates the
 // harness settings so a misconfigured lane fails at boot rather than at first use.
-func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback, apiKeyFallback string, audit sshops.AuditWriter, opts ...sshops.ServiceOption) (*sshops.Service, error) {
+func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback, apiKeyFallback string, knowledgeRetriever sshops.KnowledgeRetriever, audit sshops.AuditWriter, opts ...sshops.ServiceOption) (*sshops.Service, error) {
 	if sc.HarnessPath == "" {
 		return nil, fmt.Errorf("agent.ssh_ops.harness_path is required")
 	}
@@ -230,6 +230,10 @@ func buildSSHOpsService(sc config.SSHOpsConfig, modelFallback, apiKeyFallback st
 		APIKey:      apiKey,
 		Model:       model,
 		Timeout:     sc.Timeout,
+		// The immutable Go retriever remains in the control-plane process. The
+		// harness receives only bounded search/read replies over its sideband,
+		// never the MCP URL, bearer token or search capability.
+		KnowledgeRetriever: knowledgeRetriever,
 	}
 	// PublicIPv6Prefix rides along here rather than at the call sites for the same reason: it is
 	// an addressing decision that belongs to the deployment, and threading it separately would let
@@ -264,7 +268,7 @@ func instanceOpsHostResolver(cfg *config.Config, describer sshops.Describer) (ss
 // serverInstanceOpsRunner wires SSH operations only with tenant-scoped STS and
 // a complete audit schema. Invalid lane configuration fails startup; a missing
 // optional audit migration disables only this lane and is logged explicitly.
-func serverInstanceOpsRunner(cfg *config.Config, describer sshops.Describer, db *sql.DB) (engine.InstanceOpsRunner, error) {
+func serverInstanceOpsRunner(cfg *config.Config, describer sshops.Describer, knowledgeRetriever sshops.KnowledgeRetriever, db *sql.DB) (engine.InstanceOpsRunner, error) {
 	if cfg == nil || strings.TrimSpace(cfg.Agent.SSHOps.HarnessPath) == "" {
 		return nil, nil
 	}
@@ -293,6 +297,7 @@ func serverInstanceOpsRunner(cfg *config.Config, describer sshops.Describer, db 
 		cfg.Agent.SSHOps,
 		cfg.Agent.LLM.Model,
 		cfg.Agent.LLM.APIKey,
+		knowledgeRetriever,
 		store.NewSSHOpsAuditStore(db),
 		sshops.WithHostResolver(hostResolver),
 	)

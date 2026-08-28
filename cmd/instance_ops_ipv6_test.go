@@ -42,7 +42,7 @@ func TestServerInstanceOpsRunner_InternalIPv6MisconfigIsBootError(t *testing.T) 
 	db := sql.OpenDB(fakeConnector{})
 	defer db.Close()
 
-	_, err := serverInstanceOpsRunner(cfg, noopDescriber{}, db)
+	_, err := serverInstanceOpsRunner(cfg, noopDescriber{}, nil, db)
 	require.Error(t, err)
 }
 
@@ -60,7 +60,7 @@ func TestServerInstanceOpsRunner_BootLineNamesTheDialledRoute(t *testing.T) {
 	db := sql.OpenDB(fakeConnector{})
 	defer db.Close()
 
-	r, err := serverInstanceOpsRunner(cfg, noopDescriber{}, db)
+	r, err := serverInstanceOpsRunner(cfg, noopDescriber{}, nil, db)
 	require.NoError(t, err)
 	require.NotNil(t, r)
 	require.Contains(t, buf.String(), "internal IPv6")

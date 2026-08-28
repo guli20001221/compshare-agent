@@ -124,7 +124,7 @@ func TestSupervisorFailuresGetTheirOwnErrClass(t *testing.T) {
 func TestAbsentOutcomeLineMeansTheBoxWasEntered(t *testing.T) {
 	stream := "@@STEP {\"command\":\"nvidia-smi\",\"tier\":\"read_only\",\"disposition\":\"ran\",\"bytes\":42}\n" +
 		"<<<VERDICT>>>\nGPU 正常\n<<<END>>>\n"
-	_, steps, outcome, err := parseHarnessStream(strings.NewReader(stream), nil, nil)
+	_, steps, outcome, err := parseHarnessStream(strings.NewReader(stream), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestAbsentOutcomeLineMeansTheBoxWasEntered(t *testing.T) {
 func TestOutcomeLineIsParsed(t *testing.T) {
 	stream := "@@OUTCOME {\"outcome\":\"preflight_failed\",\"err_class\":\"NoValidConnectionsError\",\"context_applied\":false}\n" +
 		"<<<VERDICT>>>\n⚠ 只读诊断未能开始\n<<<END>>>\n"
-	verdict, steps, outcome, err := parseHarnessStream(strings.NewReader(stream), nil, nil)
+	verdict, steps, outcome, err := parseHarnessStream(strings.NewReader(stream), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestOutcomeLineIsParsed(t *testing.T) {
 func TestOutcomeLineRecordsContextReceipt(t *testing.T) {
 	stream := "@@OUTCOME {\"outcome\":\"\",\"err_class\":\"\",\"context_applied\":true}\n" +
 		"<<<VERDICT>>>\nGPU 正常\n<<<END>>>\n"
-	_, _, outcome, err := parseHarnessStream(strings.NewReader(stream), nil, nil)
+	_, _, outcome, err := parseHarnessStream(strings.NewReader(stream), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestOutcomeLineRecordsContextReceipt(t *testing.T) {
 func TestAgentFailureOutcomeIsParsedWithoutLeakingIntoVerdict(t *testing.T) {
 	stream := "@@OUTCOME {\"outcome\":\"agent_failed\",\"err_class\":\"server_error\",\"context_applied\":true}\n" +
 		"<<<VERDICT>>>\n诊断中断：没有形成经验证的最终结论\n<<<END>>>\n"
-	verdict, _, outcome, err := parseHarnessStream(strings.NewReader(stream), nil, nil)
+	verdict, _, outcome, err := parseHarnessStream(strings.NewReader(stream), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestAgentFailureOutcomeIsParsedWithoutLeakingIntoVerdict(t *testing.T) {
 // diagnosis as a dial that never happened is worse than losing the label.
 func TestMalformedOutcomeLineIsTreatedAsEntered(t *testing.T) {
 	stream := "@@OUTCOME not-json-at-all\n<<<VERDICT>>>\nGPU 正常\n<<<END>>>\n"
-	_, _, outcome, err := parseHarnessStream(strings.NewReader(stream), nil, nil)
+	_, _, outcome, err := parseHarnessStream(strings.NewReader(stream), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
