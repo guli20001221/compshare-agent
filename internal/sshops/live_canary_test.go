@@ -642,87 +642,33 @@ func TestLiveTerminateOpsCanary(t *testing.T) {
 	t.Logf("TERMINATED_CANARY_INSTANCE=%s", instanceID)
 }
 
-// TestLiveOpsWriteCanary runs the real write-authorized lane but approves exactly one caller-named
-// operation. It exists for reversible, dedicated-test-instance fault injection and recovery; an
-// unexpected model proposal is denied. SSHH_APPROVE_EXACT binds the whole displayed card, while
-// SSHH_APPROVE_SHELL_EXACT binds the literal shell effect of a managed-background card when the
-// model varies only its human-readable purpose. The explicit test switch plus exact effect match
-// make it impossible for the ordinary live suite to mutate a box accidentally.
-// SSHH_ASSERT_ABSENT optionally fails if one caller-supplied marker reaches the verdict or activity
-// stream; durable audit redaction remains a store/PostgreSQL test because this canary uses memory.
+// TestLiveOpsWriteCanary is fixture control for an opt-in disposable-instance canary. It executes
+// the caller-supplied SSHH_APPROVE_EXACT bytes directly over the reviewed live SSH transport; it
+// does not ask a model to reproduce the fault-injection command and does not exercise product
+// authorization. TestLiveOpsTaskScopeCanary separately proves that the real Agent SDK + MCP repair
+// lane can perform autonomous, scoped guest-local repair without legacy per-command confirmation.
+// The explicit test switch plus exact caller command keep this test out of the ordinary live suite.
+// The legacy variable name is retained because run_live_sshops.py exposes --approve-exact.
 func TestLiveOpsWriteCanary(t *testing.T) {
 	if os.Getenv("SSHH_WRITE_CANARY") != "1" {
-		t.Skip("set SSHH_WRITE_CANARY=1 and run this exact test")
+		t.Skip("set SSHH_WRITE_CANARY=1 and run this exact fixture-control test")
 	}
-	instanceID := os.Getenv("SSHH_INSTANCE")
-	task := os.Getenv("SSHH_TASK")
-	approveExact := os.Getenv("SSHH_APPROVE_EXACT")
-	approveShellExact := os.Getenv("SSHH_APPROVE_SHELL_EXACT")
-	if instanceID == "" || task == "" || (approveExact == "") == (approveShellExact == "") {
-		t.Fatal("SSHH_INSTANCE/SSHH_TASK plus exactly one of SSHH_APPROVE_EXACT or SSHH_APPROVE_SHELL_EXACT are required")
+	instanceID := strings.TrimSpace(os.Getenv("SSHH_INSTANCE"))
+	exactCommand := os.Getenv("SSHH_APPROVE_EXACT")
+	if instanceID == "" || strings.TrimSpace(exactCommand) == "" {
+		t.Fatal("SSHH_INSTANCE and SSHH_APPROVE_EXACT (the literal remote shell command) are required")
 	}
-	if os.Getenv("SSHH_HARNESS") == "" || os.Getenv("SSHH_API_KEY") == "" {
-		t.Fatal("SSHH_HARNESS and SSHH_API_KEY are required")
+	if os.Getenv("SSHH_APPROVE_SHELL_EXACT") != "" {
+		t.Fatal("SSHH_APPROVE_SHELL_EXACT is obsolete; pass the literal shell command as SSHH_APPROVE_EXACT")
 	}
-	top, err := strconv.ParseUint(os.Getenv("SSHH_TOP_ORG"), 10, 32)
-	if err != nil {
-		t.Fatalf("SSHH_TOP_ORG: %v", err)
-	}
-	sub, err := strconv.ParseUint(os.Getenv("SSHH_ORG"), 10, 32)
-	if err != nil {
-		t.Fatalf("SSHH_ORG: %v", err)
+	if os.Getenv("SSHH_HARNESS") == "" {
+		t.Fatal("SSHH_HARNESS is required")
 	}
 	describer, ctx := liveRealDescriber(t)
-	audit := &MemAuditWriter{}
-	supervisor := liveSupervisor(t)
-	approved := 0
-	result, err := NewService(supervisor, audit).DiagnoseWithContext(
-		ctx, describer,
-		Owner{TopOrganizationID: uint32(top), OrganizationID: uint32(sub),
-			RequestUUID: "live-write-canary", TurnID: fmt.Sprintf("live-write-%d", time.Now().UnixNano())},
-		instanceID, task,
-		opscontext.Context{SchemaVersion: opscontext.SchemaVersion, RepairScopeAuthorized: true,
-			ConversationHistory: []opscontext.ConversationMessage{{Role: opscontext.ConversationRoleUser, Content: task}}},
-		func(step Step) {
-			t.Logf("step=%s tier=%s disposition=%s reason=%s", step.Command, step.Tier,
-				step.Disposition, step.Reason)
-		},
-		func(request ConfirmRequest) ConfirmDecision {
-			matches := request.Command == approveExact
-			if approveShellExact != "" {
-				const marker = " command="
-				index := strings.LastIndex(request.Command, marker)
-				matches = strings.HasPrefix(request.Command, "ssh_exec run_in_background=true purpose=") &&
-					strings.Count(request.Command, marker) == 1 && index >= 0 &&
-					request.Command[index+len(marker):] == approveShellExact
-			}
-			if !matches {
-				t.Logf("DENIED_UNEXPECTED_OPERATION=%s", request.Command)
-				return ConfirmDecision{Approved: false, TerminalReason: "user_declined"}
-			}
-			approved++
-			t.Logf("APPROVED_EXACT_OPERATION=%s", request.Command)
-			return ConfirmDecision{Approved: true}
-		},
-	)
-	t.Logf("VERDICT:\n%s", result.Output)
-	if err != nil {
-		t.Fatalf("write canary: %v", err)
-	}
-	if approved != 1 {
-		t.Fatalf("approved exact operation %d times, want 1", approved)
-	}
-	if marker := os.Getenv("SSHH_ASSERT_ABSENT"); marker != "" {
-		if strings.Contains(result.Output, marker) {
-			t.Fatal("sensitive marker leaked into the live canary verdict")
-		}
-		for _, step := range result.Steps {
-			if strings.Contains(step.Command, marker) || strings.Contains(step.Reason, marker) {
-				t.Fatal("sensitive marker leaked into a live canary activity step")
-			}
-		}
-	}
-	if !result.ContextApplied {
-		t.Fatal("write canary did not deliver context to a model turn")
-	}
+	cred, err := FetchCredential(ctx, describer, instanceID)
+	require.NoError(t, err)
+	result := requireLiveRemoteOK(t, cred, exactCommand)
+	t.Logf("EXECUTED_EXACT_FIXTURE_COMMAND=%s", exactCommand)
+	t.Logf("FIXTURE_RESULT exit=%d stdout_bytes=%d stderr_bytes=%d", *result.ExitCode,
+		len(result.Stdout), len(result.Stderr))
 }

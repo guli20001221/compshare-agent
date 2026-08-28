@@ -21,10 +21,11 @@
 //	the same broker. Exactly one source may be configured.
 //
 // What these tests do NOT cover, so nobody reads a green live run as broader than it is:
-//   - The ordinary TestLiveFullFlow and TestLiveKeystone deny every proposed write. A separate,
-//     exact-name TestLiveOpsWriteCanary exists for a dedicated disposable instance; it requires
-//     SSHH_WRITE_CANARY=1 + one SSHH_APPROVE_EXACT value and denies every
-//     other proposal. It is not selected accidentally by the ordinary live command.
+//   - The ordinary TestLiveFullFlow and TestLiveKeystone deny every proposed write. The opt-in
+//     TestLiveOpsWriteCanary is fixture control: it executes one caller-supplied literal command
+//     over the live SSH transport and does not invoke a model. TestLiveOpsTaskScopeCanary is the
+//     separate end-to-end proof of autonomous Agent SDK + MCP repair. Neither is selected by the
+//     ordinary live command.
 //   - No database. They use MemAuditWriter, so migration 0013's columns, the fail-closed INSERT
 //     and the INV-9 UNIQUE(turn_id, task_hash) replay refusal are covered only by unit tests.
 //   - No production dial path. There is no internal-IPv6 resolver here, so the address these
