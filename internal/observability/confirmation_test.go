@@ -99,14 +99,22 @@ func TestConfirmationOutcomeUsesOnlyTheLatestCard(t *testing.T) {
 	}
 }
 
-func TestConfirmationTraceMarshalsOnlyBoundedTerminalData(t *testing.T) {
+func TestConfirmationTraceMarshalsBoundedGuidedMetadata(t *testing.T) {
+	stepIndex := 6
+	final := true
 	record := TraceRecord{
 		SchemaVersion: SchemaVersion,
 		TraceID:       "trace-confirmation",
 		TurnID:        "turn-confirmation",
 		Confirmations: []ConfirmationTrace{{
-			Action: "CreateInstanceWorkflow", State: ConfirmationStateNotConfirmed,
-			TerminalReason: ConfirmationReasonTimeout, ElapsedMS: 123,
+			Action: "CreateInstanceWorkflow", State: ConfirmationStateConfirmed,
+			TerminalReason: ConfirmationReasonUserConfirmed, ElapsedMS: 123,
+			StepIndex: &stepIndex, StepTitle: "第六步，确认镜像与计费", Final: &final,
+			ConfirmedContract: &ConfirmedCreateContract{
+				GPUType: "H20", GPU: 1, CPU: 16, MemoryMB: 245760,
+				Zone: "cn-wlcb-01", Image: "InfiniteTalk", ChargeType: "Postpay",
+				EstimatedPrice: "¥7.12/小时（预估）",
+			},
 		}},
 	}
 	data, err := json.Marshal(record)
@@ -114,7 +122,11 @@ func TestConfirmationTraceMarshalsOnlyBoundedTerminalData(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(data)
-	for _, want := range []string{`"terminal_reason":"timeout"`, `"elapsed_ms":123`} {
+	for _, want := range []string{
+		`"terminal_reason":"user_confirmed"`, `"elapsed_ms":123`, `"step_index":6`,
+		`"final":true`, `"confirmed_contract"`, `"gpu_type":"H20"`,
+		`"estimated_price":"¥7.12/小时（预估）"`,
+	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("trace missing %s: %s", want, text)
 		}

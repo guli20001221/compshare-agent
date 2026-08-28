@@ -222,8 +222,8 @@ func TestSearchKnowledgeTurnTraceEmitsFullTurnEvidenceWithoutCitations(t *testin
 // when the retriever returns only topically-IRRELEVANT top-K (qwen3-reranker score
 // below weakEvidenceSemanticThreshold=0.5 — what a tool-ops symptom retrieves when
 // the external KB is off and only platform docs are in the index), SearchKnowledge
-// drops them to an EMPTY ledger so the agent gives honest general guidance instead of
-// false-grounding on irrelevant chunks. Verified live: relevant ext-* hits score
+// keeps them out of the evidence ledger while exposing at most three IDs for an
+// optional ReadChunk review. Verified live: relevant ext-* hits score
 // 0.60-0.99 (kept); irrelevant platform hits at external-off score 0.01-0.07 (dropped).
 // RerankerMode is set: the 0.07 is a genuine low reranker relevance score, so the
 // floor legitimately applies (the reranker actually scored these hits — distinct
@@ -233,16 +233,12 @@ func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
 		Enabled:      true,
 		HybridMode:   "qwen3_rrf",
 		RerankerMode: "qwen3-reranker-8b",
-		HitItems: []knowledge.RetrievalHit{{
-			Kept:  true,
-			Score: 0.07, // below the 0.5 semantic floor — topically irrelevant top-K
-			Chunk: knowledge.KBChunk{
-				ChunkID:    "w0-resource_purchase-irrelevant",
-				Title:      "购买资源",
-				SourceType: "platform",
-				Content:    "无关平台文档：如何购买资源与计费说明，与 vllm 进程被 kill 无关。",
-			},
-		}},
+		HitItems: []knowledge.RetrievalHit{
+			{Kept: true, Score: 0.07, Chunk: knowledge.KBChunk{ChunkID: "weak-1", Title: "候选一", Content: "候选一正文不得随搜索结果交付。"}},
+			{Kept: true, Score: 0.06, Chunk: knowledge.KBChunk{ChunkID: "weak-2", Title: "候选二", Content: "候选二正文不得随搜索结果交付。"}},
+			{Kept: true, Score: 0.05, Chunk: knowledge.KBChunk{ChunkID: "weak-3", Title: "候选三", Content: "候选三正文不得随搜索结果交付。"}},
+			{Kept: true, Score: 0.04, Chunk: knowledge.KBChunk{ChunkID: "weak-4", Title: "候选四", Content: "第四条应被候选上限截掉。"}},
+		},
 	}}}
 	exec := &mockExecutor{}
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, exec, nil)
@@ -256,11 +252,22 @@ func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
 	}
 	out := eng.executeTool(context.Background(), tc, noopStep)
 
-	// The weak (irrelevant) hit is NOT in the ledger the agent sees — no false-grounding.
-	assert.NotContains(t, out, "w0-resource_purchase-irrelevant", "weak hit must be dropped from the agent's ledger")
+	result := readChunkResult(t, out)
+	ledger := result["EvidenceLedger"].(map[string]any)
+	assert.Empty(t, ledger["items"], "weak hits must not enter citable evidence before ReadChunk")
+	candidates := result["below_floor_candidates"].([]any)
+	require.Len(t, candidates, maxBelowFloorKnowledgeCandidates)
+	for i, raw := range candidates {
+		candidate := raw.(map[string]any)
+		assert.Equal(t, fmt.Sprintf("weak-%d", i+1), candidate["chunk_id"])
+		assert.Equal(t, "below_floor", candidate["strength"])
+		assert.Len(t, candidate, 3, "a weak candidate exposes only id, title and strength")
+	}
+	assert.NotContains(t, out, "候选一正文", "SearchKnowledge must not expose a below-floor body")
+	assert.NotContains(t, out, "weak-4", "only the first three weak candidates are reviewable")
 	assert.Contains(t, out, `"floor_dropped_all":true`, "the model must know why the ledger is empty")
-	assert.Contains(t, out, "请改写或收窄查询后再次检索")
-	assert.Contains(t, out, "不得据此确认平台事实")
+	assert.Contains(t, out, "ReadChunk")
+	assert.Contains(t, out, "读取前不得引用")
 	observation, ok := tools.ParseAgentToolResult(agentToolObservation("SearchKnowledge", out))
 	require.True(t, ok)
 	assert.Equal(t, "NO_CITABLE_EVIDENCE", observation.Error.Code,
@@ -269,7 +276,7 @@ func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, true, data["floor_dropped_all"],
 		"the reason for the empty ledger must survive the real model-observation wrapper")
-	assert.Contains(t, data["note"], "请改写或收窄查询后再次检索")
+	assert.Contains(t, data["note"], "ReadChunk")
 	// And it is NOT recorded as evidence the agent grounded on (the echo telemetry
 	// would otherwise be judged against content the agent never received).
 	assert.Empty(t, eng.searchKnowledgeHitsThisTurn, "weak hits must not be recorded as grounding evidence")
@@ -331,6 +338,9 @@ func TestExecuteSearchKnowledge_MultiQueryKeepsStrongEvidenceWithoutFloorWarning
 	require.Len(t, retriever.calls, 3)
 	assert.Contains(t, out, "strong-platform-fact")
 	assert.NotContains(t, out, "weak-unrelated")
+	assert.NotContains(t, out, `"below_floor_candidates"`)
+	assert.NotContains(t, eng.searchKnowledgeCapabilitiesThisTurn, "weak-unrelated")
+	assert.NotContains(t, eng.belowFloorKnowledgeIDsThisTurn, "weak-unrelated")
 	assert.NotContains(t, out, `"floor_dropped_all"`,
 		"one weak retrieval must not downgrade a multi-query call that produced citable evidence")
 	assert.NotContains(t, out, `"note"`)

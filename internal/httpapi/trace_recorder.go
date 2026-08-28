@@ -206,8 +206,9 @@ func (r *chatTraceRecorder) AddAuthorizationTrace(trace observability.Authorizat
 }
 
 // AddConfirmationTrace appends one terminal confirmation outcome. The payload
-// is already bounded by engine.recordConfirmationResult and contains no form
-// values, action arguments or broker ids.
+// is already bounded by engine.recordConfirmationResult and contains no full
+// form, broker ids or arbitrary arguments; the only argument-derived data is the
+// fixed-field contract from an approved final create card.
 func (r *chatTraceRecorder) AddConfirmationTrace(trace observability.ConfirmationTrace) {
 	if r == nil {
 		return

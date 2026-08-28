@@ -4781,7 +4781,7 @@ func buildGuidedFinalForm(wfCtx *Context) (*ConfirmForm, error) {
 			// exist. Naming the current value and how to change it is the honest
 			// version — the Summary carries it too, alongside the price it produced.
 			Description: fmt.Sprintf(
-				"镜像决定开机即用的预装环境（框架与驱动）。当前计费方式为「%s」，价格按此计算；%s确认无误后点击下方按钮即开始创建。",
+				"镜像决定开机即用的预装环境（框架与驱动）。本次确认只创建实例及所选镜像；镜像已包含的软件会随实例提供，其他软件不会自动安装。当前计费方式为「%s」，价格按此计算；%s确认无误后点击下方按钮即开始创建。",
 				chargeTypeLabel(createChargeType(wfCtx.Params)),
 				chargeTypeChangeHint(wfCtx)),
 			PrimaryLabel:   "确认部署",

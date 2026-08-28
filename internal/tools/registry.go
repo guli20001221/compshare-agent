@@ -589,7 +589,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateInstanceWorkflow",
-			Description: "创建算力实例的候选请求。用于用户明确要求实际创建实例；支持平台镜像、社区镜像和当前账户的自制镜像，配置不完整时可进入引导卡继续选择。价格、库存或创建方法查询不使用。",
+			Description: "创建实例及所选镜像；配置不完整时进入引导卡。用户要求创建时使用，价格、库存或方法查询不用。不会安装镜像外软件；部署应用前，先确认镜像已内置或有可执行安装来源/计划，否则确认是否只要运行环境。支持平台、社区和自制镜像。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

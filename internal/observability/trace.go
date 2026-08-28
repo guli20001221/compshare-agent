@@ -16,7 +16,7 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-const SchemaVersion = "trace.v0.14"
+const SchemaVersion = "trace.v0.15"
 
 const (
 	ToolSourceMainReAct          = "main_react"
@@ -93,9 +93,10 @@ type TraceRecord struct {
 	Completion          TurnCompletionTrace  `json:"completion"`
 	Outcome             OutcomeTrace         `json:"outcome"`
 	// Confirmations records every human confirmation gate that reached a terminal
-	// outcome during this turn. It deliberately carries only action names and
-	// closed-set state/reason values: confirmation arguments and ids stay out of
-	// the trace.
+	// outcome during this turn. Guided cards add only their bounded step metadata;
+	// an approved final create card also carries a redacted fixed-field projection
+	// of the contract shown to the user. Confirmation ids, full forms and card
+	// prose stay out of the trace.
 	Confirmations []ConfirmationTrace `json:"confirmations,omitempty"`
 	// Steps holds workflow step traces. Empty values are omitted for turns that
 	// did not execute a workflow.
@@ -288,12 +289,34 @@ const (
 // ConfirmationTrace is the terminal observation for one confirmation card.
 // State and TerminalReason are closed-set values above. ElapsedMS measures the
 // wait from presenting the card to its terminal outcome; it may be zero for an
-// immediately resolved confirmation.
+// immediately resolved confirmation. Step metadata is present only for guided
+// forms; plain y/n cards retain the legacy empty-metadata shape.
 type ConfirmationTrace struct {
-	Action         string `json:"action"`
-	State          string `json:"state"`
-	TerminalReason string `json:"terminal_reason"`
-	ElapsedMS      int64  `json:"elapsed_ms"`
+	Action            string                   `json:"action"`
+	State             string                   `json:"state"`
+	TerminalReason    string                   `json:"terminal_reason"`
+	ElapsedMS         int64                    `json:"elapsed_ms"`
+	StepIndex         *int                     `json:"step_index,omitempty"`
+	StepTitle         string                   `json:"step_title,omitempty"`
+	Final             *bool                    `json:"final,omitempty"`
+	ConfirmedContract *ConfirmedCreateContract `json:"confirmed_contract,omitempty"`
+}
+
+// ConfirmedCreateContract is the bounded, typed projection of the final create
+// card the user approved. Values are copied from that card's Summary rather than
+// recalculated, then passed through the existing text redactors.
+type ConfirmedCreateContract struct {
+	GPUType        string `json:"gpu_type,omitempty"`
+	GPU            int    `json:"gpu,omitempty"`
+	CPU            int    `json:"cpu,omitempty"`
+	MemoryMB       int    `json:"memory_mb,omitempty"`
+	Zone           string `json:"zone,omitempty"`
+	ZoneLabel      string `json:"zone_label,omitempty"`
+	Image          string `json:"image,omitempty"`
+	SystemDisk     string `json:"system_disk,omitempty"`
+	DataDisk       string `json:"data_disk,omitempty"`
+	ChargeType     string `json:"charge_type,omitempty"`
+	EstimatedPrice string `json:"estimated_price,omitempty"`
 }
 
 // AuthorizationTrace is the per-write-target dual-proof audit record: for each
