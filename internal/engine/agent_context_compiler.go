@@ -90,7 +90,7 @@ func isLiveSelectionHint(hint SelectedEntityHint) bool {
 // execution-side target binding instead of only changing what the model reads.
 func renderAgentContextCard(view AgentContext) string {
 	var lines []string
-	lines = append(lines, "【本轮执行上下文；不授权任何写操作】")
+	lines = append(lines, "【本轮执行上下文（仅用于目标指代）】")
 	for _, entity := range view.SelectedEntities {
 		if !isLiveSelectionHint(entity) {
 			continue

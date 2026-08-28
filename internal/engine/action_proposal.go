@@ -624,6 +624,15 @@ func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal
 					}
 					continue
 				}
+				// A clarification turn need not repeat a capacity the user just
+				// supplied. Keep a recent user-authored capacity when it
+				// uniquely matches the Agent's normalized value; the final create
+				// card still shows the resulting disk contract before execution.
+				if recentUserCapacityMatches(view, value) {
+					candidate.Source = actionresolver.SourceVerifiedContext
+					candidate.Evidence = &actionresolver.SourceEvidence{ContextField: "recent_user_capacity"}
+					continue
+				}
 			}
 		}
 		// Some enum fields accept localized user phrases that differ from their
@@ -915,6 +924,33 @@ func uniqueEquivalentCapacityLiteral(text []rune, proposed string) (int, int, bo
 		return 0, 0, false
 	}
 	return start, end, true
+}
+
+func recentUserCapacityMatches(view AgentContext, proposed string) bool {
+	want, ok := actionresolver.NormalizeCapacityGB(proposed)
+	if !ok {
+		return false
+	}
+	// This fallback is only for a clarification turn that did not mention a
+	// capacity. If the current message changes a size, a mismatching proposal
+	// must not be rescued by an older value from history.
+	if len(actionresolver.CapacityLiterals(view.CurrentQuestion)) > 0 {
+		return false
+	}
+	for index := len(view.RecentConversation) - 1; index >= 0; index-- {
+		literals := actionresolver.CapacityLiterals(view.RecentConversation[index].User)
+		matches := 0
+		for _, literal := range literals {
+			got, parsed := actionresolver.NormalizeCapacityGB(literal.Text)
+			if parsed && got == want {
+				matches++
+			}
+		}
+		if matches > 0 {
+			return matches == 1
+		}
+	}
+	return false
 }
 
 func uniqueStandaloneQuote(text, quote []rune) (int, int, bool) {

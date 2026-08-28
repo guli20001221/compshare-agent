@@ -353,7 +353,7 @@ func CreateInstanceDef() *Definition {
 		// CPU-memory / image source+selection / charge type).
 		GuidedIntakeFields: []string{"GpuType", "Zone", "Gpu", "Cpu", "Memory", "ImageSource", "ImageName", "ChargeType"},
 		// Disk sizes have no guided-form controls. Keep them only when grounded in
-		// the user's current message; otherwise the live image/machine catalog
+		// the current message or recent completed user input; otherwise the live image/machine catalog
 		// derives the boot disk and no data disk is added.
 		// CompShareImageId is intentionally not user-supplied-only: once a
 		// request names an exact image, silently replacing a stale/wrong-source id

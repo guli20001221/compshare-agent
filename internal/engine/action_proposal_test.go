@@ -988,6 +988,68 @@ func TestUserSpecifiedSystemDiskCapacityIsGroundedAndPreserved(t *testing.T) {
 		resolved.action.Provenance["SystemDiskSize"].Source)
 }
 
+func TestClarificationTurnKeepsTheUsersRecentDiskCapacities(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{map[string]any{"Name": "H20"}},
+		},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "创建 H20 按量实例，先正常带卡创建"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+		eng, eng.lastUserMsg, "turn-create-clarification", time.Now(),
+	)
+	eng.turnContextViewThisTurn.RecentConversation = []ConversationPair{{
+		User:      "帮我创建一台 H20，系统盘 100GB，数据盘 50GB，作为无卡开机验收机",
+		Assistant: "请确认要带卡创建还是纯 CPU 实例。",
+	}}
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposal(context.Background(), proposalArgsForOperation(
+		"CreateInstanceWorkflow", map[string]any{
+			"GpuType":        "H20",
+			"SystemDiskSize": "100GB",
+			"DataDiskSize":   "50GB",
+		},
+	))
+
+	require.NoError(t, err)
+	require.Equal(t, float64(100), resolved.action.Arguments["SystemDiskSize"])
+	require.Equal(t, float64(50), resolved.action.Arguments["DataDiskSize"])
+	require.Equal(t, actionresolver.SourceVerifiedContext,
+		resolved.action.Provenance["SystemDiskSize"].Source)
+	require.Equal(t, actionresolver.SourceVerifiedContext,
+		resolved.action.Provenance["DataDiskSize"].Source)
+}
+
+func TestCurrentCapacityDoesNotFallBackToAnOlderDifferentValue(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {
+			"AvailableInstanceTypes": []any{map[string]any{"Name": "H20"}},
+		},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "H20 不变，系统盘改成 120GB"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+		eng, eng.lastUserMsg, "turn-create-capacity-update", time.Now(),
+	)
+	eng.turnContextViewThisTurn.RecentConversation = []ConversationPair{{
+		User:      "帮我创建一台 H20，系统盘 100GB",
+		Assistant: "请确认磁盘容量。",
+	}}
+	eng.turnContextViewReady = true
+
+	resolved, err := eng.resolveActionProposal(context.Background(), proposalArgsForOperation(
+		"CreateInstanceWorkflow", map[string]any{
+			"GpuType":        "H20",
+			"SystemDiskSize": "100GB",
+		},
+	))
+
+	require.NoError(t, err)
+	require.NotContains(t, resolved.action.Arguments, "SystemDiskSize")
+}
+
 func TestCreateDiskCapacitiesAcceptEquivalentUserUnits(t *testing.T) {
 	for _, unit := range []string{"g", "G", "GB", "GiB"} {
 		t.Run(unit, func(t *testing.T) {

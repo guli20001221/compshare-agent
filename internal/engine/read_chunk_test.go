@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/knowledge"
+	"github.com/compshare-agent/internal/llm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -239,6 +240,69 @@ func TestReadChunkRemoteCanReviewBelowFloorCandidateAsLowEvidence(t *testing.T) 
 	assert.Equal(t, "weak-workbuddy", evidence.ChunkID)
 	assert.Equal(t, "low", evidence.ScoreBucket)
 	assert.Contains(t, evidence.Snippet, "读取后的完整配置正文")
+}
+
+func TestBelowFloorCandidatesRankAcrossPlannedQueriesAndKeepReadCapabilities(t *testing.T) {
+	retriever := &remoteChunkStoreRetriever{
+		scriptedKnowledgeRetriever: scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
+			{
+				Enabled: true, SearchID: "search-general", HybridMode: "qwen3_rrf", RerankerMode: "qwen3-reranker-8b",
+				HitItems: []knowledge.RetrievalHit{
+					{Kept: true, Score: 0.24, Chunk: knowledge.KBChunk{ChunkID: "generic-1", Title: "通用候选一"}},
+					{Kept: true, Score: 0.23, Chunk: knowledge.KBChunk{ChunkID: "generic-2", Title: "通用候选二"}},
+					{Kept: true, Score: 0.22, Chunk: knowledge.KBChunk{ChunkID: "generic-3", Title: "通用候选三"}},
+				},
+			},
+			{
+				Enabled: true, SearchID: "search-exact", HybridMode: "qwen3_rrf", RerankerMode: "qwen3-reranker-8b",
+				HitItems: []knowledge.RetrievalHit{{
+					Kept: true, Score: 0.26,
+					Chunk: knowledge.KBChunk{ChunkID: "workbuddy-exact", Title: "WorkBuddy 精确配置"},
+				}},
+			},
+			{Enabled: true, Empty: true},
+		}},
+		chunks: map[string]knowledge.KBChunk{
+			"workbuddy-exact": {ChunkID: "workbuddy-exact", Title: "WorkBuddy 精确配置", Content: "精确配置正文。"},
+			"generic-1":       {ChunkID: "generic-1", Title: "通用候选一", Content: "通用正文。"},
+		},
+	}
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: `{
+		"answer_question":"与 WorkBuddy 连接后还需要设置什么",
+		"search_queries":["连接后的通用配置","WorkBuddy 连接后的配置"]
+	}`}}}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	eng.knowledgeQAAgentLoopThisTurn = true
+	eng.turnContextViewThisTurn = AgentContext{
+		CurrentQuestion:    "与WorkBuddy连接后，还需要手动设置啥",
+		RecentConversation: []ConversationPair{{User: "已经连接好了", Assistant: "可以继续配置。"}},
+	}
+	eng.turnContextViewReady = true
+
+	search := readChunkResult(t, eng.executeSearchKnowledge(context.Background(), map[string]any{
+		"query": "与WorkBuddy连接后，还需要手动设置啥",
+	}, noopStep))
+	candidates := search["below_floor_candidates"].([]any)
+	require.Len(t, candidates, maxBelowFloorKnowledgeCandidates)
+	assert.Equal(t, "workbuddy-exact", candidates[0].(map[string]any)["chunk_id"])
+	assert.Equal(t, "generic-1", candidates[1].(map[string]any)["chunk_id"])
+	assert.Equal(t, "generic-2", candidates[2].(map[string]any)["chunk_id"])
+	for _, raw := range candidates {
+		assert.Len(t, raw.(map[string]any), 3, "ranking score stays internal")
+	}
+
+	read := readChunkResult(t, eng.executeReadChunk(map[string]any{
+		"chunk_ids": []any{"workbuddy-exact", "generic-1"},
+	}, noopStep))
+	items := read["chunks"].([]any)
+	require.Len(t, items, 2)
+	assert.Equal(t, readChunkStatusRead, items[0].(map[string]any)["status"])
+	assert.Equal(t, readChunkStatusRead, items[1].(map[string]any)["status"])
+	require.Len(t, retriever.reads, 2)
+	assert.Equal(t, "search-exact", retriever.reads[0].searchID)
+	assert.Equal(t, []string{"workbuddy-exact"}, retriever.reads[0].chunkIDs)
+	assert.Equal(t, "search-general", retriever.reads[1].searchID)
+	assert.Equal(t, []string{"generic-1"}, retriever.reads[1].chunkIDs)
 }
 
 func TestReadChunkRemoteExpiredCapabilityRequiresNewSearch(t *testing.T) {

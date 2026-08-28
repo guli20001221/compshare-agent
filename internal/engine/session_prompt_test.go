@@ -27,7 +27,8 @@ func TestRefreshSystemPrompt_InjectsSelectedInstance(t *testing.T) {
 	modelInput := renderTestMessages(mock.calls[0].Messages)
 	assert.Contains(t, modelInput, "my-gpu-box uhost-abc123",
 		"unknown-age legacy identity must remain available for understanding")
-	assert.Contains(t, modelInput, "不授权任何写操作")
+	assert.Contains(t, modelInput, "不代表用户已经确认写操作")
+	assert.Contains(t, modelInput, "用户要求实际执行时，调用适用的 Request*")
 }
 
 func TestRefreshSystemPrompt_SkipsWhenNotHydrated(t *testing.T) {
