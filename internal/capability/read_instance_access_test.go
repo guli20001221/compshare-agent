@@ -65,6 +65,69 @@ func TestInstanceAccessRequestMissingFields(t *testing.T) {
 		Targets: accessTarget("cpod-a"), AccessType: accessTypeCustomPort,
 		Protocol: accessProtocolHTTP, Port: 8188,
 	}.MissingFields())
+	assert.Equal(t, []platform.MissingField{{Name: "software", Reason: "required"}},
+		InstanceAccessRequest{Targets: accessTarget("cpod-a"), AccessType: accessTypeSoftware}.MissingFields())
+	assert.Empty(t, InstanceAccessRequest{
+		Targets: accessTarget("cpod-a"), AccessType: accessTypeSoftware, Software: "FileBrowser",
+	}.MissingFields())
+}
+
+func TestInstanceAccessSoftwareProjectsOnlyTheRequestedLiveDeclaration(t *testing.T) {
+	exec := &accessReadExec{results: map[string]map[string]any{
+		instanceAccessDescribeAction: describeFixture(accessHost("cpod-a", "Container", map[string]any{
+			"Softwares": []any{
+				map[string]any{"Name": "LiveTalking", "URL": "https://entry.invalid/?token=must-not-leak"},
+				map[string]any{"Name": "JupyterLab", "URL": "https://jupyter.invalid/?token=also-secret"},
+			},
+		})),
+	}}
+
+	present := runInstanceAccess(t, exec, InstanceAccessRequest{
+		Targets: accessTarget("cpod-a"), AccessType: accessTypeSoftware, Software: "LiveTalking",
+	})
+	require.Equal(t, platform.ReadStatusHandled, present.Status)
+	assert.Contains(t, present.Reply, "实时实例详情声明了 LiveTalking")
+	assert.Contains(t, present.Reply, "不能证明入口当前可达")
+	assert.NotContains(t, present.Reply, "entry.invalid")
+	assert.NotContains(t, present.Reply, "token=")
+	assert.Equal(t, true, factValue(present.Envelope, "software_declared"))
+	assert.Equal(t, true, factValue(present.Envelope, "software_entry_present"))
+	assert.Equal(t, true, factValue(present.Envelope, "software_declarations_checked"))
+	assert.Equal(t, "LiveTalking", factValue(present.Envelope, "requested_software"))
+	require.Len(t, exec.calls, 1)
+
+	absent := runInstanceAccess(t, exec, InstanceAccessRequest{
+		Targets: accessTarget("cpod-a"), AccessType: accessTypeSoftware, Software: "FileBrowser",
+	})
+	require.Equal(t, platform.ReadStatusHandled, absent.Status)
+	assert.Contains(t, absent.Reply, "实时实例详情未声明")
+	assert.Contains(t, absent.Reply, "不能证明实例内一定没有用户自行安装")
+	assert.Equal(t, false, factValue(absent.Envelope, "software_declared"))
+	assert.Equal(t, false, factValue(absent.Envelope, "software_entry_present"))
+	assert.Equal(t, true, factValue(absent.Envelope, "software_declarations_checked"))
+	assert.NotContains(t, absent.Reply, "LiveTalking")
+}
+
+func TestInstanceAccessSoftwareDoesNotTurnMissingUpstreamDataIntoAbsence(t *testing.T) {
+	for _, softwares := range []any{nil, "malformed", []any{map[string]any{"URL": "https://secret.invalid/?token=x"}}} {
+		extra := map[string]any{}
+		if softwares != nil {
+			extra["Softwares"] = softwares
+		}
+		exec := &accessReadExec{results: map[string]map[string]any{
+			instanceAccessDescribeAction: describeFixture(accessHost("cpod-a", "Container", extra)),
+		}}
+		result := runInstanceAccess(t, exec, InstanceAccessRequest{
+			Targets: accessTarget("cpod-a"), AccessType: accessTypeSoftware, Software: "RequestedApp",
+		})
+		require.Equal(t, platform.ReadStatusHandled, result.Status)
+		assert.Contains(t, result.Reply, "云侧信息不足")
+		assert.Contains(t, result.Reply, "没有返回可解析的平台应用声明列表")
+		assert.NotContains(t, result.Reply, "实时实例详情未声明")
+		assert.Equal(t, false, factValue(result.Envelope, "software_declarations_checked"))
+		assert.NotContains(t, result.Reply, "secret.invalid")
+		assert.NotContains(t, result.Reply, "token=")
+	}
 }
 
 func TestInstanceAccessSSHReturnsTheLiveLoginCommand(t *testing.T) {

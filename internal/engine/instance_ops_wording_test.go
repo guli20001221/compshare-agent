@@ -28,7 +28,7 @@ func TestInstanceOpsDescriptionOffersCardFreeAutonomousRepair(t *testing.T) {
 	if strings.Contains(*desc, "只执行只读命令") {
 		t.Fatalf("single repair contract regressed to the removed read-only product mode: %q", *desc)
 	}
-	if !strings.Contains(*desc, "不再额外弹授权卡") || !strings.Contains(*desc, "不为每条命令重复请求确认") {
+	if !strings.Contains(*desc, "不再额外弹授权卡") || !strings.Contains(*desc, "不逐命令请求确认") {
 		t.Fatalf("description does not offer the card-free autonomous repair contract: %q", *desc)
 	}
 	if !strings.Contains(*desc, "下载模型/文件到指定磁盘") || !strings.Contains(*desc, "不要只给用户手工命令") {
@@ -41,7 +41,7 @@ func TestInstanceOpsDescriptionOffersCardFreeAutonomousRepair(t *testing.T) {
 		t.Fatalf("description omits long-pause target continuity: %q", *desc)
 	}
 	// Still has to name the hard limits, or the model plans around commands it can never run.
-	if !strings.Contains(*desc, "始终会被拒绝") {
+	if !strings.Contains(*desc, "会被拒绝") {
 		t.Fatalf("description omits the destructive refusal: %q", *desc)
 	}
 	if !strings.Contains(*desc, "本轮消息中明确给出 Authorization") ||

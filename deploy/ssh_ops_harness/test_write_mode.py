@@ -130,10 +130,10 @@ check("prompt-contract::structured",
       all(section in _WRITE_PROMPT for section in ("## Evidence model", "## Diagnostic loop",
                                                     "## Authorization:", "## Final response")))
 check("prompt-contract::layered-evidence",
-      all(layer in _WRITE_PROMPT for layer in ("Control-plane metadata", "guest state",
-                                                "application state", "external reachability")))
+      all(layer in _WRITE_PROMPT_FLAT for layer in ("Control-plane metadata", "guest state",
+                                                     "application state", "external reachability")))
 check("prompt-contract::outcome-driven",
-      "observable success criterion" in _WRITE_PROMPT and "original success criterion" in _WRITE_PROMPT)
+      "observable criterion" in _WRITE_PROMPT and "original user success criterion" in _WRITE_PROMPT)
 check("prompt-contract::actual-runtime",
       "application's real" in _WRITE_PROMPT and "virtualenv or Conda" in _WRITE_PROMPT)
 check("prompt-contract::managed-ownership-invariant",
@@ -239,7 +239,7 @@ check("remote-search-tool-is-bounded-and-routes-to-exact-read",
                        "read_text_file", "not recursive grep through ssh_exec",
                        "validates every descendant")))
 check("prompt-routes-recursive-content-search-to-structured-tool",
-      "search_text_tree (not recursive shell grep)" in harness.SYSTEM_PROMPT
+      "use search_text_tree" in harness.SYSTEM_PROMPT
       and "use search_text_tree, not" in flat(harness.TOOL_DESC))
 check("remote-glob-tool-is-bounded-and-does-not-run-a-shell",
       all(term in harness.remote_search.FIND_DESCRIPTION
@@ -338,10 +338,10 @@ check("tooldesc-rule-does-not-invent-manager-ownership",
       "do not invent a unit" in _td and
       "only a launcher exists" in _td and "report the durability gap" in _td)
 check("prompt-and-tool-do-not-invent-traceback-semantics",
-      "A traceback proves a failure site, not intended" in _wp and
+      "A traceback proves a failure site, not intended" in flat(_wp) and
       "A traceback proves the failure site, not intended semantics" in _td and
       "local test" in _wp and "version contract" in _wp and
-      "reversible rollback/disable within scope" in _wp and
+      "reversible rollback/disable within scope" in flat(_wp) and
       "reversible rollback/disable within scope" in _td)
 check("prompt-and-tool-align-on-managed-service-ownership",
       "use its existing supervisor" in _wp and "use its existing supervisor" in _td)
@@ -359,7 +359,9 @@ check("tooldesc-rule-verify-every-launcher-port",
       "verify every endpoint/component it owns" in _td)
 check("prompt-no-longer-carries-port-diff", "list the listening ports" not in _wp)
 check("prompt-rule-verdict-starts-with-status",
-      all(token in _wp for token in ("`已修复`", "`部分修复`", "`未修复`", "`无需修复`")) and
+      all(token in _wp for token in ("`已修复`", "`部分修复`", "`未修复`", "`无需修复`", "`已核实`")) and
+      "only for an inspection-only request" in _wp and
+      "no guest\nmutation ran" in _wp and
       "never describe a read-only check itself as a repair" in _wp)
 check("prompt-rule-verdict-stays-compact",
       "Then include `已完成` and, only when needed, `下一步`" in _wp and

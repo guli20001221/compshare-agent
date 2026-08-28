@@ -135,14 +135,14 @@ check("cred-not-in-environ", "Pl4inPwd77x" not in "".join(os.environ.values()))
 check("secrets-has-pw-and-b64", harness._secrets()[0] == "Pl4inPwd77x" and len(harness._secrets()) == 2)
 _prompt_flat = " ".join(harness.SYSTEM_PROMPT.split())
 check("prompt-does-not-infer-events-from-absence-or-time-order",
-      "Current absence, timestamp ordering" in _prompt_flat and
-      "Do not claim a restart, rebuild, crash, eviction, or actor" in _prompt_flat)
+      "Absence, timestamps or parent PID do not prove history" in _prompt_flat and
+      "name no restart, rebuild, crash, eviction or actor" in _prompt_flat)
 check("prompt-stops-discovery-after-repair-path-is-proven",
       "never repeat a completed read unless state/time changed" in _prompt_flat and
       "Vary one input or conclude" in _prompt_flat and
       "avoid history, backups and unrelated trees" in _prompt_flat)
 check("prompt-prefers-direct-environment-interpreter",
-      "Invoke that executable directly" in _prompt_flat and
+      "invoke it directly" in _prompt_flat and
       "instead of sourcing an activation script" in _prompt_flat)
 check("prompt-verifies-platform-manual-runtime-and-ownership-scope",
       "manual/agent scope, search platform knowledge" in _prompt_flat and
@@ -159,6 +159,10 @@ check("prompt-does-not-call-a-failed-probe-no-repair-needed",
       "inspection-only run or absence of a state change does not justify" in _prompt_flat and
       "failed or inconclusive diagnostic/reproduction/repair" in _prompt_flat and
       "is `未修复`, not `无需修复`" in _prompt_flat)
+check("prompt-has-an-inspection-success-outcome",
+      "For inspection, answer `已核实` only after observing the requested facts without mutation" in _prompt_flat and
+      "`已核实` only for an inspection-only request" in _prompt_flat and
+      "no guest mutation ran" in _prompt_flat)
 check("prompt-requires-runtime-reload-after-on-disk-change",
       "do not affect a running process until reload/restart" in _prompt_flat and
       "file checks are not runtime verification" in _prompt_flat and

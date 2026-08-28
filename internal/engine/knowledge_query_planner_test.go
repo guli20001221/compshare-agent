@@ -74,6 +74,8 @@ func TestKnowledgeQueryPlannerSeparatesAnswerQuestionFromSearchQueries(t *testin
 	assert.Equal(t, openai.ChatCompletionResponseFormatTypeJSONObject, mock.calls[0].ResponseFormat.Type)
 	assert.Equal(t, openai.ChatMessageRoleSystem, mock.calls[0].Messages[0].Role,
 		"the planner contract is internal control, never a fake user message")
+	assert.Contains(t, mock.calls[0].Messages[0].Content, "资源形态（Pod/虚机）")
+	assert.Contains(t, mock.calls[0].Messages[0].Content, "作用域/所有者（控制面/Guest/应用/管理器）")
 	assert.Equal(t, "按量实例关机后，哪些资源停止计费，哪些资源继续计费？", got.AnswerQuestion)
 	assert.Equal(t, []string{
 		"按量实例关机后 CPU GPU 内存计费规则",

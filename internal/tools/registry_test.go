@@ -486,6 +486,8 @@ func TestInventoryToolDescriptionsSetRoutingBoundaries(t *testing.T) {
 	mustContain(t, descriptions["DiagnoseInstanceInternals"], "不再额外弹授权卡")
 	mustContain(t, descriptions["DiagnoseInstanceInternals"], "下载模型/文件到指定磁盘")
 	mustContain(t, descriptions["DiagnoseInstanceInternals"], "不要只给用户手工命令")
+	mustContain(t, descriptions["DiagnoseInstanceInternals"], "文件、目录、日志、进程")
+	mustContain(t, descriptions["DiagnoseInstanceInternals"], "只要求只读检查")
 }
 
 func TestDescribeCompShareInstanceDoesNotExposeWithoutGpu(t *testing.T) {
