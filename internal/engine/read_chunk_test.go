@@ -242,25 +242,31 @@ func TestReadChunkRemoteCanReviewBelowFloorCandidateAsLowEvidence(t *testing.T) 
 	assert.Contains(t, evidence.Snippet, "读取后的完整配置正文")
 }
 
-func TestBelowFloorCandidatesRankAcrossPlannedQueriesAndKeepReadCapabilities(t *testing.T) {
+func TestBelowFloorCandidatesRoundRobinAcrossScoreScalesAndKeepReadCapabilities(t *testing.T) {
 	retriever := &remoteChunkStoreRetriever{
 		scriptedKnowledgeRetriever: scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
 			{
-				Enabled: true, SearchID: "search-general", HybridMode: "qwen3_rrf", RerankerMode: "qwen3-reranker-8b",
-				HitItems: []knowledge.RetrievalHit{
-					{Kept: true, Score: 0.24, Chunk: knowledge.KBChunk{ChunkID: "generic-1", Title: "通用候选一"}},
-					{Kept: true, Score: 0.23, Chunk: knowledge.KBChunk{ChunkID: "generic-2", Title: "通用候选二"}},
-					{Kept: true, Score: 0.22, Chunk: knowledge.KBChunk{ChunkID: "generic-3", Title: "通用候选三"}},
-				},
-			},
-			{
-				Enabled: true, SearchID: "search-exact", HybridMode: "qwen3_rrf", RerankerMode: "qwen3-reranker-8b",
+				Enabled: true, HybridMode: "qwen3_rrf", RerankerMode: "qwen3-reranker-8b",
 				HitItems: []knowledge.RetrievalHit{{
 					Kept: true, Score: 0.26,
 					Chunk: knowledge.KBChunk{ChunkID: "workbuddy-exact", Title: "WorkBuddy 精确配置"},
 				}},
 			},
-			{Enabled: true, Empty: true},
+			{
+				Enabled: true, SearchID: "search-general", HybridMode: knowledge.RetrievalModeBM25Fallback,
+				HitItems: []knowledge.RetrievalHit{
+					{Kept: true, Score: 50, Chunk: knowledge.KBChunk{ChunkID: "generic-1", Title: "通用候选一"}},
+					{Kept: true, Score: 49, Chunk: knowledge.KBChunk{ChunkID: "generic-2", Title: "通用候选二"}},
+					{Kept: true, Score: 48, Chunk: knowledge.KBChunk{ChunkID: "generic-3", Title: "通用候选三"}},
+				},
+			},
+			{
+				Enabled: true, SearchID: "search-exact", HybridMode: "qwen3_rrf", RerankerMode: "qwen3-reranker-8b",
+				HitItems: []knowledge.RetrievalHit{{
+					Kept: true, Score: 0.25,
+					Chunk: knowledge.KBChunk{ChunkID: "workbuddy-exact", Title: "WorkBuddy 精确配置"},
+				}},
+			},
 		}},
 		chunks: map[string]knowledge.KBChunk{
 			"workbuddy-exact": {ChunkID: "workbuddy-exact", Title: "WorkBuddy 精确配置", Content: "精确配置正文。"},
@@ -269,7 +275,7 @@ func TestBelowFloorCandidatesRankAcrossPlannedQueriesAndKeepReadCapabilities(t *
 	}
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: `{
 		"answer_question":"与 WorkBuddy 连接后还需要设置什么",
-		"search_queries":["连接后的通用配置","WorkBuddy 连接后的配置"]
+		"search_queries":["WorkBuddy 连接后的配置","连接后的通用配置"]
 	}`}}}, &mockExecutor{}, nil)
 	eng.SetKnowledgeRetriever(retriever)
 	eng.knowledgeQAAgentLoopThisTurn = true

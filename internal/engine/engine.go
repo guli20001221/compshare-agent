@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -2389,7 +2388,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	// non-empty result was rejected by the relevance floor.
 	floorDroppedCandidates := false
 	nonFlooredCandidates := false
-	belowFloorCandidates := []belowFloorKnowledgeCandidate{}
+	belowFloorCandidateGroups := [][]belowFloorKnowledgeCandidate{}
 	for _, plannedQuery := range plan.SearchQueries {
 		if e.searchKnowledgeQueriesThisTurn >= maxRetrievalQueriesPerTurn {
 			droppedQueries = len(plan.SearchQueries) - executedQueries
@@ -2416,8 +2415,8 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		}
 		if floorDroppedAll {
 			floorDroppedCandidates = true
-			belowFloorCandidates = appendBelowFloorKnowledgeCandidates(
-				belowFloorCandidates, rawHits, retrieved.SearchID,
+			belowFloorCandidateGroups = append(belowFloorCandidateGroups,
+				belowFloorKnowledgeCandidates(rawHits, retrieved.SearchID),
 			)
 		} else if len(rawHits) > 0 {
 			nonFlooredCandidates = true
@@ -2467,7 +2466,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		})
 	}
 	if len(combined.Items) == 0 && floorDroppedCandidates && !nonFlooredCandidates {
-		belowFloorCandidates = topBelowFloorKnowledgeCandidates(belowFloorCandidates)
+		belowFloorCandidates := roundRobinBelowFloorKnowledgeCandidates(belowFloorCandidateGroups)
 		e.recordBelowFloorKnowledgeCapabilities(belowFloorCandidates)
 		return searchKnowledgeResultJSON(combined, "", map[string]any{
 			"floor_dropped_all":      true,
@@ -2486,55 +2485,73 @@ type belowFloorKnowledgeCandidate struct {
 	Title    string `json:"title,omitempty"`
 	Strength string `json:"strength"`
 	searchID string
-	score    float64
 }
 
-func appendBelowFloorKnowledgeCandidates(
-	candidates []belowFloorKnowledgeCandidate,
+func belowFloorKnowledgeCandidates(
 	hits []knowledge.RetrievalHit,
 	searchID string,
 ) []belowFloorKnowledgeCandidate {
-	byChunkID := make(map[string]int, len(candidates))
-	for i, candidate := range candidates {
-		byChunkID[candidate.ChunkID] = i
-	}
+	candidates := make([]belowFloorKnowledgeCandidate, 0, len(hits))
+	seen := make(map[string]struct{}, len(hits))
 	for _, hit := range hits {
 		chunkID := strings.TrimSpace(hit.Chunk.ChunkID)
 		if !hit.Kept || chunkID == "" {
 			continue
 		}
-		if i, exists := byChunkID[chunkID]; exists {
-			if hit.Score > candidates[i].score {
-				candidates[i].score = hit.Score
-				candidates[i].Title = truncateRunes(strings.TrimSpace(hit.Chunk.Title), 80)
-				if nextSearchID := strings.TrimSpace(searchID); nextSearchID != "" {
-					candidates[i].searchID = nextSearchID
-				}
-			} else if candidates[i].searchID == "" {
-				candidates[i].searchID = strings.TrimSpace(searchID)
-			}
+		if _, exists := seen[chunkID]; exists {
 			continue
 		}
-		byChunkID[chunkID] = len(candidates)
+		seen[chunkID] = struct{}{}
 		candidates = append(candidates, belowFloorKnowledgeCandidate{
 			ChunkID:  chunkID,
 			Title:    truncateRunes(strings.TrimSpace(hit.Chunk.Title), 80),
 			Strength: "below_floor",
 			searchID: strings.TrimSpace(searchID),
-			score:    hit.Score,
 		})
 	}
 	return candidates
 }
 
-func topBelowFloorKnowledgeCandidates(candidates []belowFloorKnowledgeCandidate) []belowFloorKnowledgeCandidate {
-	sort.SliceStable(candidates, func(i, j int) bool {
-		return candidates[i].score > candidates[j].score
-	})
-	if len(candidates) > maxBelowFloorKnowledgeCandidates {
-		candidates = candidates[:maxBelowFloorKnowledgeCandidates]
+// Scores from separate queries are not necessarily comparable: one query can
+// use a bounded reranker while another falls back to unbounded BM25. Preserve
+// each query's own ranking and give every query's first candidate a chance
+// before considering its second candidate.
+func roundRobinBelowFloorKnowledgeCandidates(groups [][]belowFloorKnowledgeCandidate) []belowFloorKnowledgeCandidate {
+	selected := make([]belowFloorKnowledgeCandidate, 0, maxBelowFloorKnowledgeCandidates)
+	seen := make(map[string]struct{}, maxBelowFloorKnowledgeCandidates)
+	searchIDs := make(map[string]string)
+	for _, group := range groups {
+		for _, candidate := range group {
+			if searchIDs[candidate.ChunkID] == "" && candidate.searchID != "" {
+				searchIDs[candidate.ChunkID] = candidate.searchID
+			}
+		}
 	}
-	return candidates
+	for rank := 0; len(selected) < maxBelowFloorKnowledgeCandidates; rank++ {
+		anyAtRank := false
+		for _, group := range groups {
+			if rank >= len(group) {
+				continue
+			}
+			anyAtRank = true
+			candidate := group[rank]
+			if _, exists := seen[candidate.ChunkID]; exists {
+				continue
+			}
+			if candidate.searchID == "" {
+				candidate.searchID = searchIDs[candidate.ChunkID]
+			}
+			seen[candidate.ChunkID] = struct{}{}
+			selected = append(selected, candidate)
+			if len(selected) == maxBelowFloorKnowledgeCandidates {
+				break
+			}
+		}
+		if !anyAtRank {
+			break
+		}
+	}
+	return selected
 }
 
 func (e *Engine) recordBelowFloorKnowledgeCapabilities(candidates []belowFloorKnowledgeCandidate) {
