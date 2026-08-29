@@ -13,16 +13,21 @@ import (
 )
 
 const (
-	resourceLabelInstanceID = "\u5b9e\u4f8bID"
-	resourceLabelName       = "\u540d\u79f0"
-	resourceLabelState      = "\u72b6\u6001"
-	resourceLabelGPUType    = "GPU\u578b\u53f7"
-	resourceLabelGPU        = "GPU\u6570\u91cf"
-	resourceLabelCPU        = "CPU"
-	resourceLabelMemory     = "\u5185\u5b58"
-	resourceLabelImageType  = "\u955c\u50cf\u7c7b\u578b"
-	resourceLabelStartTime  = "\u542f\u52a8\u65f6\u95f4"
-	resourceLabelExpireTime = "\u5230\u671f\u65f6\u95f4"
+	resourceLabelInstanceID        = "\u5b9e\u4f8bID"
+	resourceLabelName              = "\u540d\u79f0"
+	resourceLabelState             = "\u72b6\u6001"
+	resourceLabelGPUType           = "GPU\u578b\u53f7"
+	resourceLabelGPU               = "GPU\u6570\u91cf"
+	resourceLabelCPU               = "CPU"
+	resourceLabelMemory            = "\u5185\u5b58"
+	resourceLabelImageName         = "\u955c\u50cf\u540d\u79f0"
+	resourceLabelImageType         = "\u955c\u50cf\u7c7b\u578b"
+	resourceLabelInstanceType      = "\u5b9e\u4f8b\u7c7b\u578b"
+	resourceLabelStartTime         = "\u542f\u52a8\u65f6\u95f4"
+	resourceLabelSchedulerStopTime = "\u8ba1\u5212\u5173\u673a\u65f6\u95f4"
+	resourceLabelStopTime          = "\u5173\u673a\u65f6\u95f4"
+	resourceLabelReleaseTime       = "\u9884\u8ba1\u56de\u6536\u65f6\u95f4"
+	resourceLabelExpireTime        = "\u5230\u671f\u65f6\u95f4"
 
 	noInstancesReply              = "\u672a\u627e\u5230\u5b9e\u4f8b\u3002"
 	noMonitorValuesReply          = "\u672a\u8fd4\u56de\u76d1\u63a7\u6570\u636e\u3002"
@@ -69,8 +74,16 @@ func RenderResourceSummaryWithZoneCatalog(instances []entity.InstanceSnapshot, m
 		if zone := resourceZoneLabel(zoneCatalog, inst.Zone); zone != "" {
 			parts = append(parts, "可用区 "+zone)
 		}
-		if inst.ImageType != "" {
+		if inst.ImageName != "" {
+			parts = append(parts, "镜像 "+cleanResourceText(inst.ImageName))
+			if inst.ImageType != "" {
+				parts = append(parts, "镜像类型 "+cleanResourceText(inst.ImageType))
+			}
+		} else if inst.ImageType != "" {
 			parts = append(parts, "镜像 "+cleanResourceText(inst.ImageType))
+		}
+		if inst.InstanceType != "" {
+			parts = append(parts, "实例类型 "+cleanResourceText(inst.InstanceType))
 		}
 		if inst.IsSpot {
 			// Spot implies hourly postpay, so show the product mode rather than the
@@ -79,10 +92,19 @@ func RenderResourceSummaryWithZoneCatalog(instances []entity.InstanceSnapshot, m
 		} else if inst.ChargeType != "" {
 			parts = append(parts, resourceChargeTypeLabel(inst.ChargeType))
 		}
-		if inst.StartTime != 0 {
+		if inst.StartTime > 0 {
 			parts = append(parts, "启动于 "+resourceTimeLabel(inst.StartTime))
 		}
-		if inst.ExpireTime != 0 {
+		if inst.SchedulerStopTime > 0 {
+			parts = append(parts, "计划关机于 "+resourceTimeLabel(inst.SchedulerStopTime))
+		}
+		if inst.StopTime > 0 {
+			parts = append(parts, "关机于 "+resourceTimeLabel(inst.StopTime))
+		}
+		if inst.ReleaseTime > 0 {
+			parts = append(parts, "预计回收于 "+resourceTimeLabel(inst.ReleaseTime))
+		}
+		if inst.ExpireTime > 0 {
 			parts = append(parts, "到期于 "+resourceTimeLabel(inst.ExpireTime))
 		}
 		lines = append(lines, "- "+title+"："+strings.Join(parts, "；"))
@@ -145,6 +167,10 @@ func resourceMemoryLabel(memoryMB int) string {
 func resourceTimeLabel(timestamp int64) string {
 	return time.Unix(timestamp, 0).In(monitorHistoryLoc).Format("2006-01-02 15:04")
 }
+
+// ResourceTimeLabel formats an upstream Unix timestamp using the same timezone
+// and display vocabulary as instance facts.
+func ResourceTimeLabel(timestamp int64) string { return resourceTimeLabel(timestamp) }
 
 // ResourceStateLabel renders the upstream instance state for user-facing text.
 // Creation delivery and resource reads share it so raw wire values such as

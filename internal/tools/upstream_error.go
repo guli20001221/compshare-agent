@@ -149,6 +149,11 @@ var retCodeGuidanceByCode = map[int]retCodeGuidance{
 	226618: chooseAlternativeGuidance("共享文件存储仍被运行中的实例挂载：请先卸载或关闭相关实例。"),
 	226619: retryLaterGuidance("操作过于频繁：请稍等一会儿再试。"),
 	226620: retryLaterGuidance("镜像正在同步中：请等待同步完成后再操作。"),
+	226621: retryLaterGuidance("系统盘正在迁移：请等待迁移完成后再试。"),
+	226622: retryLaterGuidance("实例正在启动：请等待状态稳定后再试。"),
+	226628: retryLaterGuidance("社区镜像正在同步到目标可用区：请稍后再试。"),
+	226636: chooseAlternativeGuidance("目标可用区不支持自制镜像同步：请选择其他可用区。"),
+	226637: chooseAlternativeGuidance("目标可用区不支持所选镜像类型：请更换镜像或可用区。"),
 }
 
 func retCodeGuidanceForMessage(code int, msg string) retCodeGuidance {
@@ -156,7 +161,6 @@ func retCodeGuidanceForMessage(code int, msg string) retCodeGuidance {
 	guidance.Hint = retCodeHintForMessage(code, msg)
 	return guidance
 }
-
 
 func retCodeHintForMessage(code int, msg string) string {
 	guidance := retCodeGuidanceByCode[code]

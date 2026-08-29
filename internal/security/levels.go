@@ -28,6 +28,7 @@ func (l Level) String() string {
 var ActionLevels = map[string]Level{
 	// ── L0: Read-only / Query ───────────────────────────────
 	"DescribeCompShareInstance":               L0,
+	"DescribeCompshareDisk":                   L0,
 	"DescribeCompShareImages":                 L0,
 	"DescribeCompShareCustomImages":           L0,
 	"DescribeCompShareSharingImages":          L0,

@@ -63,6 +63,10 @@ func TestStepActionLabelCoversRegistryTools(t *testing.T) {
 	}
 }
 
+func TestStepActionLabelCoversInternalDiskRead(t *testing.T) {
+	assert.NotEmpty(t, stepActionLabel("DescribeCompshareDisk"))
+}
+
 // Request<Operation> labels are derived, not listed. This asserts the derivation
 // actually fires for a generated name and stays anchored to the workflow's own
 // label — if proposalToolName's naming scheme changes, this fails rather than

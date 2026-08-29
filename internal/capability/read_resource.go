@@ -16,11 +16,15 @@ import (
 const (
 	resourceCapabilityLabel = string(intent.IntentResourceInfo)
 	resourceInfoAction      = "DescribeCompShareInstance"
+	resourceTypeInstances   = "instances"
+	resourceTypeDisks       = "disks"
 )
 
 // ResourceInfoRequest is the capability's own request contract.
 type ResourceInfoRequest struct {
-	Targets []platform.TargetRef `json:"targets,omitempty"`
+	ResourceType string               `json:"resource_type,omitempty"`
+	Targets      []platform.TargetRef `json:"targets,omitempty"`
+	DiskIDs      []string             `json:"disk_ids,omitempty"`
 }
 
 // MissingFields: none — an empty target set lists the account's instances.
@@ -30,6 +34,7 @@ func (ResourceInfoRequest) MissingFields() []platform.MissingField { return nil 
 // metadata and the selection candidates (populated only on a "list all" turn).
 type ResourceInfoResponse struct {
 	Instances []entity.InstanceSnapshot
+	DiskInfo  *DiskInfoResponse
 	Meta      readprojection.ResourceEnvelopeMeta
 	// ZoneCatalog is immutable engine-owned reference data captured for this
 	// request. It lets the pure renderer project the raw Zone code and the live
@@ -43,10 +48,14 @@ type ResourceInfoResponse struct {
 
 func resourceReadSpec() ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResponse] {
 	return ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResponse]{
-		Label:            resourceCapabilityLabel,
-		Description:      "查询当前账号已有实例的列表、状态和基础配置，也用于按 ID 或名称核实实例。可用区给实例代码和实时目录名；无法核验时只给代码。只反映账号内资源，不查 GPU 库存或平台应用入口；应用入口用 instance_access software。",
-		Params:           objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
-		NeedsZoneCatalog: func(ResourceInfoRequest) bool { return true },
+		Label:       resourceCapabilityLabel,
+		Description: "查账号实例或云盘；不查库存或应用入口。",
+		Params: objectParam(map[string]schemaNode{
+			"resource_type": enumParam(resourceTypeInstances, resourceTypeDisks).described("instances 查实例；disks 查云盘、数据盘或 CVolume。"),
+			"targets":       targetRefsParam(),
+			"disk_ids":      arrayParam(stringParam()).described("磁盘 ID。"),
+		}),
+		NeedsZoneCatalog: func(req ResourceInfoRequest) bool { return req.ResourceType != resourceTypeDisks },
 		Handle:           resourceHandle,
 		Render:           resourceRender,
 		Observe:          resourceObserve,
@@ -54,6 +63,13 @@ func resourceReadSpec() ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResp
 }
 
 func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime) (ResourceInfoResponse, ReadResult) {
+	if req.ResourceType == resourceTypeDisks {
+		resp, terminal := diskInfoHandle(ctx, DiskInfoRequest{Targets: req.Targets, DiskIDs: req.DiskIDs}, rt)
+		return ResourceInfoResponse{DiskInfo: &resp}, terminal
+	}
+	if len(req.DiskIDs) > 0 {
+		return ResourceInfoResponse{}, ReadFallbackBeforeTool(platform.ReadFallbackValidation)
+	}
 	var ids []string
 	var filters readprojection.ResourceFilterSet
 	hasFilters := readprojection.ContainsFilterRef(req.Targets)
@@ -93,8 +109,13 @@ func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime
 		ids = resolvedIDs
 	}
 
-	args := readprojection.DescribeResourceArgs(ids)
-	raw, err := rt.Executor.Execute(ctx, resourceInfoAction, args)
+	var raw map[string]any
+	var err error
+	if len(ids) == 0 {
+		raw, err = describeAllAccountInstances(ctx, rt.Executor)
+	} else {
+		raw, err = rt.Executor.Execute(ctx, resourceInfoAction, readprojection.DescribeResourceArgs(ids))
+	}
 	if err != nil {
 		return ResourceInfoResponse{}, ReadFailureAfterTool(resourceInfoAction, resourceCapabilityLabel, err)
 	}
@@ -159,6 +180,9 @@ func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime
 }
 
 func resourceRender(resp ResourceInfoResponse) ReadResult {
+	if resp.DiskInfo != nil {
+		return diskInfoRender(*resp.DiskInfo)
+	}
 	r := ReadHandled(readprojection.RenderResourceSummaryWithZoneCatalog(resp.Instances, resp.Meta, resp.ZoneCatalog))
 	r.ToolAction = resourceInfoAction
 	env := readprojection.BuildResourceEnvelopeWithMetaAndZoneCatalog(resp.Instances, resp.Meta, resp.ZoneCatalog)
@@ -170,6 +194,9 @@ func resourceRender(resp ResourceInfoResponse) ReadResult {
 // existence evidence. resource_info is the ONLY read that emits it: its subjects
 // come from the upstream response, not a pre-query snapshot.
 func resourceObserve(resp ResourceInfoResponse) []ReadEffect {
+	if resp.DiskInfo != nil {
+		return nil
+	}
 	var effects []ReadEffect
 	if len(resp.VerifiedInstanceIDs) > 0 {
 		effects = append(effects, RememberVerifiedInstances{IDs: append([]string(nil), resp.VerifiedInstanceIDs...)})

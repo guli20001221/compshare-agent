@@ -92,6 +92,20 @@ func TestBuildResourceEnvelopeProjectsLiveZoneNamesWithoutALocalMapping(t *testi
 	assert.True(t, env.Constraints.DoNotInventZoneLabels)
 }
 
+func TestBuildResourceEnvelopeProjectsCurrentImageShapeAndLifecycleTimes(t *testing.T) {
+	env := BuildResourceEnvelope([]entity.InstanceSnapshot{{
+		UHostId: "cpod-a", ImageName: "PyTorch 2.9", ImageType: "App", InstanceType: "Container",
+		SchedulerStopTime: 1000, StopTime: 2000, ReleaseTime: 3000,
+	}})
+
+	assertEnvelopeFact(t, env, "cpod-a", "image_name", "PyTorch 2.9")
+	assertEnvelopeFact(t, env, "cpod-a", "image_type", "App")
+	assertEnvelopeFact(t, env, "cpod-a", "instance_type", "Container")
+	assertEnvelopeFact(t, env, "cpod-a", "scheduler_stop_time", "1970-01-01 08:16")
+	assertEnvelopeFact(t, env, "cpod-a", "stop_time", "1970-01-01 08:33")
+	assertEnvelopeFact(t, env, "cpod-a", "release_time", "1970-01-01 08:50")
+}
+
 func TestBuildResourceEnvelopeOmitsUnverifiedZoneName(t *testing.T) {
 	for _, catalog := range []*deployment.ZoneCatalogSnapshot{
 		nil,

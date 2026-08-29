@@ -7,7 +7,6 @@ import (
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/platform"
-	"github.com/compshare-agent/internal/readprojection"
 )
 
 // resolveReadTargetSnapshots resolves IDs and names with stable deduplication.
@@ -66,7 +65,7 @@ func warmedResolver(ctx context.Context, rt ReadRuntime) (EntityResolver, bool) 
 	if rt.Executor == nil {
 		return nil, false
 	}
-	raw, err := rt.Executor.Execute(ctx, resourceInfoAction, readprojection.DescribeResourceArgs(nil))
+	raw, err := describeAllAccountInstances(ctx, rt.Executor)
 	if err != nil {
 		return nil, false
 	}

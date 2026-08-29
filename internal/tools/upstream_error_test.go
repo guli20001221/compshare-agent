@@ -122,6 +122,34 @@ func TestRetCodeGuidanceCoversThePreviouslyDriftedCodes(t *testing.T) {
 	}
 }
 
+func TestRetCodeGuidanceCoversCurrentWorkflowContracts(t *testing.T) {
+	cases := []struct {
+		code        int
+		disposition AgentToolStatus
+		hint        string
+	}{
+		{226621, AgentToolStatusRetryLater, "系统盘正在迁移"},
+		{226622, AgentToolStatusRetryLater, "实例正在启动"},
+		{226628, AgentToolStatusRetryLater, "社区镜像正在同步到目标可用区"},
+		{226636, AgentToolStatusChooseAlternative, "目标可用区不支持自制镜像同步"},
+		{226637, AgentToolStatusChooseAlternative, "目标可用区不支持所选镜像类型"},
+	}
+	for _, tc := range cases {
+		t.Run(fmt.Sprint(tc.code), func(t *testing.T) {
+			guidance, ok := retCodeGuidanceByCode[tc.code]
+			if !ok {
+				t.Fatalf("RetCode %d must remain in the canonical guidance table", tc.code)
+			}
+			if guidance.Disposition != tc.disposition {
+				t.Fatalf("RetCode %d disposition=%q want %q", tc.code, guidance.Disposition, tc.disposition)
+			}
+			if !strings.Contains(guidance.Hint, tc.hint) {
+				t.Fatalf("RetCode %d hint=%q want substring %q", tc.code, guidance.Hint, tc.hint)
+			}
+		})
+	}
+}
+
 // TestUpstreamAPIError_UserMessage verifies that typed read failures expose a
 // known recovery hint and let callers use their generic fallback otherwise.
 func TestUpstreamAPIError_UserMessage(t *testing.T) {
