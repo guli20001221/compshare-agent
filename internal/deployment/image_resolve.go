@@ -210,9 +210,9 @@ func scopeBySource(entries []ImageCatalogEntry, source string) []ImageCatalogEnt
 	return out
 }
 
-// viableEntries applies the two HARD gates (and only those), mirroring
-// SelectImageCandidates: an image whose Status is set and not Available is dropped,
-// and a pod zone requires a container image. A GPU-support mismatch is deliberately
+// viableEntries applies the two HARD gates (and only those): an image whose
+// Status is set and not Available is dropped, and a pod zone requires a
+// container image. A GPU-support mismatch is deliberately
 // NOT a filter — SupportedGpuTypes is a recommendation hint (empty = unknown, not
 // unsupported), so it only bumps ranking, never rejects (recon redline #2).
 func viableEntries(entries []ImageCatalogEntry, req ImageRequest) []ImageCatalogEntry {
