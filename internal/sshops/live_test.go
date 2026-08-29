@@ -70,6 +70,7 @@ func envOr(k, d string) string {
 
 type liveKnowledgeProbe struct {
 	retriever *knowledge.Retriever
+	corpus    knowledge.Corpus
 	searches  atomic.Int32
 	reads     atomic.Int32
 }
@@ -84,14 +85,19 @@ type liveKnowledgeUsage interface {
 	knowledgeUsage() (searches, reads int32)
 }
 
-func (p *liveKnowledgeProbe) RetrieveContext(ctx context.Context, question, hint string) knowledge.RetrievalResult {
+func (p *liveKnowledgeProbe) RetrieveContext(_ context.Context, question, hint string) knowledge.RetrievalResult {
 	p.searches.Add(1)
-	return p.retriever.RetrieveContext(ctx, question, hint)
+	return p.retriever.Retrieve(question, hint)
 }
 
 func (p *liveKnowledgeProbe) Chunk(chunkID string) (knowledge.KBChunk, bool) {
 	p.reads.Add(1)
-	return p.retriever.Chunk(chunkID)
+	for _, chunk := range p.corpus.Chunks {
+		if chunk.ChunkID == chunkID {
+			return chunk, true
+		}
+	}
+	return knowledge.KBChunk{}, false
 }
 
 func (p *liveKnowledgeProbe) knowledgeUsage() (int32, int32) {
@@ -226,6 +232,7 @@ func liveSupervisor(t *testing.T) Supervisor {
 		}
 		sup.KnowledgeRetriever = &liveKnowledgeProbe{
 			retriever: knowledge.NewRetriever(corpus, knowledge.RetrieverOptions{}),
+			corpus:    corpus,
 		}
 	}
 	return sup
