@@ -136,10 +136,24 @@ func TestInstanceOps_MissingOrUnknownModeFailsClosed(t *testing.T) {
 			args["Mode"] = mode
 		}
 
-		out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", args, noopStep)
+		var steps []StepEvent
+		out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", args, captureSteps(&steps))
 
-		require.Contains(t, out, "模式无效")
 		require.Zero(t, runner.calls)
+		require.False(t, eng.instanceOpsRanThisTurn, "a malformed model call must not consume the runner-attempt slot")
+		require.Len(t, steps, 1)
+		require.Equal(t, instanceOpsModeRefusalForUser, steps[0].Message)
+		require.NotContains(t, steps[0].Message, "inspect")
+		require.NotContains(t, steps[0].Message, "repair")
+
+		result, ok := tools.ParseAgentToolResult(out)
+		require.True(t, ok, out)
+		require.Equal(t, tools.AgentToolStatusNeedsInput, result.Status)
+		require.Equal(t, tools.AgentToolCodeInvalidArguments, result.Error.Code)
+		require.Equal(t, tools.AgentToolNextCorrectToolCall, result.NextStep)
+		require.Equal(t, "invalid_mode", result.Meta.SourceStatus)
+		require.Contains(t, result.Error.Message, "inspect")
+		require.Contains(t, result.Error.Message, "repair")
 	}
 }
 
@@ -808,7 +822,7 @@ func TestInstanceOps_NoSSHTargetReturnsStructuredBoundaryObservation(t *testing.
 	require.True(t, ok, out)
 	require.Equal(t, tools.AgentToolStatusFailed, result.Status)
 	require.Equal(t, "INSTANCE_GUEST_SSH_UNAVAILABLE", result.Error.Code)
-	require.Equal(t, tools.AgentToolNextAnswerUser, result.NextStep)
+	require.Equal(t, tools.AgentToolNextAnswerWithLimits, result.NextStep)
 	require.Equal(t, "no_ssh_target", result.Meta.SourceStatus)
 	data, ok := result.Data.(map[string]any)
 	require.True(t, ok, "%#v", result.Data)
@@ -880,8 +894,40 @@ func TestInstanceOps_OnePerTurnEvenWithTaskTweak(t *testing.T) {
 
 	require.Equal(t, 1, runner.calls, "one-word Task tweak must not buy a second in-instance run")
 	require.True(t, strings.HasPrefix(out1, finalReplyPrefix), "first run returns the terminal verdict")
-	require.Contains(t, out2, "已经执行过")
+	require.Contains(t, out2, "已经发起过一次实例内排查请求")
+	require.NotContains(t, out2, "已经执行过一次")
+	require.NotContains(t, out2, "重复进入实例")
 	require.False(t, strings.HasPrefix(out2, finalReplyPrefix), "the already-ran refusal keeps the turn going")
+}
+
+func TestInstanceOps_PreEntryFailureRepeatWordingDoesNotClaimGuestEntry(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "no SSH entrypoint", err: ErrInstanceOpsNoSSHTarget},
+		{name: "TCP preflight unreachable", err: ErrInstanceOpsSSHPreflightUnreachable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &fakeInstanceOpsRunner{err: tc.err}
+			eng := newInstanceOpsEngine(runner, alwaysConfirm)
+
+			first := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), noopStep)
+			var secondSteps []StepEvent
+			second := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&secondSteps))
+
+			require.Equal(t, 1, runner.calls, "a pre-entry failure must not trigger a second runner attempt in the same turn")
+			firstResult, ok := tools.ParseAgentToolResult(first)
+			require.True(t, ok, first)
+			require.Equal(t, tools.AgentToolNextAnswerWithLimits, firstResult.NextStep)
+			require.Contains(t, second, "已经发起过一次实例内排查请求")
+			require.NotContains(t, second, "已经执行过一次")
+			require.NotContains(t, second, "重复进入实例")
+			require.Len(t, secondSteps, 1)
+			require.Equal(t, instanceOpsRepeatRefusalForUser, secondSteps[0].Message)
+			require.NotContains(t, secondSteps[0].Message, "进入实例")
+		})
+	}
 }
 
 // The server deployment grant is a real execution gate, not just a tool-window

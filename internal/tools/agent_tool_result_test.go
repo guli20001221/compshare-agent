@@ -20,6 +20,26 @@ func TestAgentToolResultHasOneStableShape(t *testing.T) {
 	require.Equal(t, 1, result.Meta.Attempts)
 }
 
+func TestAgentToolFailureWithLimitsKeepsOtherObservationSurfacesAvailable(t *testing.T) {
+	result := AgentToolFailureWithLimits(
+		"DiagnoseInstanceInternals",
+		map[string]any{"execution_boundary": "no_ssh_entrypoint"},
+		"INSTANCE_GUEST_SSH_UNAVAILABLE",
+		"当前观察面无法进入 Guest。",
+		AgentToolMeta{SourceStatus: "no_ssh_target"},
+	)
+
+	require.Equal(t, AgentToolStatusFailed, result.Status)
+	require.Equal(t, AgentToolNextAnswerWithLimits, result.NextStep)
+	require.False(t, result.Retryable)
+	require.Equal(t, "INSTANCE_GUEST_SSH_UNAVAILABLE", result.Error.Code)
+	require.Equal(t, "no_ssh_target", result.Meta.SourceStatus)
+
+	parsed, ok := ParseAgentToolResult(MarshalAgentToolResult(result))
+	require.True(t, ok, "the contract must recognise the bounded-failure envelope")
+	require.Equal(t, AgentToolNextAnswerWithLimits, parsed.NextStep)
+}
+
 func TestParseAgentToolResultRejectsIncoherentControlPlane(t *testing.T) {
 	raw := `{"status":"success","data":null,"error":{"code":"NONE"},"retryable":true,"next_step":"retry_later","meta":{"action":"DescribeCompShareInstance"}}`
 	_, ok := ParseAgentToolResult(raw)
@@ -141,6 +161,7 @@ func TestOnlyAMalformedCallGetsTheModelOwnedNextStep(t *testing.T) {
 		AgentToolRetryLater("A", nil, "", "", AgentToolMeta{}),
 		AgentToolChooseAlternative("A", nil, "", "", AgentToolMeta{}),
 		AgentToolFailure("A", nil, "", "", AgentToolMeta{}),
+		AgentToolFailureWithLimits("A", nil, "", "", AgentToolMeta{}),
 		AgentToolNoCitableEvidence("A", nil, AgentToolMeta{}),
 		AgentToolResultFromError("A", NewUpstreamAPIError(17000, "x"), AgentToolMeta{}),
 	}

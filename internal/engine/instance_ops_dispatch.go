@@ -40,7 +40,7 @@ type instanceOpsEntryBoundaryData struct {
 }
 
 func instanceOpsPreflightFailureObservation(action string) string {
-	return tools.MarshalAgentToolResult(tools.AgentToolFailure(action,
+	return tools.MarshalAgentToolResult(tools.AgentToolFailureWithLimits(action,
 		instanceOpsEntryBoundaryData{
 			ObservationSource:     "diagnostic_service",
 			ObservationScope:      "diagnostic_service_to_instance_ssh_candidate",
@@ -62,7 +62,7 @@ func instanceOpsPreflightFailureObservation(action string) string {
 // cannot enter the Guest, but platform reads and knowledge retrieval observe
 // different layers and can still answer or narrow the user's request.
 func instanceOpsNoSSHTargetObservation(action string) string {
-	return tools.MarshalAgentToolResult(tools.AgentToolFailure(action,
+	return tools.MarshalAgentToolResult(tools.AgentToolFailureWithLimits(action,
 		instanceOpsEntryBoundaryData{
 			ObservationSource:     "platform_instance_access",
 			ObservationScope:      "instance_guest_ssh_entry",
@@ -84,6 +84,15 @@ func instanceOpsNoSSHTargetObservation(action string) string {
 // the model. A bare confirmation or a console-only selection does not identify a
 // target in this conversation.
 const (
+	// A malformed Mode is the model's error, not a request for the user to learn
+	// internal enum values. Keep the activity stream customer-facing and route
+	// the exact correction through the model-only tool result.
+	instanceOpsModeRefusalForUser  = "实例内排查尚未开始，正在更正调用参数。"
+	instanceOpsModeRefusalForModel = "Mode 参数无效。请将 Mode 设置为 inspect（只读检查）或 repair（可恢复修复），然后重新发出同一次工具调用。"
+	// INV-11 counts an authorized runner attempt, including one that failed
+	// before Guest entry. The wording must not claim that entry occurred.
+	instanceOpsRepeatRefusalForUser  = "本回合已发起过一次实例内排查请求，本次重复调用没有执行。"
+	instanceOpsRepeatRefusalForModel = "本回合已经发起过一次实例内排查请求；请勿重复调用该通道。请基于首次观察继续判断，必要时改用适用的平台只读能力或知识检索。"
 	// instanceOpsTargetRefusalForUser is what the person reads. Actionable, no internal policy.
 	instanceOpsTargetRefusalForUser = "尚未开始实例内排查。请直接回复要排查的实例 ID 或实例名称；" +
 		"如果上面列出了候选实例，回复对应的序号也可以。"
@@ -151,9 +160,13 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		repairScopeAuthorized = true
 	case "inspect":
 	default:
-		msg := "实例内任务模式无效；只支持 inspect（只读）或 repair（可恢复修复）。"
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
-		return friendlyToolResultJSON(msg)
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: instanceOpsModeRefusalForUser})
+		return tools.MarshalAgentToolResult(tools.AgentToolInvalidToolCall(
+			action,
+			tools.AgentToolCodeInvalidArguments,
+			instanceOpsModeRefusalForModel,
+			tools.AgentToolMeta{SourceStatus: "invalid_mode"},
+		))
 	}
 	// Build the local-only portion before any platform call. A planner that copied
 	// a user Authorization value into Task must not move it into audit or activity;
@@ -186,12 +199,12 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		e.recordSelectedInstanceIDWithSource(instanceID, "", SelectedInstanceSourceUser)
 	}
 
-	// INV-11: one in-instance run per turn. A rejected target does not spend this
-	// slot because the instance was never entered.
+	// INV-11: one authorized runner attempt per turn. A rejected target does not
+	// spend this slot, while a runner failure does because it may have partially
+	// executed even when no terminal verdict returned.
 	if e.instanceOpsRanThisTurn {
-		msg := "本回合已经执行过一次实例内排查，不再重复进入实例。如需再次排查，请重新发送指令。"
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
-		return friendlyToolResultJSON(msg)
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: instanceOpsRepeatRefusalForUser})
+		return friendlyToolResultJSON(instanceOpsRepeatRefusalForModel)
 	}
 	e.instanceOpsRanThisTurn = true
 

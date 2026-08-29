@@ -418,10 +418,10 @@ type Engine struct {
 	// settable, so a session can hold a different runner than its siblings — it is
 	// not treated as a shared singleton.
 	instanceOps InstanceOpsRunner
-	// instanceOpsRanThisTurn enforces at most one in-instance run per turn
-	// (INV-11). Set at executeInstanceOps entry, BEFORE confirm, so a declined card
-	// still spends the slot. Reset per turn. Per-session/per-turn — sharing would
-	// let one tenant's run withdraw the lane from another's turn.
+	// instanceOpsRanThisTurn enforces at most one authorized runner attempt per
+	// turn (INV-11). Set immediately before Run, so pre-entry failures and partial
+	// executions both spend the slot. Reset per turn. Per-session/per-turn —
+	// sharing would let one tenant's attempt withdraw the lane from another's turn.
 	instanceOpsRanThisTurn bool
 
 	// pendingInstanceOpsInterruption is a user-facing notice left by a diagnosis that ended without

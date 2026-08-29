@@ -43,7 +43,7 @@ func TestInstanceOps_SSHPreflightUnreachableReturnsStructuredVantageObservation(
 	require.True(t, ok, raw)
 	require.Equal(t, tools.AgentToolStatusFailed, result.Status)
 	require.Equal(t, "SSH_DIAGNOSTIC_VANTAGE_UNREACHABLE", result.Error.Code)
-	require.Equal(t, tools.AgentToolNextAnswerUser, result.NextStep)
+	require.Equal(t, tools.AgentToolNextAnswerWithLimits, result.NextStep)
 	data, ok := result.Data.(map[string]any)
 	require.True(t, ok, "%#v", result.Data)
 	require.Equal(t, "diagnostic_service", data["observation_source"])

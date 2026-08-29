@@ -123,19 +123,24 @@ func AgentToolFailure(action string, data any, code, message string, meta AgentT
 	return newAgentToolResult(AgentToolStatusFailed, action, data, defaultAgentErrorCode(code, "TOOL_EXECUTION_FAILED"), message, false, AgentToolNextAnswerUser, meta)
 }
 
+// AgentToolFailureWithLimits marks a bounded failure of the current observation
+// surface. The Agent may still consult a different applicable observation
+// surface, but any final answer must stay within the evidence boundary carried
+// by data and error.message.
+func AgentToolFailureWithLimits(action string, data any, code, message string, meta AgentToolMeta) AgentToolResult {
+	return newAgentToolResult(AgentToolStatusFailed, action, data, defaultAgentErrorCode(code, "TOOL_EXECUTION_FAILED"), message, false, AgentToolNextAnswerWithLimits, meta)
+}
+
 // AgentToolNoCitableEvidence represents a successful retrieval attempt that
 // found no evidence suitable for confirming a platform fact. It is deliberately
 // not success/answer_user: the Agent may still give stable general knowledge,
 // but must limit any platform-specific answer to what it can honestly verify.
 func AgentToolNoCitableEvidence(action string, data any, meta AgentToolMeta) AgentToolResult {
-	return newAgentToolResult(
-		AgentToolStatusFailed,
+	return AgentToolFailureWithLimits(
 		action,
 		data,
 		"NO_CITABLE_EVIDENCE",
 		"未检索到可用于确认平台事实的证据。",
-		false,
-		AgentToolNextAnswerWithLimits,
 		meta,
 	)
 }
