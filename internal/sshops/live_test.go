@@ -81,6 +81,13 @@ type liveRemoteKnowledgeProbe struct {
 	reads     atomic.Int32
 }
 
+var (
+	_ KnowledgeRetriever         = (*liveKnowledgeProbe)(nil)
+	_ knowledgeLocalChunkReader  = (*liveKnowledgeProbe)(nil)
+	_ KnowledgeRetriever         = (*liveRemoteKnowledgeProbe)(nil)
+	_ knowledgeRemoteChunkReader = (*liveRemoteKnowledgeProbe)(nil)
+)
+
 type liveKnowledgeUsage interface {
 	knowledgeUsage() (searches, reads int32)
 }
