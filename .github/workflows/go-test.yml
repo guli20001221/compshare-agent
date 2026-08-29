@@ -40,6 +40,12 @@ jobs:
       - name: go test ./...
         run: go test ./... -count=1
 
+      # Live tests still need real credentials to execute, but their adapters must compile
+      # against the current production seams. A compile-only gate caught the local knowledge
+      # retriever API drifting while every ordinary package test remained green.
+      - name: compile live SSH-ops probes
+        run: go test -tags live ./internal/sshops -run '^$' -count=1
+
       # The SSH-ops guardrails decide which commands may execute inside a customer instance,
       # and until now NO job ran their tests — the classification corpus and the whole scrub
       # suite were manual-only, so a regression in the tier that separates "print the swap

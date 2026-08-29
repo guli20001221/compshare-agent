@@ -1,7 +1,7 @@
 //go:build live
 
-// Live integration test — NOT compiled in CI (needs the `live` build tag, a reachable
-// instance, a ModelVerse key, and the Python harness deps). Run manually:
+// Live integration test — compiled but not executed in CI. A real run needs a reachable
+// instance, a ModelVerse key, and the Python harness deps. Run manually:
 //
 //	go test -tags live -run TestLive -v -timeout 360s ./internal/sshops
 //
