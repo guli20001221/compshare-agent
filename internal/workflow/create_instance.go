@@ -432,10 +432,6 @@ func CreateInstanceGuidedDef() *Definition {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// Step definitions (params aligned with docs/api/ specs)
-// ---------------------------------------------------------------------------
-
 func stepQueryImages(allowCommunityBrowse bool) Step {
 	return Step{
 		Name: "查询镜像",
@@ -2893,11 +2889,6 @@ func createSpecValueUnset(v any) bool {
 	}
 	return false
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 func paramStr(params map[string]any, key, defaultVal string) string {
 	if v, ok := params[key]; ok {
 		if s, ok := v.(string); ok {
@@ -3162,15 +3153,13 @@ func createImageUnavailableError(params map[string]any) error {
 	return fmt.Errorf("未找到可用镜像，无法创建实例；请换镜像或稍后重试")
 }
 
-// ---------------------------------------------------------------------------
-// Editable confirm form (v1, select-only)
+// Editable confirm form (v1, select-only).
 //
 // All option sets are assembled from data ALREADY collected by earlier steps
 // (查询镜像 / 查询可用配比) — zero extra API calls, zero LLM. No stock or price
 // claim is made for combinations that were never checked: after an override
 // the 检查库存/查询价格 steps re-run and a refreshed card is re-confirmed
 // (方案 A), so the authoritative answer always precedes creation.
-// ---------------------------------------------------------------------------
 
 const (
 	maxFormGPUOptions     = 5

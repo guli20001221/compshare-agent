@@ -285,7 +285,7 @@ func Load(path string) (*Config, error) {
 	}
 	// mysql.dsn is optional while parsing configuration. The server command
 	// validates DSN presence before starting.
-	if err := resolveOptionalDSN(&cfg.Agent.MySQL.DSN); err != nil {
+	if err := resolveOptionalCredential(&cfg.Agent.MySQL.DSN, "agent.mysql.dsn"); err != nil {
 		return nil, err
 	}
 	if err := validateHTTPConfig(&cfg.Agent.HTTP); err != nil {
@@ -390,37 +390,37 @@ func mergeConfigMaps(base, override map[string]any) map[string]any {
 func applyRateLimitDefaults(rateLimit *RateLimitConfig) error {
 	defaults := governance.DefaultLimits()
 	if rateLimit.LLMQPS < 0 {
-		return negativeRateLimitError("agent.rate_limit.llm_qps")
+		return negativeValueError("agent.rate_limit.llm_qps")
 	}
 	if rateLimit.LLMDaily < 0 {
-		return negativeRateLimitError("agent.rate_limit.llm_daily")
+		return negativeValueError("agent.rate_limit.llm_daily")
 	}
 	if rateLimit.MutatingQPS < 0 {
-		return negativeRateLimitError("agent.rate_limit.mutating_qps")
+		return negativeValueError("agent.rate_limit.mutating_qps")
 	}
 	if rateLimit.MutatingDaily < 0 {
-		return negativeRateLimitError("agent.rate_limit.mutating_daily")
+		return negativeValueError("agent.rate_limit.mutating_daily")
 	}
 	if rateLimit.ReadExpensiveQPS < 0 {
-		return negativeRateLimitError("agent.rate_limit.read_expensive_qps")
+		return negativeValueError("agent.rate_limit.read_expensive_qps")
 	}
 	if rateLimit.ReadExpensiveDaily < 0 {
-		return negativeRateLimitError("agent.rate_limit.read_expensive_daily")
+		return negativeValueError("agent.rate_limit.read_expensive_daily")
 	}
 	if rateLimit.SSHExecQPS < 0 {
-		return negativeRateLimitError("agent.rate_limit.ssh_exec_qps")
+		return negativeValueError("agent.rate_limit.ssh_exec_qps")
 	}
 	if rateLimit.SSHExecDaily < 0 {
-		return negativeRateLimitError("agent.rate_limit.ssh_exec_daily")
+		return negativeValueError("agent.rate_limit.ssh_exec_daily")
 	}
 	if rateLimit.UserTurnQPS < 0 {
-		return negativeRateLimitError("agent.rate_limit.user_turn_qps")
+		return negativeValueError("agent.rate_limit.user_turn_qps")
 	}
 	if rateLimit.UserTurnDaily < 0 {
-		return negativeRateLimitError("agent.rate_limit.user_turn_daily")
+		return negativeValueError("agent.rate_limit.user_turn_daily")
 	}
 	if rateLimit.MaxTokensPerTurn < 0 {
-		return negativeRateLimitError("agent.rate_limit.max_tokens_per_turn")
+		return negativeValueError("agent.rate_limit.max_tokens_per_turn")
 	}
 	if rateLimit.LLMQPS == 0 {
 		rateLimit.LLMQPS = defaults.LLMQPS
@@ -447,10 +447,6 @@ func applyRateLimitDefaults(rateLimit *RateLimitConfig) error {
 		rateLimit.SSHExecDaily = defaults.SSHExecDaily
 	}
 	return nil
-}
-
-func negativeRateLimitError(yamlPath string) error {
-	return fmt.Errorf("%s must be non-negative (0 or omit to use default)", yamlPath)
 }
 
 func negativeValueError(yamlPath string) error {
@@ -564,34 +560,6 @@ func resolveOptionalPlaceholder(field *string, yamlPath string) error {
 	}
 	// Inline literal — pass through unchanged.
 	*field = raw
-	return nil
-}
-
-// resolveOptionalDSN resolves any ${ENV_VAR} placeholder in the DSN field.
-// If the field is empty or a plain literal it is left unchanged.
-// If the field looks like a placeholder but the env var is unset, the field is
-// set to "" so server-mode validators can simply check dsn == "".
-// Returns an error only when the value starts with "$" but is not valid ${...}
-// syntax, to catch typos like "$MYSQL_DSN".
-func resolveOptionalDSN(field *string) error {
-	raw := strings.TrimSpace(*field)
-	if raw == "" {
-		return nil
-	}
-	// Detect placeholder-like values that start with "$".
-	if strings.HasPrefix(raw, "$") {
-		if !strings.HasPrefix(raw, "${") || !strings.HasSuffix(raw, "}") {
-			return fmt.Errorf("agent.mysql.dsn must use ${ENV_VAR} placeholder syntax or be a plain literal DSN")
-		}
-		envKey := strings.TrimSuffix(strings.TrimPrefix(raw, "${"), "}")
-		if envKey == "" {
-			return fmt.Errorf("agent.mysql.dsn placeholder must name an environment variable")
-		}
-		// Env var unset → blank the field; server sub-command will reject it.
-		*field = os.Getenv(envKey)
-		return nil
-	}
-	// Plain literal DSN — pass through unchanged.
 	return nil
 }
 

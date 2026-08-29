@@ -2,13 +2,6 @@ package policy
 
 import "testing"
 
-func TestRedactQueryDerivedValueRedactsStaffNameFromSharedList(t *testing.T) {
-	got := RedactQueryDerivedValue("请张慧帮我看实例启动失败")
-	if got != RedactedQueryValue {
-		t.Fatalf("RedactQueryDerivedValue() = %q, want %q", got, RedactedQueryValue)
-	}
-}
-
 func TestRedactQueryDerivedValueKeepsPublicProductTerms(t *testing.T) {
 	got := RedactQueryDerivedValue("Feishu 使用 FAQ 怎么看")
 	if got != "Feishu 使用 FAQ 怎么看" {

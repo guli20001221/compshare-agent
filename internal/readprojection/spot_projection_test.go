@@ -35,11 +35,11 @@ func TestSpotInstanceRendersAsSpotNotAsPostpay(t *testing.T) {
 	spotLine := RenderResourceSummary([]entity.InstanceSnapshot{spotInstance("uhost-spot", true)},
 		ResourceEnvelopeMeta{TotalCount: 1})
 	assert.Contains(t, spotLine, "抢占式")
-	assert.NotContains(t, spotLine, ChargeTypeLabel("Postpay"),
+	assert.NotContains(t, spotLine, resourceChargeTypeLabel("Postpay"),
 		"抢占式 replaces the ChargeType word; printing both invites the same conflation")
 
 	postpayLine := RenderResourceSummary([]entity.InstanceSnapshot{spotInstance("uhost-postpay", false)},
 		ResourceEnvelopeMeta{TotalCount: 1})
-	assert.Contains(t, postpayLine, ChargeTypeLabel("Postpay"))
+	assert.Contains(t, postpayLine, resourceChargeTypeLabel("Postpay"))
 	assert.NotContains(t, postpayLine, "抢占式")
 }

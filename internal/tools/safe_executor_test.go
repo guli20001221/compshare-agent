@@ -490,7 +490,6 @@ func TestSafeExecutorDoesNotRetryCapErrors(t *testing.T) {
 	}{
 		{name: "tool cap", err: ErrToolCapExceeded},
 		{name: "history window cap", err: ErrHistoryWindowExceeded},
-		{name: "historical monitor unsupported", err: ErrHistoricalMonitorUnsupported},
 		{name: "rate limit", err: governance.ErrRateLimited},
 	}
 	for _, tc := range cases {

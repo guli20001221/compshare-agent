@@ -82,9 +82,7 @@ func (b *ConfirmBroker) register(sessionID string, owner store.Owner, form *work
 // the session label. Stale-session recovery (handlers_chat.go getOrCreateSession)
 // can mint a new session id mid-turn, so the confirm frame's SessionId may
 // legitimately differ from the one the confirmation was registered under.
-// Enforcing session equality here false-rejected those confirms with
-// ErrConfirmationOwner (the create-flow "[Forbidden] ... session/owner" bug).
-// Only owner is enforced now: the random ConfirmationId already prevents any
+// Only owner is enforced: the random ConfirmationId already prevents any
 // same-owner cross-session resolution, and the decision is delivered to the
 // exact registering turn's channel, so a session-label drift is safe to
 // resolve — it is only recorded (below) for observability.

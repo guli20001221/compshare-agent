@@ -203,8 +203,6 @@ type Engine struct {
 	registry                         *entity.EntityRegistry
 	knowledgeRetriever               KnowledgeRetriever
 	agentRuntimeEventsThisTurn       []agentruntime.Event
-	agentRuntimeObserver             func(agentruntime.Event)
-	rendererTraceObserver            func(observability.RendererTrace)
 	retrievalTraceObserver           func(observability.RetrievalTrace)
 	freshnessTraceObserver           func(observability.FreshnessTrace)
 	diagnosisTraceObserver           func(observability.DiagnosisTrace)
@@ -589,10 +587,6 @@ func (e *Engine) SetKnowledgeRetriever(retriever KnowledgeRetriever) {
 	e.knowledgeRetriever = retriever
 }
 
-func (e *Engine) SetRendererTraceObserver(observer func(observability.RendererTrace)) {
-	e.rendererTraceObserver = observer
-}
-
 func (e *Engine) SetRetrievalTraceObserver(observer func(observability.RetrievalTrace)) {
 	e.retrievalTraceObserver = observer
 }
@@ -657,18 +651,11 @@ func (e *Engine) AgentRuntimeEventsThisTurn() []agentruntime.Event {
 	return append([]agentruntime.Event(nil), e.agentRuntimeEventsThisTurn...)
 }
 
-func (e *Engine) SetAgentRuntimeObserver(observer func(agentruntime.Event)) {
-	e.agentRuntimeObserver = observer
-}
-
 const maxAgentRuntimeEventsPerTurn = 256
 
 func (e *Engine) recordAgentRuntimeEvent(event agentruntime.Event) {
 	if len(e.agentRuntimeEventsThisTurn) < maxAgentRuntimeEventsPerTurn {
 		e.agentRuntimeEventsThisTurn = append(e.agentRuntimeEventsThisTurn, event)
-	}
-	if e.agentRuntimeObserver != nil {
-		e.agentRuntimeObserver(event)
 	}
 }
 
@@ -711,11 +698,6 @@ func (e *Engine) SetRateLimitSubject(subject string) string {
 	prev := e.rateLimitSubject
 	e.rateLimitSubject = subject
 	return prev
-}
-
-func (e *Engine) RateLimitDecision(req governance.Request) governance.Decision {
-	decision, _ := e.allowRateLimited(req.Class, req.Action)
-	return decision
 }
 
 func (e *Engine) SetHardBlockObserver(observer func(observability.EngineHardBlockTrace)) {
@@ -2192,8 +2174,6 @@ func friendlyToolErrorMessage(err error) (string, bool) {
 		return friendly.message, true
 	}
 	switch {
-	case errors.Is(err, tools.ErrHistoricalMonitorUnsupported):
-		return refusal.MonitorHistoryUnsupported, true
 	case errors.Is(err, tools.ErrHistoryWindowExceeded):
 		return historyWindowExceededMessage, true
 	case errors.Is(err, tools.ErrToolCapExceeded):
@@ -2938,11 +2918,6 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		},
 	})
 	if err != nil {
-		if errors.Is(err, tools.ErrHistoricalMonitorUnsupported) {
-			msg := refusal.MonitorHistoryUnsupported
-			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, err))
-			return finalReplyPrefix + msg
-		}
 		if msg, ok := friendlyToolErrorMessage(err); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, err))
 			result := tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{})
@@ -3498,8 +3473,7 @@ func (x engineToolExecutor) Execute(ctx context.Context, action string, args map
 // no-data reply so the model cannot narrate a value or health for a window that has
 // none. The correct window and historical framing now come from the structured
 // render (RenderHistoricalMonitorSummary states the window; the envelope marks each
-// fact as a range), so the former date-regex rewrite and "当前实时监控"→"历史时间窗"
-// phrase substitution are gone — this guard only fires on all-no-data.
+// fact as a range). This guard only fires on all-no-data.
 func (e *Engine) guardMonitorNoDataFinalReply(content string) string {
 	if !e.currentMonitorWindow || content == "" {
 		return content
@@ -4635,7 +4609,6 @@ type StepEvent struct {
 	Source                     string
 	Args                       map[string]any
 	Message                    string
-	Display                    string         // structured UI content (not sent to LLM)
 	TraceResult                map[string]any // redacted result payload for trace hashing only
 	Attempts                   int
 	RendererInputToolArgHashes []string

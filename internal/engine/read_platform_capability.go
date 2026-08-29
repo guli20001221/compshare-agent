@@ -352,8 +352,6 @@ func routeStatusForReadResult(r capability.ReadResult) platform.RouteStatus {
 			return platform.RouteStatusFallbackUnresolvedTarget
 		case platform.ReadFallbackTimeWindow:
 			return platform.RouteStatusFallbackTimeWindow
-		case platform.ReadFallbackActionNotAllowed:
-			return platform.RouteStatusFallbackIneligible
 		default:
 			return platform.RouteStatusFallbackInvalid
 		}

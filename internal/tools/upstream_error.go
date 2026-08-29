@@ -157,9 +157,6 @@ func retCodeGuidanceForMessage(code int, msg string) retCodeGuidance {
 	return guidance
 }
 
-func retCodeHint(code int) string {
-	return retCodeGuidanceForMessage(code, "").Hint
-}
 
 func retCodeHintForMessage(code int, msg string) string {
 	guidance := retCodeGuidanceByCode[code]

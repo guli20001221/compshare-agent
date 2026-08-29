@@ -50,10 +50,10 @@ func TestRetCodeGuidance_KnownAndUnknown(t *testing.T) {
 			t.Errorf("RetCode %d has invalid disposition %q", code, guidance.Disposition)
 		}
 	}
-	if h := retCodeHint(0); h != "" {
+	if h := retCodeHintForMessage(0, ""); h != "" {
 		t.Errorf("expected no hint for RetCode 0, got %q", h)
 	}
-	if h := retCodeHint(99999); h != "" {
+	if h := retCodeHintForMessage(99999, ""); h != "" {
 		t.Errorf("expected no hint for unknown RetCode, got %q", h)
 	}
 }
@@ -95,7 +95,7 @@ func TestRetCodeHint_KeyCodeMeanings(t *testing.T) {
 		{226619, []string{"操作过于频繁"}},
 	}
 	for _, c := range cases {
-		h := retCodeHint(c.code)
+		h := retCodeHintForMessage(c.code, "")
 		for _, want := range c.substrings {
 			if !strings.Contains(h, want) {
 				t.Errorf("hint for %d = %q, want substring %q", c.code, h, want)

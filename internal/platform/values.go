@@ -134,16 +134,6 @@ func PriceKindValues() []string {
 	return []string{string(PriceKindAccount), string(PriceKindCatalog)}
 }
 
-// CFSKind distinguishes the four CFS read protocols.
-type CFSKind string
-
-const (
-	CFSKindList         CFSKind = "list"
-	CFSKindCreatePrice  CFSKind = "create_price"
-	CFSKindUpgradePrice CFSKind = "upgrade_price"
-	CFSKindRefund       CFSKind = "refund"
-)
-
 // DetailLevel selects overview vs. full detail for spec queries.
 type DetailLevel string
 

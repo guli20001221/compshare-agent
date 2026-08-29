@@ -15,11 +15,6 @@ func RenameInstanceDef() *Definition {
 		},
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Step definitions
-// ---------------------------------------------------------------------------
-
 func stepQueryForRename() Step {
 	return Step{
 		Name: "查询实例",

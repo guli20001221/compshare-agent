@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -11,19 +10,6 @@ import (
 	"github.com/compshare-agent/internal/observability"
 	"github.com/stretchr/testify/require"
 )
-
-type captureAppendWriter struct {
-	records []observability.TraceRecord
-}
-
-func (w *captureAppendWriter) Append(record observability.TraceRecord) error {
-	w.records = append(w.records, record)
-	return nil
-}
-
-func (w *captureAppendWriter) Dir() string { return "" }
-
-func (w *captureAppendWriter) Close(context.Context) error { return nil }
 
 func TestTraceWriterFromEnvDisabledByDefault(t *testing.T) {
 	writer, enabled, err := traceWriterFromEnv(func(string) string { return "" })
@@ -74,11 +60,10 @@ func TestCleanupTraceWriterDeletesExpiredFiles(t *testing.T) {
 	require.FileExists(t, filepath.Join(dir, "agent-trace-2026-04-08.jsonl"))
 }
 
-func TestMutatingToolsFromEnvAndRuntimeLine(t *testing.T) {
+func TestMutatingToolsFromEnv(t *testing.T) {
 	enabled, unknown := mutatingToolsEnabledFromEnv(func(string) string { return "" })
 	require.False(t, enabled)
 	require.Empty(t, unknown)
-	require.Equal(t, "mutating=disabled (read-only mode)", mutatingToolsRuntimeLine(enabled))
 
 	enabled, unknown = mutatingToolsEnabledFromEnv(func(key string) string {
 		if key == "COMPSHARE_ENABLE_MUTATING_TOOLS" {
@@ -88,7 +73,6 @@ func TestMutatingToolsFromEnvAndRuntimeLine(t *testing.T) {
 	})
 	require.True(t, enabled)
 	require.Empty(t, unknown)
-	require.Equal(t, "mutating=enabled", mutatingToolsRuntimeLine(enabled))
 
 	enabled, unknown = mutatingToolsEnabledFromEnv(func(key string) string {
 		if key == "COMPSHARE_ENABLE_MUTATING_TOOLS" {

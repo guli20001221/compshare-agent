@@ -366,9 +366,9 @@ func requireAppend(t *testing.T, w *MySQLWriter, record TraceRecord) {
 // lets us read the prepared persistedTrace straight off the queue), then
 // rowFromTrace projects the trace_json column the worker would INSERT.
 //
-// The fixture is a real PII query (staff name 张慧, the same input as
-// TestRedactQueryDerivedFieldsRedactsStaffNames) — NOT a pre-redacted mock — so
-// the test genuinely fails if the producer regresses (memory: schema-test-anti-mock).
+// The fixture is a real leaking query (the internal spt-record marker, the same
+// input as TestRedactQueryDerivedFieldsRedactsInternalMarkers) — NOT a
+// pre-redacted mock — so the test fails if the producer regresses.
 // Mirrors TestWriterAppendDoesNotLeakSecretsInTraceLine on the FileWriter side.
 func TestMySQLWriter_EnqueueRedactsQueryDerivedPIIBeforePersist(t *testing.T) {
 	w := &MySQLWriter{
@@ -378,9 +378,9 @@ func TestMySQLWriter_EnqueueRedactsQueryDerivedPIIBeforePersist(t *testing.T) {
 	if err := w.Enqueue(TenantContext{TopOrgID: 1, OrgID: 2}, TraceRecord{
 		TraceID: "pii-leak",
 		Retrieval: RetrievalTrace{
-			QueryRaw:        "请张慧帮我看一下实例启动失败",
-			QueryNormalized: "张慧 实例 启动失败",
-			QueryExpansions: []string{"实例启动失败", "找张慧处理"},
+			QueryRaw:        "请按 spt-record-2026-05 帮我看一下实例启动失败",
+			QueryNormalized: "spt-record 实例 启动失败",
+			QueryExpansions: []string{"实例启动失败", "查 spt-record 的处理结论"},
 		},
 	}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
@@ -398,8 +398,8 @@ func TestMySQLWriter_EnqueueRedactsQueryDerivedPIIBeforePersist(t *testing.T) {
 	}
 	blob := string(traceJSON)
 
-	if strings.Contains(blob, "张慧") {
-		t.Fatalf("MySQL trace_json leaked PII staff name 张慧: %s", blob)
+	if strings.Contains(blob, "spt-record") {
+		t.Fatalf("MySQL trace_json leaked the internal spt-record marker: %s", blob)
 	}
 	if !strings.Contains(blob, "[REDACTED]") {
 		t.Fatalf("MySQL trace_json should carry the redaction marker; got: %s", blob)

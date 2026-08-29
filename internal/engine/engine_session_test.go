@@ -311,7 +311,6 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"selectedInstanceSourceAtTurnStart":    true,
 		"selectedInstanceFreshnessAtTurnStart": true,
 		"instanceResolutionSourceThisTurn":     true,
-		"rendererTraceObserver":                true,
 		"retrievalTraceObserver":               true,
 		"freshnessTraceObserver":               true,
 		"diagnosisTraceObserver":               true,
@@ -327,7 +326,6 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Runtime lifecycle evidence is turn/session-local. Sharing either the
 		// event buffer or its observer would mix two tenants' reasoning traces.
 		"agentRuntimeEventsThisTurn": true,
-		"agentRuntimeObserver":       true,
 		"currentCtx":                 true,
 		// Public-channel authorization is turn-local and must never remain enabled
 		// or disabled because of another session's prior request.
@@ -429,12 +427,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 99, len(perSessionFields); want != got {
+	if want, got := 97, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 105, typ.NumField(); want != got {
+	if want, got := 103, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update this test's whitelists to match.", want, got)
 	}

@@ -238,9 +238,6 @@ const maxSessionBackgroundJobContinuationTurns = 6
 // any stream framing. The returned context for streaming is the caller's;
 // prepareChat uses ctx only for its own pre-stream DB/engine work.
 func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID, message, imageDataURL string) (*chatPrep, *APIError) {
-	// -----------------------------------------------------------------------
-	// 1. Input validation
-	// -----------------------------------------------------------------------
 	if sessionID == "" {
 		return nil, ErrInvalidParam.WithMessage("missing SessionId")
 	}
@@ -256,10 +253,6 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 		return nil, AsAPIError(err)
 	}
 	sessionID = sess.ID
-
-	// -----------------------------------------------------------------------
-	// 1.5 OCR image context extraction
-	// -----------------------------------------------------------------------
 	var ocrText string
 	if imageDataURL != "" && h.ocrClient != nil {
 		text, valErr := h.processOCR(ctx, base.RequestUUID, imageDataURL)
@@ -350,10 +343,6 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 		traceRecorder.SetRegistryTraceSupplier(agent.RegistryTraceState)
 		attachChatTraceObservers(agent, traceRecorder)
 	}
-
-	// -----------------------------------------------------------------------
-	// 3. Pre-stream persistence
-	// -----------------------------------------------------------------------
 	userMsgID := uuid.NewString()
 	assistantMsgID := uuid.NewString()
 	model := h.cfg.Agent.LLM.Model
@@ -487,10 +476,6 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		SessionID: sessionID,
 		MessageID: assistantMsgID,
 	})
-
-	// -----------------------------------------------------------------------
-	// Keepalive goroutine
-	// -----------------------------------------------------------------------
 	var firstToken time.Time
 	tokenEmitted := false
 	var usage llm.TokenUsage
@@ -510,10 +495,6 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			}
 		}
 	}()
-
-	// -----------------------------------------------------------------------
-	// LLM streaming call
-	// -----------------------------------------------------------------------
 	stepIndex := 0
 	reply, chatErr = agent.ChatWithOptions(ctx, prep.message, func(ev engine.StepEvent) {
 		if traceRecorder != nil {
@@ -571,10 +552,6 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	// detached from streamCtx, bounded, best-effort, and still fail-closed when
 	// prepareChat could not parse/recognize the stored envelope.
 	defer h.persistSessionStateBestEffort(base.Owner, sessionID, agent, prep)
-
-	// -----------------------------------------------------------------------
-	// Post-stream branching
-	// -----------------------------------------------------------------------
 	if chatErr == nil && !tokenEmitted && reply != "" {
 		if firstToken.IsZero() {
 			firstToken = time.Now()

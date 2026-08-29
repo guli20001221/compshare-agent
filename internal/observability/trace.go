@@ -55,8 +55,7 @@ type WriterOptions struct {
 	Now func() time.Time
 }
 
-// Writer appends one completed turn. Steps are accumulated by the per-turn
-// recorder; sinks do not receive independent events.
+// Writer appends one completed turn; sinks do not receive independent events.
 //
 // Dir returns the file root or "" for database sinks. Close drains any queue.
 type Writer interface {
@@ -98,13 +97,9 @@ type TraceRecord struct {
 	// of the contract shown to the user. Confirmation ids, full forms and card
 	// prose stay out of the trace.
 	Confirmations []ConfirmationTrace `json:"confirmations,omitempty"`
-	// Steps holds workflow step traces. Empty values are omitted for turns that
-	// did not execute a workflow.
-	Steps []StepTrace `json:"steps,omitempty"`
 	// Authorizations holds the per-target dual-proof audit record for each write a
 	// mutating action authorized this turn. Empty / omitempty for every non-mutating
-	// turn, so trace output stays byte-identical until a write target is proven
-	// (same reserved-slot precedent as Steps).
+	// turn, so trace output stays byte-identical until a write target is proven.
 	Authorizations []AuthorizationTrace `json:"authorizations,omitempty"`
 }
 
@@ -128,7 +123,6 @@ type traceRecordJSON struct {
 	Completion          *TurnCompletionTrace  `json:"completion,omitempty"`
 	Outcome             *OutcomeTrace         `json:"outcome,omitempty"`
 	Confirmations       []ConfirmationTrace   `json:"confirmations,omitempty"`
-	Steps               []StepTrace           `json:"steps,omitempty"`
 	Authorizations      []AuthorizationTrace  `json:"authorizations,omitempty"`
 }
 
@@ -177,9 +171,6 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	}
 	if len(r.Confirmations) > 0 {
 		out.Confirmations = r.Confirmations
-	}
-	if len(r.Steps) > 0 {
-		out.Steps = r.Steps
 	}
 	if len(r.Authorizations) > 0 {
 		out.Authorizations = r.Authorizations
@@ -369,24 +360,12 @@ type RendererTrace struct {
 }
 
 type FreshnessTrace struct {
-	MonitorCallInCurrentTurn    bool   `json:"monitor_call_in_current_turn"`
-	MonitorRecallForced         bool   `json:"monitor_recall_forced,omitempty"`
-	MonitorRecallMode           string `json:"monitor_recall_mode,omitempty"`
-	MonitorRecallFallbackReason string `json:"monitor_recall_fallback_reason,omitempty"`
+	MonitorCallInCurrentTurn bool `json:"monitor_call_in_current_turn"`
 }
 
 func MergeFreshnessTrace(current, next FreshnessTrace) FreshnessTrace {
 	if next.MonitorCallInCurrentTurn {
 		current.MonitorCallInCurrentTurn = true
-	}
-	if next.MonitorRecallForced {
-		current.MonitorRecallForced = true
-	}
-	if next.MonitorRecallMode != "" {
-		current.MonitorRecallMode = next.MonitorRecallMode
-	}
-	if next.MonitorRecallFallbackReason != "" {
-		current.MonitorRecallFallbackReason = next.MonitorRecallFallbackReason
 	}
 	return current
 }
@@ -694,7 +673,6 @@ func prepareForPersist(record TraceRecord, now time.Time) TraceRecord {
 	record = record.withDefaults(now)
 	RedactQueryDerivedFields(&record.Retrieval)
 	RedactDiagnosisDerivedFields(&record.Diagnosis)
-	RedactStepDerivedFields(record.Steps)
 	return record
 }
 
@@ -927,10 +905,7 @@ func traceRateLimitObserved(trace RateLimitTrace) bool {
 }
 
 func traceFreshnessObserved(trace FreshnessTrace) bool {
-	return trace.MonitorCallInCurrentTurn ||
-		trace.MonitorRecallForced ||
-		trace.MonitorRecallMode != "" ||
-		trace.MonitorRecallFallbackReason != ""
+	return trace.MonitorCallInCurrentTurn
 }
 
 func traceRetrievalObserved(trace RetrievalTrace) bool {

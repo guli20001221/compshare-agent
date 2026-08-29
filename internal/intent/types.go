@@ -20,14 +20,3 @@ const (
 	IntentCFSInfo               Intent = "cfs_info"
 	IntentPricingQuery          Intent = "pricing_query"
 )
-
-// LifecycleAction narrows an account-wide instance list only for actions with
-// an unambiguous required state.
-type LifecycleAction string
-
-const (
-	LifecycleActionStop       LifecycleAction = "stop"
-	LifecycleActionStart      LifecycleAction = "start"
-	LifecycleActionReboot     LifecycleAction = "reboot"
-	LifecycleActionCreateDisk LifecycleAction = "create_disk"
-)

@@ -51,13 +51,6 @@ type EvidenceInput struct {
 	DebugReason        *string
 }
 
-type UserView struct {
-	SourceTitle  string       `json:"source_title"`
-	Snippet      string       `json:"snippet"`
-	SurfaceURL   *string      `json:"surface_url"`
-	EvidenceKind EvidenceKind `json:"evidence_kind"`
-}
-
 type TraceView struct {
 	SourceTitle               string       `json:"source_title"`
 	EvidenceKind              EvidenceKind `json:"evidence_kind"`
@@ -70,12 +63,6 @@ type TraceView struct {
 	ProducedAt                time.Time    `json:"produced_at"`
 	SurfaceURL                *string      `json:"surface_url,omitempty"`
 	SurfaceURLRejectionReason *string      `json:"surface_url_rejection_reason,omitempty"`
-}
-
-type LLMView struct {
-	SourceTitle  string       `json:"source_title"`
-	Snippet      string       `json:"snippet"`
-	EvidenceKind EvidenceKind `json:"evidence_kind"`
 }
 
 func NewEvidence(input EvidenceInput) (Evidence, error) {
@@ -144,15 +131,6 @@ func NewEvidence(input EvidenceInput) (Evidence, error) {
 	}, nil
 }
 
-func (e Evidence) ForUser() UserView {
-	return UserView{
-		SourceTitle:  e.sourceTitle,
-		Snippet:      e.snippet,
-		SurfaceURL:   allowedSurfaceURL(e.surfaceURL).url,
-		EvidenceKind: e.evidenceKind,
-	}
-}
-
 func (e Evidence) ForTrace() TraceView {
 	surface := allowedSurfaceURL(e.surfaceURL)
 	return TraceView{
@@ -167,14 +145,6 @@ func (e Evidence) ForTrace() TraceView {
 		ProducedAt:                e.producedAt,
 		SurfaceURL:                surface.url,
 		SurfaceURLRejectionReason: surface.rejectionReason,
-	}
-}
-
-func (e Evidence) ForLLM() LLMView {
-	return LLMView{
-		SourceTitle:  e.sourceTitle,
-		Snippet:      e.snippet,
-		EvidenceKind: e.evidenceKind,
 	}
 }
 

@@ -24,13 +24,7 @@ const maxCreateRecoveryProbes = 8
 // create-zone; the capacity precheck is the only signal we get.
 //
 // The code is read off the typed error rather than matched in the message text.
-// The previous form, strings.Contains(msg, "230") && strings.Contains(msg,
-// "CompShareImageId"), was unanchored on both halves: any "230" anywhere in the
-// sentence satisfied it — a memory size, a byte count, a substring of an id — so
-// an unrelated failure whose text happened to mention the image param could
-// trigger an image swap and re-run.
-//
-// The param name is still checked, and that is not laziness: upstream shares 230
+// The param name is still checked because upstream shares 230
 // between CodeParamsError and CodeParamsConflictError (uhost-compshare-api
 // internal/errors/code.go), with a generic "Params [%s] not available" body, so
 // the code alone does not identify WHICH param was rejected. Matching the typed

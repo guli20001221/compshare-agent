@@ -246,9 +246,3 @@ func TestApplySharedDepsDefaultsToKnowledgeMCP(t *testing.T) {
 	require.NoError(t, err)
 	require.IsType(t, &knowledge.MCPRetriever{}, deps.KnowledgeRetriever)
 }
-
-func TestRootCommandDoesNotExposeWebSocketServe(t *testing.T) {
-	for _, cmd := range rootCmd.Commands() {
-		require.NotEqual(t, "serve", cmd.Name())
-	}
-}

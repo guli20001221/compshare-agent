@@ -28,8 +28,8 @@ import (
 //
 // The codec is the only crossing. ToContractMap is the only encoder,
 // ParseCreateExecutionDraft the only decoder, and no consumer may read the encoded
-// map's keys directly; architectureguard enforces that, because two hand-written
-// readings of one format is the same defect class this whole convergence removed.
+// map's keys directly — two hand-written readings of one format is the same defect
+// class this whole convergence removed.
 type CreateExecutionDraft struct {
 	Args      CreateInstanceArgs
 	Image     SelectedImage

@@ -151,12 +151,6 @@ type Step struct {
 	//   - runResolveStep rejects any Resolve that mutates Params.
 	//   - It is NOT otherwise read-only. It holds the live *Context and could
 	//     still write StepResults, InitialParams or Runtime. Nothing stops it.
-	//
-	// So "pure" is a property of each Resolve today, not of the type. Before
-	// StepResolve is used outside the create draft, this should take a read-only
-	// snapshot (deep-copied Params + StepResults, Runtime by value) and return its
-	// result, rather than being handed the Context itself — then replayability
-	// from a trace would follow from the signature instead of from review.
 	Resolve func(wfCtx *Context) (map[string]any, error)
 	// SkipIf lets adaptive workflows omit a step once earlier context has made
 	// that choice unambiguous. nil preserves the legacy "always run" behavior.

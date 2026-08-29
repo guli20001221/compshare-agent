@@ -8,8 +8,8 @@ import (
 )
 
 // stripHistoricalToolTranscript keeps the plain conversation history small and
-// makes hot history match cold reconstruction. When canonical transcript replay
-// is enabled, the recorded tool turns are attached later as whole exchanges.
+// makes hot history match cold reconstruction. Recorded tool turns are attached
+// later as whole exchanges by the canonical transcript replay.
 func stripHistoricalToolTranscript(messages []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
 	if len(messages) == 0 {
 		return messages

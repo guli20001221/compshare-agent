@@ -255,13 +255,5 @@ func stringSlice(value any) []string {
 	}
 }
 
-func SortedFieldNames(spec OperationSpec) []string {
-	out := make([]string, 0, len(spec.Fields))
-	for name := range spec.Fields {
-		out = append(out, name)
-	}
-	sort.Strings(out)
-	return out
-}
 
 func normalizeName(name string) string { return strings.TrimSpace(name) }

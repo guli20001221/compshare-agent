@@ -68,18 +68,3 @@ func SafeValueMap(v map[string]any) map[string]any {
 	return map[string]any{}
 }
 
-func CopyArgs(args map[string]any) map[string]any {
-	if args == nil {
-		return nil
-	}
-	out := make(map[string]any, len(args))
-	for key, value := range args {
-		switch typed := value.(type) {
-		case []string:
-			out[key] = append([]string(nil), typed...)
-		default:
-			out[key] = typed
-		}
-	}
-	return out
-}

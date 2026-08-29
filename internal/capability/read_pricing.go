@@ -478,17 +478,12 @@ func pricingClarifyReply(items []any, prefix string) string {
 	return out
 }
 
-// renderPricingReply formats the per-GPU price rows.
 // renderPricingReply renders one section per DISTINCT quote, not one per zone.
 //
-// pricingSpecs deliberately fans a zone-less request out over every zone that
-// offers the GPU, because a zone can differ in price or in which charge types it
-// exposes. What it does not do is check whether they actually differ — so 「4090
-// 多少钱」 printed the same four price lines under five near-identical headers,
-// and the reader had to diff five blocks by eye to discover they were the same
-// quote. Zones whose spec and price table are identical are merged into one
-// header; a zone that genuinely differs still gets its own section, so nothing
-// is hidden — only the repetition is.
+// pricingSpecs fans a zone-less request out over every zone that offers the GPU,
+// because a zone can differ in price or in which charge types it exposes. Zones
+// whose spec and price table are identical are merged into one header; a zone
+// that genuinely differs still gets its own section.
 func renderPricingReply(rows []gpuPriceRow) string {
 	lines := []string{}
 	for _, group := range groupPricingRowsByQuote(rows) {

@@ -37,28 +37,6 @@ func TestDefaultCapabilityRegistryOwnsEveryAgentToolAndPolicy(t *testing.T) {
 	}
 }
 
-func TestCapabilityRegistryDerivesResultOwnershipFromExecutionRoute(t *testing.T) {
-	registry := DefaultCapabilityRegistry()
-	cases := []struct {
-		name     string
-		contract ResultContract
-		owner    string
-	}{
-		// SearchKnowledge owns grounded evidence; the response-only support handoff
-		// remains Agent-owned even though it is available in restricted windows.
-		{name: "SearchKnowledge", contract: ResultContractGroundedAnswer, owner: "grounding"},
-		{name: CustomerSupportHandoffName, contract: ResultContractModelObservation, owner: "agent"},
-		{name: "DescribeCompShareInstance", contract: ResultContractModelObservation, owner: "agent"},
-		{name: "StopInstanceWorkflow", contract: ResultContractWorkflowResult, owner: "workflow"},
-	}
-	for _, tc := range cases {
-		capability, ok := registry.Lookup(tc.name)
-		require.True(t, ok)
-		require.Equal(t, tc.contract, capability.ResultContract)
-		require.Equal(t, tc.owner, capability.ResultOwner)
-	}
-}
-
 func TestCapabilityRegistryPreservesReadOnlyWindows(t *testing.T) {
 	registry := DefaultCapabilityRegistry()
 	for _, tool := range registry.VisibleTools(false) {
@@ -74,10 +52,10 @@ func TestCapabilityRegistryPreservesReadOnlyWindows(t *testing.T) {
 }
 
 func TestCapabilityRegistryRejectsMissingPolicyAndUnsafeL1(t *testing.T) {
-	_, err := BuildCapabilityRegistry([]openai.Tool{{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{Name: "orphan"}}}, nil)
+	_, err := BuildCapabilityRegistryFromDefinitions([]CapabilityDefinition{{Tool: openai.Tool{Type: openai.ToolTypeFunction, Function: &openai.FunctionDefinition{Name: "orphan"}}, ExposedToAgent: true}}, nil)
 	require.ErrorContains(t, err, "no execution policy")
 
-	registry, err := BuildCapabilityRegistry(nil, map[string]ToolExecutionPolicy{
+	registry, err := BuildCapabilityRegistryFromDefinitions(nil, map[string]ToolExecutionPolicy{
 		"unsafe": {Action: "unsafe", SecurityLevel: security.L1, Class: ActionClassMutating, NeedsConfirm: false},
 	})
 	require.NoError(t, err)

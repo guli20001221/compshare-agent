@@ -4,7 +4,6 @@ import (
 	"sort"
 
 	"github.com/compshare-agent/internal/entity"
-	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/readprojection"
 )
 
@@ -60,75 +59,6 @@ func truncateDescribeResultForReAct(args, result map[string]any) (shown, total i
 	result["Shown"] = limit
 	result["Truncated"] = true
 	return limit, total, true
-}
-
-// filterDescribeResultByAction narrows UHostSet to rows whose State matches
-// the requested lifecycle action so the candidate list shown to the user
-// excludes operationally invalid options.
-//
-// Conservative default — only the actions with an unambiguous required state
-// trigger filtering; unknown/empty actions and verbs that work on both states
-// (create_disk) pass the list through untouched. This keeps the model in the
-// loop when the user is exploring rather than committing to a verb.
-//
-// Like truncateDescribeResultForReAct, this skips when UHostIds were pinned
-// — if the user already named a target there is no candidate set to filter.
-func filterDescribeResultByAction(args, result map[string]any, action intent.LifecycleAction) (kept, removed int, filtered bool) {
-	if result == nil || action == "" {
-		return 0, 0, false
-	}
-	if hasPinnedUHostIds(args) {
-		return 0, 0, false
-	}
-	wantState, ok := requiredStateForAction(action)
-	if !ok {
-		return 0, 0, false
-	}
-	rawHosts, ok := result["UHostSet"].([]any)
-	if !ok {
-		return 0, 0, false
-	}
-	keptRows := make([]any, 0, len(rawHosts))
-	for _, raw := range rawHosts {
-		row, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		state, _ := row["State"].(string)
-		if state == wantState {
-			keptRows = append(keptRows, raw)
-		}
-	}
-	removed = len(rawHosts) - len(keptRows)
-	if removed == 0 {
-		return len(keptRows), 0, false
-	}
-	result["UHostSet"] = keptRows
-	result["ActionFilter"] = map[string]any{
-		"action":     string(action),
-		"want_state": wantState,
-		"removed":    removed,
-		"kept":       len(keptRows),
-		"total_seen": len(rawHosts),
-	}
-	return len(keptRows), removed, true
-}
-
-// requiredStateForAction returns the State value that an instance MUST have
-// for the given lifecycle action to be applicable. Conservative: only the
-// stop/start/reboot verbs trigger filtering — those are unambiguously
-// blocked when the State doesn't match. Verbs that can be valid on either
-// state (create_disk, rename) or that need clarification (reinstall/resize
-// — UI typically warns either way) are intentionally not filtered.
-func requiredStateForAction(action intent.LifecycleAction) (string, bool) {
-	switch action {
-	case intent.LifecycleActionStop, intent.LifecycleActionReboot:
-		return "Running", true
-	case intent.LifecycleActionStart:
-		return "Stopped", true
-	default:
-		return "", false
-	}
 }
 
 // hasPinnedUHostIds returns true when the caller passed at least one

@@ -176,23 +176,6 @@ func ResourceStateLabel(state string) string {
 	}
 }
 
-// ChargeTypeLabel names a billing mode with the same word the purchase flow
-// uses, by drawing it from the vocabulary the server already PARSES
-// (deployment.ExplicitChargeTypePhrase) rather than from a second hand-written
-// table here.
-//
-// A second table drifts, and it had: the create card says 包月 / 包日 while this
-// list said 按月 / 按天. One concept under two names, with nothing in the product
-// telling the user they are the same thing. It is exported because the instance
-// list is not the only user-facing render of a ChargeType — the CFS list shows
-// one too, and was printing the raw wire enum ("计费 Month"). Two renders of one
-// concept is exactly the drift this function exists to end, so they share it.
-//
-// `Year` is deliberately absent — there is no ChargeTypeYear in the vocabulary
-// the server parses, so a Year row shows itself rather than being given a label
-// no other part of the product uses.
-func ChargeTypeLabel(chargeType string) string { return resourceChargeTypeLabel(chargeType) }
-
 // spotFactValue keeps the model-visible fact aligned with the Chinese labels
 // used by the resource renderer.
 func spotFactValue(isSpot bool) string {

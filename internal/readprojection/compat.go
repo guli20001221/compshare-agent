@@ -33,13 +33,6 @@ const (
 	TimeWindowAbsolute = platform.TimeWindowAbsolute
 )
 
-// Exported canonical labels and empty-result replies.
-const (
-	ResourceLabelInstanceID = resourceLabelInstanceID
-	ResourceLabelName       = resourceLabelName
-	NoMonitorValuesReply    = noMonitorValuesReply
-)
-
 // Small local aliases keep projection code focused on rendering.
 func safeValue(v any) string { return platform.SafeValue(v) }
 

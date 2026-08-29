@@ -83,7 +83,6 @@ func attachChatTraceObservers(agent *engine.Engine, recorder *chatTraceRecorder)
 	agent.SetFreshnessTraceObserver(recorder.SetFreshnessTrace)
 	agent.SetDiagnosisTraceObserver(recorder.SetDiagnosisTrace)
 	agent.SetOutcomeTraceObserver(recorder.SetOutcomeTrace)
-	agent.SetRendererTraceObserver(recorder.SetRendererTrace)
 	agent.SetHardBlockObserver(recorder.SetEngineHardBlock)
 	agent.SetTurnCompletionObserver(recorder.SetTurnCompletionTrace)
 	agent.SetRateLimitObserver(recorder.SetRateLimitDecision)
@@ -100,7 +99,6 @@ func clearChatTraceObservers(agent *engine.Engine) {
 	agent.SetFreshnessTraceObserver(nil)
 	agent.SetDiagnosisTraceObserver(nil)
 	agent.SetOutcomeTraceObserver(nil)
-	agent.SetRendererTraceObserver(nil)
 	agent.SetHardBlockObserver(nil)
 	agent.SetTurnCompletionObserver(nil)
 	agent.SetRateLimitObserver(nil)
@@ -214,13 +212,6 @@ func (r *chatTraceRecorder) AddConfirmationTrace(trace observability.Confirmatio
 		return
 	}
 	r.record.Confirmations = append(r.record.Confirmations, trace)
-}
-
-func (r *chatTraceRecorder) SetRendererTrace(trace observability.RendererTrace) {
-	if r == nil {
-		return
-	}
-	r.record.Renderer = trace
 }
 
 func (r *chatTraceRecorder) SetEngineHardBlock(trace observability.EngineHardBlockTrace) {
@@ -350,20 +341,6 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 		// `default:` here later cannot quietly start recording notices.
 		return
 	}
-}
-
-// EmitStep accumulates one workflow step trace into this turn's record. Steps are
-// folded into record.Steps in memory and persisted once at Finish via
-// Enqueue/Append → prepareForPersist (which redacts Args/Result) — never a
-// per-step INSERT (a per-step INSERT would collide uk_request_uuid: one
-// agent_traces row per turn). Per-step SSE event:step (live UI) is fanned separately
-// by the HTTP handler, reusing the existing sw.WriteEvent("step", ...) path.
-func (r *chatTraceRecorder) EmitStep(step observability.StepTrace) error {
-	if r == nil {
-		return nil
-	}
-	r.record.Steps = append(r.record.Steps, step)
-	return nil
 }
 
 func (r *chatTraceRecorder) Finish(chatErr error, end time.Time) error {

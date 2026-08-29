@@ -236,5 +236,9 @@ absence differs from zero.
 - `internal/entity` is race-tested in CI; keep registry access synchronized.
 - `SecurityToken` participates in API signing parameters before HMAC-SHA1. See
   `internal/tools/README.md`.
+- Do not add historical inventories or rollout checklists to production code.
+  Current architectural decisions belong in this file; a code comment should
+  explain only the invariant adjacent to its implementation, never what the code
+  used to do or which change replaced it.
 - Preserve unrelated dirty-worktree changes. Stage explicit files, never
   `git add -A` in a shared workspace.

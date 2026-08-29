@@ -23,11 +23,6 @@ func ResetPasswordDef() *Definition {
 		},
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Step definitions
-// ---------------------------------------------------------------------------
-
 func stepQueryForReset() Step {
 	return Step{
 		Name: "查询实例",
@@ -122,11 +117,6 @@ func stepVerifyReset() Step {
 		},
 	}
 }
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
 // containerSpecialChars is the allowed special character set for container
 // instance passwords, per ResetCompShareInstancePassword.md.
 const containerSpecialChars = "()`~!@#$%^&*-+=_|{}[]:;'<>,.?/"

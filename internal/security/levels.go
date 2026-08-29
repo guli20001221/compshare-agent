@@ -26,7 +26,7 @@ func (l Level) String() string {
 
 // ActionLevels maps every whitelisted Action to its security level.
 var ActionLevels = map[string]Level{
-	// ── L0: Read-only / Query (41) ──────────────────────────
+	// ── L0: Read-only / Query ───────────────────────────────
 	"DescribeCompShareInstance":               L0,
 	"DescribeCompShareImages":                 L0,
 	"DescribeCompShareCustomImages":           L0,
@@ -71,7 +71,7 @@ var ActionLevels = map[string]Level{
 	"CreateUs3StsToken":                       L0,
 	"DownloadTeamOrder":                       L0,
 
-	// ── L1: Mutating, requires confirmation (25) ────────────
+	// ── L1: Mutating, requires confirmation ─────────────────
 	"CreateCompShareInstance":          L1,
 	"StartCompShareInstance":           L1,
 	"StopCompShareInstance":            L1,
@@ -101,7 +101,7 @@ var ActionLevels = map[string]Level{
 	// user operation with mandatory workflow confirmation.
 	"ReinstallCompShareInstance": L1,
 
-	// ── L2: Destructive, always refuse (4) ──────────────────
+	// ── L2: Destructive, always refuse ──────────────────────
 	"TerminateCompShareInstance":    L2,
 	"TerminateCompShareCustomImage": L2,
 	"DeleteCompshareDisk":           L2,

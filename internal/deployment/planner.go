@@ -1,7 +1,6 @@
 package deployment
 
 import (
-	"sort"
 	"strings"
 
 	"github.com/compshare-agent/internal/platform"
@@ -23,11 +22,6 @@ const (
 	MachineTypeGPU         = "G"
 	MinimalCPUPlatformAuto = "Auto"
 	LoginModeConsole       = "Password"
-
-	RejectImageUnavailable     = "image_unavailable"
-	RejectPodRequiresContainer = "pod_requires_container_image"
-
-	WarningSupportedGPUMismatch = "supported_gpu_mismatch"
 
 	FailureUnknown             = "unknown"
 	FailureImageZoneNotAdapted = "image_zone_not_adapted"
@@ -56,73 +50,9 @@ type ZoneConstraint struct {
 	IsPod bool
 }
 
-type ImageCandidate struct {
-	ID                string
-	Name              string
-	ImageType         string
-	Container         bool
-	Status            string
-	SupportedGPUTypes []string
-}
-
-type ImageSelectionInput struct {
-	Images       []ImageCandidate
-	RequestedGPU string
-	Zone         ZoneConstraint
-}
-
-type ImageSelectionResult struct {
-	Viable   []ViableImage
-	Rejected []RejectedImage
-}
-
-type ViableImage struct {
-	Image    ImageCandidate
-	Warnings []string
-	score    int
-}
-
-type RejectedImage struct {
-	Image  ImageCandidate
-	Reason string
-}
-
 type ClassifiedFailure struct {
 	Kind        string
 	Recoverable bool
-}
-
-func SelectImageCandidates(input ImageSelectionInput) ImageSelectionResult {
-	result := ImageSelectionResult{}
-	for _, img := range input.Images {
-		if img.Status != "" && img.Status != ImageStatusAvailable {
-			result.Rejected = append(result.Rejected, RejectedImage{Image: img, Reason: RejectImageUnavailable})
-			continue
-		}
-		if input.Zone.IsPod && !img.Container {
-			result.Rejected = append(result.Rejected, RejectedImage{Image: img, Reason: RejectPodRequiresContainer})
-			continue
-		}
-
-		viable := ViableImage{Image: img, score: 50}
-		if input.RequestedGPU != "" && len(img.SupportedGPUTypes) > 0 {
-			if gpuListContains(img.SupportedGPUTypes, input.RequestedGPU) {
-				viable.score = 100
-			} else {
-				viable.score = 10
-				viable.Warnings = append(viable.Warnings, WarningSupportedGPUMismatch)
-			}
-		}
-		result.Viable = append(result.Viable, viable)
-	}
-
-	sort.SliceStable(result.Viable, func(i, j int) bool {
-		if result.Viable[i].score != result.Viable[j].score {
-			return result.Viable[i].score > result.Viable[j].score
-		}
-		return false
-	})
-	return result
 }
 
 func NormalizeChargeType(chargeType string) string {
@@ -193,11 +123,9 @@ func ExplicitChargeTypePhrase(value string) (string, bool) {
 func ExplicitChargeTypeFromPhrase(phrase string) (string, bool) {
 	value := ""
 	for _, item := range explicitChargeTypeVocabulary {
-		// platform.ContainsLiteralSpan is the repo's single reviewed primitive
-		// for "is this a literal span of that" (architectureguard/scanner.go
-		// exempts it by name). Using it here keeps this a provenance check
-		// rather than a new string-heuristic site, and it already applies the
-		// shared whitespace/case folding.
+		// platform.ContainsLiteralSpan is the shared "is this a literal span of
+		// that" primitive: it applies the same whitespace/case folding every
+		// other provenance check uses.
 		if !platform.ContainsLiteralSpan(phrase, item.Phrase) {
 			continue
 		}
@@ -305,17 +233,4 @@ func ClassifyCreateFailure(message string) ClassifiedFailure {
 	default:
 		return ClassifiedFailure{Kind: FailureUnknown}
 	}
-}
-
-func MemoryGBToMB(gb int) int {
-	return gb * 1024
-}
-
-func gpuListContains(list []string, gpu string) bool {
-	for _, item := range list {
-		if strings.EqualFold(strings.TrimSpace(item), strings.TrimSpace(gpu)) {
-			return true
-		}
-	}
-	return false
 }

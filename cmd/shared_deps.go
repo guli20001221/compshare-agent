@@ -46,11 +46,13 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc, db *sql.D
 		return nil, false, fmt.Errorf("ssh-ops runner: %w", err)
 	}
 	deps.InstanceOps = instanceOps
-	mutating := getenv("COMPSHARE_ENABLE_MUTATING_TOOLS") == "1"
+	mutating, unknown := mutatingToolsEnabledFromEnv(getenv)
+	if unknown != "" {
+		log.Printf("runtime: unknown COMPSHARE_ENABLE_MUTATING_TOOLS value %q; treating as disabled", unknown)
+	}
 	if mutating {
 		log.Printf("runtime: HTTP mutating tools enabled (COMPSHARE_ENABLE_MUTATING_TOOLS=1)")
 	}
-	log.Printf("runtime: canonical transcript, ReAct projection and agentic SearchKnowledge enabled")
 	return deps, mutating, nil
 }
 
