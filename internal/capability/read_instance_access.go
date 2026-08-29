@@ -21,6 +21,7 @@ const (
 	accessTypeJupyter      = "jupyter"
 	accessTypeJupyterToken = "jupyter_token"
 	accessTypeCustomPort   = "custom_port"
+	accessTypeSoftware     = "software"
 
 	accessProtocolHTTP = "http"
 	accessProtocolTCP  = "tcp"
@@ -36,6 +37,7 @@ type InstanceAccessRequest struct {
 	AccessType  string               `json:"access_type,omitempty"`
 	Protocol    string               `json:"protocol,omitempty"`
 	Port        int                  `json:"port,omitempty"`
+	Software    string               `json:"software,omitempty"`
 	FailureKind string               `json:"failure_kind,omitempty"`
 }
 
@@ -55,37 +57,44 @@ func (r InstanceAccessRequest) MissingFields() []platform.MissingField {
 			missing = append(missing, platform.Missing("port"))
 		}
 	}
+	if r.AccessType == accessTypeSoftware && strings.TrimSpace(r.Software) == "" {
+		missing = append(missing, platform.Missing("software"))
+	}
 	return missing
 }
 
 type InstanceAccessResponse struct {
-	InstanceID      string
-	InstanceName    string
-	State           string
-	InstanceKind    string
-	AccessType      string
-	Protocol        string
-	Port            int
-	Status          string
-	Reason          string
-	KnownSoftware   string
-	SSHLoginCommand string
-	JupyterToken    string
-	SourceActions   []string
+	InstanceID         string
+	InstanceName       string
+	State              string
+	InstanceKind       string
+	AccessType         string
+	Protocol           string
+	Port               int
+	Status             string
+	Reason             string
+	KnownSoftware      string
+	RequestedSoftware  string
+	SoftwareListKnown  bool
+	SoftwareDeclared   bool
+	SoftwareURLPresent bool
+	SSHLoginCommand    string
+	JupyterToken       string
+	SourceActions      []string
 }
 
 func instanceAccessReadSpec() ReadCapabilitySpec[InstanceAccessRequest, InstanceAccessResponse] {
 	return ReadCapabilitySpec[InstanceAccessRequest, InstanceAccessResponse]{
 		Label: instanceAccessCapabilityLabel,
-		Description: "检查已有实例的 SSH、Jupyter 或自定义端口的云侧配置，也可在用户明确要求时获取该实例的 Jupyter Token。" +
-			"它不会连接公网端口、不会进入实例，也不会修改防火墙或端口。需要明确一个实例；自定义端口还要给出协议和端口号。" +
-			"回答 SSH 登录方式时以实时实例详情的 SshLoginCommand 为准，不按实例类型猜用户名、主机或端口。" +
-			"只有用户明确索要 Token 时才使用 jupyter_token；普通 Jupyter 故障检查使用 jupyter。",
+		Description: "核验一个实例的 SSH/Jupyter/自定义端口/平台应用声明；不连公网、不进 guest、不改配置。" +
+			"software 原样填应用名，仅返回是否声明/有入口记录，不返回 URL/凭据。SSH 以实时 SshLoginCommand 为准。" +
+			"仅明确索要 Token 用 jupyter_token；其他 Jupyter 用 jupyter；自定义端口需协议、端口。",
 		Params: objectParam(map[string]schemaNode{
 			"targets":     targetRefsParam(),
-			"access_type": enumParam(accessTypeSSH, accessTypeJupyter, accessTypeJupyterToken, accessTypeCustomPort),
+			"access_type": enumParam(accessTypeSSH, accessTypeJupyter, accessTypeJupyterToken, accessTypeCustomPort, accessTypeSoftware),
 			"protocol":    enumParam(accessProtocolHTTP, accessProtocolTCP, accessProtocolUDP),
 			"port":        boundedIntegerParam(1, 65535),
+			"software":    stringParam().described("software 时必填，原样填用户询问的应用名。"),
 			"failure_kind": enumParam("timeout", "connection_refused", "authentication_failed", "connection_dropped", "unknown").
 				described("仅 SSH 使用；只按用户实际报告的错误选择，无法确定时用 unknown。"),
 		}, "targets", "access_type"),
@@ -167,6 +176,26 @@ func instanceAccessHandle(ctx context.Context, req InstanceAccessRequest, rt Rea
 		return resp, ReadResult{}
 	}
 
+	if req.AccessType == accessTypeSoftware {
+		resp.RequestedSoftware = strings.TrimSpace(req.Software)
+		resp.SoftwareDeclared, resp.SoftwareURLPresent, resp.SoftwareListKnown = hostSoftwareDeclaration(host, resp.RequestedSoftware)
+		if !resp.SoftwareListKnown {
+			resp.Status = "unknown"
+			resp.Reason = "实时实例详情没有返回可解析的平台应用声明列表；不能据此判断该应用是否由平台部署。"
+		} else if resp.SoftwareDeclared {
+			resp.Status = "configured"
+			if resp.SoftwareURLPresent {
+				resp.Reason = fmt.Sprintf("实时实例详情声明了 %s，并返回了平台入口记录；这不能证明入口当前可达。", resp.RequestedSoftware)
+			} else {
+				resp.Reason = fmt.Sprintf("实时实例详情声明了 %s，但没有返回可核验的平台入口记录。", resp.RequestedSoftware)
+			}
+		} else {
+			resp.Status = "not_configured"
+			resp.Reason = fmt.Sprintf("实时实例详情没有声明 %s；这不能证明实例内一定没有用户自行安装的同名软件。", resp.RequestedSoftware)
+		}
+		return resp, ReadResult{}
+	}
+
 	if !strings.EqualFold(resp.State, "Running") {
 		resp.Status = "blocked"
 		resp.Reason = "实例当前不是运行状态，云侧访问入口不可用。"
@@ -205,6 +234,8 @@ func instanceAccessRender(resp InstanceAccessResponse) ReadResult {
 		verdict = "实例 Service 已声明，但公网入口未经证实"
 	case "blocked":
 		verdict = "云侧存在明确阻断"
+	case "not_configured":
+		verdict = "实时实例详情未声明"
 	default:
 		verdict = "云侧信息不足，无法确认"
 	}
@@ -215,9 +246,13 @@ func instanceAccessRender(resp InstanceAccessResponse) ReadResult {
 	if resp.KnownSoftware != "" {
 		detail += " 平台端口目录将该端口标记为 " + resp.KnownSoftware + "。"
 	}
+	scopeNote := "该结果没有实际连接公网端口，也没有进入实例检查服务进程、系统防火墙或认证日志。"
+	if resp.AccessType == accessTypeSoftware {
+		scopeNote = "该结果只反映实时实例详情的平台声明；没有进入实例检查用户自行安装的软件，也没有探测入口可达性。"
+	}
 	reply := fmt.Sprintf("%s 的%s访问预检：%s。%s %s",
 		subject, accessTypeDisplay(resp.AccessType), verdict, strings.TrimSpace(detail),
-		"该结果没有实际连接公网端口，也没有进入实例检查服务进程、系统防火墙或认证日志。")
+		scopeNote)
 	var sensitiveReply string
 	if resp.JupyterToken != "" {
 		sensitiveReply = fmt.Sprintf("%s 的 Jupyter Token：%s。%s",
@@ -258,6 +293,21 @@ func instanceAccessRender(resp InstanceAccessResponse) ReadResult {
 		facts = append(facts, envelope.Fact{
 			SubjectID: resp.InstanceID, Key: "catalog_software", Label: "平台端口目录应用", Value: resp.KnownSoftware, Source: envelope.FactSourceAPI,
 		})
+	}
+	if resp.RequestedSoftware != "" {
+		facts = append(facts,
+			envelope.Fact{SubjectID: resp.InstanceID, Key: "requested_software", Label: "查询的平台应用", Value: resp.RequestedSoftware, Source: envelope.FactSourceComputed},
+			envelope.Fact{SubjectID: resp.InstanceID, Key: "software_declarations_checked", Label: "实例详情是否返回完整可解析的应用声明列表", Value: resp.SoftwareListKnown, Source: envelope.FactSourceAPI},
+		)
+		// Unknown is not a pair of negative facts. When the list is absent or partly malformed,
+		// emitting declared=false/entry=false would contradict the rendered "信息不足" verdict and
+		// let the model turn missing upstream data into a confident absence.
+		if resp.SoftwareListKnown {
+			facts = append(facts,
+				envelope.Fact{SubjectID: resp.InstanceID, Key: "software_declared", Label: "实例详情是否声明该应用", Value: resp.SoftwareDeclared, Source: envelope.FactSourceAPI},
+				envelope.Fact{SubjectID: resp.InstanceID, Key: "software_entry_present", Label: "实例详情是否返回应用入口记录", Value: resp.SoftwareURLPresent, Source: envelope.FactSourceAPI},
+			)
+		}
 	}
 	if resp.JupyterToken != "" {
 		facts = append(facts, envelope.Fact{
@@ -379,13 +429,39 @@ func podTCPForwardPresent(host map[string]any, internalPort int) bool {
 }
 
 func hostSoftware(host map[string]any, contains string) (bool, bool) {
-	for _, raw := range mapSliceAt(host, "Softwares") {
-		entry, _ := raw.(map[string]any)
-		if strings.EqualFold(stringField(entry, "Name"), contains) {
-			return true, strings.TrimSpace(stringField(entry, "URL")) != ""
+	found, urlPresent, _ := hostSoftwareDeclaration(host, contains)
+	return found, urlPresent
+}
+
+func hostSoftwareDeclaration(host map[string]any, contains string) (bool, bool, bool) {
+	rawList, exists := host["Softwares"]
+	if !exists {
+		return false, false, false
+	}
+	items, ok := rawList.([]any)
+	if !ok {
+		return false, false, false
+	}
+	if len(items) == 0 {
+		return false, false, true
+	}
+	allEntriesValid := true
+	for _, raw := range items {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			allEntriesValid = false
+			continue
+		}
+		name := strings.TrimSpace(stringField(entry, "Name"))
+		if name == "" {
+			allEntriesValid = false
+			continue
+		}
+		if strings.EqualFold(name, contains) {
+			return true, strings.TrimSpace(stringField(entry, "URL")) != "", true
 		}
 	}
-	return false, false
+	return false, false, allEntriesValid
 }
 
 func jupyterCatalogPort(raw map[string]any) (int, string) {
@@ -413,6 +489,8 @@ func accessTypeDisplay(value string) string {
 		return " Jupyter Token "
 	case accessTypeCustomPort:
 		return "自定义端口"
+	case accessTypeSoftware:
+		return "平台应用"
 	default:
 		return "实例"
 	}

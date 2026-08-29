@@ -47,9 +47,9 @@ func TestTypedInstanceIDAuthorizesEntryAndCarriesAcrossTurns(t *testing.T) {
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
-			`{"UHostId":"cpod-typed-1","Task":"排查 ComfyUI 打不开"}`)}},
+			`{"UHostId":"cpod-typed-1","Task":"排查 ComfyUI 打不开","Mode":"repair"}`)}},
 		{ToolCalls: []openai.ToolCall{toolCall("d2", "DiagnoseInstanceInternals",
-			`{"UHostId":"cpod-typed-1","Task":"继续排查 ComfyUI"}`)}},
+			`{"UHostId":"cpod-typed-1","Task":"继续排查 ComfyUI","Mode":"repair"}`)}},
 	}}
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
 	eng.SetInstanceOps(runner)
@@ -281,7 +281,7 @@ func TestTargetRefusalKeepsModelInstructionsOffTheUsersScreen(t *testing.T) {
 
 	var steps []StepEvent
 	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
-		"UHostId": "cpod-not-designated", "Task": "排查",
+		"UHostId": "cpod-not-designated", "Task": "排查", "Mode": "repair",
 	}, captureSteps(&steps))
 
 	require.Zero(t, runner.calls)

@@ -20,18 +20,19 @@ import (
 // the cap, per-command events stop; the terminal summary still reports the totals.
 const maxInstanceOpsStepEvents = 50
 
-// instanceOpsPreflightFailureData is the narrow observation emitted when the
-// diagnosis service itself cannot establish the prerequisite TCP connection.
-// It deliberately names the observer and the boundary rather than turning one
-// network vantage point into a conclusion about the instance or evidence the
-// user supplied through another path (for example an SSH -vvv transcript).
+// instanceOpsEntryBoundaryData is the narrow observation emitted when this lane
+// cannot cross a prerequisite Guest-entry boundary. It deliberately names the
+// observer and the boundary rather than turning one access limitation into a
+// conclusion about the instance or evidence supplied through another path.
 //
 // Unlike a terminal reply, this is a normal AgentToolResult. The central Agent
 // therefore receives both this observation and the canonical conversation and
 // can reconcile independent evidence in one semantic path.
-type instanceOpsPreflightFailureData struct {
+type instanceOpsEntryBoundaryData struct {
 	ObservationSource     string `json:"observation_source"`
 	ObservationScope      string `json:"observation_scope"`
+	ExecutionBoundary     string `json:"execution_boundary"`
+	SSHEntrypoint         string `json:"ssh_entrypoint"`
 	TCPConnection         string `json:"tcp_connection"`
 	SSHSessionEstablished bool   `json:"ssh_session_established"`
 	GuestCommandsExecuted bool   `json:"guest_commands_executed"`
@@ -39,10 +40,12 @@ type instanceOpsPreflightFailureData struct {
 }
 
 func instanceOpsPreflightFailureObservation(action string) string {
-	return tools.MarshalAgentToolResult(tools.AgentToolFailure(action,
-		instanceOpsPreflightFailureData{
+	return tools.MarshalAgentToolResult(tools.AgentToolFailureWithLimits(action,
+		instanceOpsEntryBoundaryData{
 			ObservationSource:     "diagnostic_service",
 			ObservationScope:      "diagnostic_service_to_instance_ssh_candidate",
+			ExecutionBoundary:     "pre_ssh_tcp",
+			SSHEntrypoint:         "candidate_available",
 			TCPConnection:         "not_established",
 			SSHSessionEstablished: false,
 			GuestCommandsExecuted: false,
@@ -54,11 +57,42 @@ func instanceOpsPreflightFailureObservation(action string) string {
 		tools.AgentToolMeta{SourceStatus: "preflight_failed"}))
 }
 
+// instanceOpsNoSSHTargetObservation keeps a missing SSH entrypoint as one
+// bounded observation instead of ending the central Agent turn. The SSH lane
+// cannot enter the Guest, but platform reads and knowledge retrieval observe
+// different layers and can still answer or narrow the user's request.
+func instanceOpsNoSSHTargetObservation(action string) string {
+	return tools.MarshalAgentToolResult(tools.AgentToolFailureWithLimits(action,
+		instanceOpsEntryBoundaryData{
+			ObservationSource:     "platform_instance_access",
+			ObservationScope:      "instance_guest_ssh_entry",
+			ExecutionBoundary:     "no_ssh_entrypoint",
+			SSHEntrypoint:         "not_available",
+			TCPConnection:         "not_attempted",
+			SSHSessionEstablished: false,
+			GuestCommandsExecuted: false,
+			EvidenceBoundary: "This observation only proves that the instance has no SSH entrypoint available to this diagnostic lane. " +
+				"It does not prevent the central agent from using platform read capabilities or knowledge evidence.",
+		},
+		"INSTANCE_GUEST_SSH_UNAVAILABLE",
+		"该实例没有可用的 SSH 登录入口；未建立 SSH 会话、未进入 Guest，也没有执行 Guest 命令。仍可继续查询平台实时事实和知识证据。",
+		tools.AgentToolMeta{SourceStatus: "no_ssh_target"}))
+}
+
 // Target refusal text is split by audience: the activity stream gives the user
 // an actionable instruction, while the tool result explains the binding rule to
 // the model. A bare confirmation or a console-only selection does not identify a
 // target in this conversation.
 const (
+	// A malformed Mode is the model's error, not a request for the user to learn
+	// internal enum values. Keep the activity stream customer-facing and route
+	// the exact correction through the model-only tool result.
+	instanceOpsModeRefusalForUser  = "实例内排查尚未开始，正在更正调用参数。"
+	instanceOpsModeRefusalForModel = "Mode 参数无效。请将 Mode 设置为 inspect（只读检查）或 repair（可恢复修复），然后重新发出同一次工具调用。"
+	// INV-11 counts an authorized runner attempt, including one that failed
+	// before Guest entry. The wording must not claim that entry occurred.
+	instanceOpsRepeatRefusalForUser  = "本回合已发起过一次实例内排查请求，本次重复调用没有执行。"
+	instanceOpsRepeatRefusalForModel = "本回合已经发起过一次实例内排查请求；请勿重复调用该通道。请基于首次观察继续判断，必要时改用适用的平台只读能力或知识检索。"
 	// instanceOpsTargetRefusalForUser is what the person reads. Actionable, no internal policy.
 	instanceOpsTargetRefusalForUser = "尚未开始实例内排查。请直接回复要排查的实例 ID 或实例名称；" +
 		"如果上面列出了候选实例，回复对应的序号也可以。"
@@ -108,12 +142,31 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	filtered := e.safeExecutor.FilterArgs(action, args)
 	instanceIDArg, _ := filtered["UHostId"].(string)
 	taskArg, _ := filtered["Task"].(string)
+	modeArg, _ := filtered["Mode"].(string)
 	instanceID := strings.TrimSpace(instanceIDArg)
 	task := strings.TrimSpace(taskArg)
 	if instanceID == "" || task == "" {
 		msg := "请提供要排查的实例 ID 和本次排查目标。"
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 		return friendlyToolResultJSON(msg)
+	}
+	// Mode is a capability boundary, not merely prompt wording. Explicit inspection reaches the
+	// same SSH/read surface while the private repair bit stays false, so every mutation is refused
+	// by the harness at runtime. Missing and unknown values fail closed instead of silently granting
+	// repair authority to a malformed/replayed model call.
+	repairScopeAuthorized := false
+	switch strings.ToLower(strings.TrimSpace(modeArg)) {
+	case "repair":
+		repairScopeAuthorized = true
+	case "inspect":
+	default:
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: instanceOpsModeRefusalForUser})
+		return tools.MarshalAgentToolResult(tools.AgentToolInvalidToolCall(
+			action,
+			tools.AgentToolCodeInvalidArguments,
+			instanceOpsModeRefusalForModel,
+			tools.AgentToolMeta{SourceStatus: "invalid_mode"},
+		))
 	}
 	// Build the local-only portion before any platform call. A planner that copied
 	// a user Authorization value into Task must not move it into audit or activity;
@@ -146,12 +199,12 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		e.recordSelectedInstanceIDWithSource(instanceID, "", SelectedInstanceSourceUser)
 	}
 
-	// INV-11: one in-instance run per turn. A rejected target does not spend this
-	// slot because the instance was never entered.
+	// INV-11: one authorized runner attempt per turn. A rejected target does not
+	// spend this slot, while a runner failure does because it may have partially
+	// executed even when no terminal verdict returned.
 	if e.instanceOpsRanThisTurn {
-		msg := "本回合已经执行过一次实例内排查，不再重复进入实例。如需再次排查，请重新发送指令。"
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
-		return friendlyToolResultJSON(msg)
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: instanceOpsRepeatRefusalForUser})
+		return friendlyToolResultJSON(instanceOpsRepeatRefusalForModel)
 	}
 	e.instanceOpsRanThisTurn = true
 
@@ -211,7 +264,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		InstanceID:            instanceID,
 		Task:                  task,
 		Context:               modelContext,
-		RepairScopeAuthorized: true,
+		RepairScopeAuthorized: repairScopeAuthorized,
 	}, onProgress)
 	if err != nil {
 		// A control-plane NotFound result is authoritative for this target: its guest job can no
@@ -231,14 +284,13 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		// detached process may have survived the killed harness. Stashed BEFORE the branches rather
 		// than inside each, so a future branch cannot return without considering it.
 		e.recordInstanceOpsInterruption(instanceID, settled)
-		// No SSH entrypoint (empty SshLoginCommand — e.g. a Windows instance): the box
-		// can never be entered, so this is honest and NON-retryable. Never the generic
-		// "请稍后重试" text, which wrongly implies a transient failure the user should
-		// retry. Confirmed live against a CompShare Windows GPU instance.
+		// No SSH entrypoint is an authoritative boundary for this lane, but not for the
+		// whole central Agent. Return it as a structured observation so platform reads
+		// and knowledge retrieval remain available; never imply that Guest commands ran.
 		if errors.Is(err, ErrInstanceOpsNoSSHTarget) {
-			msg := "该实例没有 SSH 登录入口（如 Windows 实例），暂不支持实例内排查。"
+			msg := "该实例没有可用的 SSH 登录入口；未建立 SSH 会话、未进入 Guest，也没有执行 Guest 命令。"
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
-			return finalReplyPrefix + msg
+			return instanceOpsNoSSHTargetObservation(action)
 		}
 		// A well-formed account response that omits the id is permanent for this
 		// request; tell the user to correct the target rather than retry blindly.
@@ -489,6 +541,8 @@ func knownInstanceOpsRefusalReason(reason string) (string, bool) {
 		return "相同只读检查的结果没有变化，已停止重复；请更换检查条件、等待真实状态变化或结束本轮排查", true
 	case "refused_mutating_phase1":
 		return "旧版只读执行器未运行这条修改命令，请重新发起实例内排查", true
+	case "refused_inspection_scope":
+		return "本轮是只读核查，修改操作未执行；我会继续使用只读证据完成核查", true
 	}
 	return "", false
 }

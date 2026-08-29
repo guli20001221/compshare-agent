@@ -347,7 +347,7 @@ func gateCfg() *config.Config {
 func TestServerInstanceOpsRunner_OffByDefault(t *testing.T) {
 	cfg := gateCfg()
 	cfg.Agent.SSHOps.HarnessPath = ""
-	r, err := serverInstanceOpsRunner(cfg, noopDescriber{}, nil)
+	r, err := serverInstanceOpsRunner(cfg, noopDescriber{}, nil, nil)
 	require.NoError(t, err)
 	require.Nil(t, r)
 }
@@ -362,7 +362,7 @@ func TestServerInstanceOpsRunner_RefusesStaticProvider(t *testing.T) {
 	db := sql.OpenDB(fakeConnector{})
 	defer db.Close()
 
-	r, err := serverInstanceOpsRunner(cfg, noopDescriber{}, db)
+	r, err := serverInstanceOpsRunner(cfg, noopDescriber{}, nil, db)
 	require.NoError(t, err)
 	require.Nil(t, r, "static AK/SK must refuse the lane (INV-12)")
 }
@@ -396,7 +396,7 @@ func TestServerInstanceOpsRunner_MissingAuditMigrationDisablesTheLaneAndStillBoo
 	// hallucinated call.
 	describer := &recordingDescriber{}
 
-	r, err := serverInstanceOpsRunner(gateCfg(), describer, db)
+	r, err := serverInstanceOpsRunner(gateCfg(), describer, nil, db)
 
 	require.NoError(t, err, "an optional lane's missing column must not take the whole server down")
 	require.Nil(t, r, "the lane must be OFF: a nil runner is what keeps the tool out of the model's window (INV-10)")
@@ -417,7 +417,7 @@ func TestServerInstanceOpsRunner_CompleteAuditSchemaWiresTheLane(t *testing.T) {
 	db := sql.OpenDB(fakeConnector{})
 	defer db.Close()
 
-	r, err := serverInstanceOpsRunner(gateCfg(), noopDescriber{}, db)
+	r, err := serverInstanceOpsRunner(gateCfg(), noopDescriber{}, nil, db)
 
 	require.NoError(t, err)
 	require.NotNil(t, r)
@@ -430,19 +430,20 @@ func TestServerInstanceOpsRunner_MisconfigIsBootError(t *testing.T) {
 	db := sql.OpenDB(fakeConnector{})
 	defer db.Close()
 
-	_, err := serverInstanceOpsRunner(cfg, noopDescriber{}, db)
+	_, err := serverInstanceOpsRunner(cfg, noopDescriber{}, nil, db)
 	require.Error(t, err, "a fully-enabled but misconfigured lane must fail boot, not disable silently")
 }
 
 func TestBuildSSHOpsService_ValidatesAndDefaults(t *testing.T) {
-	_, err := buildSSHOpsService(config.SSHOpsConfig{BaseURL: "https://api.example"}, "m", "key", &sshops.MemAuditWriter{})
+	_, err := buildSSHOpsService(config.SSHOpsConfig{BaseURL: "https://api.example"}, "m", "key", nil, &sshops.MemAuditWriter{})
 	require.Error(t, err, "harness_path is required")
-	_, err = buildSSHOpsService(config.SSHOpsConfig{HarnessPath: "/h.py"}, "m", "key", &sshops.MemAuditWriter{})
+	_, err = buildSSHOpsService(config.SSHOpsConfig{HarnessPath: "/h.py"}, "m", "key", nil, &sshops.MemAuditWriter{})
 	require.Error(t, err, "base_url is required")
 	_, err = buildSSHOpsService(
 		config.SSHOpsConfig{HarnessPath: "/h.py", BaseURL: "https://api.example"},
 		"m",
 		"",
+		nil,
 		&sshops.MemAuditWriter{},
 	)
 	require.Error(t, err, "api_key or the agent.llm.api_key fallback is required")
@@ -450,6 +451,7 @@ func TestBuildSSHOpsService_ValidatesAndDefaults(t *testing.T) {
 		config.SSHOpsConfig{HarnessPath: "/h.py", BaseURL: "https://api.example"},
 		"m",
 		"fallback-key",
+		nil,
 		&sshops.MemAuditWriter{},
 	)
 	require.NoError(t, err)

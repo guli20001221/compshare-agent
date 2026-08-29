@@ -9,6 +9,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestContextV5AppendsVersionAndCoverageContracts(t *testing.T) {
+	assert.Equal(t, 5, SchemaVersion)
+	assert.Equal(t, 4, SchemaVersionInstanceKind,
+		"v4 remains named so mixed-deployment consumers can accept it explicitly")
+	assert.Equal(t, "sshops-agent-v4", AgentSessionContract)
+	assert.Equal(t, uint32(1<<10), CoverageInstanceKind,
+		"persisted coverage meanings must never be reordered")
+	assert.Equal(t, uint32(1<<11), CoverageInstanceRuntimeType)
+	assert.Equal(t, uint32(1<<12), CoverageMonitorProvenance)
+}
+
 func TestProbeAuthorizationStaysOutOfContextJSONAndFormatting(t *testing.T) {
 	const secret = "Bear" + "er auth-canary-0123456789"
 	ctx := Context{

@@ -28,13 +28,14 @@ import (
 //     the heap-resident credential dies with it. No reuse, no caching.
 //   - only the harness's already-scrubbed stdout is returned; the credential is never in it.
 type Supervisor struct {
-	Python      string        // interpreter; default "python3"
-	HarnessPath string        // absolute path to harness.py
-	SessionRoot string        // stable private root for Claude SDK session workdirs; empty disables resume storage
-	BaseURL     string        // ANTHROPIC_BASE_URL (for production: https://api.modelverse.cn)
-	APIKey      string        // ModelVerse token passed only to the Claude CLI child
-	Model       string        // ModelVerse model id (e.g. gpt-5.6-terra)
-	Timeout     time.Duration // hard wall-clock per task; default 5m
+	Python             string             // interpreter; default "python3"
+	HarnessPath        string             // absolute path to harness.py
+	SessionRoot        string             // stable private root for Claude SDK session workdirs; empty disables resume storage
+	BaseURL            string             // ANTHROPIC_BASE_URL (for production: https://api.modelverse.cn)
+	APIKey             string             // ModelVerse token passed only to the Claude CLI child
+	Model              string             // ModelVerse model id (e.g. gpt-5.6-terra)
+	Timeout            time.Duration      // hard wall-clock per task; default 5m
+	KnowledgeRetriever KnowledgeRetriever // read-only Go broker; endpoint/token never enter child env or handshake
 }
 
 // Keep the core service contract compiler-enforced. Run remains a public compatibility wrapper,
@@ -304,6 +305,10 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 		"probe_authorizations":     modelContext.ProbeAuthorizations,
 		"pending_background_job":   modelContext.PendingBackgroundJob,
 		"background_job_slot_busy": modelContext.BackgroundJobSlotBusy,
+		// The harness always owns a stable two-tool knowledge surface. This private
+		// bit only tells it whether the current supervisor can answer the sideband;
+		// no MCP URL, bearer token or short-lived search capability crosses stdin.
+		"knowledge_bridge_available": s.KnowledgeRetriever != nil,
 	})
 	if err != nil {
 		return Result{}, fmt.Errorf("sshops: marshal handshake: %w", err)
@@ -360,7 +365,15 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 		}
 		_, _ = stdin.Write(append(reply, '\n'))
 	}
-	verdict, steps, outcome, parseErr := parseHarnessStream(stdout, onStep, answer)
+	knowledgeBroker := newKnowledgeBridge(ctx, s.KnowledgeRetriever)
+	answerKnowledge := func(req KnowledgeRequest) {
+		reply, mErr := json.Marshal(knowledgeBroker.handle(req))
+		if mErr != nil {
+			reply = []byte(`{"id":"","ok":false,"error_class":"unavailable"}`)
+		}
+		_, _ = stdin.Write(append(reply, '\n'))
+	}
+	verdict, steps, outcome, parseErr := parseHarnessStream(stdout, onStep, answer, answerKnowledge)
 	runErr := cmd.Wait()
 	_ = killProcGroup(cmd) // best-effort reap of any strays the SDK left in the group
 
@@ -412,6 +425,7 @@ const (
 //	@@STEP {json}                one per command, metadata only
 //	@@JOB {json}                 opaque background-job handle, not a command/audit step
 //	@@AGENT_SESSION {json}       opaque SDK continuation cursor, not a command/audit step
+//	@@KNOWLEDGE {json}           read-only search/read request, not a command/audit step
 //	<<<VERDICT>>> ... <<<END>>>  the single terminal conclusion block
 //
 // onStep, if non-nil, is invoked for parsed @@STEP command rows and @@JOB lifecycle updates as
@@ -431,7 +445,7 @@ type harnessOutcome struct {
 	ContextApplied bool   `json:"context_applied"`
 }
 
-func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRequest)) (verdict string, steps []Step, outcome harnessOutcome, err error) {
+func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRequest), onKnowledge func(KnowledgeRequest)) (verdict string, steps []Step, outcome harnessOutcome, err error) {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 0, 64<<10), maxHarnessStepLine)
 	var total int
@@ -443,6 +457,7 @@ func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRe
 		line := sc.Text()
 		jobPayload, isJobLine := strings.CutPrefix(line, "@@JOB ")
 		agentSessionPayload, isAgentSessionLine := strings.CutPrefix(line, "@@AGENT_SESSION ")
+		knowledgePayload, isKnowledgeLine := strings.CutPrefix(line, "@@KNOWLEDGE ")
 		total += len(line) + 1
 		if total > maxHarnessStdoutBytes {
 			return strings.TrimSpace(vb.String()), steps, outcome,
@@ -468,6 +483,17 @@ func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRe
 			}
 			if onConfirm != nil {
 				onConfirm(req)
+			}
+		case isKnowledgeLine:
+			// Like confirmation, a malformed request still receives one bounded
+			// failure reply. Dropping the line would strand the in-process MCP call
+			// until the whole SSH-ops wall clock expired.
+			var req KnowledgeRequest
+			if json.Unmarshal([]byte(knowledgePayload), &req) != nil {
+				req = KnowledgeRequest{}
+			}
+			if onKnowledge != nil {
+				onKnowledge(req)
 			}
 		case strings.HasPrefix(line, "@@STEP "):
 			if len(steps) >= maxHarnessSteps {

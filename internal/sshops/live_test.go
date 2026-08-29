@@ -1,7 +1,7 @@
 //go:build live
 
-// Live integration test — NOT compiled in CI (needs the `live` build tag, a reachable
-// instance, a ModelVerse key, and the Python harness deps). Run manually:
+// Live integration test — compiled but not executed in CI. A real run needs a reachable
+// instance, a ModelVerse key, and the Python harness deps. Run manually:
 //
 //	go test -tags live -run TestLive -v -timeout 360s ./internal/sshops
 //
@@ -15,12 +15,17 @@
 //	SSHH_INSTANCE (default "uhost-livetest")  SSHH_TASK (default: 掉卡 root-cause probe)
 //	SSHH_CONTEXT=0 disables the reference-context arm; any other value enables it (the default).
 //	SSHH_CONTEXT_CURRENT_REPORT optionally supplies the raw user wording for the enabled arm.
+//	SSHH_KB_MCP_URL optionally supplies the real read-only knowledge MCP endpoint.
+//	SSHH_KB_MCP_BEARER_TOKEN supplies its optional read token.
+//	SSHH_KB_CORPUS is the offline fallback: an immutable local JSONL corpus snapshot served through
+//	the same broker. Exactly one source may be configured.
 //
 // What these tests do NOT cover, so nobody reads a green live run as broader than it is:
-//   - The ordinary TestLiveFullFlow and TestLiveKeystone deny every proposed write. A separate,
-//     exact-name TestLiveOpsWriteCanary exists for a dedicated disposable instance; it requires
-//     SSHH_WRITE_CANARY=1 + one SSHH_APPROVE_EXACT value and denies every
-//     other proposal. It is not selected accidentally by the ordinary live command.
+//   - The ordinary TestLiveFullFlow and TestLiveKeystone deny every proposed write. The opt-in
+//     TestLiveOpsWriteCanary is fixture control: it executes one caller-supplied literal command
+//     over the live SSH transport and does not invoke a model. TestLiveOpsTaskScopeCanary is the
+//     separate end-to-end proof of autonomous Agent SDK + MCP repair. Neither is selected by the
+//     ordinary live command.
 //   - No database. They use MemAuditWriter, so migration 0013's columns, the fail-closed INSERT
 //     and the INV-9 UNIQUE(turn_id, task_hash) replay refusal are covered only by unit tests.
 //   - No production dial path. There is no internal-IPv6 resolver here, so the address these
@@ -34,10 +39,12 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/compshare-agent/internal/config"
+	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/opscontext"
 	"github.com/compshare-agent/internal/tools"
 )
@@ -59,6 +66,63 @@ func envOr(k, d string) string {
 		return v
 	}
 	return d
+}
+
+type liveKnowledgeProbe struct {
+	retriever *knowledge.Retriever
+	corpus    knowledge.Corpus
+	searches  atomic.Int32
+	reads     atomic.Int32
+}
+
+type liveRemoteKnowledgeProbe struct {
+	retriever *knowledge.MCPRetriever
+	searches  atomic.Int32
+	reads     atomic.Int32
+}
+
+var (
+	_ KnowledgeRetriever         = (*liveKnowledgeProbe)(nil)
+	_ knowledgeLocalChunkReader  = (*liveKnowledgeProbe)(nil)
+	_ KnowledgeRetriever         = (*liveRemoteKnowledgeProbe)(nil)
+	_ knowledgeRemoteChunkReader = (*liveRemoteKnowledgeProbe)(nil)
+)
+
+type liveKnowledgeUsage interface {
+	knowledgeUsage() (searches, reads int32)
+}
+
+func (p *liveKnowledgeProbe) RetrieveContext(_ context.Context, question, hint string) knowledge.RetrievalResult {
+	p.searches.Add(1)
+	return p.retriever.Retrieve(question, hint)
+}
+
+func (p *liveKnowledgeProbe) Chunk(chunkID string) (knowledge.KBChunk, bool) {
+	p.reads.Add(1)
+	for _, chunk := range p.corpus.Chunks {
+		if chunk.ChunkID == chunkID {
+			return chunk, true
+		}
+	}
+	return knowledge.KBChunk{}, false
+}
+
+func (p *liveKnowledgeProbe) knowledgeUsage() (int32, int32) {
+	return p.searches.Load(), p.reads.Load()
+}
+
+func (p *liveRemoteKnowledgeProbe) RetrieveContext(ctx context.Context, question, hint string) knowledge.RetrievalResult {
+	p.searches.Add(1)
+	return p.retriever.RetrieveContext(ctx, question, hint)
+}
+
+func (p *liveRemoteKnowledgeProbe) ReadChunks(ctx context.Context, searchID string, chunkIDs []string) ([]knowledge.KBChunk, error) {
+	p.reads.Add(1)
+	return p.retriever.ReadChunks(ctx, searchID, chunkIDs)
+}
+
+func (p *liveRemoteKnowledgeProbe) knowledgeUsage() (int32, int32) {
+	return p.searches.Load(), p.reads.Load()
 }
 
 // liveContextEnabled deliberately has an explicit off switch so one known fault can be run in
@@ -143,8 +207,9 @@ func liveRealDescriber(t *testing.T) (Describer, context.Context) {
 	return tools.NewExternalExecutor(cfg.Agent), ctx
 }
 
-func liveSupervisor() Supervisor {
-	return Supervisor{
+func liveSupervisor(t *testing.T) Supervisor {
+	t.Helper()
+	sup := Supervisor{
 		Python:      envOr("SSHH_PYTHON", "python"),
 		HarnessPath: os.Getenv("SSHH_HARNESS"),
 		BaseURL:     envOr("SSHH_BASE_URL", "https://api.modelverse.cn"),
@@ -152,6 +217,32 @@ func liveSupervisor() Supervisor {
 		Model:       envOr("SSHH_MODEL", "gpt-5.6-terra"),
 		Timeout:     12 * time.Minute, // sized for the whole command sequence, see Supervisor.Run
 	}
+	corpusPath := strings.TrimSpace(os.Getenv("SSHH_KB_CORPUS"))
+	mcpURL := strings.TrimSpace(os.Getenv("SSHH_KB_MCP_URL"))
+	if corpusPath != "" && mcpURL != "" {
+		t.Fatal("configure only one of SSHH_KB_CORPUS or SSHH_KB_MCP_URL")
+	}
+	if mcpURL != "" {
+		retriever, err := knowledge.NewMCPRetriever(knowledge.MCPRetrieverOptions{
+			Endpoint:    mcpURL,
+			BearerToken: strings.TrimSpace(os.Getenv("SSHH_KB_MCP_BEARER_TOKEN")),
+			Timeout:     12 * time.Second,
+		})
+		if err != nil {
+			t.Fatalf("configure SSHH_KB_MCP_URL: %v", err)
+		}
+		sup.KnowledgeRetriever = &liveRemoteKnowledgeProbe{retriever: retriever}
+	} else if corpusPath != "" {
+		corpus, err := knowledge.LoadCorpus(corpusPath)
+		if err != nil {
+			t.Fatalf("load SSHH_KB_CORPUS: %v", err)
+		}
+		sup.KnowledgeRetriever = &liveKnowledgeProbe{
+			retriever: knowledge.NewRetriever(corpus, knowledge.RetrieverOptions{}),
+			corpus:    corpus,
+		}
+	}
+	return sup
 }
 
 // TestLiveKeystone proves the full Go->harness->SDK->ModelVerse->SSH chain end to end:
@@ -180,7 +271,7 @@ func TestLiveKeystone(t *testing.T) {
 
 	// nil ConfirmFunc on purpose: this direct harness keystone has no human confirmation channel, so
 	// every mutating command is refused rather than waved through.
-	res, err := liveSupervisor().Run(context.Background(), cred, task, func(st Step) {
+	res, err := liveSupervisor(t).Run(context.Background(), cred, task, func(st Step) {
 		t.Logf("[活动流] %s → %s (exit=%v, %d B)", st.Command, st.Disposition, st.ExitCode, st.Bytes)
 	}, nil)
 	t.Logf("\n========== HARNESS OUTPUT ==========\n%s\n====================================", res.Output)
@@ -232,14 +323,14 @@ func TestLiveFullFlow(t *testing.T) {
 		d = liveDescriber(host, port, user, pass, instanceID)
 	}
 	audit := &MemAuditWriter{}
-	sup := liveSupervisor()
+	sup := liveSupervisor(t)
 	// Log the remaining A/B arm. The removed product-level read-only/write split no longer changes
 	// the prompt or tool surface; only reference-context delivery is varied here.
 	contextEnabled := liveContextEnabled()
 	t.Logf("[arm] context=%v model=%s", contextEnabled, sup.Model)
 	svc := NewService(sup, audit)
 
-	// The model already selected DiagnoseInstanceInternals{UHostId, Task}; the product path proves the
+	// The model already selected DiagnoseInstanceInternals{UHostId, Task, Mode}; the product path proves the
 	// user target and deployment grant before calling Service. Enter and diagnose here (real harness,
 	// real SSH, default 掉卡 probe).
 	// SSHH_TASK carries the REAL user phrasing for the scenario under test (the Task the model would
@@ -264,6 +355,13 @@ func TestLiveFullFlow(t *testing.T) {
 		t.Logf("[拒绝测试中的写操作] %s", request.Command)
 		return ConfirmDecision{Approved: false, TerminalReason: "user_declined"}
 	})
+	if probe, ok := sup.KnowledgeRetriever.(liveKnowledgeUsage); ok {
+		searches, reads := probe.knowledgeUsage()
+		t.Logf("[knowledge] searches=%d chunks_read=%d", searches, reads)
+		if os.Getenv("SSHH_REQUIRE_KB_USE") == "1" && searches == 0 {
+			t.Fatal("candidate arm did not call search_platform_knowledge")
+		}
+	}
 	t.Logf("\n========== [beat 4] 进入实例排查 · 诊断结论 ==========\n%s\n====================================================", res.Output)
 	if err != nil {
 		t.Fatalf("Diagnose: %v (timedOut=%v)", err, res.TimedOut)

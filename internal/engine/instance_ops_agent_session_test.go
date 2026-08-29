@@ -66,7 +66,7 @@ func TestInstanceOpsAgentSessionMalformedOrFutureStartsFresh(t *testing.T) {
 	}
 }
 
-func TestInstanceOpsAgentSessionV2CursorStartsFreshUnderV3Contract(t *testing.T) {
+func TestInstanceOpsAgentSessionV2CursorStartsFreshUnderCurrentContract(t *testing.T) {
 	const oldSessionID = "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5"
 	const anchor = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	e := &Engine{sessionState: SessionState{PersistedInstanceOpsAgent: PersistedInstanceOpsAgentSession{
@@ -84,7 +84,7 @@ func TestInstanceOpsAgentSessionV2CursorStartsFreshUnderV3Contract(t *testing.T)
 	require.NotEqual(t, oldSessionID, got.SessionID)
 	require.NoError(t, uuid.Validate(got.SessionID))
 	require.Equal(t, got.SessionID, got.WorkdirID)
-	require.Equal(t, "sshops-agent-v3", got.Contract)
+	require.Equal(t, instanceOpsAgentSessionContract, got.Contract)
 	require.Empty(t, got.Model)
 	require.Empty(t, got.ConversationAnchor)
 }

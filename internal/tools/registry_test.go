@@ -481,11 +481,35 @@ func TestInventoryToolDescriptionsSetRoutingBoundaries(t *testing.T) {
 	mustContain(t, descriptions["CreateInstanceWorkflow"], "不会安装镜像外软件")
 	mustNotContain(t, descriptions["CreateInstanceWorkflow"], "必须使用此工具")
 	mustContain(t, descriptions["DiagnoseBilling"], "再次询问当前费用时重新调用本工具")
-	mustContain(t, descriptions["DiagnoseInstanceInternals"], "绝不能从列表自行挑选")
-	mustContain(t, descriptions["DiagnoseInstanceInternals"], "不因时间间隔失效")
-	mustContain(t, descriptions["DiagnoseInstanceInternals"], "不再额外弹授权卡")
-	mustContain(t, descriptions["DiagnoseInstanceInternals"], "下载模型/文件到指定磁盘")
-	mustContain(t, descriptions["DiagnoseInstanceInternals"], "不要只给用户手工命令")
+	mustContain(t, descriptions["DiagnoseInstanceInternals"], "不从列表自选")
+	mustContain(t, descriptions["DiagnoseInstanceInternals"], "不因时间失效")
+	mustContain(t, descriptions["DiagnoseInstanceInternals"], "不弹实例内或逐命令确认")
+	mustContain(t, descriptions["DiagnoseInstanceInternals"], "Mode=repair")
+	mustContain(t, descriptions["DiagnoseInstanceInternals"], "不只给手工命令")
+	mustContain(t, descriptions["DiagnoseInstanceInternals"], "文件/目录/日志")
+	mustContain(t, descriptions["DiagnoseInstanceInternals"], "Mode=inspect")
+	mustContain(t, descriptions["DiagnoseInstanceInternals"], "实测诊断服务到 SSH 入口")
+}
+
+func TestInstanceOpsToolRequiresAnExplicitRuntimeMode(t *testing.T) {
+	for _, tool := range Registry {
+		if tool.Function == nil || tool.Function.Name != "DiagnoseInstanceInternals" {
+			continue
+		}
+		params, _ := tool.Function.Parameters.(map[string]any)
+		properties, _ := params["properties"].(map[string]any)
+		mode, _ := properties["Mode"].(map[string]any)
+		enum, _ := mode["enum"].([]string)
+		if !slices.Equal(enum, []string{"inspect", "repair"}) {
+			t.Fatalf("Mode enum = %#v", enum)
+		}
+		required, _ := params["required"].([]string)
+		if !slices.Contains(required, "Mode") {
+			t.Fatalf("Mode is not required: %#v", required)
+		}
+		return
+	}
+	t.Fatal("DiagnoseInstanceInternals tool not found")
 }
 
 func TestDescribeCompShareInstanceDoesNotExposeWithoutGpu(t *testing.T) {

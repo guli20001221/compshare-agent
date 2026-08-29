@@ -41,7 +41,7 @@ func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc, db *sql.D
 	}
 	// Wire the user-targeted SSH-ops runner when a harness path is configured.
 	// deps.ExternalExecutor (a tools.ToolExecutor) satisfies sshops.Describer for the credential fetch.
-	instanceOps, err := serverInstanceOpsRunner(cfg, deps.ExternalExecutor, db)
+	instanceOps, err := serverInstanceOpsRunner(cfg, deps.ExternalExecutor, deps.KnowledgeRetriever, db)
 	if err != nil {
 		return nil, false, fmt.Errorf("ssh-ops runner: %w", err)
 	}

@@ -43,11 +43,13 @@ func TestInstanceOps_SSHPreflightUnreachableReturnsStructuredVantageObservation(
 	require.True(t, ok, raw)
 	require.Equal(t, tools.AgentToolStatusFailed, result.Status)
 	require.Equal(t, "SSH_DIAGNOSTIC_VANTAGE_UNREACHABLE", result.Error.Code)
-	require.Equal(t, tools.AgentToolNextAnswerUser, result.NextStep)
+	require.Equal(t, tools.AgentToolNextAnswerWithLimits, result.NextStep)
 	data, ok := result.Data.(map[string]any)
 	require.True(t, ok, "%#v", result.Data)
 	require.Equal(t, "diagnostic_service", data["observation_source"])
 	require.Equal(t, "diagnostic_service_to_instance_ssh_candidate", data["observation_scope"])
+	require.Equal(t, "pre_ssh_tcp", data["execution_boundary"])
+	require.Equal(t, "candidate_available", data["ssh_entrypoint"])
 	require.Equal(t, "not_established", data["tcp_connection"])
 	require.Equal(t, false, data["ssh_session_established"])
 	require.Equal(t, false, data["guest_commands_executed"])
@@ -64,7 +66,7 @@ func TestInstanceOps_SSHPreflightUnreachableReturnsStructuredVantageObservation(
 // replacing the conversation with a terminal canned reply.
 func TestInstanceOps_SSHPreflightUnreachableDoesNotOverrideUserConnectivityEvidence(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{toolCall("preflight", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"排查 SSH 登录异常"}`)}},
+		{ToolCalls: []openai.ToolCall{toolCall("preflight", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"排查 SSH 登录异常","Mode":"inspect"}`)}},
 		{Content: "诊断服务所在网络未能连通候选 SSH 地址；但你提供的 SSH 日志已证明另一条路径完成了 TCP 建连，因此不能把两者混为同一个结论。"},
 	}}
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, alwaysConfirm)
@@ -96,7 +98,7 @@ func TestInstanceOps_SSHPreflightUnreachableDoesNotOverrideUserConnectivityEvide
 // the central Agent decides how to answer from the conversation it actually has.
 func TestInstanceOps_SSHPreflightUnreachableWithoutUserEvidenceUsesSameObservation(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{toolCall("preflight", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"排查无法登录"}`)}},
+		{ToolCalls: []openai.ToolCall{toolCall("preflight", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"排查无法登录","Mode":"inspect"}`)}},
 		{Content: "诊断服务未能建立 SSH 前置 TCP 连接，尚无法据此判断实例内部根因。"},
 	}}
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, alwaysConfirm)
@@ -109,4 +111,46 @@ func TestInstanceOps_SSHPreflightUnreachableWithoutUserEvidenceUsesSameObservati
 	for _, message := range model.calls[1].Messages {
 		require.NotContains(t, message.Content, "Connection established")
 	}
+}
+
+// A missing SSH entrypoint closes only the Guest execution lane. The central
+// Agent must receive another model round and may use a platform read capability
+// to answer what remains observable outside the Guest.
+func TestInstanceOps_NoSSHTargetCanContinueWithPlatformRead(t *testing.T) {
+	const instanceID = "uhost-no-ssh-001"
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"TotalCount": float64(1),
+			"UHostSet": []any{map[string]any{
+				"UHostId": instanceID,
+				"State":   "Running",
+				"OsType":  "Windows",
+			}},
+		},
+	}}
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("guest", "DiagnoseInstanceInternals", `{"UHostId":"`+instanceID+`","Task":"排查远程登录失败","Mode":"inspect"}`)}},
+		{ToolCalls: []openai.ToolCall{toolCall("platform", "ReadCapability_instance_access", `{"targets":[{"type":"uhost_id_user_input","value":"`+instanceID+`","source":"user_text"}],"access_type":"ssh"}`)}},
+		{Content: "实例当前为 Running，但平台没有提供 SSH 登录入口；本轮没有进入 Guest，也没有执行 Guest 命令。请改用平台支持的远程入口继续排查。"},
+	}}
+	eng := NewWithDeps(model, executor, alwaysConfirm)
+	eng.SetInstanceOps(&fakeInstanceOpsRunner{err: ErrInstanceOpsNoSSHTarget})
+
+	reply, err := eng.Chat(context.Background(), "请排查 "+instanceID+" 的远程登录失败。", noopStep)
+	require.NoError(t, err)
+	require.Contains(t, reply, "当前为 Running")
+	require.Contains(t, reply, "没有提供 SSH 登录入口")
+	require.Contains(t, executor.calls, "DescribeCompShareInstance",
+		"no-SSH observation must not terminate the turn before platform reads")
+	require.Len(t, model.calls, 3)
+
+	var guestObservation string
+	for _, message := range model.calls[1].Messages {
+		if message.Role == openai.ChatMessageRoleTool && message.ToolCallID == "guest" {
+			guestObservation = message.Content
+		}
+	}
+	result, ok := tools.ParseAgentToolResult(guestObservation)
+	require.True(t, ok, guestObservation)
+	require.Equal(t, "INSTANCE_GUEST_SSH_UNAVAILABLE", result.Error.Code)
 }

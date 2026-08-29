@@ -139,6 +139,10 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 	}
 	task = security.RedactKnownAuthorizationText(task, authorizations)
 
+	phase := "read_only"
+	if modelContext.RepairScopeAuthorized {
+		phase = "read_write"
+	}
 	ev := AuditEvent{
 		RequestUUID:       owner.RequestUUID,
 		TurnID:            owner.TurnID,
@@ -147,10 +151,10 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 		OrganizationID:    owner.OrganizationID,
 		InstanceID:        cred.InstanceID,
 		Task:              task,
-		// The phase is what the box was ENTERED under, so it is taken from the lane's gate rather
-		// than from what the harness happened to run: a write-authorized session that ended up
-		// issuing only reads still entered under write authority, and the audit has to say so.
-		Phase:                "read_write",
+		// The phase is what the box was ENTERED under, not what commands happened to run. An inspect
+		// session stays read_only even if the model attempted a refused mutation; a repair-authorized
+		// session stays read_write even when diagnosis proved no change was necessary.
+		Phase:                phase,
 		ContextSchemaVersion: modelContext.SchemaVersion,
 		ContextFactCoverage:  modelContext.Coverage,
 	}

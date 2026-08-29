@@ -42,6 +42,11 @@ func TestInstanceRepairLaneIsNamedWhenMutatingToolsAreOn(t *testing.T) {
 	if !strings.Contains(both, "下载") || !strings.Contains(both, "不要只给手工命令") {
 		t.Fatal("the lane must cover explicit guest-local operations instead of handing shell commands back to the user")
 	}
+	if !strings.Contains(both, "文件、目录、日志、进程") || !strings.Contains(both, "Mode=inspect") ||
+		!strings.Contains(both, "运行时会拒绝写入") ||
+		!strings.Contains(both, "不得用公共模型/镜像目录或知识库替代实例内观察") {
+		t.Fatal("guest-state reads must route to the instance lane instead of a public catalog or a hand-written command")
+	}
 	if !strings.Contains(both, "同一会话") || !strings.Contains(both, "不因时间间隔失效") {
 		t.Fatal("a long pause must not revoke the conversation's user-selected SSH target")
 	}

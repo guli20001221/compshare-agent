@@ -44,7 +44,7 @@ type ResourceInfoResponse struct {
 func resourceReadSpec() ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResponse] {
 	return ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResponse]{
 		Label:            resourceCapabilityLabel,
-		Description:      "查询当前账号已有实例的列表、状态和配置，也用于按 ID 或名称核实实例。可用区同时给出实例返回的代码和实时目录展示名；目录无法核验时只给代码，不推测名称。只反映账号内资源，不用于查询平台 GPU 库存。",
+		Description:      "查询当前账号已有实例的列表、状态和基础配置，也用于按 ID 或名称核实实例。可用区给实例代码和实时目录名；无法核验时只给代码。只反映账号内资源，不查 GPU 库存或平台应用入口；应用入口用 instance_access software。",
 		Params:           objectParam(map[string]schemaNode{"targets": targetRefsParam()}),
 		NeedsZoneCatalog: func(ResourceInfoRequest) bool { return true },
 		Handle:           resourceHandle,

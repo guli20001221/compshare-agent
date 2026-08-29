@@ -11,8 +11,9 @@ import (
 // SSH entrypoint (an empty SshLoginCommand — Windows instances, and any image without
 // SSH). It is the engine-side, transport-agnostic mirror of sshops.ErrNoSSHTarget;
 // the cmd adapter translates one to the other, keeping internal/sshops out of the
-// engine import set. executeInstanceOps matches it with errors.Is to give an honest,
-// NON-retryable refusal instead of the generic "please retry" text.
+// engine import set. executeInstanceOps matches it with errors.Is and returns a
+// bounded observation: the Guest cannot be entered through this lane, while the
+// central Agent may continue with platform reads or knowledge retrieval.
 var ErrInstanceOpsNoSSHTarget = errors.New("engine: instance has no SSH target")
 
 // ErrInstanceOpsNotRunning is the engine-side mirror of sshops.ErrInstanceNotRunning:

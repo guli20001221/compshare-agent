@@ -29,9 +29,9 @@ func TestATypedIDIsADesignationEvenWhenTheRegistryIsEmpty(t *testing.T) {
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
-			`{"UHostId":"cpod-typed-1","Task":"排查 ComfyUI 打不开"}`)}},
+			`{"UHostId":"cpod-typed-1","Task":"排查 ComfyUI 打不开","Mode":"repair"}`)}},
 		{ToolCalls: []openai.ToolCall{toolCall("d2", "DiagnoseInstanceInternals",
-			`{"UHostId":"cpod-typed-1","Task":"继续排查 ComfyUI"}`)}},
+			`{"UHostId":"cpod-typed-1","Task":"继续排查 ComfyUI","Mode":"repair"}`)}},
 	}}
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
 	eng.SetInstanceOps(runner)
@@ -67,7 +67,7 @@ func TestColdTypedIDSurvivesAProseOnlyAcknowledgement(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{Content: "已记录当前实例。"},
 		{ToolCalls: []openai.ToolCall{toolCall("d2", "DiagnoseInstanceInternals",
-			`{"UHostId":"cpod-1uivn2vwu842","Task":"只读核查 GPU"}`)}},
+			`{"UHostId":"cpod-1uivn2vwu842","Task":"只读核查 GPU","Mode":"inspect"}`)}},
 	}}
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
 	eng.SetInstanceOps(runner)
@@ -97,7 +97,7 @@ func TestLongPausedSelectionRefreshesColdRegistryBeforeANameSwitch(t *testing.T)
 	const oldID, newID = "cpod-old-1", "cpod-new-2"
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
 	model := &mockLLM{responses: []llm.ChatResponse{{ToolCalls: []openai.ToolCall{
-		toolCall("switch-by-name", "DiagnoseInstanceInternals", `{"UHostId":"cpod-new-2","Task":"排查新训练机"}`),
+		toolCall("switch-by-name", "DiagnoseInstanceInternals", `{"UHostId":"cpod-new-2","Task":"排查新训练机","Mode":"repair"}`),
 	}}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
@@ -167,7 +167,7 @@ func TestWrappedAccountIDBecomesDesignationAfterSameTurnRegistryWarmup(t *testin
 		},
 	}, "case-124-resource-info"))
 	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
-		"UHostId": instanceID, "Task": "排查上传 413",
+		"UHostId": instanceID, "Task": "排查上传 413", "Mode": "repair",
 	}, noopStep)
 	require.NotContains(t, out, instanceOpsTargetRefusalForModel)
 	require.Zero(t, cards, "the uniquely resolved wrapper must not create an entry card")
@@ -184,7 +184,7 @@ func TestWrappedAccountIDBecomesDesignationAfterSameTurnRegistryWarmup(t *testin
 func TestAnIDTheUserNeverWroteIsNotADesignationOnAColdRegistry(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
-			`{"UHostId":"cpod-from-a-list","Task":"排查 ComfyUI 打不开"}`)}},
+			`{"UHostId":"cpod-from-a-list","Task":"排查 ComfyUI 打不开","Mode":"repair"}`)}},
 		{Content: "请告诉我要排查哪台实例。"},
 	}}
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
@@ -215,7 +215,7 @@ func TestTheSoleInstanceDoesNotAuthorizeInstanceOps(t *testing.T) {
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
-			`{"UHostId":"uhost-only-1","Task":"排查 ComfyUI 打不开"}`)}},
+			`{"UHostId":"uhost-only-1","Task":"排查 ComfyUI 打不开","Mode":"repair"}`)}},
 		{Content: "排查完成。"},
 	}}
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)

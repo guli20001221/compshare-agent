@@ -18,7 +18,7 @@ func TestStepCarriesTheSpecificRefusalReason(t *testing.T) {
 		"<<<VERDICT>>>", "结论", "<<<END>>>",
 	}, "\n") + "\n"
 
-	_, steps, _, err := parseHarnessStream(strings.NewReader(in), nil, nil)
+	_, steps, _, err := parseHarnessStream(strings.NewReader(in), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
@@ -44,7 +44,7 @@ func TestAnOlderHarnessLeavesTheReasonEmptyRatherThanWrong(t *testing.T) {
 	in := `@@STEP {"command":"rm -rf /","tier":"destructive","disposition":"refused","exit":null,"bytes":0}` +
 		"\n<<<VERDICT>>>\n结论\n<<<END>>>\n"
 
-	_, steps, _, err := parseHarnessStream(strings.NewReader(in), nil, nil)
+	_, steps, _, err := parseHarnessStream(strings.NewReader(in), nil, nil, nil)
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}

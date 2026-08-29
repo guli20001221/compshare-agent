@@ -131,22 +131,33 @@ func TestSupervisorOmitsTheRemovedReadOnlyModeFromHandshake(t *testing.T) {
 	require.Contains(t, res.Output, "HAS_ALLOW_WRITES=False")
 }
 
-// The audit row is the only persisted record that a human authorized entering someone's machine, and
-// under what authority. A write session recorded as read_only is not a cosmetic mislabel: it is the
-// evidence trail disagreeing with what actually happened on the box, which is exactly what the row
-// exists to prevent. Phase must follow the lane's gate, not the commands that happened to run — a
-// write-authorized session that issued only reads still entered with write authority.
-func TestAuditPhaseAlwaysRecordsRepairAuthority(t *testing.T) {
-	audit := &MemAuditWriter{}
-	svc := NewService(runnerFunc(func(context.Context, Credential, string, func(Step)) (Result, error) {
-		return Result{Output: "done"}, nil
-	}), audit)
-	confirm := func(ConfirmRequest) ConfirmDecision { return ConfirmDecision{Approved: true} }
-	_, err := svc.Diagnose(context.Background(), stubDescriber{resp: describeResp("ssh root@1.2.3.4", base64.StdEncoding.EncodeToString([]byte("S3cr3tPw")))}, Owner{RequestUUID: "r", TurnID: "t"},
-		"uhost-abc", "task", nil, confirm)
-	require.NoError(t, err)
-	require.NotEmpty(t, audit.Events)
-	require.Equal(t, "read_write", audit.Events[0].Phase)
+// Audit phase records the authority under which the box was entered, not the commands the model
+// happened to choose. This keeps an inspect run distinguishable from a repair-authorized run that
+// required no change.
+func TestAuditPhaseFollowsTypedRepairScope(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		authorized bool
+		want       string
+	}{
+		{name: "inspection", want: "read_only"},
+		{name: "repair", authorized: true, want: "read_write"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			audit := &MemAuditWriter{}
+			svc := NewService(runnerFunc(func(context.Context, Credential, string, func(Step)) (Result, error) {
+				return Result{Output: "done"}, nil
+			}), audit)
+			confirm := func(ConfirmRequest) ConfirmDecision { return ConfirmDecision{Approved: true} }
+			_, err := svc.DiagnoseWithContext(context.Background(),
+				stubDescriber{resp: describeResp("ssh root@1.2.3.4", base64.StdEncoding.EncodeToString([]byte("S3cr3tPw")))},
+				Owner{RequestUUID: "r", TurnID: "t"}, "uhost-abc", "task",
+				opscontext.Context{RepairScopeAuthorized: tc.authorized}, nil, confirm)
+			require.NoError(t, err)
+			require.NotEmpty(t, audit.Events)
+			require.Equal(t, tc.want, audit.Events[0].Phase)
+		})
+	}
 }
 
 type runnerFunc func(context.Context, Credential, string, func(Step)) (Result, error)

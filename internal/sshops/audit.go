@@ -20,7 +20,7 @@ type AuditEvent struct {
 	OrganizationID    uint32
 	InstanceID        string
 	Task              string
-	Phase             string // currently "read_write"; retained for audit-schema compatibility
+	Phase             string // "read_only" inspection or "read_write" repair authority
 	// ContextSchemaVersion and ContextFactCoverage are aggregate observability
 	// only. Begin records the requested context; Finish retains them only after
 	// the harness confirms it constructed a model prompt containing that context. Neither stores
