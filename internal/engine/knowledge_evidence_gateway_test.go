@@ -196,6 +196,57 @@ func TestEvidenceGatewayReadsAFullChunkBeforeCorrectingInsufficientEvidence(t *t
 	assert.Equal(t, 1, eng.evidenceCorrectionCountThisTurn)
 }
 
+func TestEvidenceGatewayConflictGetsOneAgentSummaryBeforeFailClosed(t *testing.T) {
+	main := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("search", "SearchKnowledge", `{"query":"数据盘价格"}`)}},
+		{Content: `{"answer_question":"数据盘价格是多少","search_queries":["数据盘价格"]}`},
+		{Content: "数据盘每月 3 元。"},
+		{ToolCalls: []openai.ToolCall{toolCall("read", "ReadChunk", `{"chunk_ids":["chunk-disk-price"]}`)}},
+		{Content: "文档正文明确给出的价格是每 GB 每小时 0.0005 元；同页截图文字出现了不同旧价格，因此不采用截图中的金额。"},
+	}}
+	gateway := &mockLLM{responses: []llm.ChatResponse{
+		{Content: `{"decision":"abstain","reason":"evidence_conflict"}`},
+		{Content: `{"decision":"pass","reason":"supported"}`},
+	}}
+	full := knowledge.KBChunk{
+		ChunkID: "chunk-disk-price", Title: "数据盘", SourceType: "platform",
+		SourceOrigin: "platform_docs", Confidence: "high", ProductArea: "billing",
+		Content: "正文：数据盘价格为每 GB 每小时 0.0005 元。\n[图片说明] 旧控制台的数据盘价格卡片。\n[图片文字] 10 GB 数据盘每月 3 元。",
+	}
+	retriever := &remoteChunkStoreRetriever{
+		scriptedKnowledgeRetriever: scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+			Enabled: true, SearchID: "search-1", HybridMode: knowledge.RetrievalModeQwen3RRF,
+			HitItems: []knowledge.RetrievalHit{{Kept: true, Score: 0.9, Chunk: full}},
+		}}},
+		chunks: map[string]knowledge.KBChunk{full.ChunkID: full},
+	}
+	eng := NewWithDeps(main, &mockExecutor{}, nil)
+	eng.SetEvidenceGatewayClient(gateway)
+	eng.SetKnowledgeRetriever(retriever)
+
+	reply, err := eng.Chat(context.Background(), "优云的数据盘怎么收费？", noopStep)
+	require.NoError(t, err)
+	assert.Equal(t, "文档正文明确给出的价格是每 GB 每小时 0.0005 元；同页截图文字出现了不同旧价格，因此不采用截图中的金额。", reply)
+	assert.NotContains(t, reply, "现有资料对这个问题的关键事实存在冲突")
+	assert.Equal(t, 1, eng.evidenceCorrectionCountThisTurn)
+	require.Len(t, retriever.reads, 1)
+	assert.Equal(t, []string{full.ChunkID}, retriever.reads[0].chunkIDs)
+	require.Len(t, main.calls, 5)
+	for _, call := range main.calls[len(main.calls)-2:] {
+		foundInstruction := false
+		for _, message := range call.Messages {
+			if strings.Contains(message.Content, "自然总结已有证据能确认的部分") {
+				foundInstruction = true
+			}
+		}
+		assert.True(t, foundInstruction, "the one correction boundary must survive its read-tool round")
+	}
+	require.Len(t, gateway.calls, 2)
+	assert.Contains(t, gateway.calls[0].Messages[0].Content, "正文的明确陈述优先")
+	assert.Contains(t, gateway.calls[0].Messages[0].Content, "[图片说明]")
+	assert.Contains(t, gateway.calls[0].Messages[0].Content, "[图片文字]")
+}
+
 func TestEvidenceGatewaySecondUnsupportedDraftAbstainsAndStops(t *testing.T) {
 	main := &streamingEvidenceGatewayLLM{mockLLM: mockLLM{responses: []llm.ChatResponse{
 		{Content: "控制台里肯定有工单中心。"},

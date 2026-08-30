@@ -1393,7 +1393,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// memory representation.
 	truncatedOutputRecoveries := 0
 	recoverTruncatedOutput := false
-	recoverKnowledgeEvidence := false
 	emitTerminalText := func(text string) {
 		if opts.OnTextDelta == nil || text == "" {
 			return
@@ -1509,9 +1508,12 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, truncatedOutputRecoveryInstruction)
 			recoverTruncatedOutput = false
 		}
-		if recoverKnowledgeEvidence {
+		// Keep the correction boundary on every round in the one allowed repair
+		// attempt. The Agent may call a read tool before writing its replacement;
+		// dropping the instruction after that tool call would leave the final
+		// narration unconstrained even though no second correction is available.
+		if e.evidenceCorrectionCountThisTurn > 0 {
 			req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, evidenceCorrectionInstruction)
-			recoverKnowledgeEvidence = false
 		}
 		if decision, ok := e.allowRateLimited(governance.ClassLLM, "main_react_chat"); !ok {
 			if result, committed := finishCommittedWrite(); committed {
@@ -1626,7 +1628,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				} else {
 					e.recordEvidenceGatewayVerdict(verdict)
 					switch verdict.Decision {
-					case evidenceDecisionRetrieve:
+					case evidenceDecisionRetrieve, evidenceDecisionAbstain:
 						if committedDraft, ok := committedWriteFallback(""); ok {
 							draft = committedDraft
 							break
@@ -1641,13 +1643,12 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 						}
 						if e.evidenceCorrectionCountThisTurn == 0 {
 							e.evidenceCorrectionCountThisTurn = 1
-							recoverKnowledgeEvidence = true
 							// A missing stable platform fact gets one server-owned
 							// SearchKnowledge call. For live facts, or when the Agent
 							// already searched, the ephemeral instruction lets the
 							// ordinary tool window choose ReadChunk, a different query,
 							// or the appropriate live read capability.
-							if verdict.Reason == evidenceReasonKnowledgeMissing && !e.searchKnowledgeRanThisTurn {
+							if verdict.Decision == evidenceDecisionRetrieve && verdict.Reason == evidenceReasonKnowledgeMissing && !e.searchKnowledgeRanThisTurn {
 								tc := gatewaySearchToolCall(e.userTurn, e.evidenceCorrectionCountThisTurn, security.RedactEvidenceText(llmCurrentUserMsg))
 								toolResult := e.executeTool(ctx, tc, onStep)
 								e.messages = append(e.messages,
@@ -1655,7 +1656,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 									openai.ChatCompletionMessage{Role: openai.ChatMessageRoleTool, ToolCallID: tc.ID, Content: agentToolObservation(tc.Function.Name, toolResult)},
 								)
 								runtimeRound.Observation(tc.Function.Name)
-							} else if verdict.Reason == evidenceReasonEvidenceInsufficient && e.readChunkCallsThisTurn == 0 {
+							} else if verdict.Decision == evidenceDecisionRetrieve && verdict.Reason == evidenceReasonEvidenceInsufficient && e.readChunkCallsThisTurn == 0 {
 								// A search snippet can identify the right document while ending
 								// before the exact limitation or procedure. Read the strongest
 								// available bodies once before asking the model to correct its
@@ -1678,8 +1679,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 						// entering another search/rewrite loop.
 						e.recordEvidenceGatewayHostOutcome(evidenceDecisionAbstain, evidenceOutcomeCorrectionExhausted)
 						draft = evidenceGatewayRefusal(verdict.Reason)
-					case evidenceDecisionAbstain:
-						draft, _ = committedWriteFallback(evidenceGatewayRefusal(verdict.Reason))
 					}
 				}
 			} else if e.evidenceGatewayClient != nil {
