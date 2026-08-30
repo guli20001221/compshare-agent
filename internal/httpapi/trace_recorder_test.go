@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -99,4 +100,50 @@ func TestChatTraceRecorderPersistsEngineSnapshotMetadata(t *testing.T) {
 	assert.Equal(t, 19, got.PromptMessagesRawPeak)
 	assert.Equal(t, 15, got.PromptMessagesAssembledPeak)
 	assert.True(t, got.PromptMessagesCapApplied)
+}
+
+func TestChatTraceRecorderPreservesTheModelSelectedFunction(t *testing.T) {
+	recorder := newChatTraceRecorder(
+		&captureTraceWriter{},
+		BaseRequest{RequestUUID: "req-selected-function", Owner: store.Owner{TopOrganizationID: 1, OrganizationID: 2}},
+		"sess-selected-function",
+		1,
+		"停止这台实例",
+		time.Now(),
+	)
+
+	recorder.OnStep(engine.StepEvent{
+		Type: engine.StepToolCall, Action: tools.ProposeActionName,
+		SelectedFunctionName: "RequestStopInstance", Source: observability.ToolSourceMainReAct,
+	})
+	recorder.OnStep(engine.StepEvent{
+		Type: engine.StepToolResult, Action: tools.ProposeActionName,
+		Source: observability.ToolSourceMainReAct,
+	})
+
+	require.Len(t, recorder.record.ToolCalls, 1)
+	assert.Equal(t, tools.ProposeActionName, recorder.record.ToolCalls[0].Action)
+	assert.Equal(t, "RequestStopInstance", recorder.record.ToolCalls[0].SelectedFunctionName)
+}
+
+func TestChatTraceRecorderPreservesASelectionWithoutAStartedCall(t *testing.T) {
+	for _, stepType := range []engine.StepType{engine.StepToolResult, engine.StepError, engine.StepBlocked} {
+		t.Run(fmt.Sprintf("step-%d", stepType), func(t *testing.T) {
+			recorder := newChatTraceRecorder(
+				&captureTraceWriter{},
+				BaseRequest{RequestUUID: "req-terminal-selection", Owner: store.Owner{TopOrganizationID: 1, OrganizationID: 2}},
+				"sess-terminal-selection",
+				1,
+				"查询或操作",
+				time.Now(),
+			)
+			recorder.OnStep(engine.StepEvent{
+				Type: stepType, Action: "ProjectedAction", SelectedFunctionName: "RawSelectedFunction",
+				Source: observability.ToolSourceMainReAct,
+			})
+
+			require.Len(t, recorder.record.ToolCalls, 1)
+			assert.Equal(t, "RawSelectedFunction", recorder.record.ToolCalls[0].SelectedFunctionName)
+		})
+	}
 }

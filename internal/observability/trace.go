@@ -234,11 +234,12 @@ type EntityRegistryTrace struct {
 }
 
 type ToolCallTrace struct {
-	ID        string `json:"id"`
-	TurnIndex int    `json:"turn_index"`
-	Action    string `json:"action"`
-	Source    string `json:"source"`
-	ArgsHash  string `json:"args_hash"`
+	ID                   string `json:"id"`
+	TurnIndex            int    `json:"turn_index"`
+	Action               string `json:"action"`
+	SelectedFunctionName string `json:"selected_function_name,omitempty"`
+	Source               string `json:"source"`
+	ArgsHash             string `json:"args_hash"`
 	// LatencyMS is nil when this recorder did not observe both endpoints of a
 	// tool call. A pointer to 0 is a real measured duration below one
 	// millisecond. Keeping those states distinct prevents unmatched events from

@@ -4579,6 +4579,7 @@ const (
 type StepEvent struct {
 	Type                       StepType
 	Action                     string
+	SelectedFunctionName       string
 	Source                     string
 	Args                       map[string]any
 	Message                    string
