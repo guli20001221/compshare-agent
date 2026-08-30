@@ -15,10 +15,12 @@ import (
 // package) so we reuse them rather than declaring a parallel stub.
 func newTwoSessions(t *testing.T) (engA, engB *Engine, deps *SharedDeps) {
 	t.Helper()
+	client := &mockLLM{}
 	deps = &SharedDeps{
-		LLMClient:        &mockLLM{},
-		RateLimiter:      governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
-		ExternalExecutor: &mockExecutor{results: map[string]map[string]any{}},
+		LLMClient:             client,
+		EvidenceGatewayClient: client,
+		RateLimiter:           governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
+		ExternalExecutor:      &mockExecutor{results: map[string]map[string]any{}},
 	}
 	engA = NewSession(deps, SessionOptions{Subject: "subj-A"})
 	engB = NewSession(deps, SessionOptions{Subject: "subj-B"})
@@ -159,6 +161,9 @@ func TestSessionIsolation_SharedPointersEqual(t *testing.T) {
 		t.Fatalf("LLMClient must be shared across sessions; got %p vs %p",
 			engA.LLMClientPointer(), engB.LLMClientPointer())
 	}
+	if engA.evidenceGatewayClient != deps.EvidenceGatewayClient || engA.evidenceGatewayClient != engB.evidenceGatewayClient {
+		t.Fatalf("evidence gateway client must be shared across sessions")
+	}
 	if engA.RateLimiterPointer() != engB.RateLimiterPointer() {
 		t.Fatalf("RateLimiter must be shared across sessions; got %p vs %p",
 			engA.RateLimiterPointer(), engB.RateLimiterPointer())
@@ -201,14 +206,15 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 6 shared + 98 per-session = 104 fields. Any drift
+// Whitelist totals: 7 shared + 103 per-session = 110 fields. Any drift
 // requires classifying the new field here.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
-		"llmClient":          true,
-		"knowledgeRetriever": true,
-		"rateLimiter":        true,
-		"maxTokensPerTurn":   true,
+		"llmClient":             true,
+		"evidenceGatewayClient": true,
+		"knowledgeRetriever":    true,
+		"rateLimiter":           true,
+		"maxTokensPerTurn":      true,
 		// externalExecutor is the RAW shared tool executor (same instance as the
 		// one safeExecutor wraps) — pointer-equal across sessions, used only for
 		// read-only L0 catalog calls. Shared like llmClient.
@@ -357,11 +363,17 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"promptSectionIDsThisTurn":            true,
 		"verifiedEvidenceUpdateThisTurn":      true,
 		"groundingOutcomeThisTurn":            true,
+		"evidenceRequiredThisTurn":            true,
+		"evidenceHadThisTurn":                 true,
+		"evidenceDecisionThisTurn":            true,
+		"evidenceReasonThisTurn":              true,
+		"evidenceCorrectionCountThisTurn":     true,
 		"promptMessagesRawPeakThisTurn":       true,
 		"promptMessagesAssembledPeakThisTurn": true,
 		"promptMessagesCapAppliedThisTurn":    true,
 		"verifiedInstanceEvidenceThisTurn":    true,
 		"platformReadEvidenceThisTurn":        true,
+		"agentToolEvidenceThisTurn":           true,
 		"sensitiveRepliesThisTurn":            true,
 		"toolResultsByCallThisTurn":           true,
 		"actionProposalDispositionThisTurn":   true,
@@ -424,15 +436,15 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 
 	// The fixed counts make an unclassified Engine field fail even when it is
 	// accidentally omitted from both maps.
-	if want, got := 6, len(sharedFields); want != got {
+	if want, got := 7, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 97, len(perSessionFields); want != got {
+	if want, got := 103, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 103, typ.NumField(); want != got {
+	if want, got := 110, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update this test's whitelists to match.", want, got)
 	}

@@ -341,3 +341,51 @@ func TestChatReportsCommittedWriteWhenNarrationIsLengthStopped(t *testing.T) {
 	require.Equal(t, reply, streamed, "the client must receive exactly the persisted recovery reply")
 	require.Equal(t, reply, eng.messages[len(eng.messages)-1].Content)
 }
+
+type committedNarrationLLM struct {
+	eng        *Engine
+	calls      int
+	firstUsage llm.TokenUsage
+	second     llm.ChatResponse
+}
+
+func (m *committedNarrationLLM) Chat(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+	m.calls++
+	if m.calls == 1 {
+		m.eng.committedWriteRepliesThisTurn = append(m.eng.committedWriteRepliesThisTurn, "✅ 已创建实例 uhost-good1。")
+		return &llm.ChatResponse{
+			ToolCalls: []openai.ToolCall{toolCall("tc1", "ReadCapability_resource_info", `{}`)},
+			Usage:     m.firstUsage,
+		}, nil
+	}
+	return &m.second, nil
+}
+
+func TestCommittedWriteFallsBackWhenNarrationFailsEvidenceCheck(t *testing.T) {
+	main := &committedNarrationLLM{second: llm.ChatResponse{Content: "已创建实例；控制台肯定有隐藏工单入口。"}}
+	gateway := &mockLLM{responses: []llm.ChatResponse{{Content: `{"decision":"retrieve","reason":"evidence_insufficient"}`}}}
+	eng := NewWithDeps(main, &mockExecutor{}, nil)
+	main.eng = eng
+	eng.SetEvidenceGatewayClient(gateway)
+
+	reply, err := eng.Chat(context.Background(), "创建实例", noopStep)
+	require.NoError(t, err)
+	assert.Contains(t, reply, "uhost-good1")
+	assert.Contains(t, reply, "请勿重复提交")
+	assert.NotContains(t, reply, "隐藏工单入口")
+	assert.Len(t, gateway.calls, 1, "the committed result supports validation but never bypasses it")
+}
+
+func TestCommittedWriteOutranksTokenBudgetRecovery(t *testing.T) {
+	main := &committedNarrationLLM{firstUsage: llm.TokenUsage{TotalTokens: 60000}}
+	eng := NewWithDeps(main, &mockExecutor{}, nil)
+	main.eng = eng
+	eng.maxTokensPerTurn = 50000
+
+	reply, err := eng.Chat(context.Background(), "创建实例", noopStep)
+	require.NoError(t, err)
+	assert.Contains(t, reply, "uhost-good1")
+	assert.Contains(t, reply, "请勿重复提交")
+	assert.NotEqual(t, tokenBudgetExceededMessage, reply)
+	assert.Equal(t, 1, main.calls, "the budget exit reports the committed write without another model call")
+}

@@ -14,8 +14,47 @@ const malformedToolProtocolReply = "本次操作没有进入安全确认流程�
 // It does not infer intent from words in the answer. Instead it selects the
 // applicable contract from evidence that actually crossed a tool boundary.
 func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) string {
+	content, ok := e.prepareResponseDraft(draft)
+	if !ok {
+		return content
+	}
+
+	// SearchKnowledge validates only the Agent-authored draft. Ordinary read
+	// facts already reached the Agent as tool evidence, and no second read block
+	// is composed afterwards by this gateway.
+	if e.searchKnowledgeRanThisTurn {
+		content = e.finalizeAgentLoopKnowledgeAnswer(ctx, userMsg, content)
+	} else {
+		e.groundingOutcomeThisTurn = groundingUnavailable
+	}
+	return e.finishResponseDelivery(userMsg, draft, content)
+}
+
+// finalizeResponseWithoutGrounding applies the common delivery boundary to a
+// terminal recovery whose citation/grounding state was already accepted by
+// acceptBudgetSynthesis. Running finalizeResponse here would validate and
+// mutate that state twice; skipping this boundary would leak private markers or
+// operational tokens and could drop server-owned sensitive read results.
+func (e *Engine) finalizeResponseWithoutGrounding(userMsg, draft string) string {
+	content, ok := e.prepareResponseDraft(draft)
+	if !ok {
+		return content
+	}
+	return e.finishResponseDelivery(userMsg, draft, content)
+}
+
+// finalizeHostTerminalResponse composes server-owned terminal results without
+// treating private adapter markers as model-authored text. These exits do not
+// need citation grounding, but they still must deliver any sensitive read result
+// collected earlier in the turn and apply the ordinary credential boundary.
+func (e *Engine) finalizeHostTerminalResponse(userMsg, draft string) string {
+	content := security.RedactOperationalTokensInText(draft)
+	return e.finishResponseDelivery(userMsg, draft, content)
+}
+
+func (e *Engine) prepareResponseDraft(draft string) (string, bool) {
 	if security.ContainsToolProtocolMarkup(draft) {
-		return malformedToolProtocolReply
+		return malformedToolProtocolReply, false
 	}
 	// Customer-support delivery is valid only as the deterministic result of
 	// HandoffToCustomerSupport. A model-authored copy of the private marker must
@@ -29,21 +68,16 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 	}
 	content := e.guardMonitorNoDataFinalReply(draft)
 	content = security.RedactOperationalTokensInText(content)
+	return content, true
+}
 
-	// SearchKnowledge validates only the Agent-authored draft. Ordinary read
-	// facts already reached the Agent as tool evidence, and no second read block
-	// is composed afterwards by this gateway.
-	if e.searchKnowledgeRanThisTurn {
-		content = e.finalizeAgentLoopKnowledgeAnswer(ctx, userMsg, content)
-	} else {
-		e.groundingOutcomeThisTurn = groundingUnavailable
-	}
+func (e *Engine) finishResponseDelivery(userMsg, originalDraft, content string) string {
 	content = prependSensitiveReplies(content, e.sensitiveRepliesThisTurn)
 	// A user may deliberately paste a short-lived signed download URL and ask
 	// for the exact command to run. Preserve only that exact current-turn URL;
 	// arbitrary model/tool credentials remain redacted, and HTTP persistence
 	// immediately redacts this reply again for history.
-	content = security.RestoreUserProvidedCredentialURLs(content, userMsg, draft)
+	content = security.RestoreUserProvidedCredentialURLs(content, userMsg, originalDraft)
 
 	if strings.TrimSpace(content) == "" {
 		// A turn that already handed the user a verbatim block (the billing card,

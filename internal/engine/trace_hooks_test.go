@@ -16,6 +16,11 @@ func TestTraceSnapshotReportsOnlyBoundedContinuityMetadata(t *testing.T) {
 		promptSectionIDsThisTurn:             []string{"identity", "knowledge_turn_policy", "user_state"},
 		verifiedEvidenceUpdateThisTurn:       evidenceUpdateRecorded,
 		groundingOutcomeThisTurn:             groundingSupported,
+		evidenceRequiredThisTurn:             true,
+		evidenceHadThisTurn:                  true,
+		evidenceDecisionThisTurn:             evidenceDecisionPass,
+		evidenceReasonThisTurn:               evidenceReasonSupported,
+		evidenceCorrectionCountThisTurn:      1,
 		promptMessagesRawPeakThisTurn:        12,
 		promptMessagesAssembledPeakThisTurn:  9,
 		promptMessagesCapAppliedThisTurn:     true,
@@ -32,6 +37,11 @@ func TestTraceSnapshotReportsOnlyBoundedContinuityMetadata(t *testing.T) {
 	require.True(t, snapshot.PromptMessagesCapApplied)
 	require.Equal(t, evidenceUpdateRecorded, snapshot.EvidenceUpdateSource)
 	require.Equal(t, groundingSupported, snapshot.GroundingOutcome)
+	require.True(t, snapshot.EvidenceRequired)
+	require.True(t, snapshot.EvidenceHad)
+	require.Equal(t, evidenceDecisionPass, snapshot.EvidenceDecision)
+	require.Equal(t, evidenceReasonSupported, snapshot.EvidenceReason)
+	require.Equal(t, 1, snapshot.EvidenceCorrectionCount)
 	require.Equal(t, "uhost-start", snapshot.SelectedInstanceIDAtStart)
 	require.Equal(t, SelectedInstanceSourceUser, snapshot.SelectedInstanceSourceAtStart)
 	require.Equal(t, ContinuityFreshnessExpired, snapshot.SelectedInstanceFreshnessAtStart)
