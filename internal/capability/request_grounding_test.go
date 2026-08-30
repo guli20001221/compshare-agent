@@ -1,6 +1,7 @@
 package capability
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/compshare-agent/internal/platform"
@@ -129,4 +130,21 @@ func TestCurrentTurnInstanceIDMustRemainWhole(t *testing.T) {
 	require.NoError(t, ValidateCurrentTurnGrounding(ResourceInfoRequest{Targets: []platform.TargetRef{{
 		Type: platform.TargetRefUHostIDUserInput, Value: "uhost-from-prior-turn", Source: platform.SourcePriorTurn,
 	}}}, "继续查它"), "without any literal ID, a normal carried-target follow-up remains valid")
+}
+
+func TestInstanceIDGroundingMismatchCarriesCompleteUserLiteralsWithoutSelectingOne(t *testing.T) {
+	err := ValidateUserLiteralInstanceID(
+		"uhost-current-12",
+		"对比 uhost-current-123 和 UHOST-OTHER-456",
+		"上一轮是 uhost-prior-789 和 uhost-current-123",
+	)
+	var mismatch *InstanceIDGroundingMismatch
+	require.True(t, errors.As(err, &mismatch), err)
+	require.Equal(t, "uhost-current-12", mismatch.Provided)
+	require.Equal(t, []string{"uhost-current-123", "UHOST-OTHER-456", "uhost-prior-789"}, mismatch.UserLiteralIDs,
+		"the boundary reports user-authored evidence in recency order and does not pick a target")
+
+	require.NoError(t, ValidateUserLiteralInstanceID(
+		"uhost-current-123", "查询 UHOST-CURRENT-123",
+	), "case-only normalization is not truncation")
 }
