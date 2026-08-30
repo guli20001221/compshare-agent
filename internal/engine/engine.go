@@ -185,8 +185,9 @@ type ChatOptions struct {
 
 // Engine runs the ReAct loop: User → LLM → Tool → LLM → ... → Reply.
 type Engine struct {
-	llmClient    LLMClient
-	safeExecutor *tools.SafeToolExecutor
+	llmClient             LLMClient
+	evidenceGatewayClient LLMClient
+	safeExecutor          *tools.SafeToolExecutor
 	// externalExecutor is the RAW (unfiltered) shared executor. Used only for
 	// read-only L0 catalog calls that must pass gateway-identity args the
 	// SafeToolExecutor would strip (e.g. DescribeCompShareSupportZone needs
@@ -349,6 +350,10 @@ type Engine struct {
 	// renders a second user-facing answer: the Agent sees the same evidence and
 	// writes the final Markdown itself.
 	platformReadEvidenceThisTurn []platformReadEvidence
+	// agentToolEvidenceThisTurn contains sanitized successful results from
+	// non-read tools for final-answer verification only. It never persists and
+	// never authorizes another action.
+	agentToolEvidenceThisTurn []knowledge.EvidenceItem
 	// sensitiveRepliesThisTurn contains credentials intentionally withheld from
 	// model context. The response gateway delivers each one once.
 	sensitiveRepliesThisTurn []string
@@ -398,6 +403,14 @@ type Engine struct {
 	promptSectionIDsThisTurn       []string
 	verifiedEvidenceUpdateThisTurn string
 	groundingOutcomeThisTurn       string
+	// The evidence gateway is a final-answer quality control, not another
+	// evidence store. These bounded fields record only its closed-set decision;
+	// prompts, drafts and evidence text never enter trace metadata.
+	evidenceRequiredThisTurn        bool
+	evidenceHadThisTurn             bool
+	evidenceDecisionThisTurn        string
+	evidenceReasonThisTurn          string
+	evidenceCorrectionCountThisTurn int
 	// Per-turn instance-binding observability. Captured at turn
 	// entry / refreshSystemPrompt, read post-turn by the trace recorder. Per-turn
 	// by design (reset every turn) — a shared value would attribute one tenant's
@@ -458,9 +471,10 @@ type Engine struct {
 // KnowledgeRetriever is exported so server bootstrap
 // can assign it on immutable process-wide dependencies before sessions start.
 type SharedDeps struct {
-	LLMClient          LLMClient
-	KnowledgeRetriever KnowledgeRetriever
-	RateLimiter        governance.RateLimiter
+	LLMClient             LLMClient
+	EvidenceGatewayClient LLMClient
+	KnowledgeRetriever    KnowledgeRetriever
+	RateLimiter           governance.RateLimiter
 	// MaxTokensPerTurn caps total LLM tokens summed across one user turn.
 	// 0 = disabled. Process-wide constant; copied into every NewSession.
 	MaxTokensPerTurn int
@@ -490,8 +504,10 @@ func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
 	if strings.TrimSpace(cfg.Agent.LLM.Model) == "" {
 		return nil, errors.New("engine.NewSharedDeps: agent.llm.model is required")
 	}
+	client := llm.NewClient(cfg.Agent.LLM)
 	return &SharedDeps{
-		LLMClient: llm.NewClient(cfg.Agent.LLM),
+		LLMClient:             client,
+		EvidenceGatewayClient: client,
 		// InMemoryRateLimiter is process-local and suitable for local demo or
 		// single-instance deployment only. Multi-replica production needs a
 		// centralized limiter such as Redis or an API gateway.
@@ -516,10 +532,11 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 	}
 	eng := &Engine{
 		// ── shared (pointer-equal across sessions) ──
-		llmClient:          deps.LLMClient,
-		knowledgeRetriever: deps.KnowledgeRetriever,
-		rateLimiter:        deps.RateLimiter,
-		maxTokensPerTurn:   deps.MaxTokensPerTurn,
+		llmClient:             deps.LLMClient,
+		evidenceGatewayClient: deps.EvidenceGatewayClient,
+		knowledgeRetriever:    deps.KnowledgeRetriever,
+		rateLimiter:           deps.RateLimiter,
+		maxTokensPerTurn:      deps.MaxTokensPerTurn,
 
 		// ── per-session (fresh instance every call) ──
 		confirmFn:             opts.ConfirmFn,
@@ -585,6 +602,14 @@ func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
 
 func (e *Engine) SetKnowledgeRetriever(retriever KnowledgeRetriever) {
 	e.knowledgeRetriever = retriever
+}
+
+// SetEvidenceGatewayClient enables the final evidence decision in focused
+// tests. Production receives the same stateless LLM client through SharedDeps;
+// NewWithDeps intentionally leaves it disabled so legacy unit fixtures keep
+// exercising the behavior they were written for.
+func (e *Engine) SetEvidenceGatewayClient(client LLMClient) {
+	e.evidenceGatewayClient = client
 }
 
 func (e *Engine) SetRetrievalTraceObserver(observer func(observability.RetrievalTrace)) {
@@ -1049,6 +1074,10 @@ func (e *Engine) SetSessionState(state SessionState, version int) {
 		state.PendingSelectionProducedAtUnix = 0
 		state.PendingSelectionTTLSeconds = 0
 		state.PendingSelectionItems = nil
+		// Verified evidence is also server-owned authority: the final gateway
+		// treats it as factual support on later turns. A CreateSession client may
+		// preserve opaque context, but cannot mint a verified knowledge ledger.
+		state.VerifiedEvidence = nil
 	}
 	e.sessionState = state
 	e.sessionStateVersion = version
@@ -1256,6 +1285,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.promptSectionIDsThisTurn = nil
 	e.verifiedEvidenceUpdateThisTurn = evidenceUpdateNone
 	e.groundingOutcomeThisTurn = "unavailable"
+	e.evidenceRequiredThisTurn = false
+	e.evidenceHadThisTurn = false
+	e.evidenceDecisionThisTurn = evidenceDecisionSkipped
+	e.evidenceReasonThisTurn = evidenceOutcomeNotAttempted
+	e.evidenceCorrectionCountThisTurn = 0
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
 	e.answerEchoedChunkIDThisTurn = ""
@@ -1271,6 +1305,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeActivityIDsByChunkID = nil
 	e.verifiedInstanceEvidenceThisTurn = map[string]struct{}{}
 	e.platformReadEvidenceThisTurn = nil
+	e.agentToolEvidenceThisTurn = nil
 	e.sensitiveRepliesThisTurn = nil
 	e.committedWriteRepliesThisTurn = nil
 	e.toolResultsByCallThisTurn = map[string]string{}
@@ -1358,6 +1393,37 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// memory representation.
 	truncatedOutputRecoveries := 0
 	recoverTruncatedOutput := false
+	recoverKnowledgeEvidence := false
+	emitTerminalText := func(text string) {
+		if opts.OnTextDelta == nil || text == "" {
+			return
+		}
+		if len(e.verbatimBlocksThisTurn) > 0 {
+			opts.OnTextDelta(verbatimBlockSeparator)
+		}
+		opts.OnTextDelta(text)
+	}
+	committedWriteFallback := func(fallback string) (string, bool) {
+		reply, ok := e.committedWriteRecoveryReply()
+		if !ok {
+			return fallback, false
+		}
+		e.recordEvidenceGatewayHostOutcome(evidenceDecisionSkipped, evidenceOutcomeCommittedWrite)
+		return reply, true
+	}
+	finishCommittedWrite := func() (agentruntime.Result, bool) {
+		reply, ok := committedWriteFallback("")
+		if !ok {
+			return agentruntime.Result{}, false
+		}
+		reply = e.finalizeHostTerminalResponse(llmCurrentUserMsg, reply)
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: reply,
+		})
+		emitTerminalText(reply)
+		return agentruntime.Final(reply, agentruntime.FinishDeterministicReply), true
+	}
 	runtime := agentruntime.MustNew(maxReActRounds, e.recordAgentRuntimeEvent)
 	runtimeResult, runtimeErr := runtime.Run(ctx, func(ctx context.Context, runtimeRound *agentruntime.Round) (agentruntime.Result, error) {
 		round := runtimeRound.Index()
@@ -1368,6 +1434,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// before we stop. This preserves the WS protocol invariant that
 		// every tool_call is followed by a tool_result on the wire.
 		if e.tokenBudgetExceeded() {
+			if result, ok := finishCommittedWrite(); ok {
+				return result, nil
+			}
 			// If a prior round's SearchKnowledge already
 			// gathered evidence this turn, write the final answer from it
 			// (disciplined cited synthesis) instead of discarding the turn for
@@ -1376,21 +1445,27 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// never fabricate" guard). Round 0 has no tool evidence and therefore
 			// takes the refusal path.
 			if synth, ok := e.synthesizeOnBudgetExceeded(ctx, llmCurrentUserMsg); ok {
+				var passed bool
+				synth, passed = e.gateTerminalKnowledgeAnswer(ctx, llmCurrentUserMsg, synth, true)
+				if passed {
+					synth = e.acceptBudgetSynthesis(llmCurrentUserMsg, synth)
+				}
+				synth = e.finalizeResponseWithoutGrounding(llmCurrentUserMsg, synth)
 				e.messages = append(e.messages, openai.ChatCompletionMessage{
 					Role:    openai.ChatMessageRoleAssistant,
 					Content: synth,
 				})
-				if opts.OnTextDelta != nil {
-					opts.OnTextDelta(synth)
-				}
+				emitTerminalText(synth)
 				return agentruntime.Final(synth, agentruntime.FinishBudgetRecovery), nil
 			}
 			e.emitTokenBudgetExceededHardBlock()
+			content := e.finalizeHostTerminalResponse(llmCurrentUserMsg, tokenBudgetExceededMessage)
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
-				Content: tokenBudgetExceededMessage,
+				Content: content,
 			})
-			return agentruntime.Final(tokenBudgetExceededMessage, agentruntime.FinishBudgetRefusal), nil
+			emitTerminalText(content)
+			return agentruntime.Final(content, agentruntime.FinishBudgetRefusal), nil
 		}
 		// The tool window is decided FIRST, and narrowed to its final shape, because
 		// it is part of the request the provider sizes against and the message
@@ -1434,13 +1509,22 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, truncatedOutputRecoveryInstruction)
 			recoverTruncatedOutput = false
 		}
+		if recoverKnowledgeEvidence {
+			req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, evidenceCorrectionInstruction)
+			recoverKnowledgeEvidence = false
+		}
 		if decision, ok := e.allowRateLimited(governance.ClassLLM, "main_react_chat"); !ok {
+			if result, committed := finishCommittedWrite(); committed {
+				return result, nil
+			}
 			e.markTurnCompletion(observability.CompletionClassSafetyBlock, observability.CompletionReasonRateLimit)
 			content := rateLimitMessage(decision.Reason)
+			content = e.finalizeHostTerminalResponse(llmCurrentUserMsg, content)
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
 				Content: content,
 			})
+			emitTerminalText(content)
 			return agentruntime.Final(content, agentruntime.FinishRateLimit), nil
 		}
 		// A no-tool model response is not yet user-facing text: the final gateway
@@ -1463,15 +1547,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// landed create as a failed turn is worse than reporting nothing — the
 			// user's next move is to create it again. This runs even on a cancelled
 			// ctx, because "the write happened" stays true after a disconnect.
-			if reply, ok := e.committedWriteRecoveryReply(); ok {
-				e.messages = append(e.messages, openai.ChatCompletionMessage{
-					Role:    openai.ChatMessageRoleAssistant,
-					Content: reply,
-				})
-				if opts.OnTextDelta != nil {
-					opts.OnTextDelta(reply)
-				}
-				return agentruntime.Final(reply, agentruntime.FinishDeterministicReply), nil
+			if result, ok := finishCommittedWrite(); ok {
+				return result, nil
 			}
 			// A per-call LLM error would otherwise discard the turn. If a prior round
 			// already gathered groundable
@@ -1483,13 +1560,17 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// the original error still propagates (TestChat_LLMError stays green).
 			if ctx.Err() == nil {
 				if synth, ok := e.synthesizeOnBudgetExceeded(ctx, llmCurrentUserMsg); ok {
+					var passed bool
+					synth, passed = e.gateTerminalKnowledgeAnswer(ctx, llmCurrentUserMsg, synth, true)
+					if passed {
+						synth = e.acceptBudgetSynthesis(llmCurrentUserMsg, synth)
+					}
+					synth = e.finalizeResponseWithoutGrounding(llmCurrentUserMsg, synth)
 					e.messages = append(e.messages, openai.ChatCompletionMessage{
 						Role:    openai.ChatMessageRoleAssistant,
 						Content: synth,
 					})
-					if opts.OnTextDelta != nil {
-						opts.OnTextDelta(synth)
-					}
+					emitTerminalText(synth)
 					return agentruntime.Final(synth, agentruntime.FinishBudgetRecovery), nil
 				}
 			}
@@ -1515,15 +1596,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// refusal: telling the user an already-created instance failed invites a
 			// duplicate billable request. This path uses only the committed record, not
 			// the partial model output.
-			if reply, ok := e.committedWriteRecoveryReply(); ok {
-				e.messages = append(e.messages, openai.ChatCompletionMessage{
-					Role:    openai.ChatMessageRoleAssistant,
-					Content: reply,
-				})
-				if opts.OnTextDelta != nil {
-					opts.OnTextDelta(reply)
-				}
-				return agentruntime.Final(reply, agentruntime.FinishDeterministicReply), nil
+			if result, ok := finishCommittedWrite(); ok {
+				return result, nil
 			}
 			truncatedOutputRecoveries++
 			if truncatedOutputRecoveries <= maxTruncatedOutputRecoveriesPerTurn {
@@ -1531,21 +1605,91 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				return agentruntime.Continue(), nil
 			}
 			e.markTurnCompletion(observability.CompletionClassAgent, observability.CompletionReasonModelOutputTruncated)
+			content := e.finalizeHostTerminalResponse(llmCurrentUserMsg, outputTruncatedRefusal)
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
-				Content: outputTruncatedRefusal,
+				Content: content,
 			})
-			if opts.OnTextDelta != nil {
-				opts.OnTextDelta(outputTruncatedRefusal)
-			}
-			return agentruntime.Final(outputTruncatedRefusal, agentruntime.FinishOutputTruncated), nil
+			emitTerminalText(content)
+			return agentruntime.Final(content, agentruntime.FinishOutputTruncated), nil
 		}
-		runtimeRound.ModelStep(len(resp.ToolCalls), len(resp.ToolCalls) == 0 && strings.TrimSpace(resp.Content) != "")
-
 		// No tool calls → final text reply
 		if len(resp.ToolCalls) == 0 {
 			rawContent := resp.Content
 			draft := rawContent
+			runtimeRound.ModelStep(0, strings.TrimSpace(rawContent) != "")
+			if e.shouldAssessKnowledgeEvidence(draft, true) {
+				verdict, failure := e.assessKnowledgeEvidence(ctx, llmCurrentUserMsg, draft)
+				if failure != "" {
+					e.recordEvidenceGatewayHostOutcome(evidenceDecisionUnavailable, failure)
+					draft, _ = committedWriteFallback(evidenceGatewayUnavailableRefusal(failure))
+				} else {
+					e.recordEvidenceGatewayVerdict(verdict)
+					switch verdict.Decision {
+					case evidenceDecisionRetrieve:
+						if committedDraft, ok := committedWriteFallback(""); ok {
+							draft = committedDraft
+							break
+						}
+						// The final checker is allowed to run after the Agent's
+						// generation budget is spent, but a retrieve verdict must not
+						// start another paid round beyond that budget.
+						if e.tokenBudgetExceeded() {
+							e.recordEvidenceGatewayHostOutcome(evidenceDecisionAbstain, evidenceOutcomeCorrectionExhausted)
+							draft = evidenceGatewayRefusal(verdict.Reason)
+							break
+						}
+						if e.evidenceCorrectionCountThisTurn == 0 {
+							e.evidenceCorrectionCountThisTurn = 1
+							recoverKnowledgeEvidence = true
+							// A missing stable platform fact gets one server-owned
+							// SearchKnowledge call. For live facts, or when the Agent
+							// already searched, the ephemeral instruction lets the
+							// ordinary tool window choose ReadChunk, a different query,
+							// or the appropriate live read capability.
+							if verdict.Reason == evidenceReasonKnowledgeMissing && !e.searchKnowledgeRanThisTurn {
+								tc := gatewaySearchToolCall(e.userTurn, e.evidenceCorrectionCountThisTurn, security.RedactEvidenceText(llmCurrentUserMsg))
+								toolResult := e.executeTool(ctx, tc, onStep)
+								e.messages = append(e.messages,
+									openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{tc}},
+									openai.ChatCompletionMessage{Role: openai.ChatMessageRoleTool, ToolCallID: tc.ID, Content: agentToolObservation(tc.Function.Name, toolResult)},
+								)
+								runtimeRound.Observation(tc.Function.Name)
+							} else if verdict.Reason == evidenceReasonEvidenceInsufficient && e.readChunkCallsThisTurn == 0 {
+								// A search snippet can identify the right document while ending
+								// before the exact limitation or procedure. Read the strongest
+								// available bodies once before asking the model to correct its
+								// answer; another paraphrased search usually returns the same
+								// truncated prefix and cannot close that evidence gap.
+								if ids := e.gatewayReadCandidateIDs(2); len(ids) > 0 {
+									tc := gatewayReadToolCall(e.userTurn, e.evidenceCorrectionCountThisTurn, ids)
+									toolResult := e.executeTool(ctx, tc, onStep)
+									e.messages = append(e.messages,
+										openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{tc}},
+										openai.ChatCompletionMessage{Role: openai.ChatMessageRoleTool, ToolCallID: tc.ID, Content: agentToolObservation(tc.Function.Name, toolResult)},
+									)
+									runtimeRound.Observation(tc.Function.Name)
+								}
+							}
+							return agentruntime.Continue(), nil
+						}
+						// One correction is the hard limit. A second unsupported
+						// draft is replaced by a deterministic boundary instead of
+						// entering another search/rewrite loop.
+						e.recordEvidenceGatewayHostOutcome(evidenceDecisionAbstain, evidenceOutcomeCorrectionExhausted)
+						draft = evidenceGatewayRefusal(verdict.Reason)
+					case evidenceDecisionAbstain:
+						draft, _ = committedWriteFallback(evidenceGatewayRefusal(verdict.Reason))
+					}
+				}
+			} else if e.evidenceGatewayClient != nil {
+				if reason := e.evidenceGatewaySkipReason(draft, true); reason != "" {
+					e.recordEvidenceGatewayHostOutcome(evidenceDecisionSkipped, reason)
+				}
+			}
+			if security.ContainsToolProtocolMarkup(draft) {
+				draft, _ = committedWriteFallback(draft)
+			}
 			content := e.finalizeResponse(ctx, userMsg, draft)
 			e.commitDisplayedResourceSelectionIfVisible(content)
 			// Replay buffered streaming deltas when the LLM content was returned
@@ -1596,7 +1740,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		}
 
 		// Has tool calls → execute each and feed results back.
-		return e.runToolCallsRound(ctx, resp, toolWindow, runtimeRound, onStep, opts.OnTextDelta)
+		runtimeRound.ModelStep(len(resp.ToolCalls), false)
+		return e.runToolCallsRound(ctx, llmCurrentUserMsg, resp, toolWindow, runtimeRound, onStep, opts.OnTextDelta)
 	})
 	// Runtime owns the loop's terminal reason; retain it verbatim for the final
 	// trace instead of forcing a separate hand-maintained completion taxonomy to
@@ -1615,6 +1760,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// loop DID hit the ceiling, so the attribution holds whether or not we recover
 	// an answer from gathered evidence — recovery only changes what the user sees.
 	e.reactCeilingHitThisTurn = true
+	if result, ok := finishCommittedWrite(); ok {
+		return result.Reply, nil
+	}
 	// If a prior round's SearchKnowledge already gathered groundable evidence this
 	// turn, deliver the final cited answer from it instead of discarding the whole
 	// turn for a bare 请重新描述 — the same recovery the token-budget gate uses at the
@@ -1624,23 +1772,29 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// fabricates. Final text is always buffered through the response gateway, so
 	// opts.OnTextDelta(synth) is the sole emission for this recovery as well.
 	if synth, ok := e.synthesizeOnBudgetExceeded(ctx, llmCurrentUserMsg); ok {
+		var passed bool
+		synth, passed = e.gateTerminalKnowledgeAnswer(ctx, llmCurrentUserMsg, synth, true)
+		if passed {
+			synth = e.acceptBudgetSynthesis(llmCurrentUserMsg, synth)
+		}
+		synth = e.finalizeResponseWithoutGrounding(llmCurrentUserMsg, synth)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
 			Content: synth,
 		})
-		if opts.OnTextDelta != nil {
-			opts.OnTextDelta(synth)
-		}
+		emitTerminalText(synth)
 		return synth, nil
 	}
 	// Neither recovery had evidence to synthesize. Record the refusal so hot and
 	// rebuilt histories contain the same completed exchange.
+	content := e.finalizeHostTerminalResponse(llmCurrentUserMsg, reactCeilingRefusal)
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleAssistant,
-		Content: reactCeilingRefusal,
+		Content: content,
 	})
 	e.markTurnCompletion(observability.CompletionClassSafetyBlock, observability.CompletionReasonReactRoundCeiling)
-	return reactCeilingRefusal, nil
+	emitTerminalText(content)
+	return content, nil
 }
 
 // runToolCallsRound executes every tool call in resp, feeding results back into
@@ -1654,7 +1808,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 // emitDelta streams user-visible text (nil when the caller does not stream). A
 // verbatim block is emitted through it at the point the tool returns, so the
 // streamed order matches the composed reply: block first, Agent's answer after.
-func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, toolWindow []openai.Tool, runtimeRound *agentruntime.Round, onStep func(StepEvent), emitDelta func(string)) (agentruntime.Result, error) {
+func (e *Engine) runToolCallsRound(ctx context.Context, userMsg string, resp *llm.ChatResponse, toolWindow []openai.Tool, runtimeRound *agentruntime.Round, onStep func(StepEvent), emitDelta func(string)) (agentruntime.Result, error) {
 	assistantMsg := openai.ChatCompletionMessage{
 		Role:      openai.ChatMessageRoleAssistant,
 		Content:   resp.Content,
@@ -1665,16 +1819,21 @@ func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, 
 	for idx, tc := range resp.ToolCalls {
 		toolResult := e.executeModelTool(ctx, tc, toolWindow, onStep)
 		runtimeRound.Observation(tc.Function.Name)
+		authorizedNonEvidenceTool := toolListContainsFunction(toolWindow, tc.Function.Name) &&
+			!evidenceGatewayAllowsTool(tc.Function.Name)
 
 		// Verbatim user block — deliver as-is, keep the turn alive. The model's
 		// history gets an amount-free note in place of the text, so it cannot
 		// restate or recompute the figures (see verbatimReplyPrefix).
 		if block, ok := isVerbatimReply(toolResult); ok {
 			block = security.RedactOperationalTokensInText(block)
-			e.verbatimBlocksThisTurn = append(e.verbatimBlocksThisTurn, block)
 			if emitDelta != nil {
+				if len(e.verbatimBlocksThisTurn) > 0 {
+					emitDelta(verbatimBlockSeparator)
+				}
 				emitDelta(block)
 			}
+			e.verbatimBlocksThisTurn = append(e.verbatimBlocksThisTurn, block)
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:       openai.ChatMessageRoleTool,
 				Content:    agentToolObservation(tc.Function.Name, fmt.Sprintf(`{"observation":%q,"verbatim_delivered":true}`, verbatimBlockObservation)),
@@ -1685,7 +1844,10 @@ func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, 
 
 		// Deterministic final reply — return directly without LLM narration
 		if finalMsg, ok := isFinalReply(toolResult); ok {
-			finalMsg = security.RedactOperationalTokensInText(finalMsg)
+			if authorizedNonEvidenceTool {
+				e.recordEvidenceGatewayHostOutcome(evidenceDecisionSkipped, evidenceOutcomeNonEvidenceTool)
+			}
+			finalMsg = e.finalizeHostTerminalResponse(userMsg, finalMsg)
 			historyFinalMsg := finalMsg
 			if tc.Function.Name == tools.CustomerSupportHandoffName {
 				// The active channel receives a QR or private adapter marker. Model
@@ -1713,12 +1875,21 @@ func (e *Engine) runToolCallsRound(ctx context.Context, resp *llm.ChatResponse, 
 				Role:    openai.ChatMessageRoleAssistant,
 				Content: historyFinalMsg,
 			})
+			if emitDelta != nil && finalMsg != "" {
+				if len(e.verbatimBlocksThisTurn) > 0 {
+					emitDelta(verbatimBlockSeparator)
+				}
+				emitDelta(finalMsg)
+			}
 			return agentruntime.Final(finalMsg, agentruntime.FinishDeterministicReply), nil
 		}
 
 		// Only this normal-result path can be supplied to a later Agent round.
 		// Keep every normal result on the common AgentTool control-plane contract.
 		toolResult = agentToolObservation(tc.Function.Name, toolResult)
+		if authorizedNonEvidenceTool {
+			e.recordAgentToolEvidence(tc.Function.Name, toolResult)
+		}
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:       openai.ChatMessageRoleTool,
 			Content:    toolResult,
@@ -2537,6 +2708,10 @@ func (e *Engine) recordSearchKnowledgeCapabilities(searchID string, ledger knowl
 	for _, item := range ledger.Items {
 		chunkID := strings.TrimSpace(item.ChunkID)
 		if chunkID != "" {
+			// A later strong retrieval upgrades the same chunk. Keeping the old
+			// below-floor mark would make the verifier distrust evidence that the
+			// current search explicitly accepted.
+			delete(e.belowFloorKnowledgeIDsThisTurn, chunkID)
 			// A new search supersedes a prior capability for the same chunk. The
 			// previous search_id is deliberately not retained as a fallback.
 			e.searchKnowledgeCapabilitiesThisTurn[chunkID] = searchID

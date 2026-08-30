@@ -74,9 +74,12 @@ func keptVLLMHit() knowledge.RetrievalHit {
 
 // vllmGroundedRepairResponse is the single-model budget/ceiling recovery reply:
 // plain text with a positional [1] citation that resolves to the gathered ledger
-// item (ext-vllm-oom-001). The runtime strips the marker for display.
+// item (ext-vllm-oom-001). It also includes a model-authored operational token
+// so these end-to-end exits prove they still cross the common delivery boundary.
+const recoveryModelToken = "recovery-model-token-abcdefghijklmnopqrst"
+
 func vllmGroundedRepairResponse() llm.ChatResponse {
-	return llm.ChatResponse{Content: `{"answer":"可以把 max-model-len 调小来降低显存占用[1]。"}`}
+	return llm.ChatResponse{Content: `{"answer":"可以把 max-model-len 调小来降低显存占用[1]。临时地址：https://example.invalid/download?Authorization=` + recoveryModelToken + `"}`}
 }
 
 func vllmRetriever() *scriptedKnowledgeRetriever {
@@ -114,6 +117,8 @@ func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
 
 	mock := &mockLLM{responses: responses}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	gateway := &mockLLM{responses: []llm.ChatResponse{{Content: `{"decision":"pass","reason":"supported"}`}}}
+	eng.SetEvidenceGatewayClient(gateway)
 	prepareKnowledgeRecoveryLane(t, eng)
 	eng.SetKnowledgeRetriever(vllmRetriever())
 	eng.messages = []openai.ChatCompletionMessage{
@@ -125,9 +130,12 @@ func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
 	assert.NotContains(t, reply, "轮次超限", "evidence was in hand — must recover, not refuse")
 	assert.Contains(t, reply, "max-model-len", "the grounded answer must flow through")
 	assert.NotContains(t, reply, "[1]", "the positional cite marker is stripped for display")
+	assert.NotContains(t, reply, recoveryModelToken, "terminal recovery must cross the ordinary response redaction boundary")
 	assert.True(t, eng.ReactCeilingHitThisTurn(),
 		"trace attribution preserved: the loop DID hit the ceiling even though the user got an answer")
 	require.Len(t, eng.searchKnowledgeHitsThisTurn, 1, "the gathered hit is what recovery grounds on")
+	require.Len(t, gateway.calls, 1, "round-ceiling synthesis must pass through the final evidence gateway")
+	assert.Equal(t, evidenceDecisionPass, eng.evidenceDecisionThisTurn)
 }
 
 func TestChat_RoundCeiling_DoesNotGuessFromInstanceKeywords(t *testing.T) {
@@ -255,6 +263,7 @@ func TestChat_LLMError_RecoversWhenEvidenceInHandAndCtxLive(t *testing.T) {
 	require.NoError(t, err, "evidence in hand + live ctx → recover, not error")
 	assert.Contains(t, reply, "max-model-len")
 	assert.NotContains(t, reply, "[1]")
+	assert.NotContains(t, reply, recoveryModelToken, "LLM-error recovery must cross the ordinary response redaction boundary")
 	assert.Equal(t, 3, mock.idx, "round0 search + round1 error + synthesis = exactly 3 LLM calls")
 }
 

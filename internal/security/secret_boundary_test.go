@@ -208,3 +208,11 @@ func TestCaptureUserAuthorizationHeadersFindsAHeaderAfterASignedURL(t *testing.T
 	assert.Contains(t, safe, query)
 	assert.NotContains(t, safe, header)
 }
+
+func TestRedactEvidenceTextRemovesSignedURLQueryCredentials(t *testing.T) {
+	const raw = "查看 https://example.test/file?part=1&Authorization=opaque-current-turn-secret&X-Amz-Signature=abcdef"
+	got := RedactEvidenceText(raw)
+	assert.Contains(t, got, "part=1")
+	assert.NotContains(t, got, "opaque-current-turn-secret")
+	assert.NotContains(t, got, "abcdef")
+}

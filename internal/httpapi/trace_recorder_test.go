@@ -84,6 +84,11 @@ func TestChatTraceRecorderPersistsEngineSnapshotMetadata(t *testing.T) {
 		PromptSectionIDs:            []string{"identity", "tool_use"},
 		EvidenceUpdateSource:        "none",
 		GroundingOutcome:            "supported",
+		EvidenceRequired:            true,
+		EvidenceHad:                 true,
+		EvidenceDecision:            "pass",
+		EvidenceReason:              "supported",
+		EvidenceCorrectionCount:     1,
 		PromptMessagesRawPeak:       19,
 		PromptMessagesAssembledPeak: 15,
 		PromptMessagesCapApplied:    true,
@@ -97,6 +102,11 @@ func TestChatTraceRecorderPersistsEngineSnapshotMetadata(t *testing.T) {
 	assert.Equal(t, []string{"identity", "tool_use"}, got.PromptSectionIDs)
 	assert.Equal(t, "none", got.EvidenceUpdateSource)
 	assert.Equal(t, "supported", got.GroundingOutcome)
+	assert.True(t, got.EvidenceRequired)
+	assert.True(t, got.EvidenceHad)
+	assert.Equal(t, "pass", got.EvidenceDecision)
+	assert.Equal(t, "supported", got.EvidenceReason)
+	assert.Equal(t, 1, got.EvidenceCorrectionCount)
 	assert.Equal(t, 19, got.PromptMessagesRawPeak)
 	assert.Equal(t, 15, got.PromptMessagesAssembledPeak)
 	assert.True(t, got.PromptMessagesCapApplied)
