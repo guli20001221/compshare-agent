@@ -23,6 +23,7 @@ var stepActionLabels = map[string]string{
 	// but the handler path emits them as steps verbatim — engine.go's
 	// planner-handler emit sites pass the raw API action through.
 	"DescribeCompShareInstance":               "查询实例信息",
+	"DescribeCompshareDisk":                   "查询磁盘信息",
 	"DescribeAvailableCompShareInstanceTypes": "查询可用机型",
 	"DescribeCompShareImages":                 "查询镜像列表",
 	"DescribeCompShareImageTags":              "查询镜像标签",
@@ -53,7 +54,7 @@ var stepActionLabels = map[string]string{
 	// --- internal/capability: the "ReadCapability_"+intent family -----------
 	// Second source. These ARE the model's read surface, so in a typical turn
 	// the very first step is one of them (ReadCapability_resource_info).
-	"ReadCapability_resource_info":              "查询实例信息",
+	"ReadCapability_resource_info":              "查询实例或磁盘",
 	"ReadCapability_monitor_query":              "查询实例监控",
 	"ReadCapability_monitor_history":            "查询历史监控",
 	"ReadCapability_gpu_specs_query":            "查询 GPU 规格",

@@ -6,6 +6,7 @@ type Kind string
 
 const (
 	KindResourceInfo      Kind = "resource_info"
+	KindDiskInfo          Kind = "disk_info"
 	KindMonitorQuery      Kind = "monitor_query"
 	KindGPUSpecsQuery     Kind = "gpu_specs_query"
 	KindStockAvailability Kind = "stock_availability"
@@ -21,10 +22,11 @@ const (
 type SubjectType string
 
 const (
-	SubjectInstance   SubjectType = "instance"
-	SubjectGPUModel   SubjectType = "gpu_model"
-	SubjectImage      SubjectType = "image"
-	SubjectZone       SubjectType = "zone"
+	SubjectInstance SubjectType = "instance"
+	SubjectDisk     SubjectType = "disk"
+	SubjectGPUModel SubjectType = "gpu_model"
+	SubjectImage    SubjectType = "image"
+	SubjectZone     SubjectType = "zone"
 )
 
 type FactSource string

@@ -39,6 +39,21 @@ func TestRenderResourceSummaryByteExact(t *testing.T) {
 	require.Equal(t, want, got)
 }
 
+func TestRenderResourceSummaryIncludesCurrentImageShapeAndLifecycleTimes(t *testing.T) {
+	got := RenderResourceSummary([]entity.InstanceSnapshot{{
+		UHostId: "cpod-a", State: "Stopped", CPU: 2, Memory: 4096,
+		ImageName: "PyTorch 2.9", ImageType: "App", InstanceType: "Container",
+		SchedulerStopTime: 1000, StopTime: 2000, ReleaseTime: 3000,
+	}}, ResourceEnvelopeMeta{})
+
+	assert.Contains(t, got, "镜像 PyTorch 2.9")
+	assert.Contains(t, got, "镜像类型 App")
+	assert.Contains(t, got, "实例类型 Container")
+	assert.Contains(t, got, "计划关机于 1970-01-01 08:16")
+	assert.Contains(t, got, "关机于 1970-01-01 08:33")
+	assert.Contains(t, got, "预计回收于 1970-01-01 08:50")
+}
+
 func TestRenderResourceSummary_NoGPUDoesNotAdvertiseTheStoredGPUModel(t *testing.T) {
 	got := RenderResourceSummary([]entity.InstanceSnapshot{{
 		UHostId: "uhost-a", State: "Running", GpuType: "4090", GPU: 0, CPU: 2, Memory: 4096,

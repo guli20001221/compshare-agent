@@ -7,6 +7,7 @@ import (
 func TestCheck_L0_DirectExecute(t *testing.T) {
 	l0Actions := []string{
 		"DescribeCompShareInstance",
+		"DescribeCompshareDisk",
 		"GetCompShareInstancePrice",
 		"CheckCompShareResourceCapacity",
 		"DescribeCompShareImages",

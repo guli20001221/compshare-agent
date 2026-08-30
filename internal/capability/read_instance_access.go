@@ -162,6 +162,11 @@ func instanceAccessHandle(ctx context.Context, req InstanceAccessRequest, rt Rea
 			diagnosis.SSHFailureChainWithDescribeResult(raw),
 			map[string]any{"UHostId": ids[0], "FailureKind": req.FailureKind},
 		)
+		if (diagErr != nil || !diag.Success) && resp.SSHLoginCommand != "" {
+			resp.Status = "unknown"
+			resp.Reason = "已取得实时 SSH 登录命令，但云侧连通性预检未完成，当前无法判断网络和端口是否可达。"
+			return resp, ReadResult{}
+		}
 		if diagErr != nil {
 			return InstanceAccessResponse{}, ReadFailureAfterTool("GetCompShareInstanceMonitor", instanceAccessCapabilityLabel, diagErr)
 		}

@@ -209,6 +209,9 @@ func TestFirstBatchCapabilityToolsAreRegisteredWithSafeBoundaries(t *testing.T) 
 	if !slices.Contains(policies["DescribeCompShareJupyterToken"].AllowedParams, "UHostIds") {
 		t.Fatal("internal Jupyter token action must accept the verified instance id")
 	}
+	if !slices.Contains(policies["DescribeCompshareDisk"].AllowedParams, "HostId") {
+		t.Fatal("internal disk action must preserve the capability's resolved instance id")
+	}
 	for _, action := range []string{"EnableNetOptimizerWorkflow", "CreateCFSWorkflow", "ResizeCFSWorkflow"} {
 		if !policies[action].NeedsConfirm {
 			t.Fatalf("%s must require confirmation in the runtime policy", action)

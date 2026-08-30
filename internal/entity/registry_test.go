@@ -20,7 +20,7 @@ import (
 // invalidatesRegistry leaves the cache serving the pre-change value for up to
 // DefaultRegistryFreshnessTTL, with nothing red and no user-visible error. That
 // is exactly how ResizeInstanceWorkflow and ReinstallInstanceWorkflow (which
-// rewrite GPU/GpuType/CPU/Memory and OsType/ImageType respectively) were both
+// rewrite GPU/GpuType/CPU/Memory and OsType/ImageName/ImageType respectively) were both
 // registered as workflows yet absent from the invalidation set.
 //
 // workflow.RegisteredWorkflowActions() is the source of truth on purpose: a
@@ -50,7 +50,7 @@ func TestEveryWorkflowActionIsClassifiedForInvalidation(t *testing.T) {
 				"workflow %q is unclassified for cache invalidation: either add it to invalidatesRegistry "+
 					"(if it mutates a field of InstanceSnapshot: %s) or record here why it does not. "+
 					"Leaving it out silently serves a stale snapshot.",
-				action, "UHostId/Name/State/OsType/GPU/GpuType/ImageType/CPU/Memory/Zone/Region/ChargeType/IsSpot/ExpireTime/AutoRenew")
+				action, "UHostId/Name/State/OsType/GPU/GpuType/ImageName/ImageType/InstanceType/lifecycle times/CPU/Memory/Zone/Region/ChargeType/IsSpot/ExpireTime/AutoRenew")
 		})
 	}
 }
@@ -183,18 +183,28 @@ func TestSyncFromDescribeParsesJSONNumberFields(t *testing.T) {
 func TestSyncFromDescribeParsesValidatorSnapshotFields(t *testing.T) {
 	reg := NewRegistry()
 	require.NoError(t, reg.SyncFromDescribe(describeResult(map[string]any{
-		"UHostId":   "uhost-validator",
-		"Name":      "validator-host",
-		"State":     "Running",
-		"ImageType": "Custom",
-		"StartTime": float64(1778145000),
+		"UHostId":            "uhost-validator",
+		"Name":               "validator-host",
+		"State":              "Running",
+		"CompShareImageName": "training-image",
+		"CompShareImageType": "Custom",
+		"InstanceType":       "Container",
+		"StartTime":          float64(1778145000),
+		"SchedulerStopTime":  float64(1778146000),
+		"StopTime":           float64(1778147000),
+		"ReleaseTime":        float64(1778148000),
 	}), "init"))
 
 	got, res := reg.ResolveByID("uhost-validator")
 	require.Equal(t, ResolveHit, res.Status)
 	require.NotNil(t, got)
+	assert.Equal(t, "training-image", got.ImageName)
 	assert.Equal(t, "Custom", got.ImageType)
+	assert.Equal(t, "Container", got.InstanceType)
 	assert.Equal(t, int64(1778145000), got.StartTime)
+	assert.Equal(t, int64(1778146000), got.SchedulerStopTime)
+	assert.Equal(t, int64(1778147000), got.StopTime)
+	assert.Equal(t, int64(1778148000), got.ReleaseTime)
 }
 
 func TestSnapshotReturnsDeepCopies(t *testing.T) {
@@ -578,7 +588,7 @@ func TestNeedsRefreshAndInvalidationWhitelist(t *testing.T) {
 		"SetStopSchedulerWorkflow",
 		"CancelStopSchedulerWorkflow",
 		// Resize rewrites GPU/GpuType/CPU/Memory; Reinstall rewrites
-		// OsType/ImageType. Both are InstanceSnapshot fields, so both must force
+		// OsType/ImageName/ImageType. Both are InstanceSnapshot fields, so both must force
 		// a re-Describe instead of serving the spec from before the change.
 		"ResizeInstanceWorkflow",
 		"ReinstallInstanceWorkflow",

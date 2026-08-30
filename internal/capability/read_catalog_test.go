@@ -70,6 +70,7 @@ func TestReadCapabilitiesDeclareZoneCatalogDependenciesOnTheirTypedSpecs(t *test
 	resource, ok := RegisteredReadForTool(ReadToolName(intent.IntentResourceInfo))
 	require.True(t, ok)
 	require.True(t, resource.RequiresZoneCatalog(ResourceInfoRequest{}))
+	require.False(t, resource.RequiresZoneCatalog(ResourceInfoRequest{ResourceType: resourceTypeDisks}))
 
 	zones, ok := RegisteredReadForTool(ReadToolName(intent.IntentZoneCatalog))
 	require.True(t, ok)

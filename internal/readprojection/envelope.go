@@ -77,8 +77,13 @@ func BuildResourceEnvelopeWithMetaAndZoneCatalog(instances []entity.InstanceSnap
 		} else {
 			addStringFact(addInstanceFact, "gpu_type", resourceLabelGPUType, inst.GpuType)
 		}
+		addStringFact(addInstanceFact, "image_name", resourceLabelImageName, inst.ImageName)
 		addStringFact(addInstanceFact, "image_type", resourceLabelImageType, inst.ImageType)
+		addStringFact(addInstanceFact, "instance_type", resourceLabelInstanceType, inst.InstanceType)
 		addPositiveTimeFact(addInstanceFact, "start_time", resourceLabelStartTime, inst.StartTime)
+		addPositiveTimeFact(addInstanceFact, "scheduler_stop_time", resourceLabelSchedulerStopTime, inst.SchedulerStopTime)
+		addPositiveTimeFact(addInstanceFact, "stop_time", resourceLabelStopTime, inst.StopTime)
+		addPositiveTimeFact(addInstanceFact, "release_time", resourceLabelReleaseTime, inst.ReleaseTime)
 		addPositiveIntFact(addInstanceFact, "cpu", resourceLabelCPU, inst.CPU)
 		addPositiveIntFact(addInstanceFact, "memory", resourceLabelMemory, inst.Memory)
 		addStringFact(addInstanceFact, "zone", "可用区代码", inst.Zone)

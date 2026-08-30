@@ -470,7 +470,7 @@ func invalidatesRegistry(action string) bool {
 		"SetStopSchedulerWorkflow",
 		"CancelStopSchedulerWorkflow",
 		// Resize rewrites GPU/GpuType/CPU/Memory and Reinstall rewrites
-		// OsType/ImageType — all InstanceSnapshot fields. Both were absent here
+		// OsType/ImageName/ImageType — all InstanceSnapshot fields. Both were absent here
 		// while being registered workflows, so a resize or reinstall left the
 		// cache serving the pre-change spec.
 		"ResizeInstanceWorkflow",

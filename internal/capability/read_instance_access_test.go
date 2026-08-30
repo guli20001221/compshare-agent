@@ -2,6 +2,7 @@ package capability
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/compshare-agent/internal/envelope"
@@ -12,11 +13,15 @@ import (
 
 type accessReadExec struct {
 	results map[string]map[string]any
+	errs    map[string]error
 	calls   []fakeReadExecCall
 }
 
 func (e *accessReadExec) Execute(_ context.Context, action string, args map[string]any) (map[string]any, error) {
 	e.calls = append(e.calls, fakeReadExecCall{action: action, args: args})
+	if err := e.errs[action]; err != nil {
+		return nil, err
+	}
 	return e.results[action], nil
 }
 
@@ -191,6 +196,31 @@ func TestInstanceAccessSSHReturnsTheLiveLoginCommand(t *testing.T) {
 	assert.Equal(t, false, factValue(result.Envelope, "instance_process_checked"))
 	assert.Equal(t, false, factValue(result.Envelope, "system_firewall_checked"))
 	assert.Equal(t, command, factValue(result.Envelope, "ssh_login_command"))
+}
+
+func TestInstanceAccessSSHKeepsTheLiveLoginCommandWhenMonitorFails(t *testing.T) {
+	const command = "ssh -p 25694 root@cpod-a.podtcp.compshare.cn"
+	exec := &accessReadExec{
+		results: map[string]map[string]any{
+			instanceAccessDescribeAction: describeFixture(accessHost("cpod-a", "Container", map[string]any{
+				"SshLoginCommand": command,
+			})),
+		},
+		errs: map[string]error{"GetCompShareInstanceMonitor": errors.New("monitor unavailable")},
+	}
+
+	result := runInstanceAccess(t, exec, InstanceAccessRequest{
+		Targets: accessTarget("cpod-a"), AccessType: accessTypeSSH,
+	})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Contains(t, result.Reply, command)
+	assert.Contains(t, result.Reply, "连通性预检未完成")
+	assert.Equal(t, "unknown", factValue(result.Envelope, "cloud_precheck_status"))
+	assert.Equal(t, command, factValue(result.Envelope, "ssh_login_command"))
+	assert.Equal(t, []string{instanceAccessDescribeAction}, result.Envelope.SourceActions,
+		"a failed monitor call must not be represented as evidence")
+	require.Len(t, exec.calls, 2)
 }
 
 func TestInstanceAccessJupyterUsesInstanceAndRealPortCatalog(t *testing.T) {

@@ -9,19 +9,24 @@ import (
 // InstanceSnapshot is the compact, API-grounded representation used by later
 // planner/handler code to resolve user references without trusting LLM IDs.
 type InstanceSnapshot struct {
-	UHostId    string
-	Name       string
-	State      string
-	OsType     string
-	GPU        int
-	GpuType    string
-	ImageType  string
-	StartTime  int64
-	CPU        int
-	Memory     int
-	Zone       string
-	Region     string
-	ChargeType string
+	UHostId           string
+	Name              string
+	State             string
+	OsType            string
+	GPU               int
+	GpuType           string
+	ImageName         string
+	ImageType         string
+	InstanceType      string
+	StartTime         int64
+	SchedulerStopTime int64
+	StopTime          int64
+	ReleaseTime       int64
+	CPU               int
+	Memory            int
+	Zone              string
+	Region            string
+	ChargeType        string
 	// IsSpot is independent of ChargeType: spot instances describe as Postpay (or
 	// an empty ChargeType) plus IsSpot=true.
 	IsSpot     bool
@@ -44,22 +49,27 @@ func InstanceFromMap(row map[string]any) InstanceSnapshot {
 
 func instanceFromMap(row map[string]any) InstanceSnapshot {
 	return InstanceSnapshot{
-		UHostId:    stringField(row, "UHostId"),
-		Name:       stringField(row, "Name"),
-		State:      stringField(row, "State"),
-		OsType:     stringField(row, "OsType"),
-		GPU:        intField(row, "GPU"),
-		GpuType:    stringField(row, "GpuType"),
-		ImageType:  stringField(row, "ImageType"),
-		StartTime:  int64Field(row, "StartTime"),
-		CPU:        intField(row, "CPU"),
-		Memory:     intField(row, "Memory"),
-		Zone:       stringField(row, "Zone"),
-		Region:     stringField(row, "Region"),
-		ChargeType: stringField(row, "ChargeType"),
-		IsSpot:     InstanceIsSpot(row),
-		ExpireTime: int64Field(row, "ExpireTime"),
-		AutoRenew:  stringField(row, "AutoRenew"),
+		UHostId:           stringField(row, "UHostId"),
+		Name:              stringField(row, "Name"),
+		State:             stringField(row, "State"),
+		OsType:            stringField(row, "OsType"),
+		GPU:               intField(row, "GPU"),
+		GpuType:           stringField(row, "GpuType"),
+		ImageName:         stringField(row, "CompShareImageName"),
+		ImageType:         stringField(row, "CompShareImageType"),
+		InstanceType:      stringField(row, "InstanceType"),
+		StartTime:         int64Field(row, "StartTime"),
+		SchedulerStopTime: int64Field(row, "SchedulerStopTime"),
+		StopTime:          int64Field(row, "StopTime"),
+		ReleaseTime:       int64Field(row, "ReleaseTime"),
+		CPU:               intField(row, "CPU"),
+		Memory:            intField(row, "Memory"),
+		Zone:              stringField(row, "Zone"),
+		Region:            stringField(row, "Region"),
+		ChargeType:        stringField(row, "ChargeType"),
+		IsSpot:            InstanceIsSpot(row),
+		ExpireTime:        int64Field(row, "ExpireTime"),
+		AutoRenew:         stringField(row, "AutoRenew"),
 	}
 }
 
