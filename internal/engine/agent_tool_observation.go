@@ -95,9 +95,17 @@ func agentToolObservation(action, raw string) string {
 			action, toolObservationData(object), "TOOL_REQUEST_FAILED", "工具未能完成本次请求。", meta))
 	}
 	if searchKnowledgeHasNoCitableEvidence(action, object) {
+		data := toolObservationData(object)
+		if nonEmptyCollection(object["below_floor_candidates"]) {
+			return tools.MarshalAgentToolResult(tools.AgentToolCandidatesNeedInspection(
+				action,
+				data,
+				meta,
+			))
+		}
 		return tools.MarshalAgentToolResult(tools.AgentToolNoCitableEvidence(
 			action,
-			toolObservationData(object),
+			data,
 			meta,
 		))
 	}

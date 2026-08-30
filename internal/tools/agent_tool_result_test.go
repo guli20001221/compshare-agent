@@ -40,6 +40,21 @@ func TestAgentToolFailureWithLimitsKeepsOtherObservationSurfacesAvailable(t *tes
 	require.Equal(t, AgentToolNextAnswerWithLimits, parsed.NextStep)
 }
 
+func TestAgentToolCandidatesNeedInspectionRoundTrips(t *testing.T) {
+	result := AgentToolCandidatesNeedInspection(
+		"SearchKnowledge",
+		map[string]any{"below_floor_candidates": []any{map[string]any{"chunk_id": "candidate-1"}}},
+		AgentToolMeta{},
+	)
+
+	require.Equal(t, AgentToolStatusFailed, result.Status)
+	require.Equal(t, AgentToolNextInspectCandidates, result.NextStep)
+	require.Equal(t, AgentToolCodeNoCitableEvidence, result.Error.Code)
+	parsed, ok := ParseAgentToolResult(MarshalAgentToolResult(result))
+	require.True(t, ok)
+	require.Equal(t, AgentToolNextInspectCandidates, parsed.NextStep)
+}
+
 func TestParseAgentToolResultRejectsIncoherentControlPlane(t *testing.T) {
 	raw := `{"status":"success","data":null,"error":{"code":"NONE"},"retryable":true,"next_step":"retry_later","meta":{"action":"DescribeCompShareInstance"}}`
 	_, ok := ParseAgentToolResult(raw)

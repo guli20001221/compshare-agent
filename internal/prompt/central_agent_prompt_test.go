@@ -23,6 +23,7 @@ func TestCentralAgentPromptHasOneRuntimeContract(t *testing.T) {
 		"工作流负责补齐、确认、复查和执行",
 		"Request* 成功前不得声称已发起操作",
 		"next_step=correct_tool_call 时用户无需补充",
+		"next_step=inspect_candidates 时",
 		"failed/answer_with_limits 表示当前观察面或证据边界不足",
 		"如仍有与问题匹配的其他只读观察面，先调用它们",
 		"实时平台事实（目录、状态、价格、库存、实例详情等）必须查询对应只读工具",

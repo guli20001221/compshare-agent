@@ -35,14 +35,14 @@ const (
 type AgentToolNextStep string
 
 const (
-	AgentToolNextAnswerUser       AgentToolNextStep = "answer_user"
-	AgentToolNextAnswerWithLimits AgentToolNextStep = "answer_with_limits"
-	AgentToolNextAskUser          AgentToolNextStep = "ask_user"
-	AgentToolNextRetryLater       AgentToolNextStep = "retry_later"
-	AgentToolNextChooseOption     AgentToolNextStep = "ask_user_to_choose"
-	// AgentToolNextCorrectToolCall is the one next step the model owns entirely.
-	// It exists because the other four all end in the user doing something, and
-	// a call the model itself malformed needs nothing from the user at all.
+	AgentToolNextAnswerUser        AgentToolNextStep = "answer_user"
+	AgentToolNextAnswerWithLimits  AgentToolNextStep = "answer_with_limits"
+	AgentToolNextAskUser           AgentToolNextStep = "ask_user"
+	AgentToolNextRetryLater        AgentToolNextStep = "retry_later"
+	AgentToolNextChooseOption      AgentToolNextStep = "ask_user_to_choose"
+	AgentToolNextInspectCandidates AgentToolNextStep = "inspect_candidates"
+	// A call the model itself malformed needs nothing from the user; the model
+	// corrects its arguments in the same turn.
 	AgentToolNextCorrectToolCall AgentToolNextStep = "correct_tool_call"
 )
 
@@ -80,6 +80,8 @@ type AgentToolResult struct {
 }
 
 const agentToolNoErrorCode = "NONE"
+
+const AgentToolCodeNoCitableEvidence = "NO_CITABLE_EVIDENCE"
 
 const TraceAgentToolErrorOther = "_OTHER"
 
@@ -139,8 +141,24 @@ func AgentToolNoCitableEvidence(action string, data any, meta AgentToolMeta) Age
 	return AgentToolFailureWithLimits(
 		action,
 		data,
-		"NO_CITABLE_EVIDENCE",
+		AgentToolCodeNoCitableEvidence,
 		"未检索到可用于确认平台事实的证据。",
+		meta,
+	)
+}
+
+// AgentToolCandidatesNeedInspection distinguishes a true retrieval miss from
+// an empty citable ledger that still carries reviewable candidate IDs. The
+// candidates remain non-evidence until a read tool inspects them.
+func AgentToolCandidatesNeedInspection(action string, data any, meta AgentToolMeta) AgentToolResult {
+	return newAgentToolResult(
+		AgentToolStatusFailed,
+		action,
+		data,
+		AgentToolCodeNoCitableEvidence,
+		"当前候选尚不能直接引用，请先核验候选内容。",
+		false,
+		AgentToolNextInspectCandidates,
 		meta,
 	)
 }
@@ -253,6 +271,9 @@ func validAgentToolControlPlane(result AgentToolResult) bool {
 	case AgentToolStatusChooseAlternative:
 		return !result.Retryable && result.NextStep == AgentToolNextChooseOption
 	case AgentToolStatusFailed:
+		if result.NextStep == AgentToolNextInspectCandidates {
+			return !result.Retryable && result.Error.Code == AgentToolCodeNoCitableEvidence
+		}
 		return !result.Retryable && (result.NextStep == AgentToolNextAnswerUser || result.NextStep == AgentToolNextAnswerWithLimits)
 	default:
 		return false
@@ -271,7 +292,8 @@ func validAgentToolStatus(status AgentToolStatus) bool {
 func validAgentToolNextStep(step AgentToolNextStep) bool {
 	switch step {
 	case AgentToolNextAnswerUser, AgentToolNextAnswerWithLimits, AgentToolNextAskUser,
-		AgentToolNextRetryLater, AgentToolNextChooseOption, AgentToolNextCorrectToolCall:
+		AgentToolNextRetryLater, AgentToolNextChooseOption, AgentToolNextCorrectToolCall,
+		AgentToolNextInspectCandidates:
 		return true
 	default:
 		return false
