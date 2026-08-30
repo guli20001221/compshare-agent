@@ -200,10 +200,10 @@ func shareBandwidthInfoRender(resp ShareBandwidthInfoResponse) ReadResult {
 				addShareBandwidthFact(&env, inst.UHostId, prefix+"status", "共享带宽状态", eip.Status, "")
 			}
 			addShareBandwidthFact(&env, inst.UHostId, prefix+"can_switch", "当前是否已有可切换的目标共享带宽池", eip.CanSwitch, "")
-			if eip.TargetScope != "" {
-				addShareBandwidthFact(&env, inst.UHostId, prefix+"target_scope", "当前可切换的既有目标归属", eip.TargetScope, "")
+			if eip.CanSwitch && eip.TargetScope != "" {
+				addShareBandwidthFact(&env, inst.UHostId, prefix+"target_scope", "上游报告的候选切换目标归属", eip.TargetScope, "")
+				addShareBandwidthComputed(&env, inst.UHostId, prefix+"switch_interpretation", "切换字段含义", "上游报告当前存在候选切换目标；不证明本次切换必然成功，也不证明支持购买、扩容或存在控制台入口")
 			}
-			addShareBandwidthComputed(&env, inst.UHostId, prefix+"switch_interpretation", "切换字段含义", "仅表示当前已有可切换的目标池，不证明支持购买、扩容或存在控制台入口")
 			if strings.EqualFold(eip.Scope, "Public") {
 				addShareBandwidthComputed(&env, inst.UHostId, prefix+"public_scope_interpretation", "公共共享带宽含义", "平台公共共享出口的产品口径，不是单实例保底带宽或端到端测速结果")
 			}
@@ -242,9 +242,9 @@ func shareBandwidthSwitchLabel(eip ShareBandwidthEIP) string {
 		return ""
 	}
 	if strings.EqualFold(eip.TargetScope, "Company") {
-		return "账号当前已有可用的公司独享共享带宽池，可将该 EIP 切换过去"
+		return "上游报告公司独享共享带宽池为候选切换目标"
 	}
-	return "可切换到当前已有的" + shareBandwidthScopeLabel(eip.TargetScope)
+	return "上游报告候选切换目标为" + shareBandwidthScopeLabel(eip.TargetScope)
 }
 
 func shareBandwidthScopeLabel(scope string) string {

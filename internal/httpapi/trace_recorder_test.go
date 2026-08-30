@@ -147,3 +147,29 @@ func TestChatTraceRecorderPreservesASelectionWithoutAStartedCall(t *testing.T) {
 		})
 	}
 }
+
+func TestChatTraceRecorderKeepsARepeatedModelSelectionSeparateAfterCompletion(t *testing.T) {
+	recorder := newChatTraceRecorder(
+		&captureTraceWriter{},
+		BaseRequest{RequestUUID: "req-repeated-selection", Owner: store.Owner{TopOrganizationID: 1, OrganizationID: 2}},
+		"sess-repeated-selection",
+		1,
+		"再查一次",
+		time.Now(),
+	)
+	recorder.OnStep(engine.StepEvent{
+		Type: engine.StepToolCall, Action: "DiagnoseBilling",
+		SelectedFunctionName: "DiagnoseBilling", Source: observability.ToolSourceMainReAct,
+	})
+	recorder.OnStep(engine.StepEvent{
+		Type: engine.StepToolResult, Action: "DiagnoseBilling", Source: observability.ToolSourceMainReAct,
+	})
+	recorder.OnStep(engine.StepEvent{
+		Type: engine.StepToolResult, Action: "DiagnoseBilling",
+		SelectedFunctionName: "DiagnoseBilling", Source: observability.ToolSourceMainReAct,
+	})
+
+	require.Len(t, recorder.record.ToolCalls, 2)
+	assert.Equal(t, "DiagnoseBilling", recorder.record.ToolCalls[0].SelectedFunctionName)
+	assert.Equal(t, "DiagnoseBilling", recorder.record.ToolCalls[1].SelectedFunctionName)
+}

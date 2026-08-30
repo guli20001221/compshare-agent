@@ -1376,8 +1376,9 @@ func TestDiagnoseBillingConsumesMultipleReadExpensiveQuotaUnits(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, executor, nil)
 	eng.rateLimiter = limiter
 	eng.rateLimitSubject = "sha256:subject"
+	onStep, events := collectSteps()
 
-	reply := eng.executeDiagnosis(context.Background(), "DiagnoseBilling", map[string]any{}, noopStep)
+	reply := eng.executeDiagnosis(context.Background(), "DiagnoseBilling", map[string]any{}, onStep)
 
 	assert.Contains(t, reply, "uhost-bill-001")
 	assert.True(t, strings.HasPrefix(reply, verbatimReplyPrefix),
@@ -1393,6 +1394,7 @@ func TestDiagnoseBillingConsumesMultipleReadExpensiveQuotaUnits(t *testing.T) {
 	require.Len(t, readExpensive, 2, "DiagnoseBilling intentionally consumes quota for both list and price-detail Describe calls")
 	assert.Equal(t, "DescribeCompShareInstance", readExpensive[0].Action)
 	assert.Equal(t, "DescribeCompShareInstance", readExpensive[1].Action)
+	assertStepWithType(t, *events, StepToolResult, "DiagnoseBilling", "诊断完成")
 }
 
 func TestChat_ReadOnlyToolDoesNotConsumeMutatingQuota(t *testing.T) {

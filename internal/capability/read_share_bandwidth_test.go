@@ -47,7 +47,7 @@ func TestResourceInfoSharedBandwidthReadsTheInstanceEIPScope(t *testing.T) {
 	assert.Empty(t, exec.directCalls)
 	assert.Equal(t, true, exec.internalCalls[0].args["IncludeShareBandwidth"])
 	assert.Contains(t, result.Reply, "平台公共共享带宽 2 Gbps")
-	assert.Contains(t, result.Reply, "已有可用的公司独享共享带宽池")
+	assert.Contains(t, result.Reply, "候选切换目标")
 	assert.Contains(t, result.Reply, "不等于端到端传输测速")
 	require.NotNil(t, result.Envelope)
 	assert.Equal(t, envelope.KindResourceInfo, result.Envelope.Kind)
@@ -66,6 +66,28 @@ func TestResourceInfoSharedBandwidthReadsTheInstanceEIPScope(t *testing.T) {
 	switchMeaning, ok := computedFactValue(result.Envelope, "eip_1_switch_interpretation")
 	require.True(t, ok)
 	assert.Contains(t, switchMeaning, "不证明支持购买")
+	assert.Contains(t, switchMeaning, "不证明本次切换必然成功")
+}
+
+func TestResourceInfoSharedBandwidthDoesNotOfferAnUnavailableTarget(t *testing.T) {
+	exec := &shareBandwidthReadExec{result: describeFixture(map[string]any{
+		"UHostId": "uhost-a", "Name": "train-a", "State": "Running",
+		"IPSet": []any{map[string]any{
+			"ShareBandwidth": map[string]any{
+				"Scope": "Public", "CanSwitch": false, "TargetScope": "Company",
+			},
+		}},
+	})}
+	result := NewReadCapability(resourceReadSpec()).Run(context.Background(), ResourceInfoRequest{
+		ResourceType: resourceTypeShareBandwidth,
+	}, ReadRuntime{Executor: exec})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.NotContains(t, result.Reply, "候选切换目标")
+	_, targetExposed := resourceFactValue(result.Envelope, "uhost-a", "eip_1_target_scope")
+	assert.False(t, targetExposed)
+	_, interpretationExposed := computedFactValue(result.Envelope, "eip_1_switch_interpretation")
+	assert.False(t, interpretationExposed)
 }
 
 func findShareBandwidthFact(facts []envelope.Fact, key string) *envelope.Fact {
