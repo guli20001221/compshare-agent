@@ -51,9 +51,9 @@ type ResourceInfoResponse struct {
 func resourceReadSpec() ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResponse] {
 	return ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResponse]{
 		Label:       resourceCapabilityLabel,
-		Description: "查账号实例、云盘，或实例公网 EIP 当前使用的平台公共/公司独享共享带宽归属；不查库存或应用入口。带宽产品规则和提速方法仍需查知识库。",
+		Description: "查实例、云盘。查询现有实例的共享带宽归属或切换目标时选择 shared_bandwidth；购买和提速规则另查知识库。",
 		Params: objectParam(map[string]schemaNode{
-			"resource_type": enumParam(resourceTypeInstances, resourceTypeDisks, resourceTypeShareBandwidth).described("instances 查实例；disks 查云盘、数据盘或 CVolume；shared_bandwidth 查实例公网 EIP 当前属于 Public 公共共享出口还是 Company 公司独享共享带宽。"),
+			"resource_type": enumParam(resourceTypeInstances, resourceTypeDisks, resourceTypeShareBandwidth).described("instances 查实例；disks 查云盘/CVolume；shared_bandwidth 查实例 EIP 的共享带宽归属、口径和已有切换目标，不代表测速或购买入口。"),
 			"targets":       targetRefsParam(),
 			"disk_ids":      arrayParam(stringParam()).described("磁盘 ID。"),
 		}),
