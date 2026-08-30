@@ -14,7 +14,7 @@ const segmentCentralAgentBehavior = `## 工作方式
 
 const segmentToolObservationContract = `## 工具结果
 根级 status、data、error.code、retryable、next_step、meta 为准；data.status 不覆盖根级。
-success 据 data 回答；needs_input 补问缺字段，但 next_step=correct_tool_call 时用户无需补充，按 error.message 改正参数后重发同一次调用，不要提问；choose_alternative 换返回候选；retry_later 不盲重试；failed 如实说明。failed/answer_with_limits 表示当前观察面或证据边界不足：如仍有与问题匹配的其他只读观察面，先调用它们，再在已证实边界内回答。其 error.code=NO_CITABLE_EVIDENCE 时，不得据空知识证据断言平台事实；只答稳定通用知识或说明无法核实；按 data.note 读取待核验候选或改写重检，勿原样重复。`
+success 据 data 回答；needs_input 补问缺字段，但 next_step=correct_tool_call 时用户无需补充，按 error.message 改正参数后重发同一次调用，不要提问；choose_alternative 换返回候选；retry_later 不盲重试；failed 如实说明。next_step=inspect_candidates 时按 data.note 使用现有只读工具核验候选，不要先回答或追问用户。failed/answer_with_limits 表示当前观察面或证据边界不足：如仍有与问题匹配的其他只读观察面，先调用它们，再在已证实边界内回答。其 error.code=NO_CITABLE_EVIDENCE 时，不得据空知识证据断言平台事实；只答稳定通用知识或说明无法核实；按 data.note 读取待核验候选或改写重检，勿原样重复。`
 
 const segmentCentralAgentReplyStyle = `## 回复要求
 - 需要工具或写操作时先调用，再据结果作答；不要在动作之前先写结论或参数清单。直接回答类问题：先给结论，再给必要依据。

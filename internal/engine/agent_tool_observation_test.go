@@ -79,6 +79,21 @@ func TestAgentToolObservationTreatsEmptyKnowledgeAsNoCitableEvidence(t *testing.
 	require.Equal(t, true, data["empty"])
 }
 
+func TestAgentToolObservationDirectsReviewableKnowledgeCandidatesToReadFirst(t *testing.T) {
+	result, ok := tools.ParseAgentToolResult(agentToolObservation("SearchKnowledge", `{
+		"EvidenceLedger":{"items":[]},
+		"empty":true,
+		"floor_dropped_all":true,
+		"below_floor_candidates":[{"chunk_id":"candidate-1","strength":"below_floor"}],
+		"note":"用 ReadChunk 核验候选全文"
+	}`))
+	require.True(t, ok)
+	require.Equal(t, tools.AgentToolStatusFailed, result.Status)
+	require.Equal(t, tools.AgentToolCodeNoCitableEvidence, result.Error.Code)
+	require.Equal(t, tools.AgentToolNextInspectCandidates, result.NextStep)
+	require.False(t, result.Retryable)
+}
+
 func TestAgentToolObservationKeepsEmptyPlatformReadsAsSuccess(t *testing.T) {
 	result, ok := tools.ParseAgentToolResult(agentToolObservation("DescribeCompShareInstance", `{"instances":[],"empty":true}`))
 	require.True(t, ok)

@@ -272,6 +272,8 @@ func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "NO_CITABLE_EVIDENCE", observation.Error.Code,
 		"floor feedback must remain on the existing no-citable-evidence control plane")
+	assert.Equal(t, tools.AgentToolNextInspectCandidates, observation.NextStep,
+		"reviewable candidate IDs must be inspected before the model answers")
 	data, ok := observation.Data.(map[string]any)
 	require.True(t, ok)
 	assert.Equal(t, true, data["floor_dropped_all"],
