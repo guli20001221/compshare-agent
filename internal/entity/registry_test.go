@@ -193,6 +193,12 @@ func TestSyncFromDescribeParsesValidatorSnapshotFields(t *testing.T) {
 		"SchedulerStopTime":  float64(1778146000),
 		"StopTime":           float64(1778147000),
 		"ReleaseTime":        float64(1778148000),
+		"CfsId":              "cfs-mounted",
+		"MigrationProgress": map[string]any{
+			"MigrationId": "migration-1", "State": "Running", "Reason": "",
+			"Current": "88.8G", "Total": "100.0G", "Speed": "1.2G/s",
+			"Eta": float64(10), "Percent": float64(88),
+		},
 	}), "init"))
 
 	got, res := reg.ResolveByID("uhost-validator")
@@ -205,6 +211,15 @@ func TestSyncFromDescribeParsesValidatorSnapshotFields(t *testing.T) {
 	assert.Equal(t, int64(1778146000), got.SchedulerStopTime)
 	assert.Equal(t, int64(1778147000), got.StopTime)
 	assert.Equal(t, int64(1778148000), got.ReleaseTime)
+	assert.Equal(t, "cfs-mounted", got.CfsID)
+	assert.True(t, got.MigrationProgress.Present)
+	assert.Equal(t, "migration-1", got.MigrationProgress.MigrationID)
+	assert.Equal(t, "Running", got.MigrationProgress.State)
+	assert.Equal(t, "88.8G", got.MigrationProgress.Current)
+	assert.Equal(t, "100.0G", got.MigrationProgress.Total)
+	assert.Equal(t, "1.2G/s", got.MigrationProgress.Speed)
+	assert.Equal(t, int64(10), got.MigrationProgress.ETASeconds)
+	assert.Equal(t, 88, got.MigrationProgress.Percent)
 }
 
 func TestSnapshotReturnsDeepCopies(t *testing.T) {

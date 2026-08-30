@@ -5,6 +5,7 @@ package engine
 import (
 	"encoding/json"
 	"os"
+	"sort"
 	"testing"
 
 	"github.com/compshare-agent/internal/workflow"
@@ -24,9 +25,9 @@ func TestDumpCapabilityInventory(t *testing.T) {
 		Name        string `json:"name"`
 		Description string `json:"description"`
 	}
-	collect := func(mutating bool) []toolRow {
+	collect := func(mutating, instanceOps bool) []toolRow {
 		var rows []toolRow
-		for _, tool := range centralAgentToolWindow(mutating, false) {
+		for _, tool := range centralAgentToolWindow(mutating, instanceOps) {
 			if tool.Function == nil {
 				continue
 			}
@@ -35,10 +36,33 @@ func TestDumpCapabilityInventory(t *testing.T) {
 		return rows
 	}
 
+	registered := workflow.RegisteredWorkflowActions()
+	visibleSet := make(map[string]struct{})
+	for _, tool := range centralAgentToolWindow(true, true) {
+		if tool.Function == nil {
+			continue
+		}
+		if operation, ok := proposalOperationForTool(tool.Function.Name); ok {
+			visibleSet[operation] = struct{}{}
+		}
+	}
+	var modelVisible, serverOnly []string
+	for _, operation := range registered {
+		if _, ok := visibleSet[operation]; ok {
+			modelVisible = append(modelVisible, operation)
+		} else {
+			serverOnly = append(serverOnly, operation)
+		}
+	}
+	sort.Strings(modelVisible)
+	sort.Strings(serverOnly)
+
 	payload := map[string]any{
-		"tool_window_readonly": collect(false),
-		"tool_window_mutating": collect(true),
-		"workflow_actions":     workflow.RegisteredWorkflowActions(),
+		"tool_window_readonly":           collect(false, false),
+		"tool_window_production":         collect(true, true),
+		"model_visible_workflow_actions": modelVisible,
+		"server_only_workflow_actions":   serverOnly,
+		"registered_workflow_actions":    registered,
 	}
 	b, err := json.MarshalIndent(payload, "", "  ")
 	require.NoError(t, err)

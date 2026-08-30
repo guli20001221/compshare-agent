@@ -8,6 +8,7 @@ import (
 	"github.com/compshare-agent/internal/cfsbilling"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/platform"
+	"github.com/compshare-agent/internal/readprojection"
 	"github.com/compshare-agent/internal/zones"
 )
 
@@ -56,7 +57,7 @@ func (CFSListRequest) MissingFields() []platform.MissingField { return nil }
 func cfsListReadSpec() ReadCapabilitySpec[CFSListRequest, CFSResponse] {
 	return ReadCapabilitySpec[CFSListRequest, CFSResponse]{
 		Label:       readCFSList,
-		Description: "查询当前账号 CFS 列表或指定 CFS 的状态、容量和位置。价格、扩容价和退费估算使用对应 CFS 能力。",
+		Description: "查询当前账号 CFS 列表或指定 CFS 的状态、容量、位置、到期时间和挂载实例。价格、扩容价和退费估算使用对应 CFS 能力。",
 		Params:      objectParam(map[string]schemaNode{"cfs": cfsRefParam()}),
 		Handle:      cfsListHandle,
 		Render:      cfsRender,
@@ -382,7 +383,15 @@ func renderCFSInfoReply(raw map[string]any) string {
 		if mountStatus != "" {
 			mountStatus = "，" + cfsMountStatusLabel(mountStatus)
 		}
-		lines = append(lines, fmt.Sprintf("- %s（%s）%s%s%s", name, id, sizeText, charge, mountStatus))
+		expiry := ""
+		if purchaseValue, ok := numericField(row, "PurchaseValue"); ok && purchaseValue > 0 {
+			expiry = "，到期 " + readprojection.ResourceTimeLabel(int64(purchaseValue))
+		}
+		mountedInstances := ""
+		if ids := uniqueStrings(stringSliceAt(row, "MountedUHostIds")); len(ids) > 0 {
+			mountedInstances = "，挂载实例 " + strings.Join(ids, "、")
+		}
+		lines = append(lines, fmt.Sprintf("- %s（%s）%s%s%s%s%s", name, id, sizeText, charge, mountStatus, expiry, mountedInstances))
 		shown++
 	}
 	if len(rows) > shown {

@@ -94,12 +94,20 @@ func TestKnowledgeToolExcludesCurrentPlatformFacts(t *testing.T) {
 }
 
 func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {
-	for _, mutating := range []bool{false, true} {
-		system := prompt.BuildSystemWithOptions("context", prompt.BuildOptions{MutatingToolsEnabled: mutating})
-		toolJSON, err := json.Marshal(centralAgentToolWindow(mutating, false))
+	shapes := []struct {
+		name        string
+		mutating    bool
+		instanceOps bool
+	}{
+		{name: "read_only"},
+		{name: "production", mutating: true, instanceOps: true},
+	}
+	for _, shape := range shapes {
+		system := prompt.BuildSystemWithOptions("context", prompt.BuildOptions{MutatingToolsEnabled: shape.mutating})
+		toolJSON, err := json.Marshal(centralAgentToolWindow(shape.mutating, shape.instanceOps))
 		require.NoError(t, err)
-		t.Logf("mutating=%t system_bytes=%d system_runes=%d tool_bytes=%d tool_runes=%d total_bytes=%d total_runes=%d",
-			mutating, len(system), len([]rune(system)), len(toolJSON), len([]rune(string(toolJSON))),
+		t.Logf("mutating=%t instance_ops=%t system_bytes=%d system_runes=%d tool_bytes=%d tool_runes=%d total_bytes=%d total_runes=%d",
+			shape.mutating, shape.instanceOps, len(system), len([]rune(system)), len(toolJSON), len([]rune(string(toolJSON))),
 			len(system)+len(toolJSON), len([]rune(system))+len([]rune(string(toolJSON))))
 		// P2 adds one compact, shared observation contract. Keep B4's measured
 		// write-authorization wording verbatim instead of recovering this budget
@@ -144,11 +152,11 @@ func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {
 		require.LessOrEqual(t, len(system), 5600, "central system prompt grew past its reviewed byte budget")
 		require.NotContains(t, system, "更新任务状态",
 			"the retired semantic-memory tool must not remain as a model instruction")
-		// Each Request tool keeps its operation-specific safety boundary and adds
-		// a compact card/failed-result continuation. This is the full mutating
-		// fallback window; no intent-scoping assumption is used to hide its cost.
-		require.LessOrEqual(t, len(toolJSON), 33000, "model-visible tool window grew past its reviewed byte budget")
-		require.LessOrEqual(t, len(system)+len(toolJSON), 37500,
+		// The production shape includes the SSH diagnosis tool. Keep the budget
+		// attached to the exact window sent by the deployed configuration rather
+		// than a cheaper no-SSH approximation.
+		require.LessOrEqual(t, len(toolJSON), 35000, "model-visible tool window grew past its reviewed byte budget")
+		require.LessOrEqual(t, len(system)+len(toolJSON), 40000,
 			"static prompt plus tool schemas grew past its reviewed byte budget")
 	}
 }
