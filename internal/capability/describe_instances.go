@@ -21,6 +21,21 @@ const (
 // parser marks the snapshot truncated instead of treating a partial view as an
 // absence oracle.
 func describeAllAccountInstances(ctx context.Context, exec ReadExecutor) (map[string]any, error) {
+	return describeAllAccountInstancesWithArgs(ctx, exec, nil)
+}
+
+// describeAllAccountInstancesWithArgs preserves server-owned Describe flags
+// across every page. It is used for optional response expansions such as EIP
+// shared-bandwidth facts; paging remains identical to the ordinary listing.
+func describeAllAccountInstancesWithArgs(ctx context.Context, exec ReadExecutor, baseArgs map[string]any) (map[string]any, error) {
+	return describeAllAccountInstancesUsing(ctx, exec.Execute, baseArgs)
+}
+
+func describeAllAccountInstancesInternalWithArgs(ctx context.Context, exec ReadExecutor, baseArgs map[string]any) (map[string]any, error) {
+	return describeAllAccountInstancesUsing(ctx, exec.ExecuteInternal, baseArgs)
+}
+
+func describeAllAccountInstancesUsing(ctx context.Context, execute func(context.Context, string, map[string]any) (map[string]any, error), baseArgs map[string]any) (map[string]any, error) {
 	var merged map[string]any
 	rows := make([]any, 0)
 	seen := make(map[string]struct{})
@@ -28,10 +43,13 @@ func describeAllAccountInstances(ctx context.Context, exec ReadExecutor) (map[st
 	totalKnown := false
 
 	for page := 0; page < maxDescribeInstancePages; page++ {
-		raw, err := exec.Execute(ctx, resourceInfoAction, map[string]any{
-			"Limit":  describeInstancePageLimit,
-			"Offset": page * describeInstancePageLimit,
-		})
+		args := make(map[string]any, len(baseArgs)+2)
+		for key, value := range baseArgs {
+			args[key] = value
+		}
+		args["Limit"] = describeInstancePageLimit
+		args["Offset"] = page * describeInstancePageLimit
+		raw, err := execute(ctx, resourceInfoAction, args)
 		if err != nil {
 			return nil, err
 		}

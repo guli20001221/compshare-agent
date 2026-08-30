@@ -80,6 +80,7 @@ func buildToolExecutionPolicies() map[string]ToolExecutionPolicy {
 	for action, allowed := range registryParams {
 		policy := policyForAction(action)
 		policy.AllowedParams = allowed
+		policy.InternalAllowedParams = append(policy.InternalAllowedParams, backendOnlyAllowedParams(action)...)
 		if actionAllowsBackendZoneID(action) {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "zone_id")
 		}
@@ -109,6 +110,7 @@ func buildToolExecutionPolicies() map[string]ToolExecutionPolicy {
 		}
 		policy := policyForAction(action)
 		policy.AllowedParams = internalOnlyAllowedParams(action)
+		policy.InternalAllowedParams = append(policy.InternalAllowedParams, backendOnlyAllowedParams(action)...)
 		if actionAllowsBackendZoneID(action) {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "zone_id")
 		}
@@ -240,6 +242,15 @@ func internalOnlyAllowedParams(action string) []string {
 	default:
 		return nil
 	}
+}
+
+// backendOnlyAllowedParams are response-expansion switches selected by typed
+// server capabilities. They are never model parameters.
+func backendOnlyAllowedParams(action string) []string {
+	if action == "DescribeCompShareInstance" {
+		return []string{"IncludeShareBandwidth"}
+	}
+	return nil
 }
 
 func actionAllowsBackendZoneID(action string) bool {

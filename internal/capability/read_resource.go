@@ -14,10 +14,11 @@ import (
 // explicit ID/name references are mutually exclusive.
 
 const (
-	resourceCapabilityLabel = string(intent.IntentResourceInfo)
-	resourceInfoAction      = "DescribeCompShareInstance"
-	resourceTypeInstances   = "instances"
-	resourceTypeDisks       = "disks"
+	resourceCapabilityLabel    = string(intent.IntentResourceInfo)
+	resourceInfoAction         = "DescribeCompShareInstance"
+	resourceTypeInstances      = "instances"
+	resourceTypeDisks          = "disks"
+	resourceTypeShareBandwidth = "shared_bandwidth"
 )
 
 // ResourceInfoRequest is the capability's own request contract.
@@ -33,9 +34,10 @@ func (ResourceInfoRequest) MissingFields() []platform.MissingField { return nil 
 // ResourceInfoResponse carries the display-ready instance list, its envelope
 // metadata and the selection candidates (populated only on a "list all" turn).
 type ResourceInfoResponse struct {
-	Instances []entity.InstanceSnapshot
-	DiskInfo  *DiskInfoResponse
-	Meta      readprojection.ResourceEnvelopeMeta
+	Instances          []entity.InstanceSnapshot
+	DiskInfo           *DiskInfoResponse
+	ShareBandwidthInfo *ShareBandwidthInfoResponse
+	Meta               readprojection.ResourceEnvelopeMeta
 	// ZoneCatalog is immutable engine-owned reference data captured for this
 	// request. It lets the pure renderer project the raw Zone code and the live
 	// console display name from one catalog row.
@@ -49,16 +51,18 @@ type ResourceInfoResponse struct {
 func resourceReadSpec() ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResponse] {
 	return ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResponse]{
 		Label:       resourceCapabilityLabel,
-		Description: "查账号实例或云盘；不查库存或应用入口。",
+		Description: "查账号实例、云盘，或实例公网 EIP 当前使用的平台公共/公司独享共享带宽归属；不查库存或应用入口。带宽产品规则和提速方法仍需查知识库。",
 		Params: objectParam(map[string]schemaNode{
-			"resource_type": enumParam(resourceTypeInstances, resourceTypeDisks).described("instances 查实例；disks 查云盘、数据盘或 CVolume。"),
+			"resource_type": enumParam(resourceTypeInstances, resourceTypeDisks, resourceTypeShareBandwidth).described("instances 查实例；disks 查云盘、数据盘或 CVolume；shared_bandwidth 查实例公网 EIP 当前属于 Public 公共共享出口还是 Company 公司独享共享带宽。"),
 			"targets":       targetRefsParam(),
 			"disk_ids":      arrayParam(stringParam()).described("磁盘 ID。"),
 		}),
-		NeedsZoneCatalog: func(req ResourceInfoRequest) bool { return req.ResourceType != resourceTypeDisks },
-		Handle:           resourceHandle,
-		Render:           resourceRender,
-		Observe:          resourceObserve,
+		NeedsZoneCatalog: func(req ResourceInfoRequest) bool {
+			return req.ResourceType == "" || req.ResourceType == resourceTypeInstances
+		},
+		Handle:  resourceHandle,
+		Render:  resourceRender,
+		Observe: resourceObserve,
 	}
 }
 
@@ -66,6 +70,13 @@ func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime
 	if req.ResourceType == resourceTypeDisks {
 		resp, terminal := diskInfoHandle(ctx, DiskInfoRequest{Targets: req.Targets, DiskIDs: req.DiskIDs}, rt)
 		return ResourceInfoResponse{DiskInfo: &resp}, terminal
+	}
+	if req.ResourceType == resourceTypeShareBandwidth {
+		if len(req.DiskIDs) > 0 {
+			return ResourceInfoResponse{}, ReadFallbackBeforeTool(platform.ReadFallbackValidation)
+		}
+		resp, terminal := shareBandwidthInfoHandle(ctx, req.Targets, rt)
+		return ResourceInfoResponse{ShareBandwidthInfo: &resp}, terminal
 	}
 	if len(req.DiskIDs) > 0 {
 		return ResourceInfoResponse{}, ReadFallbackBeforeTool(platform.ReadFallbackValidation)
@@ -183,6 +194,9 @@ func resourceRender(resp ResourceInfoResponse) ReadResult {
 	if resp.DiskInfo != nil {
 		return diskInfoRender(*resp.DiskInfo)
 	}
+	if resp.ShareBandwidthInfo != nil {
+		return shareBandwidthInfoRender(*resp.ShareBandwidthInfo)
+	}
 	r := ReadHandled(readprojection.RenderResourceSummaryWithZoneCatalog(resp.Instances, resp.Meta, resp.ZoneCatalog))
 	r.ToolAction = resourceInfoAction
 	env := readprojection.BuildResourceEnvelopeWithMetaAndZoneCatalog(resp.Instances, resp.Meta, resp.ZoneCatalog)
@@ -194,7 +208,7 @@ func resourceRender(resp ResourceInfoResponse) ReadResult {
 // existence evidence. resource_info is the ONLY read that emits it: its subjects
 // come from the upstream response, not a pre-query snapshot.
 func resourceObserve(resp ResourceInfoResponse) []ReadEffect {
-	if resp.DiskInfo != nil {
+	if resp.DiskInfo != nil || resp.ShareBandwidthInfo != nil {
 		return nil
 	}
 	var effects []ReadEffect
