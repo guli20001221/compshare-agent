@@ -31,7 +31,7 @@ type NetworkAcceleratorStatusResponse struct {
 func netAcceleratorReadSpec() ReadCapabilitySpec[NetworkAcceleratorStatusRequest, NetworkAcceleratorStatusResponse] {
 	return ReadCapabilitySpec[NetworkAcceleratorStatusRequest, NetworkAcceleratorStatusResponse]{
 		Label:       netAcceleratorCapabilityLabel,
-		Description: "查询当前账号各地域或可用区的网络加速状态。只读，不开启或关闭网络加速。",
+		Description: "查各地域的代码仓库等平台网络加速状态；不查实例 EIP 共享带宽。",
 		Params:      objectParam(map[string]schemaNode{}),
 		Handle:      netAcceleratorHandle,
 		Render:      netAcceleratorRender,

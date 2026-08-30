@@ -125,6 +125,30 @@ func TestDescribeCompShareImagesAllowsOffsetForPagination(t *testing.T) {
 	assert.Equal(t, 100, filtered["Offset"])
 }
 
+func TestDescribeInstanceShareBandwidthExpansionIsBackendOnly(t *testing.T) {
+	directInner := &spyExecutor{}
+	direct := NewSafeToolExecutor(directInner)
+	_, err := direct.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "DescribeCompShareInstance",
+		Args:   map[string]any{"IncludeShareBandwidth": true, "Limit": 100},
+		Origin: OriginDirectLLM,
+	})
+	require.NoError(t, err)
+	require.Len(t, directInner.args, 1)
+	assert.NotContains(t, directInner.args[0], "IncludeShareBandwidth")
+
+	internalInner := &spyExecutor{}
+	internal := NewSafeToolExecutor(internalInner)
+	_, err = internal.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "DescribeCompShareInstance",
+		Args:   map[string]any{"IncludeShareBandwidth": true, "Limit": 100},
+		Origin: OriginDiagnosisInternal,
+	})
+	require.NoError(t, err)
+	require.Len(t, internalInner.args, 1)
+	assert.Equal(t, true, internalInner.args[0]["IncludeShareBandwidth"])
+}
+
 func TestReinstallWorkflowAllowsImageNameForLookup(t *testing.T) {
 	safe := NewSafeToolExecutor(&spyExecutor{})
 

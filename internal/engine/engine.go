@@ -4485,7 +4485,13 @@ func cfsWorkflowFailureReply(message string) string {
 
 // executeDiagnosis runs a diagnostic chain and returns the result as JSON.
 func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
-	reply, _ := e.executeDiagnosisWithOutcome(ctx, action, args, onStep)
+	reply, outcome := e.executeDiagnosisWithOutcome(ctx, action, args, onStep)
+	if outcome == intent.HandlerFailureNone {
+		onStep(StepEvent{
+			Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct,
+			Message: "诊断完成", TraceResult: map[string]any{"status": "completed"},
+		})
+	}
 	return reply
 }
 
@@ -4579,6 +4585,7 @@ const (
 type StepEvent struct {
 	Type                       StepType
 	Action                     string
+	SelectedFunctionName       string
 	Source                     string
 	Args                       map[string]any
 	Message                    string

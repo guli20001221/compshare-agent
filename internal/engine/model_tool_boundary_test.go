@@ -34,6 +34,22 @@ func TestModelToolBoundaryLetsAnAdvertisedNameReachTheNormalDispatcher(t *testin
 	require.NotContains(t, out, "TOOL_NOT_ALLOWED")
 }
 
+func TestModelToolBoundaryRecordsTheRawSelectionOnlyOnce(t *testing.T) {
+	eng := &Engine{}
+	window := centralAgentToolWindow(false, false)
+	var events []StepEvent
+
+	eng.executeModelTool(context.Background(), toolCall("visible", "HandoffToCustomerSupport", `{}`), window, func(ev StepEvent) {
+		events = append(events, ev)
+	})
+
+	require.GreaterOrEqual(t, len(events), 2)
+	require.Equal(t, "HandoffToCustomerSupport", events[0].SelectedFunctionName)
+	for _, ev := range events[1:] {
+		require.Empty(t, ev.SelectedFunctionName)
+	}
+}
+
 func TestImageRequestsFollowTheSharedActionFirstContract(t *testing.T) {
 	window := centralAgentToolWindow(true, false)
 	for _, name := range []string{"RequestCreateCustomImage", "RequestCloneCustomImage"} {

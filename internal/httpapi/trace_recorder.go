@@ -286,13 +286,14 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 			windowSeconds = traceWindowSeconds(ev.Args)
 		}
 		r.record.ToolCalls = append(r.record.ToolCalls, observability.ToolCallTrace{
-			ID:               fmt.Sprintf("tool-%d", len(r.record.ToolCalls)+1),
-			TurnIndex:        r.record.TurnIndex,
-			Action:           ev.Action,
-			Source:           source,
-			ArgsHash:         argsHash,
-			RequestedTargets: requestedTargets,
-			WindowSeconds:    windowSeconds,
+			ID:                   fmt.Sprintf("tool-%d", len(r.record.ToolCalls)+1),
+			TurnIndex:            r.record.TurnIndex,
+			Action:               ev.Action,
+			SelectedFunctionName: ev.SelectedFunctionName,
+			Source:               source,
+			ArgsHash:             argsHash,
+			RequestedTargets:     requestedTargets,
+			WindowSeconds:        windowSeconds,
 		})
 		r.pendingByID[key] = append(r.pendingByID[key], pendingToolCall{
 			index:     len(r.record.ToolCalls) - 1,
@@ -300,6 +301,7 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 		})
 	case engine.StepToolResult:
 		idx, startedAt := r.matchPending(key, ev.Action, source)
+		r.applySelectedFunctionName(idx, ev.SelectedFunctionName)
 		resultHash, _ := observability.HashTracePayload(ev.TraceResult)
 		r.record.ToolCalls[idx].Status = observability.ToolStatusSuccess
 		r.applyLatency(idx, startedAt)
@@ -316,6 +318,7 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 		}
 	case engine.StepError:
 		idx, startedAt := r.matchPending(key, ev.Action, source)
+		r.applySelectedFunctionName(idx, ev.SelectedFunctionName)
 		r.record.ToolCalls[idx].Status = observability.ToolStatusError
 		// Step messages are user-facing diagnostics and may contain upstream
 		// detail. Trace records only the closed-set error class.
@@ -325,6 +328,7 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 		r.applyCapFields(idx, ev)
 	case engine.StepBlocked:
 		idx, startedAt := r.matchPending(key, ev.Action, source)
+		r.applySelectedFunctionName(idx, ev.SelectedFunctionName)
 		r.record.ToolCalls[idx].Status = observability.ToolStatusError
 		r.record.ToolCalls[idx].ErrorClass = "blocked"
 		r.applyErrorCode(idx, ev.ErrorCode)
@@ -340,6 +344,15 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 		// This case is explicit rather than left to the switch having no branch, so that adding a
 		// `default:` here later cannot quietly start recording notices.
 		return
+	}
+}
+
+func (r *chatTraceRecorder) applySelectedFunctionName(idx int, name string) {
+	if r == nil || name == "" || idx < 0 || idx >= len(r.record.ToolCalls) {
+		return
+	}
+	if r.record.ToolCalls[idx].SelectedFunctionName == "" {
+		r.record.ToolCalls[idx].SelectedFunctionName = name
 	}
 }
 
