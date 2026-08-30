@@ -98,6 +98,17 @@ func BuildResourceEnvelopeWithMetaAndZoneCatalog(instances []entity.InstanceSnap
 		addInstanceFact("is_spot", "是否抢占式", spotFactValue(inst.IsSpot))
 		addPositiveTimeFact(addInstanceFact, "expire_time", resourceLabelExpireTime, inst.ExpireTime)
 		addStringFact(addInstanceFact, "auto_renew", "AutoRenew", inst.AutoRenew)
+		addStringFact(addInstanceFact, "cfs_id", resourceLabelCFSID, inst.CfsID)
+		if progress := inst.MigrationProgress; progress.Present {
+			addStringFact(addInstanceFact, "migration_id", "迁移任务ID", progress.MigrationID)
+			addStringFact(addInstanceFact, "migration_state", "系统盘迁移状态", progress.State)
+			addStringFact(addInstanceFact, "migration_reason", "系统盘迁移说明", progress.Reason)
+			addStringFact(addInstanceFact, "migration_current", "已迁移量", progress.Current)
+			addStringFact(addInstanceFact, "migration_total", "迁移总量", progress.Total)
+			addStringFact(addInstanceFact, "migration_speed", "迁移速度", progress.Speed)
+			addInstanceFact("migration_eta_seconds", "预计剩余秒数", progress.ETASeconds)
+			addInstanceFact("migration_percent", "迁移进度百分比", progress.Percent)
+		}
 	}
 	if usedZoneCatalog {
 		env.SourceActions = append(env.SourceActions, "DescribeCompShareSupportZone")

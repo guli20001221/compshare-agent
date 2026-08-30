@@ -54,6 +54,27 @@ func TestRenderResourceSummaryIncludesCurrentImageShapeAndLifecycleTimes(t *test
 	assert.Contains(t, got, "预计回收于 1970-01-01 08:50")
 }
 
+func TestRenderResourceSummaryIncludesCFSAndMigrationProgressWhenReturned(t *testing.T) {
+	got := RenderResourceSummary([]entity.InstanceSnapshot{{
+		UHostId: "cpod-a", State: "Migrating", CPU: 2, Memory: 4096, CfsID: "cfs-1",
+		MigrationProgress: entity.InstanceMigrationProgress{
+			Present: true, MigrationID: "migration-1", State: "Running", Current: "88.8G",
+			Total: "100.0G", Speed: "1.2G/s", ETASeconds: 10, Percent: 88,
+		},
+	}}, ResourceEnvelopeMeta{})
+
+	assert.Contains(t, got, "挂载 CFS cfs-1")
+	assert.Contains(t, got, "系统盘迁移 Running（88%），88.8G/100.0G，速度 1.2G/s，预计剩余 10 秒")
+}
+
+func TestRenderResourceSummaryOmitsAbsentMigrationProgress(t *testing.T) {
+	got := RenderResourceSummary([]entity.InstanceSnapshot{{
+		UHostId: "uhost-a", State: "Running", CPU: 2, Memory: 4096,
+	}}, ResourceEnvelopeMeta{})
+
+	assert.NotContains(t, got, "系统盘迁移")
+}
+
 func TestRenderResourceSummary_NoGPUDoesNotAdvertiseTheStoredGPUModel(t *testing.T) {
 	got := RenderResourceSummary([]entity.InstanceSnapshot{{
 		UHostId: "uhost-a", State: "Running", GpuType: "4090", GPU: 0, CPU: 2, Memory: 4096,

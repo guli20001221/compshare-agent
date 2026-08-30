@@ -106,6 +106,26 @@ func TestBuildResourceEnvelopeProjectsCurrentImageShapeAndLifecycleTimes(t *test
 	assertEnvelopeFact(t, env, "cpod-a", "release_time", "1970-01-01 08:50")
 }
 
+func TestBuildResourceEnvelopeProjectsCFSAndMigrationProgress(t *testing.T) {
+	env := BuildResourceEnvelope([]entity.InstanceSnapshot{{
+		UHostId: "cpod-a", CfsID: "cfs-1",
+		MigrationProgress: entity.InstanceMigrationProgress{
+			Present: true, MigrationID: "migration-1", State: "Failed", Reason: "target unavailable",
+			Current: "4.0G", Total: "100.0G", Speed: "0B/s", ETASeconds: 0, Percent: 4,
+		},
+	}})
+
+	assertEnvelopeFact(t, env, "cpod-a", "cfs_id", "cfs-1")
+	assertEnvelopeFact(t, env, "cpod-a", "migration_id", "migration-1")
+	assertEnvelopeFact(t, env, "cpod-a", "migration_state", "Failed")
+	assertEnvelopeFact(t, env, "cpod-a", "migration_reason", "target unavailable")
+	assertEnvelopeFact(t, env, "cpod-a", "migration_current", "4.0G")
+	assertEnvelopeFact(t, env, "cpod-a", "migration_total", "100.0G")
+	assertEnvelopeFact(t, env, "cpod-a", "migration_speed", "0B/s")
+	assertEnvelopeFact(t, env, "cpod-a", "migration_eta_seconds", "0")
+	assertEnvelopeFact(t, env, "cpod-a", "migration_percent", "4")
+}
+
 func TestBuildResourceEnvelopeOmitsUnverifiedZoneName(t *testing.T) {
 	for _, catalog := range []*deployment.ZoneCatalogSnapshot{
 		nil,

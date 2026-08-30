@@ -22,6 +22,8 @@ type InstanceSnapshot struct {
 	SchedulerStopTime int64
 	StopTime          int64
 	ReleaseTime       int64
+	CfsID             string
+	MigrationProgress InstanceMigrationProgress
 	CPU               int
 	Memory            int
 	Zone              string
@@ -32,6 +34,22 @@ type InstanceSnapshot struct {
 	IsSpot     bool
 	ExpireTime int64
 	AutoRenew  string
+}
+
+// InstanceMigrationProgress is the system-disk migration status already
+// returned by DescribeCompShareInstance. Present distinguishes an omitted
+// progress object from a real 0%/0-second value without adding pointer aliasing
+// to the session registry snapshots.
+type InstanceMigrationProgress struct {
+	Present     bool
+	MigrationID string
+	State       string
+	Reason      string
+	Current     string
+	Total       string
+	Speed       string
+	ETASeconds  int64
+	Percent     int
 }
 
 // InstanceIsSpot is the shared reader used by the instance projection and
@@ -62,6 +80,8 @@ func instanceFromMap(row map[string]any) InstanceSnapshot {
 		SchedulerStopTime: int64Field(row, "SchedulerStopTime"),
 		StopTime:          int64Field(row, "StopTime"),
 		ReleaseTime:       int64Field(row, "ReleaseTime"),
+		CfsID:             stringField(row, "CfsId"),
+		MigrationProgress: migrationProgressField(row),
 		CPU:               intField(row, "CPU"),
 		Memory:            intField(row, "Memory"),
 		Zone:              stringField(row, "Zone"),
@@ -70,6 +90,24 @@ func instanceFromMap(row map[string]any) InstanceSnapshot {
 		IsSpot:            InstanceIsSpot(row),
 		ExpireTime:        int64Field(row, "ExpireTime"),
 		AutoRenew:         stringField(row, "AutoRenew"),
+	}
+}
+
+func migrationProgressField(row map[string]any) InstanceMigrationProgress {
+	raw, ok := row["MigrationProgress"].(map[string]any)
+	if !ok || len(raw) == 0 {
+		return InstanceMigrationProgress{}
+	}
+	return InstanceMigrationProgress{
+		Present:     true,
+		MigrationID: stringField(raw, "MigrationId"),
+		State:       stringField(raw, "State"),
+		Reason:      stringField(raw, "Reason"),
+		Current:     stringField(raw, "Current"),
+		Total:       stringField(raw, "Total"),
+		Speed:       stringField(raw, "Speed"),
+		ETASeconds:  int64Field(raw, "Eta"),
+		Percent:     intField(raw, "Percent"),
 	}
 }
 

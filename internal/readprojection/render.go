@@ -28,6 +28,7 @@ const (
 	resourceLabelStopTime          = "\u5173\u673a\u65f6\u95f4"
 	resourceLabelReleaseTime       = "\u9884\u8ba1\u56de\u6536\u65f6\u95f4"
 	resourceLabelExpireTime        = "\u5230\u671f\u65f6\u95f4"
+	resourceLabelCFSID             = "CFS ID"
 
 	noInstancesReply              = "\u672a\u627e\u5230\u5b9e\u4f8b\u3002"
 	noMonitorValuesReply          = "\u672a\u8fd4\u56de\u76d1\u63a7\u6570\u636e\u3002"
@@ -107,6 +108,12 @@ func RenderResourceSummaryWithZoneCatalog(instances []entity.InstanceSnapshot, m
 		if inst.ExpireTime > 0 {
 			parts = append(parts, "到期于 "+resourceTimeLabel(inst.ExpireTime))
 		}
+		if inst.CfsID != "" {
+			parts = append(parts, "挂载 CFS "+cleanResourceText(inst.CfsID))
+		}
+		if progress := resourceMigrationProgressLabel(inst.MigrationProgress); progress != "" {
+			parts = append(parts, progress)
+		}
 		lines = append(lines, "- "+title+"："+strings.Join(parts, "；"))
 	}
 	body := strings.Join(lines, "\n")
@@ -118,6 +125,37 @@ func RenderResourceSummaryWithZoneCatalog(instances []entity.InstanceSnapshot, m
 		body += fmt.Sprintf("\n（已显示 %d/%d 台，完整列表请到控制台查看）", meta.Shown, displayTotal)
 	}
 	return body
+}
+
+func resourceMigrationProgressLabel(progress entity.InstanceMigrationProgress) string {
+	if !progress.Present {
+		return ""
+	}
+	state := cleanResourceText(progress.State)
+	if state == "" {
+		state = "状态未知"
+	}
+	parts := []string{fmt.Sprintf("系统盘迁移 %s（%d%%）", state, progress.Percent)}
+	if current, total := cleanResourceText(progress.Current), cleanResourceText(progress.Total); current != "" || total != "" {
+		switch {
+		case current != "" && total != "":
+			parts = append(parts, current+"/"+total)
+		case current != "":
+			parts = append(parts, "已迁移 "+current)
+		default:
+			parts = append(parts, "总量 "+total)
+		}
+	}
+	if speed := cleanResourceText(progress.Speed); speed != "" {
+		parts = append(parts, "速度 "+speed)
+	}
+	if progress.ETASeconds > 0 {
+		parts = append(parts, fmt.Sprintf("预计剩余 %d 秒", progress.ETASeconds))
+	}
+	if reason := cleanResourceText(progress.Reason); reason != "" {
+		parts = append(parts, "原因 "+reason)
+	}
+	return strings.Join(parts, "，")
 }
 
 func resourceZoneLabel(catalog *deployment.ZoneCatalogSnapshot, zone string) string {
