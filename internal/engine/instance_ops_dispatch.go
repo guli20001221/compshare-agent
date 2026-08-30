@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/opscontext"
@@ -149,6 +150,21 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		msg := "请提供要排查的实例 ID 和本次排查目标。"
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 		return friendlyToolResultJSON(msg)
+	}
+	// A literal ID copied from user text must stay whole before this lane even
+	// refreshes the registry. A unique trailing-suffix truncation is a model-owned tool
+	// error: give the next Agent round the exact token, but never rewrite or run
+	// the rejected call. Other target disagreements continue to the existing
+	// binder below, which remains the authority for references and carried state.
+	if err := capability.ValidateUserLiteralInstanceID(instanceID, e.lastUserMsg, e.recentPriorUserTexts(4)...); err != nil {
+		if agentResult, ok := modelOwnedInstanceIDCompletion(action, err); ok {
+			onStep(StepEvent{
+				Type: StepToolResult, Action: action, Source: observability.ToolSourceDiagnosisInternal,
+				Message: "正在按用户原文修正完整实例 ID", ErrorCode: agentResult.Error.Code,
+				TraceResult: map[string]any{"status": "correct_tool_call", "source_status": agentResult.Meta.SourceStatus},
+			})
+			return tools.MarshalAgentToolResult(agentResult)
+		}
 	}
 	// Mode is a capability boundary, not merely prompt wording. Explicit inspection reaches the
 	// same SSH/read surface while the private repair bit stays false, so every mutation is refused

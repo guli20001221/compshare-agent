@@ -8,6 +8,23 @@ import (
 	"github.com/compshare-agent/internal/platform"
 )
 
+// InstanceIDGroundingMismatch reports that a model-authored target does not
+// equal any complete instance ID the user wrote in the current or recent
+// conversation. UserLiteralIDs preserve the user's exact tokens in recency
+// order; callers may use them to explain a rejected call, but they remain
+// evidence rather than an instruction to select a target.
+type InstanceIDGroundingMismatch struct {
+	Provided       string
+	UserLiteralIDs []string
+}
+
+func (e *InstanceIDGroundingMismatch) Error() string {
+	if e == nil {
+		return "targets: 实例 ID 与用户原文不一致"
+	}
+	return fmt.Sprintf("targets: 实例 ID %q 不是当前或近期用户原文中的完整 ID", strings.TrimSpace(e.Provided))
+}
+
 // ValidateCurrentTurnGrounding verifies the small subset of read arguments that
 // must be grounded in user-authored text. Mutating-adjacent facts such as zones
 // and time windows stay current-turn-only. A read-only image catalog query may
@@ -103,11 +120,10 @@ func targetRefsForGrounding(request platform.ReadRequest) []platform.TargetRef {
 func validateUserLiteralInstanceIDs(refs []platform.TargetRef, currentUserText string, priorUserTexts ...string) error {
 	// Current and recent user messages are both literal evidence. Source is
 	// model-provided metadata, so the check intentionally ignores it.
-	grounded := foldedInstanceIDs(currentUserText)
-	for _, text := range priorUserTexts {
-		for id := range foldedInstanceIDs(text) {
-			grounded[id] = struct{}{}
-		}
+	groundedIDs := userLiteralInstanceIDs(currentUserText, priorUserTexts...)
+	grounded := make(map[string]struct{}, len(groundedIDs))
+	for _, id := range groundedIDs {
+		grounded[strings.ToLower(id)] = struct{}{}
 	}
 	if len(grounded) == 0 {
 		return nil
@@ -118,17 +134,40 @@ func validateUserLiteralInstanceIDs(refs []platform.TargetRef, currentUserText s
 		}
 		value := strings.ToLower(strings.TrimSpace(ref.Value))
 		if _, ok := grounded[value]; !ok {
-			return fmt.Errorf("targets: 实例 ID %q 不是当前或近期用户原文中的完整 ID", strings.TrimSpace(ref.Value))
+			return &InstanceIDGroundingMismatch{
+				Provided:       strings.TrimSpace(ref.Value),
+				UserLiteralIDs: append([]string(nil), groundedIDs...),
+			}
 		}
 	}
 	return nil
 }
 
-func foldedInstanceIDs(text string) map[string]struct{} {
-	ids := (entity.RegistrySnapshot{}).InstanceIDTokensInText(text)
-	out := make(map[string]struct{}, len(ids))
-	for _, id := range ids {
-		out[strings.ToLower(id)] = struct{}{}
+// ValidateUserLiteralInstanceID applies the same literal-integrity check to a
+// single target outside the typed read adapter (currently the SSH diagnosis
+// lane). With no literal ID in recent user text it deliberately returns nil, so
+// ordinary references such as "继续排查刚才那台" remain governed by that
+// lane's existing deterministic binder.
+func ValidateUserLiteralInstanceID(value, currentUserText string, priorUserTexts ...string) error {
+	return validateUserLiteralInstanceIDs([]platform.TargetRef{{
+		Type:  platform.TargetRefUHostIDUserInput,
+		Value: value,
+	}}, currentUserText, priorUserTexts...)
+}
+
+func userLiteralInstanceIDs(currentUserText string, priorUserTexts ...string) []string {
+	texts := append([]string{currentUserText}, priorUserTexts...)
+	seen := map[string]struct{}{}
+	var out []string
+	for _, text := range texts {
+		for _, id := range (entity.RegistrySnapshot{}).InstanceIDTokensInText(text) {
+			folded := strings.ToLower(id)
+			if _, ok := seen[folded]; ok {
+				continue
+			}
+			seen[folded] = struct{}{}
+			out = append(out, id)
+		}
 	}
 	return out
 }

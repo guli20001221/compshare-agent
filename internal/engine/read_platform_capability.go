@@ -57,6 +57,14 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 		return tools.MarshalAgentToolResult(agentResult)
 	}
 	if err := e.validateCurrentTurnReadGrounding(request); err != nil {
+		if agentResult, ok := modelOwnedInstanceIDCompletion(action, err); ok {
+			onStep(StepEvent{
+				Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct,
+				Message: "正在按用户原文修正完整实例 ID", ErrorCode: agentResult.Error.Code,
+				TraceResult: map[string]any{"status": "correct_tool_call", "source_status": agentResult.Meta.SourceStatus},
+			})
+			return tools.MarshalAgentToolResult(agentResult)
+		}
 		// Grounding rejects an invented optional filter before any read runs. It
 		// is also wholly model-owned: the user already gave the question, so the
 		// next step is to remove the invention or use an expressed condition.
