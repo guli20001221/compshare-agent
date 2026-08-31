@@ -159,6 +159,45 @@ func TestStockHandle_PlainListingAttachesEnvelope(t *testing.T) {
 	assert.Equal(t, envelope.KindStockAvailability, result.Envelope.Kind)
 }
 
+func TestStockHandle_ZoneOnlyListingKeepsTheZoneAndInventoryInModelEvidence(t *testing.T) {
+	base := &mapReadExec{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{
+			map[string]any{"Name": "5090", "Zone": "cn-wlcb-01", "Status": "Normal"},
+			map[string]any{"Name": "4090", "Zone": "cn-wlcb-01", "Status": "Normal"},
+			map[string]any{"Name": "H20", "Zone": "cn-sh2-02", "Status": "Normal"},
+		}},
+		"DescribeCompShareSupportZone": stockSupportZonesFixture(),
+	}}
+	exec := &stockDualInventoryExec{
+		mapReadExec: base,
+		official: map[string]any{"GpuInventory": map[string]any{
+			"Exclusive": map[string]any{"1": map[string]any{"5090": float64(3), "4090": float64(0)}},
+			"Spot":      map[string]any{"1": map[string]any{"5090": float64(1), "4090": float64(0)}},
+		}},
+		pod: map[string]any{"GpuInventory": map[string]any{
+			"Exclusive": map[string]any{}, "Spot": map[string]any{},
+		}},
+	}
+
+	result := runStock(t, exec, StockAvailabilityRequest{ZoneMentions: []string{"华北二A"}})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Contains(t, result.Reply, "华北二A (cn-wlcb-01) / 5090：独占约 3 张、抢占约 1 张")
+	assert.Contains(t, result.Reply, "华北二A (cn-wlcb-01) / 4090：当前库存快照为 0")
+	assert.NotContains(t, result.Reply, "上海二B")
+	assert.NotContains(t, result.Reply, "H20")
+	require.NotNil(t, result.Envelope)
+	require.Len(t, result.Envelope.Subjects, 1)
+	assert.Equal(t, "cn-wlcb-01", result.Envelope.Subjects[0].ID)
+	require.Len(t, result.Envelope.Facts, 1)
+	assert.Equal(t, result.Reply, result.Envelope.Facts[0].Value,
+		"the model-visible evidence must carry the same scoped snapshot the deterministic renderer produced")
+	for _, call := range exec.calls {
+		assert.NotEqual(t, "CheckCompShareResourceCapacity", call.action,
+			"without a concrete GPU and spec, inventory is reported as a snapshot rather than guessed into a capacity request")
+	}
+}
+
 // --- handler: full capacity-precheck orchestration ------------------------------
 
 func TestStockHandle_CapacityPrecheckForMatchedNormalGPU(t *testing.T) {
@@ -610,7 +649,7 @@ func TestStockInventoryExplicitZeroAndNoPositivePrecheckRemainsUncertain(t *test
 		Name: "4090_48G", Zone: "上海二B (cn-sh2-02)", CanonicalZone: "cn-sh2-02", CheckedSpec: 2,
 	}}
 
-	reply := joinStockReply(renderStockCapacityReply(checks), renderStockGPUInventory(snapshot, []string{"4090_48G"}, nil, zones.ParseSupportZones(stockSupportZonesFixture())))
+	reply := joinStockReply(renderStockCapacityReply(checks), renderStockGPUInventory(snapshot, []string{"4090_48G"}, nil, zones.ParseSupportZones(stockSupportZonesFixture()), ""))
 	assert.Contains(t, reply, "不能据此判断该机型无法创建")
 	assert.Contains(t, reply, "库存快照为 0")
 	assert.NotContains(t, reply, "当前暂无可用库存")

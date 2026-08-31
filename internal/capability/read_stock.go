@@ -141,9 +141,36 @@ func stockHandle(ctx context.Context, req StockAvailabilityRequest, rt ReadRunti
 	if zoneErr == nil {
 		inventory = stockGPUInventorySnapshot(ctx, rt, listingZones)
 	}
+	if len(req.ZoneMentions) > 0 {
+		if zoneErr != nil {
+			return StockAvailabilityResponse{}, ReadFailureAfterTool("DescribeCompShareSupportZone", stockCapabilityLabel, zoneErr)
+		}
+		filter, unresolved := stockZoneFilterFromMentions(req.ZoneMentions, listingZones)
+		if len(unresolved) > 0 {
+			return StockAvailabilityResponse{}, unmatchedZoneMentionResult(unresolved, listingZones)
+		}
+		if referent == "" {
+			models := normalStockModelsInZones(raw, filter)
+			reply := renderStockGPUInventory(inventory, models, filter, listingZones, req.InventoryPool)
+			if reply == "" {
+				reply = "指定可用区的当前开售目录未返回 GPU 机型。"
+			}
+			reply = joinStockReply(reply, soldOutDisclaimer)
+			env := stockScopedListingEnvelope(reply, filter, listingZones)
+			return StockAvailabilityResponse{Reply: reply, Envelope: &env}, ReadResult{}
+		}
+	}
+	reply := renderStockReply(raw, referent, inventory, listingZones)
+	env := buildStockEnvelope(raw, referent)
+	if inventory != nil {
+		env.SourceActions = append(env.SourceActions, "DescribeCompShareGpuInventory")
+	}
+	env.Computed = append(env.Computed, envelope.Fact{
+		Key: "rendered_snapshot", Label: "本轮库存查询结果", Value: reply, Source: envelope.FactSourceComputed,
+	})
 	return StockAvailabilityResponse{
-		Reply:    renderStockReply(raw, referent, inventory, listingZones),
-		Envelope: populatedEnvelope(buildStockEnvelope(raw, referent)),
+		Reply:    reply,
+		Envelope: populatedEnvelope(env),
 	}, ReadResult{}
 }
 
@@ -347,7 +374,7 @@ func stockCapacityPrecheck(ctx context.Context, rt ReadRuntime, req StockAvailab
 	allEntries := append([]stockInstanceTypeEntry(nil), entries...)
 	_, modelOrder := groupStockEntriesByModel(allEntries)
 	inventory := stockGPUInventorySnapshot(ctx, rt, supportZones)
-	inventoryReply := renderStockGPUInventory(inventory, modelOrder, filter, supportZones)
+	inventoryReply := renderStockGPUInventory(inventory, modelOrder, filter, supportZones, req.InventoryPool)
 	if len(filter) > 0 {
 		entries = filterStockEntriesByZone(entries, filter)
 		if len(entries) == 0 {
@@ -452,7 +479,7 @@ func stockZoneCatalogSnapshot(list []zones.ZoneInfo) *deployment.ZoneCatalogSnap
 	return deployment.NewZoneCatalogSnapshot(true, entries)
 }
 
-func renderStockGPUInventory(snapshot *deployment.GPUInventorySnapshot, models []string, filter map[string]struct{}, supportZones []zones.ZoneInfo) string {
+func renderStockGPUInventory(snapshot *deployment.GPUInventorySnapshot, models []string, filter map[string]struct{}, supportZones []zones.ZoneInfo, requestedPool string) string {
 	if snapshot == nil || len(models) == 0 {
 		return ""
 	}
@@ -462,6 +489,7 @@ func renderStockGPUInventory(snapshot *deployment.GPUInventorySnapshot, models [
 		return ""
 	}
 	var rows []string
+	pool := normalizeInventoryPool(requestedPool)
 	for _, zone := range supportZones {
 		if len(filter) > 0 {
 			if _, ok := filter[strings.ToLower(zone.Zone)]; !ok {
@@ -469,6 +497,28 @@ func renderStockGPUInventory(snapshot *deployment.GPUInventorySnapshot, models [
 			}
 		}
 		for _, model := range models {
+			if pool != "" {
+				poolLabel := "独占"
+				if pool == deployment.GPUInventoryPoolSpot {
+					poolLabel = "抢占式"
+				}
+				label := fmt.Sprintf("%s / %s", zones.Label(supportZones, zone.Zone), model)
+				supported, known := snapshot.PoolSupported(zone.Zone, model, pool)
+				count, present, available := snapshot.PoolCount(zone.Zone, model, pool)
+				switch {
+				case !available:
+					rows = append(rows, label+"：对应库存源本轮不可用")
+				case known && !supported:
+					rows = append(rows, label+"：当前不支持"+poolLabel+"购买方式")
+				case !present:
+					rows = append(rows, label+"：库存接口未返回"+poolLabel+"数量")
+				case count == 0:
+					rows = append(rows, label+"："+poolLabel+"库存快照为 0")
+				default:
+					rows = append(rows, fmt.Sprintf("%s：%s约 %d 张", label, poolLabel, count))
+				}
+				continue
+			}
 			exclusive, spot, present, available := snapshot.Counts(zone.Zone, model)
 			label := fmt.Sprintf("%s / %s", zones.Label(supportZones, zone.Zone), model)
 			switch {
@@ -495,6 +545,57 @@ func renderStockGPUInventory(snapshot *deployment.GPUInventorySnapshot, models [
 		return ""
 	}
 	return "原始 GPU 库存快照（只用于补充区域信息，不等同于最终可创建性）：" + strings.Join(rows, "；") + "。"
+}
+
+func normalStockModelsInZones(raw map[string]any, filter map[string]struct{}) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	for _, item := range mapSliceAt(raw, "AvailableInstanceTypes") {
+		entry, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		name := safeString(entry, "Name")
+		zone := strings.ToLower(safeString(entry, "Zone"))
+		status := safeString(entry, "Status")
+		if status == "" {
+			status = "Normal"
+		}
+		if name == "" || !strings.EqualFold(status, "Normal") {
+			continue
+		}
+		if _, ok := filter[zone]; !ok {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+func stockScopedListingEnvelope(reply string, filter map[string]struct{}, supportZones []zones.ZoneInfo) envelope.Envelope {
+	env := envelope.Envelope{
+		Kind: envelope.KindStockAvailability,
+		SourceActions: []string{
+			"DescribeAvailableCompShareInstanceTypes",
+			"DescribeCompShareSupportZone",
+			"DescribeCompShareGpuInventory",
+		},
+		Facts: []envelope.Fact{{
+			Key: "inventory_snapshot", Label: "指定可用区库存快照", Value: reply, Source: envelope.FactSourceComputed,
+		}},
+		Constraints: envelope.Constraints{DoNotInventInstances: true},
+	}
+	for _, zone := range supportZones {
+		if _, ok := filter[strings.ToLower(zone.Zone)]; !ok {
+			continue
+		}
+		env.Subjects = append(env.Subjects, envelope.Subject{ID: zone.Zone, Name: zone.Describe, Type: envelope.SubjectZone})
+	}
+	return env
 }
 
 func joinStockReply(primary, inventory string) string {
