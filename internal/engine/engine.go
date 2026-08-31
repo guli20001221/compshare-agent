@@ -83,7 +83,7 @@ const (
 	// directAnswerToolReviewInstruction gives the same central Agent one bounded
 	// chance to reconsider a first-round tool-free answer. It does not classify
 	// the question, inspect the draft, or execute a tool on the model's behalf.
-	directAnswerToolReviewInstruction = "重新检查刚才准备直接给出的答复：如果其中包含尚未由本轮观察支持的优云平台事实，请现在调用与事实所在层一致的现有只读工具；稳定规则、操作方法和故障知识使用 SearchKnowledge，当前目录、状态、价格、库存和实例详情使用对应实时能力。如果只是普通对话，或无需平台事实即可回答，则直接自然回答。不要提及本提醒。"
+	directAnswerToolReviewInstruction = "在给出最终答复前，再判断本轮是否需要工具：如果答复会包含尚未由本轮观察支持的优云平台事实，请现在调用与事实所在层一致的现有只读工具；稳定规则、操作方法和故障知识使用 SearchKnowledge，当前目录、状态、价格、库存和实例详情使用对应实时能力。如果只是普通对话，或无需平台事实即可回答，则直接自然回答。不要提及本提醒。"
 )
 
 const (
@@ -1378,6 +1378,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// memory representation.
 	truncatedOutputRecoveries := 0
 	recoverTruncatedOutput := false
+	directAnswerToolReviewDraft := ""
 	emitTerminalText := func(text string) {
 		if opts.OnTextDelta == nil || text == "" {
 			return
@@ -1399,6 +1400,20 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		emitTerminalText(reply)
 		return agentruntime.Final(reply, agentruntime.FinishDeterministicReply), true
 	}
+	finishDirectAnswerToolReviewDraft := func() (agentruntime.Result, bool) {
+		if strings.TrimSpace(directAnswerToolReviewDraft) == "" {
+			return agentruntime.Result{}, false
+		}
+		content := e.finalizeResponse(ctx, userMsg, directAnswerToolReviewDraft)
+		e.commitDisplayedResourceSelectionIfVisible(content)
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role: openai.ChatMessageRoleAssistant, Content: content,
+		})
+		emitTerminalText(content)
+		directAnswerToolReviewDraft = ""
+		e.directAnswerToolReviewPending = false
+		return agentruntime.Final(content, agentruntime.FinishFinalAnswer), true
+	}
 	runtime := agentruntime.MustNew(maxReActRounds, e.recordAgentRuntimeEvent)
 	runtimeResult, runtimeErr := runtime.Run(ctx, func(ctx context.Context, runtimeRound *agentruntime.Round) (agentruntime.Result, error) {
 		round := runtimeRound.Index()
@@ -1410,6 +1425,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// every tool_call is followed by a tool_result on the wire.
 		if e.tokenBudgetExceeded() {
 			if result, ok := finishCommittedWrite(); ok {
+				return result, nil
+			}
+			if result, ok := finishDirectAnswerToolReviewDraft(); ok {
 				return result, nil
 			}
 			// If a prior round's SearchKnowledge already
@@ -1474,7 +1492,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			Messages: e.buildMessagesForLLM(toolWindow),
 			Tools:    toolWindow,
 		}
-		if e.directAnswerToolReviewPending {
+		reviewingDirectAnswer := e.directAnswerToolReviewPending
+		if reviewingDirectAnswer {
 			req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, directAnswerToolReviewInstruction)
 			e.directAnswerToolReviewPending = false
 		}
@@ -1485,6 +1504,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		if decision, ok := e.allowRateLimited(governance.ClassLLM, "main_react_chat"); !ok {
 			if result, committed := finishCommittedWrite(); committed {
 				return result, nil
+			}
+			if reviewingDirectAnswer {
+				if result, available := finishDirectAnswerToolReviewDraft(); available {
+					return result, nil
+				}
 			}
 			e.markTurnCompletion(observability.CompletionClassSafetyBlock, observability.CompletionReasonRateLimit)
 			content := rateLimitMessage(decision.Reason)
@@ -1516,6 +1540,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// ctx, because "the write happened" stays true after a disconnect.
 			if result, ok := finishCommittedWrite(); ok {
 				return result, nil
+			}
+			if reviewingDirectAnswer {
+				if result, available := finishDirectAnswerToolReviewDraft(); available {
+					return result, nil
+				}
 			}
 			// A per-call LLM error would otherwise discard the turn. If a prior round
 			// already gathered groundable
@@ -1562,6 +1591,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			if result, ok := finishCommittedWrite(); ok {
 				return result, nil
 			}
+			if reviewingDirectAnswer {
+				if result, available := finishDirectAnswerToolReviewDraft(); available {
+					return result, nil
+				}
+			}
 			truncatedOutputRecoveries++
 			if truncatedOutputRecoveries <= maxTruncatedOutputRecoveriesPerTurn {
 				recoverTruncatedOutput = true
@@ -1589,9 +1623,16 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// already-paid draft rather than turning a quality retry into a refusal.
 			if round == 0 && e.knowledgeRetriever != nil && strings.TrimSpace(rawContent) != "" &&
 				!e.tokenBudgetExceeded() && maxReActRounds > 1 {
+				directAnswerToolReviewDraft = rawContent
 				e.directAnswerToolReviewPending = true
 				return agentruntime.Continue(), nil
 			}
+			if reviewingDirectAnswer && strings.TrimSpace(rawContent) == "" {
+				if result, available := finishDirectAnswerToolReviewDraft(); available {
+					return result, nil
+				}
+			}
+			directAnswerToolReviewDraft = ""
 			draft := rawContent
 			content := e.finalizeResponse(ctx, userMsg, draft)
 			e.commitDisplayedResourceSelectionIfVisible(content)
@@ -1643,6 +1684,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		}
 
 		// Has tool calls → execute each and feed results back.
+		directAnswerToolReviewDraft = ""
 		return e.runToolCallsRound(ctx, resp, toolWindow, runtimeRound, onStep, opts.OnTextDelta)
 	})
 	// Runtime owns the loop's terminal reason; retain it verbatim for the final

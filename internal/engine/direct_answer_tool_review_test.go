@@ -2,9 +2,11 @@ package engine
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/compshare-agent/internal/capability"
+	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
@@ -12,6 +14,23 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+type directAnswerReviewFailureLLM struct {
+	calls     int
+	second    llm.ChatResponse
+	secondErr error
+}
+
+func (m *directAnswerReviewFailureLLM) Chat(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+	m.calls++
+	if m.calls == 1 {
+		return &llm.ChatResponse{Content: "第一轮已经完成的答复。"}, nil
+	}
+	if m.secondErr != nil {
+		return nil, m.secondErr
+	}
+	return &m.second, nil
+}
 
 func TestDirectAnswerReviewLetsTheCentralAgentChooseKnowledge(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{
@@ -94,4 +113,43 @@ func TestDirectAnswerWithoutKnowledgeRetrieverKeepsOneModelCall(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "直接回答。", reply)
 	require.Len(t, model.calls, 1)
+}
+
+func TestDirectAnswerReviewFailureKeepsTheCompletedFirstDraft(t *testing.T) {
+	cases := []struct {
+		name     string
+		response llm.ChatResponse
+		err      error
+	}{
+		{name: "model error", err: errors.New("temporary model failure")},
+		{name: "empty response", response: llm.ChatResponse{}},
+		{name: "truncated response", response: llm.ChatResponse{Content: "不完整", StopReason: "length"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			model := &directAnswerReviewFailureLLM{second: tc.response, secondErr: tc.err}
+			eng := NewWithDeps(model, &mockExecutor{}, nil)
+			eng.SetKnowledgeRetriever(&scriptedKnowledgeRetriever{})
+
+			reply, err := eng.Chat(context.Background(), "普通问题", noopStep)
+			require.NoError(t, err)
+			assert.Equal(t, "第一轮已经完成的答复。", reply)
+			assert.Equal(t, 2, model.calls)
+		})
+	}
+}
+
+func TestDirectAnswerReviewRateLimitKeepsTheCompletedFirstDraft(t *testing.T) {
+	model := &mockLLM{responses: []llm.ChatResponse{{Content: "第一轮已经完成的答复。"}}}
+	eng := NewWithDeps(model, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(&scriptedKnowledgeRetriever{})
+	eng.rateLimiter = &scriptedRateLimiter{decisions: []governance.Decision{
+		{Allowed: true},
+		{Allowed: false, Reason: "test limit"},
+	}}
+
+	reply, err := eng.Chat(context.Background(), "普通问题", noopStep)
+	require.NoError(t, err)
+	assert.Equal(t, "第一轮已经完成的答复。", reply)
+	require.Len(t, model.calls, 1, "the second model call is blocked before dispatch")
 }
