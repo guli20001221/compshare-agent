@@ -2765,8 +2765,8 @@ func stepDescribeInstance() Step {
 
 // createInstanceResultData keeps two claims separate: Intended comes from the
 // sealed contract the user confirmed; Observed comes from the optional readback
-// of the exact ids returned by create. ActualReadbackAvailable reports only that
-// a matching readback row was available. It does not redefine create success or
+// of the exact ids returned by create. ActualReadbackAvailable reports that every
+// returned id had a matching readback row. It does not redefine create success or
 // claim that every actual field was present.
 func createInstanceResultData(wfCtx *Context) map[string]any {
 	createResult := wfCtx.Result("创建实例")
@@ -2791,11 +2791,10 @@ func createInstanceResultData(wfCtx *Context) map[string]any {
 		}
 	}
 	observed := createObservedInstances(wfCtx, ids)
+	data["ActualReadbackAvailable"] = createReadbackCoversEveryReturnedInstance(ids, observed)
 	if len(observed) == 0 {
-		data["ActualReadbackAvailable"] = false
 		return data
 	}
-	data["ActualReadbackAvailable"] = true
 	data["Observed"] = observed
 	intended, hasIntent := createIntendedSpec(wfCtx)
 	if !hasIntent {
@@ -2818,20 +2817,9 @@ func createObservedInstances(wfCtx *Context, ids any) []map[string]any {
 	if len(rows) == 0 {
 		return nil
 	}
-	wanted := map[string]struct{}{}
-	switch list := ids.(type) {
-	case []string:
-		for _, id := range list {
-			if id = strings.TrimSpace(id); id != "" {
-				wanted[strings.ToLower(id)] = struct{}{}
-			}
-		}
-	case []any:
-		for _, id := range list {
-			if s, _ := id.(string); strings.TrimSpace(s) != "" {
-				wanted[strings.ToLower(strings.TrimSpace(s))] = struct{}{}
-			}
-		}
+	wanted := createReturnedInstanceIDs(ids)
+	if len(wanted) == 0 {
+		return nil
 	}
 	out := make([]map[string]any, 0, len(wanted))
 	for _, raw := range rows {
@@ -2858,6 +2846,36 @@ func createObservedInstances(wfCtx *Context, ids any) []map[string]any {
 		})
 	}
 	return out
+}
+
+func createReturnedInstanceIDs(ids any) map[string]struct{} {
+	wanted := map[string]struct{}{}
+	switch list := ids.(type) {
+	case []string:
+		for _, id := range list {
+			if id = strings.TrimSpace(id); id != "" {
+				wanted[strings.ToLower(id)] = struct{}{}
+			}
+		}
+	case []any:
+		for _, id := range list {
+			if s, _ := id.(string); strings.TrimSpace(s) != "" {
+				wanted[strings.ToLower(strings.TrimSpace(s))] = struct{}{}
+			}
+		}
+	}
+	return wanted
+}
+
+func createReadbackCoversEveryReturnedInstance(ids any, observed []map[string]any) bool {
+	missing := createReturnedInstanceIDs(ids)
+	if len(missing) == 0 {
+		return false
+	}
+	for _, row := range observed {
+		delete(missing, strings.ToLower(strings.TrimSpace(paramStr(row, "UHostId", ""))))
+	}
+	return len(missing) == 0
 }
 
 // createIntendedSpec reads the confirmed sealed contract, never mutable Params.
@@ -3847,47 +3865,54 @@ func createDataDisksObserved(describe map[string]any, ids any, expected []map[st
 	if len(expected) == 0 || describe == nil {
 		return false
 	}
-	wanted := map[string]bool{}
-	switch list := ids.(type) {
-	case []any:
-		for _, raw := range list {
-			wanted[strings.ToLower(strings.TrimSpace(fmt.Sprint(raw)))] = true
-		}
-	case []string:
-		for _, raw := range list {
-			wanted[strings.ToLower(strings.TrimSpace(raw))] = true
-		}
+	wanted := createReturnedInstanceIDs(ids)
+	if len(wanted) == 0 {
+		return false
 	}
+	matched := map[string]struct{}{}
 	rows, _ := describe["UHostSet"].([]any)
 	for _, raw := range rows {
 		row, _ := raw.(map[string]any)
-		if row == nil || !wanted[strings.ToLower(strings.TrimSpace(paramStr(row, "UHostId", "")))] {
+		if row == nil {
 			continue
 		}
-		remaining := append([]map[string]any(nil), expected...)
-		rawDisks, _ := row["DiskSet"].([]any)
-		for _, rawDisk := range rawDisks {
-			disk, _ := rawDisk.(map[string]any)
-			if disk == nil {
-				continue
-			}
-			if isBootDisk(disk) {
-				continue
-			}
-			actual := diskNumber(disk, "Size", "DiskSize", "Capacity")
-			for i, want := range remaining {
-				size, _ := priceNumber(want["SizeGB"])
-				if actual == size {
-					remaining = append(remaining[:i], remaining[i+1:]...)
-					break
-				}
-			}
+		id := strings.ToLower(strings.TrimSpace(paramStr(row, "UHostId", "")))
+		if _, ok := wanted[id]; !ok {
+			continue
 		}
-		if len(remaining) == 0 {
-			return true
+		if createDataDiskSetObserved(row, expected) {
+			matched[id] = struct{}{}
 		}
 	}
-	return false
+	return len(matched) == len(wanted)
+}
+
+func createDataDiskSetObserved(row map[string]any, expected []map[string]any) bool {
+	remaining := append([]map[string]any(nil), expected...)
+	rawDisks, _ := row["DiskSet"].([]any)
+	for _, rawDisk := range rawDisks {
+		disk, _ := rawDisk.(map[string]any)
+		if disk == nil {
+			continue
+		}
+		if isBootDisk(disk) {
+			continue
+		}
+		actual := diskNumber(disk, "Size", "DiskSize", "Capacity")
+		actualType := strings.TrimSpace(paramStr(disk, "DiskType", ""))
+		if actualType == "" {
+			actualType = strings.TrimSpace(paramStr(disk, "Type", ""))
+		}
+		for i, want := range remaining {
+			size, _ := priceNumber(want["SizeGB"])
+			wantType := strings.TrimSpace(paramStr(want, "Type", ""))
+			if actual == size && wantType != "" && strings.EqualFold(actualType, wantType) {
+				remaining = append(remaining[:i], remaining[i+1:]...)
+				break
+			}
+		}
+	}
+	return len(remaining) == 0
 }
 
 // shouldSkipSourceReQuery skips the post-source re-query when an explicit image is

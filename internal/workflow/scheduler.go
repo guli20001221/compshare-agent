@@ -358,8 +358,10 @@ func schedulerStopTime(result map[string]any) int64 {
 	return int64(firstNumberField(host, "SchedulerStopTime"))
 }
 
-// CancelStopSchedulerDef cancels a scheduled stop and reads the instance back so
-// the user can distinguish an accepted request from a verified cleared value.
+// CancelStopSchedulerDef cancels a scheduled stop and reads the instance back.
+// The current upstream read API omits SchedulerStopTime both when no scheduler
+// exists and when its scheduler lookup fails, so absence is not independent
+// proof that deletion succeeded.
 func CancelStopSchedulerDef() *Definition {
 	return &Definition{
 		Name: "CancelStopSchedulerWorkflow",
@@ -389,11 +391,10 @@ func stepReadbackCancelledScheduler() Step {
 
 func cancelStopSchedulerResultData(wfCtx *Context) map[string]any {
 	result := wfCtx.Result(cancelSchedulerReadbackStepName)
-	_, readable := firstInstance(result)
 	observed := schedulerStopTime(result)
 	return map[string]any{
 		"ObservedStopTime": observed,
-		"Verified":         readable && observed == 0,
+		"Verified":         false,
 	}
 }
 

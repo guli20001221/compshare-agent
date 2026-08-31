@@ -424,10 +424,6 @@ var Registry = []openai.Tool{
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"CompShareImageId": map[string]any{
-						"type":        "string",
-						"description": "镜像 ID（可选，传则查特定镜像）",
-					},
 					"Offset": map[string]any{
 						"type":        "integer",
 						"description": "分页偏移，默认 0",
@@ -449,10 +445,6 @@ var Registry = []openai.Tool{
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"CompShareImageId": map[string]any{
-						"type":        "string",
-						"description": "按共享镜像 ID 精确查询；结果仍受当前账号的共享可见性限制。",
-					},
 					"Limit": map[string]any{
 						"type":        "integer",
 						"description": "分页大小，默认 20。",

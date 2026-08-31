@@ -101,6 +101,12 @@ func buildToolExecutionPolicies() map[string]ToolExecutionPolicy {
 		if action == "SyncCompShareCustomImage" {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "TargetZoneIds")
 		}
+		if action == "DescribeCompShareCustomImages" {
+			// A just-completed custom-image creation may read back the exact id
+			// returned by that same write. Keep that server-derived value off the
+			// model schema while allowing the workflow-internal status check.
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "CompShareImageId")
+		}
 		policies[action] = policy
 	}
 

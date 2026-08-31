@@ -134,6 +134,54 @@ func TestAuthorizedWriteFailureReadbackNeverRunsBeforeTheWriteWasAuthorized(t *t
 	assert.Empty(t, executor.calls)
 }
 
+func TestReinstallFailureReadbackOnlyClaimsAnObservedImageChange(t *testing.T) {
+	tests := []struct {
+		name       string
+		initialID  string
+		observedID string
+		contains   string
+		notContain string
+	}{
+		{
+			name: "target differs from the pre-confirm image", initialID: "img-old", observedID: "img-new",
+			contains: "已切换到目标镜像",
+		},
+		{
+			name: "same-image reinstall cannot be inferred from readback", initialID: "img-new", observedID: "img-new",
+			contains: "不能确认重装已完整生效", notContain: "已切换到目标镜像",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+				require.Equal(t, "DescribeCompShareInstance", action)
+				result := instanceReadback("uhost-1", "Stopped", 1, "H20", 16, 245760, nil)
+				row := result["UHostSet"].([]any)[0].(map[string]any)
+				row["CompShareImageId"] = tt.observedID
+				row["ImageName"] = "Ubuntu 22.04"
+				return result, nil
+			}}
+			eng := NewWithDeps(&mockLLM{}, executor, nil)
+			reply, ok := eng.authorizedWriteFailureReply(context.Background(), "ReinstallInstanceWorkflow", map[string]any{
+				"UHostId": "uhost-1",
+			}, &workflow.Result{
+				Err: errors.New("synthetic reinstall failure"),
+				Failure: &workflow.StepFailure{
+					Step: "重装系统", ExecutionAuthorized: true,
+					Draft: map[string]any{
+						"InitialImageId": tt.initialID, "TargetImageId": "img-new", "TargetImageName": "Ubuntu 22.04",
+					},
+				},
+			})
+			require.True(t, ok)
+			assert.Contains(t, reply, tt.contains)
+			if tt.notContain != "" {
+				assert.NotContains(t, reply, tt.notContain)
+			}
+		})
+	}
+}
+
 func TestRebootFailureUsesThePreConfirmStartTimeToConfirmACompletedReboot(t *testing.T) {
 	describeCalls := 0
 	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {

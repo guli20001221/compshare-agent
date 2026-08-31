@@ -70,24 +70,28 @@ func TestDescribeCommunityImagesAllowsPopularSortCondition(t *testing.T) {
 	}
 }
 
-func TestSharingImageExactReadRemainsTenantScoped(t *testing.T) {
-	for _, tool := range Registry {
-		if tool.Function == nil || tool.Function.Name != "DescribeCompShareSharingImages" {
-			continue
+func TestTenantImageReadsDoNotExposeUnscopedExactLookup(t *testing.T) {
+	policies := DefaultToolExecutionPolicies()
+	for _, action := range []string{"DescribeCompShareCustomImages", "DescribeCompShareSharingImages"} {
+		properties := registryToolProperties(t, action)
+		if _, ok := properties["CompShareImageId"]; ok {
+			t.Fatalf("%s must list the tenant-visible catalog and match exact ids locally", action)
 		}
-		params, _ := tool.Function.Parameters.(map[string]any)
-		properties, _ := params["properties"].(map[string]any)
-		field, ok := properties["CompShareImageId"].(map[string]any)
-		if !ok {
-			t.Fatal("shared-image exact lookup must be exposed after the upstream endpoint preserves tenant visibility")
+		for _, key := range []string{"Offset", "Limit"} {
+			if _, ok := properties[key]; !ok {
+				t.Fatalf("%s must retain pagination field %s", action, key)
+			}
 		}
-		description, _ := field["description"].(string)
-		if !strings.Contains(description, "共享可见性") {
-			t.Fatal("the exact-id contract must state that tenant sharing visibility still applies")
+		if containsString(policies[action].AllowedParams, "CompShareImageId") {
+			t.Fatalf("%s must not accept a model-origin exact id", action)
 		}
-		return
 	}
-	t.Fatal("DescribeCompShareSharingImages schema not found")
+	if !containsString(policies["DescribeCompShareCustomImages"].InternalAllowedParams, "CompShareImageId") {
+		t.Fatal("the custom-image creation workflow must retain its server-derived status readback id")
+	}
+	if containsString(policies["DescribeCompShareSharingImages"].InternalAllowedParams, "CompShareImageId") {
+		t.Fatal("shared-image exact ids must remain list-scoped even for internal callers")
+	}
 }
 
 func TestCreateImageIDContractAllowsRecentExactConversationCandidate(t *testing.T) {

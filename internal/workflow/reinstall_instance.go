@@ -412,12 +412,19 @@ func reinstallFailureDraft(wfCtx *Context) map[string]any {
 	}
 	queried := wfCtx.Result("查询实例")
 	image, _ := targetReinstallImage(wfCtx)
+	host, _ := firstInstance(queried)
+	initialImageName := strings.TrimSpace(paramStr(host, "CompShareImageName", ""))
+	if initialImageName == "" {
+		initialImageName = strings.TrimSpace(paramStr(host, "ImageName", ""))
+	}
 	return map[string]any{
-		"UHostId":         strings.TrimSpace(paramStr(wfCtx.Params, "UHostId", "")),
-		"InitialState":    extractInstanceState(queried),
-		"IsPod":           isPodInstanceResult(queried),
-		"TargetImageId":   image.ID,
-		"TargetImageName": image.Name,
+		"UHostId":          strings.TrimSpace(paramStr(wfCtx.Params, "UHostId", "")),
+		"InitialState":     extractInstanceState(queried),
+		"InitialImageId":   strings.TrimSpace(paramStr(host, "CompShareImageId", "")),
+		"InitialImageName": initialImageName,
+		"IsPod":            isPodInstanceResult(queried),
+		"TargetImageId":    image.ID,
+		"TargetImageName":  image.Name,
 	}
 }
 

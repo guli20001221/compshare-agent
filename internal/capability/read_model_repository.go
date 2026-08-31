@@ -168,7 +168,11 @@ func resolveModelRepositoryZone(query string, catalog *deployment.ZoneCatalogSna
 		}
 	}
 	if len(matches) == 0 {
-		return 0, "", ReadEmpty("当前实时可用区目录中没有找到 " + query + "，无法核验模型副本状态。")
+		result := zoneCatalogRender(ZoneCatalogResponse{Records: zoneCatalogRecords(catalog)})
+		result.Reply = query + " 不是当前实时可用区目录中的可用区名称或 ZoneID，本次未查询模型副本状态。\n当前实时可用区目录：\n" + result.Reply
+		result.Status = platform.ReadStatusNeedsInput
+		result.FallbackReason = platform.ReadFallbackValidation
+		return 0, "", result
 	}
 	if len(matches) > 1 {
 		labels := make([]string, 0, len(matches))

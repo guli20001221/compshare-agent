@@ -1108,6 +1108,33 @@ func TestReinstall_CommunityImageLookupAccepted(t *testing.T) {
 	assert.True(t, reinstalled)
 }
 
+func TestReinstallFailureDraftCapturesThePreConfirmImageFromTheInstanceRow(t *testing.T) {
+	instance := stoppedInstanceResult()
+	host := instance["UHostSet"].([]any)[0].(map[string]any)
+	host["CompShareImageId"] = "img-current"
+	host["CompShareImageName"] = "Ubuntu 22.04"
+	executor := &mockExecutor{
+		results: map[string]map[string]any{
+			"DescribeCompShareInstance": instance,
+			"DescribeCompShareImages": {"ImageSet": []any{map[string]any{
+				"CompShareImageId": "img-current", "Name": "Ubuntu 22.04", "Container": "False",
+			}}},
+		},
+		failOn: "ReinstallCompShareInstance",
+	}
+	result, err := NewEngine(executor, func(string, map[string]any) bool { return true }, nil).Run(
+		context.Background(), ReinstallInstanceDef(), map[string]any{
+			"UHostId": "uhost-test", "CompShareImageId": "img-current", "ImageSource": "platform",
+		},
+	)
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	require.NotNil(t, result.Failure)
+	assert.Equal(t, "img-current", result.Failure.Draft["InitialImageId"])
+	assert.Equal(t, "Ubuntu 22.04", result.Failure.Draft["InitialImageName"])
+	assert.Equal(t, "img-current", result.Failure.Draft["TargetImageId"])
+}
+
 func TestReinstallTenantImageSourcesNeverUsePointReads(t *testing.T) {
 	for _, source := range []string{"custom", "sharing"} {
 		t.Run(source, func(t *testing.T) {

@@ -536,7 +536,7 @@ func cancelSchedulerMockExecutor() *mockExecutor {
 	}}
 }
 
-func TestCancelStopScheduler_HappyPath(t *testing.T) {
+func TestCancelStopScheduler_AcceptedRequestRemainsUnverified(t *testing.T) {
 	executor := cancelSchedulerMockExecutor()
 	confirmFn := func(action string, args map[string]any) bool { return true }
 	onStep, _ := collectEvents()
@@ -550,7 +550,7 @@ func TestCancelStopScheduler_HappyPath(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
 	assert.Len(t, result.Steps, 4)
-	assert.Equal(t, true, result.Data["Verified"])
+	assert.Equal(t, false, result.Data["Verified"])
 	assert.Equal(t, int64(0), result.Data["ObservedStopTime"])
 
 	// Verify DeleteCompShareStopScheduler was called with UHostId and Region.

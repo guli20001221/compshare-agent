@@ -101,3 +101,63 @@ func TestCreateResultIgnoresDescribeRowsForOtherInstances(t *testing.T) {
 	require.Equal(t, false, data["ActualReadbackAvailable"])
 	require.NotContains(t, data, "Observed")
 }
+
+func TestCreateDataDiskReadbackRequiresTheConfirmedTypeAndSize(t *testing.T) {
+	wfCtx := createdWithDataDiskReadback(t, []any{"uhost-created-1"}, []any{
+		createReadbackRow("uhost-created-1", "CLOUD_RSSD"),
+	})
+
+	data := createInstanceResultData(wfCtx)
+	delivery := data["DataDiskDelivery"].(map[string]any)
+	require.Equal(t, "pending", delivery["State"], "same-sized storage of another type is not the confirmed disk")
+
+	wfCtx.StepResults["查看状态"]["UHostSet"] = []any{
+		createReadbackRow("uhost-created-1", "CLOUD_SSD"),
+	}
+	data = createInstanceResultData(wfCtx)
+	delivery = data["DataDiskDelivery"].(map[string]any)
+	require.Equal(t, "verified", delivery["State"])
+}
+
+func TestMultiCreateReadbackRequiresEveryReturnedInstance(t *testing.T) {
+	ids := []any{"uhost-created-1", "uhost-created-2"}
+	wfCtx := createdWithDataDiskReadback(t, ids, []any{
+		createReadbackRow("uhost-created-1", "CLOUD_SSD"),
+	})
+
+	data := createInstanceResultData(wfCtx)
+	require.Equal(t, false, data["ActualReadbackAvailable"])
+	require.Len(t, data["Observed"], 1, "the partial readback remains available as evidence")
+	require.Equal(t, "pending", data["DataDiskDelivery"].(map[string]any)["State"])
+
+	wfCtx.StepResults["查看状态"]["UHostSet"] = []any{
+		createReadbackRow("uhost-created-1", "CLOUD_SSD"),
+		createReadbackRow("uhost-created-2", "CLOUD_SSD"),
+	}
+	data = createInstanceResultData(wfCtx)
+	require.Equal(t, true, data["ActualReadbackAvailable"])
+	require.Len(t, data["Observed"], 2)
+	require.Equal(t, "verified", data["DataDiskDelivery"].(map[string]any)["State"])
+}
+
+func createdWithDataDiskReadback(t *testing.T, ids, rows []any) *Context {
+	t.Helper()
+	wfCtx := draftContext("cn-sh2-02")
+	wfCtx.Params["DataDiskSize"] = float64(100)
+	runToTheGate(t, wfCtx)
+	confirmAndSeal(t, wfCtx)
+	wfCtx.StepResults["创建实例"] = map[string]any{"UHostIds": ids}
+	wfCtx.StepResults["查看状态"] = map[string]any{"UHostSet": rows}
+	return wfCtx
+}
+
+func createReadbackRow(id, dataDiskType string) map[string]any {
+	return map[string]any{
+		"UHostId": id,
+		"State":   "Initializing",
+		"DiskSet": []any{
+			map[string]any{"Type": "Boot", "DiskType": "CLOUD_SSD", "Size": float64(190)},
+			map[string]any{"Type": "Data", "DiskType": dataDiskType, "Size": float64(100)},
+		},
+	}
+}

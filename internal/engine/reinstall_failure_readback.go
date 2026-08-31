@@ -40,15 +40,21 @@ func (e *Engine) reinstallFailureReply(ctx context.Context, params map[string]an
 	draft := result.Failure.Draft
 	targetID := strings.TrimSpace(fmt.Sprint(draft["TargetImageId"]))
 	targetName := strings.TrimSpace(fmt.Sprint(draft["TargetImageName"]))
+	initialID := strings.TrimSpace(fmt.Sprint(draft["InitialImageId"]))
+	initialName := strings.TrimSpace(fmt.Sprint(draft["InitialImageName"]))
 	observedID := strings.TrimSpace(fmt.Sprint(row["CompShareImageId"]))
 	imageMatches := targetID != "" && targetID != "<nil>" && strings.EqualFold(targetID, observedID)
+	imageChanged := initialID != "" && initialID != "<nil>" && !strings.EqualFold(initialID, observedID)
 	// Once the confirmed contract carries an exact image ID, an equal display
 	// name is not proof: community/custom catalogs may have multiple versions
 	// with the same name. Name fallback exists only for legacy drafts without ID.
 	if (targetID == "" || targetID == "<nil>") && targetName != "" && targetName != "<nil>" {
 		imageMatches = strings.EqualFold(targetName, snap.ImageName)
+		imageChanged = initialName != "" && initialName != "<nil>" && !strings.EqualFold(initialName, snap.ImageName)
 	}
-	if imageMatches {
+	// Reinstalling the image already on the instance is valid, but a failed call
+	// followed by the same image is not evidence that the reinstall happened.
+	if imageMatches && imageChanged {
 		return fmt.Sprintf("重装接口返回失败，但实时回读显示实例 %s 已切换到目标镜像，当前状态为%s。请以实时状态为准，请勿重复提交。", id, state), true
 	}
 

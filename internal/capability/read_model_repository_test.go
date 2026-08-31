@@ -220,6 +220,26 @@ func TestModelRepositoryHandle_ResolvesZoneFromLiveCatalog(t *testing.T) {
 	assert.Contains(t, result.Reply, "副本健康、可直接使用")
 }
 
+func TestModelRepositoryHandle_UnresolvedZoneReturnsCatalogForCorrection(t *testing.T) {
+	exec := &mapReadExec{results: map[string]map[string]any{
+		modelRepositoryTagAction: {"Tags": []any{"LLM"}},
+	}}
+	zones := deployment.NewZoneCatalogSnapshot(true, []deployment.ZoneCatalogEntry{
+		{Placement: deployment.ZonePlacement{Zone: "cn-sh2-01", ZoneID: 41}, DisplayName: "上海二A"},
+		{Placement: deployment.ZonePlacement{Zone: "cn-sh2-02", ZoneID: 42}, DisplayName: "上海二B"},
+	})
+
+	result := runModelRepositoryWithZones(t, exec, ModelRepositoryRequest{Zone: "上海"}, zones)
+
+	require.Equal(t, platform.ReadStatusNeedsInput, result.Status)
+	require.Equal(t, platform.ReadFallbackValidation, result.FallbackReason)
+	require.NotNil(t, result.Envelope)
+	assert.Contains(t, result.Reply, "本次未查询模型副本状态")
+	assert.Contains(t, result.Reply, "上海二A")
+	assert.Contains(t, result.Reply, "上海二B")
+	require.Len(t, exec.calls, 1, "an unresolved zone must stop before the model-repository query")
+}
+
 func TestModelRepositoryHandle_TagUpstreamError(t *testing.T) {
 	result := runModelRepository(t, errReadExec{err: errors.New("boom")}, ModelRepositoryRequest{})
 

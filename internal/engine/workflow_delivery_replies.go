@@ -49,10 +49,7 @@ func scheduledShutdownWorkflowReply(action string, params map[string]any, result
 		verified, _ = result.Data["Verified"].(bool)
 	}
 	if action == "CancelStopSchedulerWorkflow" {
-		if verified {
-			return fmt.Sprintf("✅ 已取消实例 %s 的定时关机，并已回读确认。", id), true
-		}
-		return fmt.Sprintf("已提交实例 %s 的定时关机取消请求，但本次回读尚未确认原设置已清除。请稍后查看当前设置，请勿重复提交。", id), true
+		return fmt.Sprintf("已提交实例 %s 的定时关机取消请求，但当前接口无法独立确认原设置已清除。请稍后查看当前设置，请勿重复提交。", id), true
 	}
 	want := int64(0)
 	if result != nil && result.Data != nil {
