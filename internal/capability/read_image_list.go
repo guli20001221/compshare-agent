@@ -247,10 +247,12 @@ func communityImageListHandle(ctx context.Context, req ImageListRequest, rt Read
 	raw := mergeCommunityImageResults(results)
 	// Upstream already applied every individual query. The merged catalog is the
 	// union; applying the primary query again here would erase the semantic
-	// expansions and restore the self-narrowing bug.
-	env := buildCommunityImageEnvelope(raw, "", platform.ListModeAll)
+	// expansions and restore the self-narrowing bug. Keep the actual mode so a
+	// filtered union preserves primary-query results ahead of its expansions;
+	// only an unfiltered catalog browse is popularity-ranked.
+	env := buildCommunityImageEnvelope(raw, "", req.Mode)
 	return ImageListResponse{
-		Reply:    renderCommunityImageReply(raw, "", platform.ListModeAll),
+		Reply:    renderCommunityImageReply(raw, "", req.Mode),
 		Action:   communityImageAction,
 		Envelope: populatedEnvelope(env),
 	}, ReadResult{}
@@ -643,12 +645,14 @@ func renderCommunityImageReply(raw map[string]any, searchQuery string, mode plat
 
 	filtered = dedupeCommunityImageGroups(filtered)
 
-	// Surface genuinely-popular images first: the live API default order is
-	// recommend-weighted, so sort by CreatedCount (部署次数) desc to make the
-	// popularity figures monotonic and put the most-deployed images on top.
-	sort.SliceStable(filtered, func(i, j int) bool {
-		return communityDeployCount(filtered[i]) > communityDeployCount(filtered[j])
-	})
+	// A full browse is popularity-ranked. Filtered input is already the ordered
+	// union of the user's primary query followed by semantic expansions; globally
+	// sorting that union would let a popular expansion displace an exact match.
+	if mode == platform.ListModeAll {
+		sort.SliceStable(filtered, func(i, j int) bool {
+			return communityDeployCount(filtered[i]) > communityDeployCount(filtered[j])
+		})
+	}
 
 	lines := make([]string, 0, communityImageGroupLimit)
 	lineBudget := communityImageGroupLimit
@@ -712,12 +716,14 @@ func buildCommunityImageEnvelope(raw map[string]any, searchQuery string, mode pl
 		}
 		filtered = append(filtered, entry)
 	}
-	// Surface genuinely-popular images first: live API order is recommend-weighted, so
-	// present the most-deployed groups' images first (subjects are shown in envelope
-	// order).
-	sort.SliceStable(filtered, func(i, j int) bool {
-		return communityDeployCount(filtered[i]) > communityDeployCount(filtered[j])
-	})
+	// Keep the structured evidence in the same order as the user-visible result.
+	// Full browsing is popularity-ranked; filtered results retain primary-query
+	// priority over semantic expansions.
+	if mode == platform.ListModeAll {
+		sort.SliceStable(filtered, func(i, j int) bool {
+			return communityDeployCount(filtered[i]) > communityDeployCount(filtered[j])
+		})
+	}
 
 	// Flatten every community version into its OWN image subject carrying the same
 	// discrete, structured per-candidate facts the platform path emits — so the central

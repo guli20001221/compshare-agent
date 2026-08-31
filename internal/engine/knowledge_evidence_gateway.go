@@ -314,7 +314,7 @@ func evidenceGatewayRefusal(reason string) string {
 	case evidenceReasonEvidenceConflict:
 		return "现有资料对这个问题的关键事实存在冲突，我无法可靠确认，因此先不猜测。请以控制台当前显示或已核实的官方信息为准。"
 	case evidenceReasonEvidenceInsufficient:
-		return "现有知识库只覆盖了这个问题的部分事实，我无法可靠确认其余部分，因此不会把其他产品或范围的做法套用过来。"
+		return "现有证据只覆盖了这个问题的部分事实，我无法可靠确认其余部分，因此不会把其他产品或范围的做法套用过来。"
 	case evidenceReasonLiveEvidenceMissing:
 		return "这个问题需要当前账号、资源或目录的实时结果，但本轮没有取得可验证数据，因此我无法可靠确认。"
 	default:
