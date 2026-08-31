@@ -1108,6 +1108,43 @@ func TestReinstall_CommunityImageLookupAccepted(t *testing.T) {
 	assert.True(t, reinstalled)
 }
 
+func TestReinstallTenantImageSourcesNeverUsePointReads(t *testing.T) {
+	for _, source := range []string{"custom", "sharing"} {
+		t.Run(source, func(t *testing.T) {
+			args, ok := reinstallImageLookupArgs(NewContext(map[string]any{
+				"ImageSource":      source,
+				"CompShareImageId": "compshareImage-tenant-visible",
+			}), source)
+			require.True(t, ok)
+			assert.Equal(t, maxCustomImageQueryLimit, args["Limit"])
+			assert.NotContains(t, args, "CompShareImageId")
+		})
+	}
+}
+
+func TestReinstallTenantImageOutsideBrowsePageUsesVerifiedTenantSnapshot(t *testing.T) {
+	const imageID = "compshareImage-shared-beyond-first-page"
+	wfCtx := NewContext(map[string]any{
+		"ImageSource":      "sharing",
+		"CompShareImageId": imageID,
+	})
+	wfCtx.StepResults["查询共享目标镜像"] = map[string]any{
+		"ImageSet": []any{map[string]any{
+			"CompShareImageId": "compshareImage-other",
+			"Name":             "另一张共享镜像",
+			"Status":           "Available",
+		}},
+	}
+	wfCtx.referenceData = ReferenceData{ImageCatalog: deployment.NewImageCatalogSnapshot(true, []deployment.ImageCatalogEntry{{
+		ID: imageID, Name: "租户可见的共享镜像", Source: "sharing", Status: deployment.ImageStatusReviewing,
+	}})}
+
+	image, ok := targetReinstallImage(wfCtx)
+	require.True(t, ok)
+	assert.Equal(t, imageID, image.ID)
+	assert.Equal(t, "sharing", image.Source)
+}
+
 func TestReinstall_CommunityImageWithoutPriceStopsBeforeConfirmation(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": stoppedInstanceResult(),

@@ -73,9 +73,10 @@ func (e *Engine) resolveImageCatalogSnapshotForSpec(
 //     TotalCount=0 even when that row exists;
 //   - community returns one CompshareImageGroup with the matching version in Data.
 //
-// Custom point reads are intentionally not used here because that upstream
-// branch changes tenant scope when given a known id. Sharing exact reads remain
-// tenant-scoped upstream and can use the same precise path as public catalogs.
+// Custom and sharing point reads are intentionally not used here: those
+// upstream branches can change the tenant scope or bypass the sharing-list
+// visibility filter when given a known id. They are therefore fetched as the
+// current tenant's paginated list and matched locally.
 //
 // Resolution therefore reads the rows, never TotalCount. A typed "this image does
 // not exist in this source" response is an available-but-empty catalog; transport
@@ -86,7 +87,7 @@ func (e *Engine) imageCatalogSnapshotByID(ctx context.Context, source, imageID s
 		return deployment.NewImageCatalogSnapshot(false, nil)
 	}
 	action, community, canonical := imageQueryForSource(source)
-	if canonical == "custom" {
+	if canonical == "custom" || canonical == "sharing" {
 		return e.tenantScopedImageCatalogSnapshot(ctx, action, canonical)
 	}
 	args := imageCatalogExactQueryArgs(community, imageID)
@@ -114,8 +115,8 @@ func (e *Engine) imageCatalogSnapshotByID(ctx context.Context, source, imageID s
 	return deployment.NewImageCatalogSnapshot(true, entries)
 }
 
-// tenantScopedImageCatalogSnapshot preserves the visibility contract of the
-// custom-image list API. FetchAll supplies bounded Limit/Offset pagination; no
+// tenantScopedImageCatalogSnapshot preserves the visibility contract of custom
+// and sharing list APIs. FetchAll supplies bounded Limit/Offset pagination; no
 // CompShareImageId is sent upstream, so the result cannot escape the caller's
 // tenant-scoped list and ByID remains a local exact match.
 func (e *Engine) tenantScopedImageCatalogSnapshot(ctx context.Context, action, source string) *deployment.ImageCatalogSnapshot {

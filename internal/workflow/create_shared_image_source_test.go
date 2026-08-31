@@ -40,7 +40,8 @@ func TestPlainCreateFromSharedImageUsesTheTenantVisibleCatalog(t *testing.T) {
 
 	listCall, ok := findExecutorCall(executor.calls, "DescribeCompShareSharingImages")
 	require.True(t, ok)
-	assert.Equal(t, imageID, listCall.args["CompShareImageId"])
+	assert.Equal(t, maxCustomImageQueryLimit, listCall.args["Limit"])
+	assert.NotContains(t, listCall.args, "CompShareImageId")
 	for _, call := range executor.calls {
 		assert.NotEqual(t, "DescribeCompShareImages", call.action,
 			"sharing must not silently fall back to the platform catalog")

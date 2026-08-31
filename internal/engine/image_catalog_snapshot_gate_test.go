@@ -133,7 +133,7 @@ func TestPlatformImagePointQueryUsesImageSetWhenTotalCountIsZero(t *testing.T) {
 	assert.Equal(t, []string{"DescribeCompShareImages"}, executor.calls)
 }
 
-func TestCustomVerificationUsesTenantListAndSharingUsesScopedExactRead(t *testing.T) {
+func TestTenantImageVerificationUsesScopedLists(t *testing.T) {
 	tests := []struct {
 		source string
 		action string
@@ -166,12 +166,8 @@ func TestCustomVerificationUsesTenantListAndSharingUsesScopedExactRead(t *testin
 			require.True(t, ok)
 			assert.Equal(t, tt.source, entry.Source)
 			assert.Equal(t, 100, gotArgs["Limit"])
-			if tt.source == "custom" {
-				assert.NotContains(t, gotArgs, "CompShareImageId")
-				assert.Equal(t, 0, gotArgs["Offset"])
-			} else {
-				assert.Equal(t, imageID, gotArgs["CompShareImageId"])
-			}
+			assert.NotContains(t, gotArgs, "CompShareImageId")
+			assert.Equal(t, 0, gotArgs["Offset"])
 			assert.Equal(t, []string{tt.action}, executor.calls)
 		})
 	}

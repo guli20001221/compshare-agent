@@ -292,6 +292,16 @@ func (info reinstallImageInfo) RequiredSystemDiskGB() float64 {
 }
 
 func reinstallImageLookupArgs(wfCtx *Context, source string) (map[string]any, bool) {
+	// Custom and shared image point reads do not preserve the tenant-list
+	// visibility contract. Their exact ids are verified against the engine's
+	// paginated tenant snapshot; this workflow call remains a browse page.
+	if source == "custom" || source == "sharing" {
+		if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) == "" &&
+			strings.TrimSpace(paramStr(wfCtx.Params, "ImageName", "")) == "" {
+			return nil, false
+		}
+		return map[string]any{"Limit": maxCustomImageQueryLimit}, true
+	}
 	if id := strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")); id != "" {
 		return map[string]any{"CompShareImageId": id}, true
 	}
@@ -304,8 +314,6 @@ func reinstallImageLookupArgs(wfCtx *Context, source string) (map[string]any, bo
 		return map[string]any{"Name": name, "Limit": 100}, true
 	case "community":
 		return map[string]any{"FuzzySearch": name, "Limit": 30}, true
-	case "custom", "sharing":
-		return map[string]any{"Limit": 100}, true
 	default:
 		return map[string]any{"Limit": 100}, true
 	}
@@ -365,6 +373,20 @@ func targetReinstallImage(wfCtx *Context) (reinstallImageInfo, bool) {
 			Prefiltered: item.source == "platform" || item.source == "community",
 		})
 		sel, ok := reinstallSelection(res)
+		if !ok && id != "" && (item.source == "custom" || item.source == "sharing") {
+			// The selected row can lie beyond the workflow's browse page. The
+			// reference snapshot is the exact row already found by the engine's
+			// tenant-scoped paginated list; accept it only for this source and id.
+			verified := wfCtx.ImageCatalog()
+			if entry, found := verified.ByID(id); found &&
+				normalizedImageSource(entry.Source) == item.source {
+				res = deployment.ResolveImage(verified, deployment.ImageRequest{
+					ID: id, Source: item.source,
+				})
+				sel, ok = reinstallSelection(res)
+				snap = verified
+			}
+		}
 		if !ok {
 			continue
 		}

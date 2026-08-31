@@ -472,9 +472,9 @@ func stepQueryImages(allowCommunityBrowse bool) Step {
 				// scope, so the workflow never uses a point-read here.
 				return customImageBrowseArgs(), nil
 			case imageSourceSharing:
-				if id := strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")); id != "" {
-					return map[string]any{"CompShareImageId": id}, nil
-				}
+				// Shared images use the same tenant-scoped list contract. The engine
+				// verifies an exact id through the paginated list and createImageResult
+				// merges a verified row that lies outside this browse page.
 				return customImageBrowseArgs(), nil
 			}
 			args := map[string]any{
@@ -856,9 +856,6 @@ func stepReQuerySelectedSourceImages() Step {
 			case imageSourceCustom:
 				return customImageBrowseArgs(), nil
 			case imageSourceSharing:
-				if id := strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")); id != "" {
-					return map[string]any{"CompShareImageId": id}, nil
-				}
 				return customImageBrowseArgs(), nil
 			}
 			args := map[string]any{"Limit": maxPlatformImageQueryLimit}
