@@ -237,17 +237,16 @@ func stepQueryForScheduler() Step {
 		},
 		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
 			state := extractInstanceState(result)
-			switch state {
-			case "":
+			if state == "" {
 				return CheckFailed("未找到该实例。")
-			case "Running":
-				if extractFirstBool(result, "IsSpot") {
-					return CheckFailed("抢占式实例不支持定时关机。")
-				}
-				return CheckPassed()
-			default:
-				return CheckFailed(fmt.Sprintf("实例当前未运行（状态：%s），无需设置定时关机。", state))
 			}
+			if extractFirstBool(result, "IsSpot") {
+				return CheckFailed("抢占式实例不支持定时关机。")
+			}
+			// The upstream scheduler stores a future stop for any existing normal
+			// resource; it does not require the guest to be Running at setup time.
+			// This matters immediately after create, while UHost is still Installing.
+			return CheckPassed()
 		},
 	}
 }

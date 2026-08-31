@@ -253,31 +253,34 @@ func TestSetStopScheduler_NotFound(t *testing.T) {
 	assert.Contains(t, result.Message, "未找到")
 }
 
-func TestSetStopScheduler_NotRunning(t *testing.T) {
+func TestSetStopScheduler_InitializingInstanceCanSchedule(t *testing.T) {
 	withFixedNow(t)
 
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{
 			map[string]any{
 				"UHostId":    "uhost-xxx",
-				"State":      "Stopped",
+				"State":      "Initializing",
+				"Zone":       "cn-bj2-04",
+				"Region":     "cn-bj2",
 				"ChargeType": "Dynamic",
 			},
 		}},
+		"UpdateCompShareStopScheduler": {"RetCode": 0},
 	}}
 	onStep, _ := collectEvents()
 
 	def := SetStopSchedulerDef()
-	eng := NewEngine(executor, nil, onStep)
+	eng := NewEngine(executor, func(string, map[string]any) bool { return true }, onStep)
 	result, err := eng.Run(context.Background(), def, map[string]any{
 		"UHostId":  "uhost-xxx",
 		"Schedule": scheduleAfter(60),
 	})
 
 	assert.NoError(t, err)
-	assert.False(t, result.Success)
-	assert.Equal(t, "查询实例", result.StoppedAt)
-	assert.Contains(t, result.Message, "未运行")
+	assert.True(t, result.Success)
+	require.Len(t, executor.calls, 3)
+	assert.Equal(t, "UpdateCompShareStopScheduler", executor.calls[1].action)
 }
 
 func TestSetStopScheduler_SpotRejected(t *testing.T) {
