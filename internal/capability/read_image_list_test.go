@@ -72,7 +72,7 @@ func TestCommunitySemanticQueriesUnionWithGroundedUserQuery(t *testing.T) {
 	exec := &communityQueryExec{results: map[string]map[string]any{
 		"数字人": {
 			"CompshareImageGroup": []any{
-				group("InfiniteTalk", "infinite-1", 10),
+				group("InfiniteTalk", "infinite-1", 17710),
 				group("HeyGem", "heygem-1", 1076),
 			},
 		},
@@ -98,7 +98,7 @@ func TestCommunitySemanticQueriesUnionWithGroundedUserQuery(t *testing.T) {
 	require.Contains(t, names, "InfiniteTalk")
 	require.Contains(t, names, "LiveTalking")
 	require.Equal(t, "InfiniteTalk", names[0],
-		"a popular semantic expansion cannot displace a candidate found by the user's own query")
+		"the guessed expansion cannot exclude the more popular candidate found by the user's own purpose")
 }
 
 func TestCommunitySemanticQueriesFilterAndDedupeFlatFallback(t *testing.T) {
@@ -209,9 +209,8 @@ func TestImageListRender_CommunityShowsGroupsAndVersions(t *testing.T) {
 	assert.Contains(t, reply, "社区镜像")
 	assert.Contains(t, reply, "LiveTalking")
 	assert.Contains(t, reply, "LTX-2.3")
-	// A filtered result preserves the primary-query/semantic-expansion order
-	// already established by the caller instead of globally re-ranking by heat.
-	assert.Less(t, strings.Index(reply, "LiveTalking"), strings.Index(reply, "LTX-2.3"))
+	// Most-deployed group (LTX, 500) sorts above LiveTalking (200).
+	assert.Less(t, strings.Index(reply, "LTX-2.3"), strings.Index(reply, "LiveTalking"))
 }
 
 // --- shared render parity -------------------------------------------------------
