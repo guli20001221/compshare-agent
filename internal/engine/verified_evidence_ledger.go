@@ -248,7 +248,7 @@ func (e *Engine) currentReadEvidenceLedger(question string) knowledge.EvidenceLe
 			ScoreBucket:  "high",
 			Title:        truncateRunes("本轮平台查询："+evidence.Capability, 80),
 			Summary:      truncateRunes(strings.TrimSpace(evidence.Reply), 600),
-			Snippet:      truncateRunes(snippet, maxEvidenceGatewayFactRunes),
+			Snippet:      truncateRunes(snippet, maxEvidenceGatewayFactRunes-1),
 		})
 	}
 	if len(e.verbatimBlocksThisTurn) > 0 {
