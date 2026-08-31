@@ -359,7 +359,7 @@ func CreateInstanceDef() *Definition {
 		// CompShareImageId is intentionally not user-supplied-only: once a
 		// request names an exact image, silently replacing a stale/wrong-source id
 		// with an unrelated browse result changes the requested object.
-		UserSuppliedOptionalFields: []string{"DataDiskSize", "SystemDiskSize"},
+		UserSuppliedOptionalFields: []string{"DataDiskSize", "Name", "SystemDiskSize"},
 	}
 }
 

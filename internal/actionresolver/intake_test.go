@@ -119,7 +119,9 @@ func TestCreateCollectableFieldsAreDeclaredNotDerived(t *testing.T) {
 	require.ElementsMatch(t,
 		[]string{"GpuType", "Zone", "Gpu", "Cpu", "Memory", "ImageSource", "ImageName", "ChargeType"},
 		spec.Intake.CollectableFields)
-	require.NotContains(t, spec.Fields, "Name", "free-form model output must not name a newly created instance")
+	require.Contains(t, spec.Fields, "Name")
+	require.Contains(t, spec.Intake.UserSuppliedOptionalFields, "Name",
+		"the guided form has no name control, so only a user-authored name may enter the sealed create contract")
 }
 
 // intakeSpecForOperation rejects a misdeclared collectable set at build time — a
@@ -207,7 +209,7 @@ func TestWorkflowFieldSourcePoliciesAreDeclared(t *testing.T) {
 		spec, ok := catalog.Lookup(operation)
 		require.True(t, ok)
 		if operation == "CreateInstanceWorkflow" {
-			require.Equal(t, []string{"DataDiskSize", "SystemDiskSize"}, spec.Intake.UserSuppliedOptionalFields)
+			require.Equal(t, []string{"DataDiskSize", "Name", "SystemDiskSize"}, spec.Intake.UserSuppliedOptionalFields)
 		} else {
 			require.Empty(t, spec.Intake.UserSuppliedOptionalFields)
 		}
@@ -265,10 +267,12 @@ func TestGroundedOptionalCreateFieldsRemainInTheContract(t *testing.T) {
 	resolved := resolver.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
 		{Name: "GpuType", Value: "H20", Source: SourceAgentInference},
 		{Name: "SystemDiskSize", Value: "190GB", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "190GB"}},
+		{Name: "Name", Value: "codex-e2e", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "codex-e2e"}},
 	}})
 
 	require.True(t, resolved.ReadyForConfirmation)
 	require.Equal(t, float64(190), resolved.Arguments["SystemDiskSize"])
+	require.Equal(t, "codex-e2e", resolved.Arguments["Name"])
 }
 
 func TestInvalidUserSuppliedOptionalFieldBlocksIntake(t *testing.T) {

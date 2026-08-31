@@ -546,15 +546,34 @@ func TestCancelStopScheduler_HappyPath(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
-	assert.Len(t, result.Steps, 3)
-	assert.Nil(t, result.Data, "取消接口成功不等于已回读确认；workflow 不应伪造验证结果")
+	assert.Len(t, result.Steps, 4)
+	assert.Equal(t, true, result.Data["Verified"])
+	assert.Equal(t, int64(0), result.Data["ObservedStopTime"])
 
 	// Verify DeleteCompShareStopScheduler was called with UHostId and Region.
-	assert.Len(t, executor.calls, 2)
+	assert.Len(t, executor.calls, 3)
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
 	assert.Equal(t, "DeleteCompShareStopScheduler", executor.calls[1].action)
+	assert.Equal(t, "DescribeCompShareInstance", executor.calls[2].action)
 	assert.Equal(t, "uhost-xxx", executor.calls[1].args["UHostId"])
 	assert.Contains(t, executor.calls[1].args, "Region", "DeleteCompShareStopScheduler must include Region")
+}
+
+func TestCancelStopScheduler_ReadbackKeepsUnverifiedWhenTimeRemains(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{map[string]any{
+			"UHostId": "uhost-xxx", "Name": "my-gpu", "State": "Running",
+			"Zone": "cn-bj2-04", "Region": "cn-bj2", "SchedulerStopTime": float64(1778420000),
+		}}},
+		"DeleteCompShareStopScheduler": {"RetCode": 0},
+	}}
+	result, err := NewEngine(executor, func(string, map[string]any) bool { return true }, nil).Run(
+		context.Background(), CancelStopSchedulerDef(), map[string]any{"UHostId": "uhost-xxx"},
+	)
+	require.NoError(t, err)
+	require.True(t, result.Success)
+	assert.Equal(t, false, result.Data["Verified"])
+	assert.Equal(t, int64(1778420000), result.Data["ObservedStopTime"])
 }
 
 func TestCancelStopScheduler_UsesReturnedInstanceRegion(t *testing.T) {
@@ -649,11 +668,12 @@ func TestCancelStopScheduler_StoppedInstance_Allowed(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
-	assert.Len(t, result.Steps, 3)
+	assert.Len(t, result.Steps, 4)
 
 	// Stopped instance should still allow cancellation of residual scheduler tasks.
-	assert.Len(t, executor.calls, 2)
+	assert.Len(t, executor.calls, 3)
 	assert.Equal(t, "DeleteCompShareStopScheduler", executor.calls[1].action)
+	assert.Equal(t, "DescribeCompShareInstance", executor.calls[2].action)
 }
 
 func TestCancelStopScheduler_MissingZoneRejectedBeforeMutation(t *testing.T) {

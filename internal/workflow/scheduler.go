@@ -359,9 +359,8 @@ func schedulerStopTime(result map[string]any) int64 {
 	return int64(firstNumberField(host, "SchedulerStopTime"))
 }
 
-// CancelStopSchedulerDef returns the 3-step workflow definition for cancelling
-// a scheduled stop on a CompShare GPU instance: query state, confirm, then
-// delete the scheduler task.
+// CancelStopSchedulerDef cancels a scheduled stop and reads the instance back so
+// the user can distinguish an accepted request from a verified cleared value.
 func CancelStopSchedulerDef() *Definition {
 	return &Definition{
 		Name: "CancelStopSchedulerWorkflow",
@@ -369,7 +368,33 @@ func CancelStopSchedulerDef() *Definition {
 			stepQueryForCancelScheduler(),
 			stepConfirmCancelScheduler(),
 			stepDeleteStopScheduler(),
+			stepReadbackCancelledScheduler(),
 		},
+		ResultData: cancelStopSchedulerResultData,
+	}
+}
+
+const cancelSchedulerReadbackStepName = "回查取消结果"
+
+func stepReadbackCancelledScheduler() Step {
+	return Step{
+		Name:     cancelSchedulerReadbackStepName,
+		Type:     StepToolCall,
+		Tool:     "DescribeCompShareInstance",
+		Optional: true,
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			return map[string]any{"UHostIds": []any{wfCtx.Params["UHostId"]}}, nil
+		},
+	}
+}
+
+func cancelStopSchedulerResultData(wfCtx *Context) map[string]any {
+	result := wfCtx.Result(cancelSchedulerReadbackStepName)
+	_, readable := firstInstance(result)
+	observed := schedulerStopTime(result)
+	return map[string]any{
+		"ObservedStopTime": observed,
+		"Verified":         readable && observed == 0,
 	}
 }
 

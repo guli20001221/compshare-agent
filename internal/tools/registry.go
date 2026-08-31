@@ -589,7 +589,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateInstanceWorkflow",
-			Description: "创建实例及所选镜像；配置不完整时进入引导卡。用户要求创建时使用，价格、库存或方法查询不用。不会安装镜像外软件；部署应用前，先确认镜像已内置或有可执行安装来源/计划，否则确认是否只要运行环境。支持平台、社区、自制和共享镜像。",
+			Description: "创建实例及所选镜像；信息不全时引导补全。仅用于创建，不用于询价或库存查询。不会安装镜像外软件。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -617,6 +617,12 @@ var Registry = []openai.Tool{
 					"Memory": map[string]any{
 						"type":        "number",
 						"description": "内存大小，单位 MB（可选）。不指定时使用平台默认值。如 64GB = 65536。需与 Cpu 一起构成合法配比。",
+					},
+					"Name": map[string]any{
+						"type":        "string",
+						"description": "用户指定的实例名；未指定则省略。",
+						"maxLength":   63,
+						"pattern":     `^[\u4E00-\u9FA5A-Za-z0-9_,.:-]+$`,
 					},
 					"SystemDiskSize": map[string]any{
 						"type":        "string",
