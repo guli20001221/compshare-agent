@@ -215,13 +215,15 @@ func BuildHistoricalMonitorEnvelope(subjects []entity.InstanceSnapshot, metrics 
 	if len(subjects) == 1 {
 		fallbackSubjectID = subjects[0].UHostId
 	}
+	series := historicalMonitorSeries(metrics, payload)
+	presentMetrics := historicalMonitorMetricsBySubject(series, fallbackSubjectID)
 	seriesSubjects := map[string]struct{}{}
-	for _, series := range historicalMonitorSeries(metrics, payload) {
-		aggregate, ok := aggregateHistoricalSeries(series)
+	for _, item := range series {
+		aggregate, ok := aggregateHistoricalSeries(item)
 		if !ok {
 			continue
 		}
-		subjectID := series.SubjectID
+		subjectID := item.SubjectID
 		if subjectID == "" {
 			subjectID = fallbackSubjectID
 		}
@@ -231,10 +233,10 @@ func BuildHistoricalMonitorEnvelope(subjects []entity.InstanceSnapshot, metrics 
 		appendFact := func(value float64, aggregation string, source envelope.FactSource) {
 			env.Facts = append(env.Facts, envelope.Fact{
 				SubjectID:   subjectID,
-				Key:         series.Key,
-				Label:       series.Label,
+				Key:         item.Key,
+				Label:       item.Label,
 				Value:       formatMonitorFloat(value),
-				Unit:        series.Unit,
+				Unit:        item.Unit,
 				Source:      source,
 				Period:      "range",
 				WindowStart: windowStart,
@@ -248,6 +250,25 @@ func BuildHistoricalMonitorEnvelope(subjects []entity.InstanceSnapshot, metrics 
 	}
 	for _, subject := range subjects {
 		if subject.UHostId == "" {
+			continue
+		}
+		if len(metrics) > 0 {
+			for _, metric := range uniqueMonitorMetrics(metrics) {
+				if presentMetrics[subject.UHostId][metric] {
+					continue
+				}
+				env.Facts = append(env.Facts, envelope.Fact{
+					SubjectID:   subject.UHostId,
+					Key:         "missing_" + string(metric) + "_usage",
+					Label:       monitorMetricReplyLabel(metric),
+					Value:       "未返回数据",
+					Source:      envelope.FactSourceComputed,
+					Period:      "range",
+					WindowStart: windowStart,
+					WindowEnd:   windowEnd,
+					Aggregation: "availability",
+				})
+			}
 			continue
 		}
 		if _, ok := seriesSubjects[subject.UHostId]; ok {

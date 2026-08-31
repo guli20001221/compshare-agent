@@ -365,6 +365,9 @@ func RenderHistoricalMonitorSummary(metrics []Metric, payload map[string]any, wi
 	series := historicalMonitorSeries(metrics, payload)
 	subjectIDs := historicalMonitorSubjectIDs(payload)
 	if len(series) == 0 {
+		if len(metrics) > 0 && len(subjectIDs) > 0 {
+			return prefix + "\n" + strings.Join(historicalMissingMetricRows(subjectIDs, metrics), "\n")
+		}
 		if len(historicalMonitorSeries(nil, payload)) > 0 {
 			return prefix + noRequestedMonitorValuesReply
 		}
@@ -377,12 +380,11 @@ func RenderHistoricalMonitorSummary(metrics []Metric, payload map[string]any, wi
 		}
 		return prefix + noMonitorValuesReply
 	}
-	seriesSubjects := map[string]struct{}{}
-	for _, item := range series {
-		if item.SubjectID != "" {
-			seriesSubjects[item.SubjectID] = struct{}{}
-		}
+	fallbackSubjectID := ""
+	if len(subjectIDs) == 1 {
+		fallbackSubjectID = subjectIDs[0]
 	}
+	presentMetrics := historicalMonitorMetricsBySubject(series, fallbackSubjectID)
 	multipleSubjects := len(subjectIDs) > 1
 	parts := make([]string, 0, len(series)+len(subjectIDs))
 	for _, item := range series {
@@ -406,9 +408,22 @@ func RenderHistoricalMonitorSummary(metrics []Metric, payload map[string]any, wi
 			peakAt,
 		))
 	}
-	if multipleSubjects {
+	if len(metrics) > 0 {
 		for _, id := range subjectIDs {
-			if _, ok := seriesSubjects[id]; !ok {
+			for _, metric := range uniqueMonitorMetrics(metrics) {
+				if presentMetrics[id][metric] {
+					continue
+				}
+				label := monitorMetricReplyLabel(metric)
+				if multipleSubjects {
+					label = id + " · " + label
+				}
+				parts = append(parts, "- "+label+"未返回数据")
+			}
+		}
+	} else if multipleSubjects {
+		for _, id := range subjectIDs {
+			if len(presentMetrics[id]) == 0 {
 				parts = append(parts, "- "+id+"：未返回请求的监控数据")
 			}
 		}
@@ -419,6 +434,39 @@ func RenderHistoricalMonitorSummary(metrics []Metric, payload map[string]any, wi
 	// The window prefix stays its own line: it qualifies every row under it, and
 	// run together with the first metric it read as part of that metric.
 	return prefix + "\n" + strings.Join(parts, "\n")
+}
+
+func historicalMonitorMetricsBySubject(series []monitorHistoricalSeries, fallbackSubjectID string) map[string]map[Metric]bool {
+	present := map[string]map[Metric]bool{}
+	for _, item := range series {
+		if _, ok := aggregateHistoricalSeries(item); !ok || item.Metric == "" {
+			continue
+		}
+		subjectID := item.SubjectID
+		if subjectID == "" {
+			subjectID = fallbackSubjectID
+		}
+		if present[subjectID] == nil {
+			present[subjectID] = map[Metric]bool{}
+		}
+		present[subjectID][item.Metric] = true
+	}
+	return present
+}
+
+func historicalMissingMetricRows(subjectIDs []string, metrics []Metric) []string {
+	multipleSubjects := len(subjectIDs) > 1
+	rows := make([]string, 0, len(subjectIDs)*len(metrics))
+	for _, id := range subjectIDs {
+		for _, metric := range uniqueMonitorMetrics(metrics) {
+			label := monitorMetricReplyLabel(metric)
+			if multipleSubjects {
+				label = id + " · " + label
+			}
+			rows = append(rows, "- "+label+"未返回数据")
+		}
+	}
+	return rows
 }
 
 // historicalMonitorWindowPrefix renders the queried Beijing window as a
