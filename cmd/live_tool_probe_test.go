@@ -193,12 +193,10 @@ func TestLiveToolProbe(t *testing.T) {
 		if rec.Error != "" {
 			reply = "ERR: " + rec.Error
 		}
-		lastTurn := rec.Turns[len(rec.Turns)-1]
-		t.Logf("\n======== [%d/%d] %s (%dms, 前文%d条) ========\n问：%s\n工具：%s\n引用：%s\n证据门：%s/%s（纠正 %d 次）\n答：\n%s",
+		t.Logf("\n======== [%d/%d] %s (%dms, 前文%d条) ========\n问：%s\n工具：%s\n引用：%s\n答：\n%s",
 			i+1, len(cases), c.caseID, time.Since(t0).Milliseconds(), len(c.history),
 			c.turns[len(c.turns)-1], strings.Join(names, ", "),
 			orDefault(strings.Join(rec.CitedChunkIDs, ", "), "（无）"),
-			lastTurn.EvidenceDecision, lastTurn.EvidenceReason, lastTurn.EvidenceCorrectionCount,
 			truncateForLog(reply, 1200))
 		if len(names) == 0 {
 			t.Logf("  ⚠ 未调用任何工具（纯知识/生成回答）")

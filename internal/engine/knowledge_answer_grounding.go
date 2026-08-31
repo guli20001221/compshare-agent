@@ -31,13 +31,11 @@ func (e *Engine) resolvedKnowledgeQuestion(fallback string) string {
 	return resolved
 }
 
-// finalizeAgentLoopKnowledgeAnswer is the sole SearchKnowledge citation exit.
-// It does not make the semantic support decision: the final evidence gateway
-// runs separately before delivery. This layer validates citation markers and
-// records which retrieved evidence may become durable verified context.
+// finalizeAgentLoopKnowledgeAnswer is the sole SearchKnowledge answer exit. No
+// second model reviews or rewrites the answer: the central Agent is the semantic
+// decider and the runtime validates citation markers only.
 //
-// Policy — citation handling is fail-open; the later evidence gate may still
-// reject an unsupported answer:
+// Policy — fail-open, NO hard stop:
 //   - An answer carrying >=1 citation that resolves to a real per-turn ledger
 //     chunk is accepted (markers stripped for display).
 //   - Otherwise the original answer SHIPS with all citation markers (including

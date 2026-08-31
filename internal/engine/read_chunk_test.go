@@ -166,6 +166,113 @@ func TestReadChunk_RecordsCitableEvidenceWithFullBody(t *testing.T) {
 	assert.Contains(t, snippet, tail, "the read upgrades the ledger snippet to the full body")
 }
 
+func TestAutoMaterializeKnowledgeChunks_LocalCapsIDsAndRunesWithoutSpendingToolCall(t *testing.T) {
+	bodyA := strings.Repeat("甲", 5000)
+	bodyB := strings.Repeat("乙", 5000)
+	eng, _ := newChunkStoreEngine(t,
+		knowledge.KBChunk{ChunkID: "a", Content: bodyA},
+		knowledge.KBChunk{ChunkID: "b", Content: bodyB},
+		knowledge.KBChunk{ChunkID: "c", Content: "第三条不得自动读取"},
+	)
+	ledger := knowledge.EvidenceLedger{Query: "q", Items: []knowledge.EvidenceItem{
+		{ChunkID: "a", Snippet: "a-snippet"},
+		{ChunkID: "b", Snippet: "b-snippet"},
+		{ChunkID: "c", Snippet: "c-snippet"},
+	}}
+	eng.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{Query: "q", Items: append([]knowledge.EvidenceItem(nil), ledger.Items...)}
+
+	result := eng.autoMaterializeKnowledgeChunks(context.Background(), &ledger, []string{"a", "b", "c"})
+
+	assert.Equal(t, []string{"a", "b"}, result.ReadIDs)
+	assert.Equal(t, []string{"b"}, result.TruncatedIDs)
+	assert.False(t, result.Unavailable)
+	assert.Len(t, eng.automaticKnowledgeBodyIDsThisTurn, maxAutoReadChunkIDsPerTurn)
+	assert.Equal(t, maxAutoReadChunkRunesPerTurn, eng.automaticKnowledgeBodyRunesThisTurn)
+	assert.Equal(t, bodyA, ledger.Items[0].Snippet)
+	assert.Equal(t, strings.Repeat("乙", 3000), ledger.Items[1].Snippet)
+	assert.Equal(t, "c-snippet", ledger.Items[2].Snippet)
+	assert.Contains(t, eng.readChunkIDsThisTurn, "a")
+	assert.Contains(t, eng.readChunkIDsThisTurn, "b")
+	assert.NotContains(t, eng.readChunkIDsThisTurn, "c")
+	assert.Zero(t, eng.readChunkCallsThisTurn, "automatic enrichment must not consume an explicit ReadChunk call")
+
+	again := eng.autoMaterializeKnowledgeChunks(context.Background(), &ledger, []string{"c"})
+	assert.Empty(t, again.ReadIDs, "the per-turn budget survives repeated SearchKnowledge calls")
+	assert.Equal(t, "c-snippet", ledger.Items[2].Snippet)
+}
+
+func TestAutoMaterializeKnowledgeChunks_RemoteFailureKeepsSnippet(t *testing.T) {
+	retriever := &remoteChunkStoreRetriever{err: fmt.Errorf("remote read failed")}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	eng.searchKnowledgeCapabilitiesThisTurn = map[string]string{"a": "search-a"}
+	ledger := knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{{ChunkID: "a", Snippet: "bounded search snippet"}}}
+
+	result := eng.autoMaterializeKnowledgeChunks(context.Background(), &ledger, []string{"a"})
+
+	assert.True(t, result.Unavailable)
+	assert.Empty(t, result.ReadIDs)
+	assert.Equal(t, "bounded search snippet", ledger.Items[0].Snippet)
+	assert.Len(t, eng.automaticKnowledgeBodyIDsThisTurn, 1, "a failed body still consumes one bounded attempt")
+	assert.Zero(t, eng.automaticKnowledgeBodyRunesThisTurn)
+	assert.NotContains(t, eng.readChunkIDsThisTurn, "a")
+	assert.Zero(t, eng.readChunkCallsThisTurn)
+	require.Len(t, retriever.reads, 1)
+	assert.Equal(t, "search-a", retriever.reads[0].searchID)
+	assert.Equal(t, []string{"a"}, retriever.reads[0].chunkIDs)
+}
+
+func TestAutoMaterializeKnowledgeChunks_SkipsAlreadyReadAndStopsAtTwoPerTurn(t *testing.T) {
+	eng, _ := newChunkStoreEngine(t,
+		knowledge.KBChunk{ChunkID: "a", Content: "already visible"},
+		knowledge.KBChunk{ChunkID: "b", Content: "body b"},
+		knowledge.KBChunk{ChunkID: "c", Content: "body c"},
+		knowledge.KBChunk{ChunkID: "d", Content: "body d"},
+	)
+	eng.markChunkRead("a")
+	ledger := knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{
+		{ChunkID: "a", Snippet: "snippet a"},
+		{ChunkID: "b", Snippet: "snippet b"},
+		{ChunkID: "c", Snippet: "snippet c"},
+		{ChunkID: "d", Snippet: "snippet d"},
+	}}
+
+	result := eng.autoMaterializeKnowledgeChunks(context.Background(), &ledger, []string{"a", "b", "c", "d"})
+
+	assert.Equal(t, []string{"b", "c"}, result.ReadIDs)
+	assert.Equal(t, "snippet a", ledger.Items[0].Snippet, "an already-read body is never pasted twice")
+	assert.Equal(t, "body b", ledger.Items[1].Snippet)
+	assert.Equal(t, "body c", ledger.Items[2].Snippet)
+	assert.Equal(t, "snippet d", ledger.Items[3].Snippet)
+
+	second := eng.autoMaterializeKnowledgeChunks(context.Background(), &ledger, []string{"d"})
+	assert.Empty(t, second.ReadIDs)
+	assert.Equal(t, "snippet d", ledger.Items[3].Snippet)
+}
+
+func TestAutoMaterializeKnowledgeChunks_RemoteGroupsBySearchCapability(t *testing.T) {
+	retriever := &remoteChunkStoreRetriever{chunks: map[string]knowledge.KBChunk{
+		"a": {ChunkID: "a", Content: "remote a"},
+		"b": {ChunkID: "b", Content: "remote b"},
+	}}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	eng.searchKnowledgeCapabilitiesThisTurn = map[string]string{"a": "search-1", "b": "search-2"}
+	ledger := knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{
+		{ChunkID: "a", Snippet: "snippet a"},
+		{ChunkID: "b", Snippet: "snippet b"},
+	}}
+
+	result := eng.autoMaterializeKnowledgeChunks(context.Background(), &ledger, []string{"a", "b"})
+
+	assert.Equal(t, []string{"a", "b"}, result.ReadIDs)
+	require.Len(t, retriever.reads, 2)
+	assert.Equal(t, remoteChunkRead{searchID: "search-1", chunkIDs: []string{"a"}}, retriever.reads[0])
+	assert.Equal(t, remoteChunkRead{searchID: "search-2", chunkIDs: []string{"b"}}, retriever.reads[1])
+	assert.Equal(t, "remote a", ledger.Items[0].Snippet)
+	assert.Equal(t, "remote b", ledger.Items[1].Snippet)
+}
+
 // A retriever that cannot serve full bodies (no Chunk method) makes ReadChunk
 // report the corpus unavailable rather than panicking.
 func TestReadChunk_NoChunkReaderIsUnavailable(t *testing.T) {
@@ -192,13 +299,13 @@ func TestReadChunkRemoteUsesOnlyCurrentTurnSearchCapability(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetKnowledgeRetriever(retriever)
 
-	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "查询可见证据"}, noopStep)
+	search := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "查询可见证据"}, noopStep)
+	assert.Contains(t, search, "远程完整正文", "a calibrated strong hit is materialized in the SearchKnowledge observation")
 	result := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"visible", "hidden"}}, noopStep))
 	items := result["chunks"].([]any)
 	require.Len(t, items, 2)
-	assert.Equal(t, readChunkStatusRead, items[0].(map[string]any)["status"])
-	assert.Equal(t, "远程完整正文", items[0].(map[string]any)["content"])
-	assert.Equal(t, true, items[0].(map[string]any)["truncated"], "the model must know a remote full-body response was bounded")
+	assert.Equal(t, readChunkStatusAlreadyRead, items[0].(map[string]any)["status"])
+	assert.Empty(t, items[0].(map[string]any)["content"], "automatic enrichment is not pasted a second time")
 	assert.Equal(t, readChunkStatusSearchNeeded, items[1].(map[string]any)["status"])
 	assert.Equal(t, true, result["search_refresh_required"])
 	require.Len(t, retriever.reads, 1)

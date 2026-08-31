@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/compshare-agent/internal/agentprotocol"
 	"github.com/compshare-agent/internal/llm"
@@ -24,8 +23,6 @@ func customerSupportToolCall() llm.ChatResponse {
 func TestChatCustomerSupportHandoffIsAnAgentDecision(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{customerSupportToolCall()}}
 	eng := NewWithDeps(model, &mockExecutor{}, nil)
-	gateway := &mockLLM{}
-	eng.SetEvidenceGatewayClient(gateway)
 	onStep, steps := collectSteps()
 
 	reply, err := eng.Chat(context.Background(), "请帮我转接人工客服", onStep)
@@ -37,10 +34,6 @@ func TestChatCustomerSupportHandoffIsAnAgentDecision(t *testing.T) {
 	require.Equal(t, StepToolCall, (*steps)[0].Type)
 	require.Equal(t, StepToolResult, (*steps)[1].Type)
 	require.Equal(t, tools.CustomerSupportHandoffName, (*steps)[0].Action)
-	require.Empty(t, gateway.calls, "a deterministic handoff must not invoke the answer checker")
-	snapshot := eng.TraceSnapshot(time.Now())
-	require.Equal(t, evidenceDecisionSkipped, snapshot.EvidenceDecision)
-	require.Equal(t, evidenceOutcomeNonEvidenceTool, snapshot.EvidenceReason)
 
 	toolJSON, err := json.Marshal(model.calls[0].Tools)
 	require.NoError(t, err)

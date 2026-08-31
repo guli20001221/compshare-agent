@@ -680,16 +680,11 @@ func prepareForPersist(record TraceRecord, now time.Time) TraceRecord {
 type OutcomeTrace struct {
 	// Continuity contract metadata is bounded and content-free. It proves which
 	// inputs and answer path were used without persisting prompts or user text.
-	ContextSources          []string `json:"context_sources,omitempty"`
-	ResponseContract        string   `json:"response_contract,omitempty"`
-	PromptSectionIDs        []string `json:"prompt_section_ids,omitempty"`
-	EvidenceUpdateSource    string   `json:"memory_update_source,omitempty"`
-	GroundingOutcome        string   `json:"grounding_outcome,omitempty"`
-	EvidenceRequired        bool     `json:"evidence_required,omitempty"`
-	EvidenceHad             bool     `json:"evidence_had,omitempty"`
-	EvidenceDecision        string   `json:"evidence_decision,omitempty"`
-	EvidenceReason          string   `json:"evidence_reason,omitempty"`
-	EvidenceCorrectionCount int      `json:"evidence_correction_count,omitempty"`
+	ContextSources       []string `json:"context_sources,omitempty"`
+	ResponseContract     string   `json:"response_contract,omitempty"`
+	PromptSectionIDs     []string `json:"prompt_section_ids,omitempty"`
+	EvidenceUpdateSource string   `json:"memory_update_source,omitempty"`
+	GroundingOutcome     string   `json:"grounding_outcome,omitempty"`
 	// PromptMessages* are content-free context-assembly telemetry. They show
 	// whether the final request had to shed prior messages, without storing the
 	// prompt or transcript itself. Prompt token usage remains in PromptTokens.
@@ -966,11 +961,6 @@ func traceOutcomeObserved(trace OutcomeTrace) bool {
 		len(trace.PromptSectionIDs) > 0 ||
 		trace.EvidenceUpdateSource != "" ||
 		trace.GroundingOutcome != "" ||
-		trace.EvidenceRequired ||
-		trace.EvidenceHad ||
-		trace.EvidenceDecision != "" ||
-		trace.EvidenceReason != "" ||
-		trace.EvidenceCorrectionCount != 0 ||
 		trace.PromptMessagesRawPeak != 0 ||
 		trace.PromptMessagesAssembledPeak != 0 ||
 		trace.PromptMessagesCapApplied ||

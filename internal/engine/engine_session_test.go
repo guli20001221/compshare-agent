@@ -15,12 +15,10 @@ import (
 // package) so we reuse them rather than declaring a parallel stub.
 func newTwoSessions(t *testing.T) (engA, engB *Engine, deps *SharedDeps) {
 	t.Helper()
-	client := &mockLLM{}
 	deps = &SharedDeps{
-		LLMClient:             client,
-		EvidenceGatewayClient: client,
-		RateLimiter:           governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
-		ExternalExecutor:      &mockExecutor{results: map[string]map[string]any{}},
+		LLMClient:        &mockLLM{},
+		RateLimiter:      governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
+		ExternalExecutor: &mockExecutor{results: map[string]map[string]any{}},
 	}
 	engA = NewSession(deps, SessionOptions{Subject: "subj-A"})
 	engB = NewSession(deps, SessionOptions{Subject: "subj-B"})
@@ -161,9 +159,6 @@ func TestSessionIsolation_SharedPointersEqual(t *testing.T) {
 		t.Fatalf("LLMClient must be shared across sessions; got %p vs %p",
 			engA.LLMClientPointer(), engB.LLMClientPointer())
 	}
-	if engA.evidenceGatewayClient != deps.EvidenceGatewayClient || engA.evidenceGatewayClient != engB.evidenceGatewayClient {
-		t.Fatalf("evidence gateway client must be shared across sessions")
-	}
 	if engA.RateLimiterPointer() != engB.RateLimiterPointer() {
 		t.Fatalf("RateLimiter must be shared across sessions; got %p vs %p",
 			engA.RateLimiterPointer(), engB.RateLimiterPointer())
@@ -206,15 +201,14 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 // below. Encodes WHY: silent field additions defeat the §3 cross-session
 // isolation guarantee.
 //
-// Whitelist totals: 7 shared + 103 per-session = 110 fields. Any drift
+// Whitelist totals: 6 shared + 98 per-session = 104 fields. Any drift
 // requires classifying the new field here.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
-		"llmClient":             true,
-		"evidenceGatewayClient": true,
-		"knowledgeRetriever":    true,
-		"rateLimiter":           true,
-		"maxTokensPerTurn":      true,
+		"llmClient":          true,
+		"knowledgeRetriever": true,
+		"rateLimiter":        true,
+		"maxTokensPerTurn":   true,
 		// externalExecutor is the RAW shared tool executor (same instance as the
 		// one safeExecutor wraps) — pointer-equal across sessions, used only for
 		// read-only L0 catalog calls. Shared like llmClient.
@@ -257,8 +251,10 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// a shared read budget would let one tenant withdraw the tool from
 		// another's turn, and a shared read set would suppress a chunk body the
 		// other tenant never saw. Reset every turn.
-		"readChunkCallsThisTurn": true,
-		"readChunkIDsThisTurn":   true,
+		"readChunkCallsThisTurn":              true,
+		"readChunkIDsThisTurn":                true,
+		"automaticKnowledgeBodyRunesThisTurn": true,
+		"automaticKnowledgeBodyIDsThisTurn":   true,
 		// Remote search capabilities are short-lived and must never leave the
 		// current Engine turn. Sharing this map would authorize a cross-tenant
 		// ReadChunk against another user's search result.
@@ -287,7 +283,8 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Per-session by design — it carries the turn-scoped cite-or-refuse coupling and
 		// the runtime-form projection; sharing it would cross one tenant's route decision
 		// into another's. Reset every turn.
-		"knowledgeQAAgentLoopThisTurn": true,
+		"knowledgeQAAgentLoopThisTurn":  true,
+		"directAnswerToolReviewPending": true,
 		// Optional deploy preference extractor injection + its per-turn result.
 		// Kept per-session so test doubles / future stateful wrappers cannot
 		// leak calls or extracted preferences across users.
@@ -363,17 +360,11 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"promptSectionIDsThisTurn":            true,
 		"verifiedEvidenceUpdateThisTurn":      true,
 		"groundingOutcomeThisTurn":            true,
-		"evidenceRequiredThisTurn":            true,
-		"evidenceHadThisTurn":                 true,
-		"evidenceDecisionThisTurn":            true,
-		"evidenceReasonThisTurn":              true,
-		"evidenceCorrectionCountThisTurn":     true,
 		"promptMessagesRawPeakThisTurn":       true,
 		"promptMessagesAssembledPeakThisTurn": true,
 		"promptMessagesCapAppliedThisTurn":    true,
 		"verifiedInstanceEvidenceThisTurn":    true,
 		"platformReadEvidenceThisTurn":        true,
-		"agentToolEvidenceThisTurn":           true,
 		"sensitiveRepliesThisTurn":            true,
 		"toolResultsByCallThisTurn":           true,
 		"actionProposalDispositionThisTurn":   true,
@@ -436,15 +427,15 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 
 	// The fixed counts make an unclassified Engine field fail even when it is
 	// accidentally omitted from both maps.
-	if want, got := 7, len(sharedFields); want != got {
+	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 103, len(perSessionFields); want != got {
+	if want, got := 100, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 110, typ.NumField(); want != got {
+	if want, got := 106, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update this test's whitelists to match.", want, got)
 	}

@@ -94,17 +94,14 @@ type retrievedChunkRec struct {
 }
 
 type turnRec struct {
-	Index                   int          `json:"index"`
-	User                    string       `json:"user"`
-	Reply                   string       `json:"reply,omitempty"`
-	ErrorCode               string       `json:"error_code,omitempty"`
-	ErrorMessage            string       `json:"error_message,omitempty"`
-	Steps                   []stepRec    `json:"steps,omitempty"`
-	Confirmations           []confirmRec `json:"confirmations,omitempty"`
-	ConfirmationCount       int          `json:"confirmation_count"`
-	EvidenceDecision        string       `json:"evidence_decision,omitempty"`
-	EvidenceReason          string       `json:"evidence_reason,omitempty"`
-	EvidenceCorrectionCount int          `json:"evidence_correction_count,omitempty"`
+	Index             int          `json:"index"`
+	User              string       `json:"user"`
+	Reply             string       `json:"reply,omitempty"`
+	ErrorCode         string       `json:"error_code,omitempty"`
+	ErrorMessage      string       `json:"error_message,omitempty"`
+	Steps             []stepRec    `json:"steps,omitempty"`
+	Confirmations     []confirmRec `json:"confirmations,omitempty"`
+	ConfirmationCount int          `json:"confirmation_count"`
 }
 
 type stepRec struct {
@@ -310,18 +307,14 @@ func runCaseInProcess(base context.Context, deps *engine.SharedDeps, mutating bo
 		ctx, cancel := context.WithTimeout(base, timeout)
 		reply, cerr := eng.ChatWithOptions(ctx, user, onStep, engine.ChatOptions{ConfirmFunc: confirmFn})
 		cancel()
-		snapshot := eng.TraceSnapshot(time.Now())
 
 		tr := turnRec{
-			Index:                   i + 1,
-			User:                    user,
-			Reply:                   reply,
-			Steps:                   steps,
-			Confirmations:           confirms,
-			ConfirmationCount:       len(confirms),
-			EvidenceDecision:        snapshot.EvidenceDecision,
-			EvidenceReason:          snapshot.EvidenceReason,
-			EvidenceCorrectionCount: snapshot.EvidenceCorrectionCount,
+			Index:             i + 1,
+			User:              user,
+			Reply:             reply,
+			Steps:             steps,
+			Confirmations:     confirms,
+			ConfirmationCount: len(confirms),
 		}
 		if cerr != nil {
 			tr.ErrorCode = "engine_error"

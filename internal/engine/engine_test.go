@@ -78,13 +78,9 @@ func (m *mockLLMWithError) Chat(_ context.Context, _ llm.ChatRequest) (*llm.Chat
 type scriptedRateLimiter struct {
 	decisions []governance.Decision
 	requests  []governance.Request
-	before    func(governance.Request)
 }
 
 func (l *scriptedRateLimiter) Allow(req governance.Request) governance.Decision {
-	if l.before != nil {
-		l.before(req)
-	}
 	l.requests = append(l.requests, req)
 	if len(l.decisions) == 0 {
 		return governance.Decision{
@@ -961,7 +957,6 @@ func TestChat_LLMError(t *testing.T) {
 }
 
 func TestChat_LLMRateLimitDenialSkipsLLM(t *testing.T) {
-	const sensitiveReply = "Jupyter Token：server-owned-token"
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
 	limiter := &scriptedRateLimiter{decisions: []governance.Decision{{
 		Allowed:     false,
@@ -970,11 +965,6 @@ func TestChat_LLMRateLimitDenialSkipsLLM(t *testing.T) {
 		Err:         governance.ErrRateLimited,
 	}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	limiter.before = func(governance.Request) {
-		// Model a protected read that completed before the next Agent call was
-		// denied. The terminal rate-limit message must not discard its result.
-		eng.sensitiveRepliesThisTurn = []string{sensitiveReply}
-	}
 	eng.rateLimiter = limiter
 	eng.rateLimitSubject = "sha256:subject"
 	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
@@ -982,7 +972,7 @@ func TestChat_LLMRateLimitDenialSkipsLLM(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "hello", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, sensitiveReply+"\n\n请求过于频繁，请稍后再试。", reply)
+	assert.Equal(t, "请求过于频繁，请稍后再试。", reply)
 	assert.Empty(t, mock.calls, "denied LLM request must not call LLM")
 	require.Len(t, limiter.requests, 1)
 	assert.Equal(t, governance.ClassLLM, limiter.requests[0].Class)

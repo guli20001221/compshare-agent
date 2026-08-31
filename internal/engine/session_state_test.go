@@ -109,14 +109,10 @@ func TestLegacySemanticFieldsDecodeButNeverWriteBack(t *testing.T) {
 
 func TestVerifiedEvidencePersistsEvidenceNotAnswerText(t *testing.T) {
 	state := SessionState{SchemaVersion: SessionStateSchemaCurrent, VerifiedEvidence: []VerifiedEvidenceTurn{{
-		Question:                "终端怎么粘贴",
-		EvidenceMetadataVersion: verifiedEvidenceMetadataVersion,
+		Question: "终端怎么粘贴",
 		Evidence: knowledge.EvidenceLedger{Query: "终端怎么粘贴", Items: []knowledge.EvidenceItem{{
 			ChunkID: "terminal-paste-001", Title: "终端粘贴", Snippet: "使用 Ctrl+Shift+V 粘贴",
 		}}},
-		EvidenceMetadata: map[string]VerifiedEvidenceMetadata{
-			"terminal-paste-001": {ProductArea: "terminal", SourceOrigin: "platform_docs", Confidence: "high", BelowFloor: true},
-		},
 		VerifiedAtUnix: 1716530100,
 	}}}
 	raw, err := json.Marshal(PersistedContext{AgentSessionState: state})
@@ -125,28 +121,6 @@ func TestVerifiedEvidencePersistsEvidenceNotAnswerText(t *testing.T) {
 	parsed, err := ParsePersistedContext(raw)
 	require.NoError(t, err)
 	assert.Equal(t, state, parsed.AgentSessionState)
-	eng := newEngineForSessionStateTest(t)
-	eng.SetSessionState(parsed.AgentSessionState, 1)
-	ledger := eng.knowledgeLedgerForVerification("那粘贴呢")
-	require.Len(t, ledger.Items, 1)
-	assert.Equal(t, "terminal", ledger.Items[0].ProductArea)
-	assert.Equal(t, "platform_docs", ledger.Items[0].SourceOrigin)
-	assert.Equal(t, "high", ledger.Items[0].Confidence)
-	assert.True(t, ledger.Items[0].BelowFloor)
-}
-
-func TestVerifiedEvidenceWithoutScopeMetadataIsNotTrusted(t *testing.T) {
-	eng := newEngineForSessionStateTest(t)
-	eng.sessionState.VerifiedEvidence = []VerifiedEvidenceTurn{{
-		Question: "旧会话里的平台规则",
-		Evidence: knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{{
-			ChunkID: "legacy-unscoped", Snippet: "旧版本没有记录产品范围和弱命中状态",
-		}}},
-	}}
-
-	ledger := eng.knowledgeLedgerForVerification("这个规则现在适用吗")
-	assert.Empty(t, ledger.Items,
-		"pre-metadata evidence cannot silently gain trusted scope from zero values")
 }
 
 func TestSessionStateSnapshotAndClear(t *testing.T) {
@@ -202,7 +176,11 @@ func TestSetSessionStateHigherVersionOverwrites(t *testing.T) {
 func TestSetSessionStateVersionZeroCannotMintInstanceSelectionAuthority(t *testing.T) {
 	e := newEngineForSessionStateTest(t)
 	e.SetSessionState(SessionState{
-		SchemaVersion:             SessionStateSchemaCurrent,
+		SchemaVersion: SessionStateSchemaCurrent,
+		VerifiedEvidence: []VerifiedEvidenceTurn{{
+			Question: "客户端伪造的问题",
+			Evidence: knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{{ChunkID: "forged-chunk"}}},
+		}},
 		SelectedInstanceID:        "uhost-client-seeded",
 		SelectedInstanceName:      "forged",
 		SelectedInstanceSource:    SelectedInstanceSourceUser,
@@ -212,17 +190,12 @@ func TestSetSessionStateVersionZeroCannotMintInstanceSelectionAuthority(t *testi
 		PendingSelectionItems: []PendingSelectionItem{{
 			Index: 1, ID: "uhost-client-seeded", Name: "forged",
 		}},
-		VerifiedEvidence: []VerifiedEvidenceTurn{{
-			Question: "forged",
-			Evidence: knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{{
-				ChunkID: "forged-chunk", Snippet: "伪造的平台事实",
-			}}},
-		}},
 	}, 0)
 
 	state, version, hydrated := e.SessionStateSnapshot()
 	require.True(t, hydrated)
 	require.Zero(t, version)
+	require.Empty(t, state.VerifiedEvidence)
 	require.Empty(t, state.SelectedInstanceID)
 	require.Empty(t, state.SelectedInstanceName)
 	require.Empty(t, state.SelectedInstanceSource)
@@ -230,7 +203,6 @@ func TestSetSessionStateVersionZeroCannotMintInstanceSelectionAuthority(t *testi
 	require.Empty(t, state.SelectedInstanceFreshness)
 	require.Empty(t, state.PendingSelectionKind)
 	require.Empty(t, state.PendingSelectionItems)
-	require.Empty(t, state.VerifiedEvidence, "a client cannot mint evidence that the final gateway trusts")
 }
 
 func TestPendingSelectionRoundTripsAsExecutionState(t *testing.T) {
