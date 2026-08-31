@@ -1095,11 +1095,15 @@ type routedCall struct {
 // single spyExecutor's uniform response is not enough.
 type routedExecutor struct {
 	results map[string]map[string]any
+	errors  map[string]error
 	calls   []routedCall
 }
 
 func (r *routedExecutor) Execute(_ context.Context, action string, args map[string]any) (map[string]any, error) {
 	r.calls = append(r.calls, routedCall{action: action, args: args})
+	if err := r.errors[action]; err != nil {
+		return nil, err
+	}
 	if result, ok := r.results[action]; ok {
 		return result, nil
 	}
@@ -1218,6 +1222,38 @@ func TestPodLifecycleWriteResolvesBackendZoneID(t *testing.T) {
 	assert.Equal(t, "StartCompShareInstance", inner.calls[1].action)
 	assert.Equal(t, "cpod-abc", inner.calls[1].args["UHostId"])
 	assert.Equal(t, uint32(5001), inner.calls[1].args["zone_id"])
+}
+
+func TestPodLifecycleUsesLastGoodZoneRouteWhenCatalogRefreshFails(t *testing.T) {
+	for _, action := range []string{"StartCompShareInstance", "StopCompShareInstance"} {
+		t.Run(action, func(t *testing.T) {
+			inner := &routedExecutor{results: map[string]map[string]any{
+				"DescribeCompShareSupportZone": {
+					"ZoneInfo": []any{map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "ZoneId": float64(5001)}},
+				},
+			}}
+			catalog := zones.NewCatalog(0)
+			ctx := WithUser(context.Background(), UserContext{TopOrganizationID: 66391350, OrganizationID: 64404856})
+			_, err := catalog.Get(ctx, inner, 66391350, 64404856)
+			require.NoError(t, err)
+
+			inner.calls = nil
+			inner.errors = map[string]error{"DescribeCompShareSupportZone": errors.New("temporary catalog failure")}
+			safe := NewSafeToolExecutor(inner, WithZoneCatalog(catalog))
+			result, err := safe.ExecuteSafe(ctx, SafeToolRequest{
+				Action: action,
+				Args:   map[string]any{"UHostId": "cpod-abc", "Zone": "cn-bj2-03", "Region": "cn-bj2"},
+				Origin: OriginWorkflowInternal,
+			})
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.Equal(t, uint32(5001), result.Args["zone_id"])
+			require.Len(t, inner.calls, 2)
+			assert.Equal(t, "DescribeCompShareSupportZone", inner.calls[0].action)
+			assert.Equal(t, action, inner.calls[1].action)
+		})
+	}
 }
 
 func TestStopWorkflowPreservesResolvedBackendZoneID(t *testing.T) {

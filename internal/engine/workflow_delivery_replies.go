@@ -49,6 +49,14 @@ func scheduledShutdownWorkflowReply(action string, params map[string]any, result
 		verified, _ = result.Data["Verified"].(bool)
 	}
 	if action == "CancelStopSchedulerWorkflow" {
+		observed := int64(0)
+		if result != nil && result.Data != nil {
+			observed = int64Value(result.Data["ObservedStopTime"])
+		}
+		if observed > 0 {
+			when := time.Unix(observed, 0).In(time.FixedZone("CST", 8*3600)).Format("2006-01-02 15:04（北京时间）")
+			return fmt.Sprintf("已提交实例 %s 的定时关机取消请求，但实时回读仍显示计划关机时间为 %s，尚未确认取消生效。请稍后查看当前设置，请勿重复提交。", id, when), true
+		}
 		return fmt.Sprintf("已提交实例 %s 的定时关机取消请求，但当前接口无法独立确认原设置已清除。请稍后查看当前设置，请勿重复提交。", id), true
 	}
 	want := int64(0)

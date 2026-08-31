@@ -317,6 +317,9 @@ func (s *SafeToolExecutor) resolveBackendZoneID(ctx context.Context, action stri
 
 // resolvePodLifecycleZoneID supplies the routing fact used by the upstream
 // Start/Stop dispatcher. UHost requests need no numeric zone; cpod requests do.
+// This is routing for an existing, already-described instance, so an exact
+// Zone-to-ID match from the last good catalog remains usable during a transient
+// catalog refresh failure. New resource selection continues to use GetStrict.
 func (s *SafeToolExecutor) resolvePodLifecycleZoneID(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
 	if hasNonZeroUint(args["zone_id"]) || !platform.IsPodInstanceID(stringArg(args["UHostId"])) {
 		return args, nil
@@ -326,7 +329,7 @@ func (s *SafeToolExecutor) resolvePodLifecycleZoneID(ctx context.Context, action
 		return nil, fmt.Errorf("%s: pod instance zone is missing", action)
 	}
 	topOrg, org := identityFromContext(ctx)
-	zoneList, err := s.zoneCatalog.GetStrict(ctx, originExecutor{safe: s, origin: OriginDiagnosisInternal}, topOrg, org)
+	zoneList, err := s.zoneCatalog.Get(ctx, originExecutor{safe: s, origin: OriginDiagnosisInternal}, topOrg, org)
 	if err != nil {
 		return nil, fmt.Errorf("%s: support-zone catalog unavailable: %w", action, err)
 	}
