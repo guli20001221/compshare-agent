@@ -69,13 +69,32 @@ type ImageCatalogEntry struct {
 	// large untrusted rich text, fetched per-id later, out of the catalog.)
 	Description string
 	SizeMB      float64 // image size in MB (Size), for reinstall disk sizing
-	CreateTime  int64
-	PubTime     int64
+	// Price is the community-image catalog price in yuan. PriceKnown keeps a
+	// genuine free image (known zero) distinct from a response that omitted the
+	// billing fact: destructive reinstall must not show a paid-image card with an
+	// unknown price.
+	Price      float64
+	PriceKnown bool
+	CreateTime int64
+	PubTime    int64
 	// Zone/ZoneID identify where a custom image currently resides. They are
 	// catalog facts, not inferred from its name, and let a clone workflow reject
 	// synchronising an image back into its own zone before confirmation.
 	Zone   string
 	ZoneID uint32
+}
+
+// ImageStatusUsable applies the upstream image-status contract in one place.
+// Shared custom images remain usable while Reviewing; every other source needs
+// Available. An omitted status is preserved as unknown/usable for older catalog
+// responses that did not publish the field.
+func ImageStatusUsable(source, status string) bool {
+	status = strings.TrimSpace(status)
+	if status == "" || strings.EqualFold(status, ImageStatusAvailable) {
+		return true
+	}
+	source = strings.ToLower(strings.TrimSpace(source))
+	return (source == "sharing" || source == "shared") && strings.EqualFold(status, ImageStatusReviewing)
 }
 
 // DisplayLabel is the label a picker/card must show for this row: the name plus the
@@ -398,6 +417,8 @@ func imageEntryFromMap(img map[string]any, source string) (ImageCatalogEntry, bo
 		Tags:              normalizeImageTags(asStringSlice(img["Tags"])),
 		Description:       asString(img, "Description"),
 		SizeMB:            asFloat(img, "Size", "ActualSize", "ImageSize"),
+		Price:             asFloat(img, "Price"),
+		PriceKnown:        hasNumericField(img, "Price"),
 		CreateTime:        asInt64(img, "CreateTime"),
 		PubTime:           asInt64(img, "PubTime"),
 		Zone:              asString(img, "Zone"),
@@ -429,6 +450,15 @@ func imageEntryFromMap(img map[string]any, source string) (ImageCatalogEntry, bo
 		}
 	}
 	return e, true
+}
+
+func hasNumericField(m map[string]any, key string) bool {
+	switch m[key].(type) {
+	case float64, float32, int, int32, int64, uint, uint32, uint64:
+		return true
+	default:
+		return false
+	}
 }
 
 // normalizeImageTags splits compound upstream tag strings so each consumer sees

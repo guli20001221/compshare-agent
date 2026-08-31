@@ -30,8 +30,9 @@ func platformCatalogRows() map[string]any {
 // used to ask "平台镜像 / 社区镜像", which requires knowing how this platform files
 // its images before you can say what you want to run.
 //
-// The stored value is a real source choice — platform, community, or the current
-// account's custom catalog — so this pins the QUESTION, not the plumbing.
+// The stored value is a real source choice — platform, community, the current
+// account's custom catalog, or images shared into the account — so this pins the
+// QUESTION, not the plumbing.
 func TestTheFirstCardAsksWhatTheUserWantsToDo(t *testing.T) {
 	wfCtx := &Context{Params: map[string]any{}}
 	form, err := buildGuidedImageSourceForm(wfCtx)
@@ -44,12 +45,13 @@ func TestTheFirstCardAsksWhatTheUserWantsToDo(t *testing.T) {
 	for _, o := range field.Options {
 		byValue[o.Value] = o
 	}
-	require.Len(t, byValue, 3)
+	require.Len(t, byValue, 4)
 
 	assert.Equal(t, "平台镜像", byValue["platform"].Label)
 	assert.Equal(t, "社区镜像", byValue["community"].Label)
 	assert.Equal(t, "自制镜像", byValue["custom"].Label)
-	for _, v := range []string{"platform", "community", "custom"} {
+	assert.Equal(t, "共享镜像", byValue["sharing"].Label)
+	for _, v := range []string{"platform", "community", "custom", "sharing"} {
 		assert.NotEmpty(t, byValue[v].Note,
 			"%s must still say which catalog it reads, so the reframe informs rather than hides", v)
 	}

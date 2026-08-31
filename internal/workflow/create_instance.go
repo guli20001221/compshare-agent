@@ -66,6 +66,7 @@ const (
 	imageSourcePlatform  = "platform"
 	imageSourceCommunity = "community"
 	imageSourceCustom    = "custom"
+	imageSourceSharing   = "sharing"
 )
 
 // resolveTargetSpec selects the target (gpu, cpu, memoryMB, zone) for instance
@@ -470,6 +471,11 @@ func stepQueryImages(allowCommunityBrowse bool) Step {
 				// browse page. Passing the ID directly can change the upstream tenant
 				// scope, so the workflow never uses a point-read here.
 				return customImageBrowseArgs(), nil
+			case imageSourceSharing:
+				if id := strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")); id != "" {
+					return map[string]any{"CompShareImageId": id}, nil
+				}
+				return customImageBrowseArgs(), nil
 			}
 			args := map[string]any{
 				"Limit": maxPlatformImageQueryLimit,
@@ -516,6 +522,8 @@ func imageCatalogToolForSource(source string) string {
 		return "DescribeCommunityImages"
 	case imageSourceCustom:
 		return "DescribeCompShareCustomImages"
+	case imageSourceSharing:
+		return "DescribeCompShareSharingImages"
 	default:
 		return "DescribeCompShareImages"
 	}
@@ -846,6 +854,11 @@ func stepReQuerySelectedSourceImages() Step {
 			case imageSourceCommunity:
 				return communityImageBrowseArgs(imageCatalogIntentQuery(wfCtx)), nil
 			case imageSourceCustom:
+				return customImageBrowseArgs(), nil
+			case imageSourceSharing:
+				if id := strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")); id != "" {
+					return map[string]any{"CompShareImageId": id}, nil
+				}
 				return customImageBrowseArgs(), nil
 			}
 			args := map[string]any{"Limit": maxPlatformImageQueryLimit}
@@ -1546,7 +1559,7 @@ func stepQueryImageTagCatalog() Step {
 		Tool:     "DescribeCompShareImageTags",
 		Optional: true,
 		SkipIf: func(wfCtx *Context) (bool, error) {
-			return imageUserSettled(wfCtx) || customImageInventorySelected(wfCtx), nil
+			return imageUserSettled(wfCtx) || tenantImageInventorySelected(wfCtx), nil
 		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			args := map[string]any{}
@@ -2013,7 +2026,7 @@ func validateSelectedImageCompatibility(wfCtx *Context, imageID string, placemen
 	if !zoneEntry.SupportsImageType(imageType) {
 		return fmt.Errorf("%s 当前不支持 %s 类型镜像，请更换镜像或可用区", zoneDisplayLabel(wfCtx, placement.Zone), imageType)
 	}
-	if status := strings.TrimSpace(paramStr(image, "Status", "")); status != "" && !strings.EqualFold(status, deployment.ImageStatusAvailable) {
+	if status := strings.TrimSpace(paramStr(image, "Status", "")); !deployment.ImageStatusUsable(paramStr(wfCtx.Params, "ImageSource", imageSourcePlatform), status) {
 		return fmt.Errorf("%s 当前不可用，请更换镜像", name)
 	}
 	gpuType := paramStr(wfCtx.Params, "GpuType", "")
@@ -2768,6 +2781,18 @@ func createInstanceResultData(wfCtx *Context) map[string]any {
 		return nil
 	}
 	data := map[string]any{"UHostIds": ids}
+	if snapshot, err := sealedCreateConfirmation(wfCtx); err == nil {
+		if expected := expectedCreateDataDisks(snapshot.Execution.Args.Disks); len(expected) > 0 {
+			state := "pending"
+			if createDataDisksObserved(wfCtx.Result("查看状态"), ids, expected) {
+				state = "verified"
+			}
+			data["DataDiskDelivery"] = map[string]any{
+				"State":     state,
+				"Requested": expected,
+			}
+		}
+	}
 	observed := createObservedInstances(wfCtx, ids)
 	if len(observed) == 0 {
 		data["ActualReadbackAvailable"] = false
@@ -3376,7 +3401,7 @@ func hasExplicitImageIntent(params map[string]any) bool {
 	if strings.TrimSpace(paramStr(params, "ImageName", "")) != "" {
 		return true
 	}
-	if source := normalizedImageSource(paramStr(params, "ImageSource", imageSourcePlatform)); source == imageSourceCommunity || source == imageSourceCustom {
+	if source := normalizedImageSource(paramStr(params, "ImageSource", imageSourcePlatform)); source == imageSourceCommunity || source == imageSourceCustom || source == imageSourceSharing {
 		return true
 	}
 	return false
@@ -3691,7 +3716,7 @@ func imageSuggestionSettlesAxis(wfCtx *Context) bool {
 }
 
 func shouldSkipGuidedImageFacetsStep(wfCtx *Context) (bool, error) {
-	if customImageInventorySelected(wfCtx) {
+	if tenantImageInventorySelected(wfCtx) {
 		return true, nil
 	}
 	if _, catalogIntent := currentTurnImageCatalogRequest(wfCtx); imageUserSettled(wfCtx) ||
@@ -3717,7 +3742,7 @@ func shouldSkipGuidedImageFacetsStep(wfCtx *Context) (bool, error) {
 // means exactly "no tag would have led anywhere". A one-option card (only 不限标签)
 // is not a choice, so it is skipped too.
 func shouldSkipGuidedImageTagStep(wfCtx *Context) (bool, error) {
-	if customImageInventorySelected(wfCtx) {
+	if tenantImageInventorySelected(wfCtx) {
 		return true, nil
 	}
 	if _, catalogIntent := currentTurnImageCatalogRequest(wfCtx); imageUserSettled(wfCtx) ||
@@ -3791,14 +3816,81 @@ func imageUserSettled(wfCtx *Context) bool {
 	return wfCtx.ImageSelection() == ImageSelectionUserPinned
 }
 
-// customImageInventorySelected keeps a user-selected self-made image source in
-// its proper domain: the current account's private artifact inventory. Unlike the
-// platform and community catalogs, it has no public category taxonomy to browse;
-// after the source card, the next image card lists exactly those tenant-visible
-// images. An exact custom ID is already covered by imageUserSettled, but this also
-// makes a deliberate "自制镜像" browse coherent when no ID was supplied.
-func customImageInventorySelected(wfCtx *Context) bool {
-	return wfCtx != nil && normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", imageSourcePlatform)) == imageSourceCustom
+// tenantImageInventorySelected keeps tenant-scoped custom/shared catalogs out of
+// the public image taxonomy. Their next card lists exactly the images visible to
+// this account; an exact ID remains independently verified and confirmation-gated.
+func tenantImageInventorySelected(wfCtx *Context) bool {
+	if wfCtx == nil {
+		return false
+	}
+	source := normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", imageSourcePlatform))
+	return source == imageSourceCustom || source == imageSourceSharing
+}
+
+func expectedCreateDataDisks(disks []any) []map[string]any {
+	var out []map[string]any
+	for _, raw := range disks {
+		disk, _ := raw.(map[string]any)
+		if disk == nil || paramBool(disk, "IsBoot", false) {
+			continue
+		}
+		size, ok := createDiskSizeGB(disk["Size"])
+		if !ok || size <= 0 {
+			continue
+		}
+		out = append(out, map[string]any{
+			"SizeGB": size,
+			"Type":   strings.TrimSpace(paramStr(disk, "Type", "")),
+		})
+	}
+	return out
+}
+
+func createDataDisksObserved(describe map[string]any, ids any, expected []map[string]any) bool {
+	if len(expected) == 0 || describe == nil {
+		return false
+	}
+	wanted := map[string]bool{}
+	switch list := ids.(type) {
+	case []any:
+		for _, raw := range list {
+			wanted[strings.ToLower(strings.TrimSpace(fmt.Sprint(raw)))] = true
+		}
+	case []string:
+		for _, raw := range list {
+			wanted[strings.ToLower(strings.TrimSpace(raw))] = true
+		}
+	}
+	rows, _ := describe["UHostSet"].([]any)
+	for _, raw := range rows {
+		row, _ := raw.(map[string]any)
+		if row == nil || !wanted[strings.ToLower(strings.TrimSpace(paramStr(row, "UHostId", "")))] {
+			continue
+		}
+		remaining := append([]map[string]any(nil), expected...)
+		rawDisks, _ := row["DiskSet"].([]any)
+		for _, rawDisk := range rawDisks {
+			disk, _ := rawDisk.(map[string]any)
+			if disk == nil {
+				continue
+			}
+			if isBootDisk(disk) {
+				continue
+			}
+			actual := diskNumber(disk, "Size", "DiskSize", "Capacity")
+			for i, want := range remaining {
+				size, _ := priceNumber(want["SizeGB"])
+				if actual == size {
+					remaining = append(remaining[:i], remaining[i+1:]...)
+					break
+				}
+			}
+		}
+		if len(remaining) == 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // shouldSkipSourceReQuery skips the post-source re-query when an explicit image is
@@ -4168,8 +4260,7 @@ func buildGuidedCpuMemoryForm(wfCtx *Context) (*ConfirmForm, error) {
 }
 
 // imageSourceFacetOptions lists the image sources the create flow supports. Each
-// value selects a concrete upstream catalog; sharing remains absent because this
-// flow is scoped to the user's own self-made images, not images owned by others.
+// value selects a concrete upstream catalog.
 //
 // These values are a real choice of where to look, not a local category: platform
 // and custom use flat ImageSet[] results, while community publishes grouped
@@ -4192,6 +4283,10 @@ func imageSourceFacetOptions() []ConfirmFormOption {
 		{
 			Value: imageSourceCustom, Label: "自制镜像",
 			Note: "自制镜像：仅查看当前账户制作的镜像，可直接用于创建实例",
+		},
+		{
+			Value: imageSourceSharing, Label: "共享镜像",
+			Note: "共享镜像：仅查看其他账户共享给当前账户、当前可见的镜像，可直接用于创建实例",
 		},
 	}
 }
@@ -5033,15 +5128,15 @@ func applyGuidedImageSourceOverrides(wfCtx *Context, overrides map[string]string
 	return nil
 }
 
-// normalizedImageSource collapses an input to a create-supported source. Sharing
-// remains intentionally out of this workflow: a self-made image is custom, while
-// a shared image needs its own ownership and visibility contract.
+// normalizedImageSource collapses aliases to one create-supported catalog source.
 func normalizedImageSource(v string) string {
 	switch strings.ToLower(strings.TrimSpace(v)) {
 	case imageSourceCommunity:
 		return imageSourceCommunity
 	case imageSourceCustom:
 		return imageSourceCustom
+	case "shared", imageSourceSharing:
+		return imageSourceSharing
 	default:
 		return imageSourcePlatform
 	}

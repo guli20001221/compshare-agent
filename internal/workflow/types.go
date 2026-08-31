@@ -224,6 +224,11 @@ type Definition struct {
 	Name       string
 	Steps      []Step
 	ResultData func(wfCtx *Context) map[string]any
+	// MutationCommitted reports whether a successful run actually crossed a
+	// mutating step. nil means yes, preserving every existing workflow. A
+	// workflow whose live preflight proves the requested state already exists can
+	// return false so the Agent does not consume the turn's write slot for a no-op.
+	MutationCommitted func(wfCtx *Context) bool
 	// NeedsZoneCatalog declares that this workflow consumes the turn's live zone
 	// snapshot even though its public proposal schema has no Zone field. Most
 	// workflows need the catalog because their Zone field uses CodecZone and are
@@ -478,12 +483,13 @@ func (c *Context) Result(stepName string) map[string]any {
 
 // Result of executing a workflow.
 type Result struct {
-	Success      bool           `json:"success"`
-	StoppedAt    string         `json:"stopped_at,omitempty"`
-	Message      string         `json:"message"`
-	MissingSlots []string       `json:"missing_slots,omitempty"`
-	Data         map[string]any `json:"data,omitempty"`
-	Steps        []StepSummary  `json:"steps"`
+	Success           bool           `json:"success"`
+	MutationCommitted bool           `json:"-"`
+	StoppedAt         string         `json:"stopped_at,omitempty"`
+	Message           string         `json:"message"`
+	MissingSlots      []string       `json:"missing_slots,omitempty"`
+	Data              map[string]any `json:"data,omitempty"`
+	Steps             []StepSummary  `json:"steps"`
 	// Contract is the seal in force when the workflow ended, or nil if it never
 	// passed a confirmation gate. It is server-internal (json:"-": never
 	// serialised to the model — it may carry secret-bearing confirmed params);

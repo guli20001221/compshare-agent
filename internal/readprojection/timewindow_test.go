@@ -47,6 +47,25 @@ func TestMonitorHistoryWindowAcceptsRelativeMinutes(t *testing.T) {
 	assert.Equal(t, time.Date(2026, 6, 22, 12, 0, 0, 0, loc).Unix(), end)
 }
 
+func TestMonitorHistoryWindowAcceptsThirtyDaysButNotMore(t *testing.T) {
+	orig := monitorNowFunc
+	loc := monitorHistoryLoc
+	monitorNowFunc = func() time.Time { return time.Date(2026, 6, 30, 12, 0, 0, 0, loc) }
+	t.Cleanup(func() { monitorNowFunc = orig })
+
+	start, end, ok := ResolveMonitorHistoryWindow(&TimeWindow{
+		Type: TimeWindowRelative, Amount: 30, Unit: "day",
+	})
+	require.True(t, ok)
+	assert.Equal(t, time.Date(2026, 5, 31, 12, 0, 0, 0, loc).Unix(), start)
+	assert.Equal(t, time.Date(2026, 6, 30, 12, 0, 0, 0, loc).Unix(), end)
+
+	_, _, ok = ResolveMonitorHistoryWindow(&TimeWindow{
+		Type: TimeWindowRelative, Amount: 31, Unit: "day",
+	})
+	assert.False(t, ok)
+}
+
 func TestMonitorHistoryWindowYesterdayIsComputedByServer(t *testing.T) {
 	orig := monitorNowFunc
 	loc := monitorHistoryLoc

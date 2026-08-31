@@ -1078,7 +1078,7 @@ func TestReinstall_CommunityImageLookupAccepted(t *testing.T) {
 		"DescribeCompShareInstance": stoppedInstanceResult(),
 		"DescribeCompShareImages":   {"ImageSet": []any{}},
 		"DescribeCommunityImages": {"ImageSet": []any{
-			map[string]any{"CompShareImageId": "comm-img-001", "Name": "DeepSeek-R1:32b", "Container": "False"},
+			map[string]any{"CompShareImageId": "comm-img-001", "Name": "DeepSeek-R1:32b", "Container": "False", "Price": float64(12.5)},
 		}},
 		"DescribeCompShareCustomImages":  {"ImageSet": []any{}},
 		"DescribeCompShareSharingImages": {"ImageSet": []any{}},
@@ -1103,8 +1103,29 @@ func TestReinstall_CommunityImageLookupAccepted(t *testing.T) {
 	require.NotNil(t, confirmArgs)
 	assert.Equal(t, "DeepSeek-R1:32b", confirmArgs["target_image_name"])
 	assert.Equal(t, "community", confirmArgs["target_image_source"])
+	assert.Contains(t, confirmArgs["target_image_price"], "12.50")
 	_, reinstalled := findExecutorCall(executor.calls, "ReinstallCompShareInstance")
 	assert.True(t, reinstalled)
+}
+
+func TestReinstall_CommunityImageWithoutPriceStopsBeforeConfirmation(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": stoppedInstanceResult(),
+		"DescribeCommunityImages": {"ImageSet": []any{
+			map[string]any{"CompShareImageId": "comm-img-001", "Name": "DeepSeek-R1:32b", "Container": "False"},
+		}},
+	}}
+	result, err := NewEngine(executor, func(string, map[string]any) bool {
+		t.Fatal("a paid community-image reinstall cannot be confirmed without its catalog price")
+		return false
+	}, nil).Run(context.Background(), ReinstallInstanceDef(), map[string]any{
+		"UHostId": "uhost-test", "CompShareImageId": "comm-img-001", "ImageSource": "community",
+	})
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "未返回价格")
+	_, reinstalled := findExecutorCall(executor.calls, "ReinstallCompShareInstance")
+	assert.False(t, reinstalled)
 }
 
 func TestReinstall_PodRejectsNonContainerImageBeforeConfirm(t *testing.T) {

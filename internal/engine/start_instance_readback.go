@@ -7,7 +7,6 @@ import (
 
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/readprojection"
-	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
 )
 
@@ -29,17 +28,10 @@ func (e *Engine) cpuOnlyStartFailureReply(ctx context.Context, params map[string
 		return cpuOnlyStartUnknownReply(), true
 	}
 
-	raw, err := e.executeRawTool(ctx, "DescribeCompShareInstance", map[string]any{
-		"UHostIds": []any{id},
-	}, tools.OriginWorkflowInternal)
-	if err != nil {
+	snap, _, ok := e.freshInstance(ctx, id)
+	if !ok {
 		return cpuOnlyStartUnknownReply(), true
 	}
-	row := describedInstanceByID(raw, id)
-	if row == nil {
-		return cpuOnlyStartUnknownReply(), true
-	}
-	snap := entity.InstanceFromMap(row)
 	state := readprojection.ResourceStateLabel(snap.State)
 	want := fmt.Sprintf("%d核/%dGB 的 CPU-only 规格", cpu, memory/1024)
 	if snap.GPU == 0 && snap.CPU == cpu && snap.Memory == memory {

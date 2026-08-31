@@ -22,6 +22,7 @@ func ReinstallInstanceDef() *Definition {
 			stepConfirmReinstall(),
 			stepReinstallInstance(),
 		},
+		FailureDraft: reinstallFailureDraft,
 	}
 }
 
@@ -180,11 +181,21 @@ func stepConfirmReinstall() Step {
 					return nil, fmt.Errorf("目标镜像「%s」需要约 %.0fGB 系统盘，当前系统盘 %.0fGB，请先扩容系统盘或选择更小的镜像。", image.Name, requiredGB, currentGB)
 				}
 			}
+			if strings.EqualFold(image.Source, "community") && !image.PriceKnown {
+				return nil, fmt.Errorf("目标社区镜像未返回价格，无法生成完整的付费重装确认卡。请稍后重试。")
+			}
 			summary := extractInstanceSummary(queried)
 			summary["target_image_id"] = wfCtx.Params["CompShareImageId"]
 			summary["target_image_name"] = image.Name
 			summary["target_image_source"] = image.Source
 			summary["target_image_container"] = image.Container
+			if strings.EqualFold(image.Source, "community") {
+				if image.Price > 0 {
+					summary["target_image_price"] = fmt.Sprintf("¥%.2f（镜像目录标价，实际费用以平台结算为准）", image.Price)
+				} else {
+					summary["target_image_price"] = "免费"
+				}
+			}
 			// The public request type still contains Password/LoginMode for wire
 			// compatibility, but neither the Pod nor UHost reinstall implementation
 			// consumes those fields. UHost reuses its stored credential (or generates
@@ -234,7 +245,7 @@ func reinstallImpactWarning(queried map[string]any, image reinstallImageInfo) st
 		} else if state == "Stopping" {
 			prefix = "Pod 会等待关机完成，再重建并重新启动"
 		}
-		return "⚠️ " + prefix + "；系统盘内容会被目标镜像替换，数据盘不受影响。请确保重要数据已备份。"
+		return "⚠️ " + prefix + "；平台会复用现有系统盘和 CFS 绑定、替换容器镜像，并重建为镜像默认端口配置，原有自定义端口不会自动保留。"
 	}
 	if isContainerInstanceResult(queried) && image.Container {
 		return "⚠️ 将替换当前 UHost 内的托管容器及其容器文件系统，服务会中断；不会重装 UHost 系统盘，数据盘不受影响。请先备份容器内重要数据。"
@@ -269,6 +280,8 @@ type reinstallImageInfo struct {
 	Container         bool
 	SupportedGPUTypes []string
 	SizeMB            float64
+	Price             float64
+	PriceKnown        bool
 }
 
 func (info reinstallImageInfo) RequiredSystemDiskGB() float64 {
@@ -364,9 +377,26 @@ func targetReinstallImage(wfCtx *Context) (reinstallImageInfo, bool) {
 			Container:         sel.Container,
 			SupportedGPUTypes: append([]string(nil), entry.SupportedGPUTypes...),
 			SizeMB:            entry.SizeMB,
+			Price:             entry.Price,
+			PriceKnown:        entry.PriceKnown,
 		}, true
 	}
 	return reinstallImageInfo{}, false
+}
+
+func reinstallFailureDraft(wfCtx *Context) map[string]any {
+	if wfCtx == nil {
+		return nil
+	}
+	queried := wfCtx.Result("查询实例")
+	image, _ := targetReinstallImage(wfCtx)
+	return map[string]any{
+		"UHostId":         strings.TrimSpace(paramStr(wfCtx.Params, "UHostId", "")),
+		"InitialState":    extractInstanceState(queried),
+		"IsPod":           isPodInstanceResult(queried),
+		"TargetImageId":   image.ID,
+		"TargetImageName": image.Name,
+	}
 }
 
 // reinstallCurrentGPUType returns the GPU identity the upstream reinstall API

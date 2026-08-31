@@ -28,6 +28,10 @@ type SlotCandidate struct {
 	Value    any             `json:"value"`
 	Source   CandidateSource `json:"source"`
 	Evidence *SourceEvidence `json:"evidence,omitempty"`
+	// UserAuthored is an engine-derived attribution hint used only to decide who
+	// can repair an invalid proposal. It grants no provenance or write authority
+	// and is deliberately absent from the model-facing wire shape.
+	UserAuthored bool `json:"-"`
 }
 
 type ActionProposal struct {
@@ -188,13 +192,24 @@ func (k RejectionKind) String() string {
 	}
 }
 
+// RejectionActor identifies who can resolve a rejected proposal. It carries no
+// values: the outer Agent only needs to know whether it should correct its own
+// call or ask the user for different input.
+type RejectionActor string
+
+const (
+	RejectionActorModel RejectionActor = "model"
+	RejectionActorUser  RejectionActor = "user"
+)
+
 // RejectedProblem is the typed twin of one Rejected[] entry. Slot is the field
 // name ("" for operation-level rejections). Populated in lockstep with Rejected
 // so the two never diverge; internal to the resolver→engine intake decision, not
 // part of the model-facing JSON.
 type RejectedProblem struct {
-	Slot string
-	Kind RejectionKind
+	Slot  string
+	Kind  RejectionKind
+	Actor RejectionActor
 }
 
 // Conflict is a slot the resolver refuses to decide. Two shapes reach it:

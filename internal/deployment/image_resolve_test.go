@@ -47,6 +47,22 @@ func TestResolveImage_UnverifiedIDIsNotFoundNeverResolved(t *testing.T) {
 	}
 }
 
+func TestResolveImage_ExactIDUsesSourceAwareStatus(t *testing.T) {
+	snap := NewImageCatalogSnapshot(true, []ImageCatalogEntry{
+		{ID: "shared-reviewing", Name: "Shared", Source: "sharing", Status: ImageStatusReviewing, Container: true},
+		{ID: "custom-reviewing", Name: "Mine", Source: "custom", Status: ImageStatusReviewing, Container: true},
+		{ID: "offline", Name: "Old", Source: "platform", Status: "Offline", Container: true},
+	})
+	if got := ResolveImage(snap, ImageRequest{ID: "shared-reviewing"}).Status; got != ResolutionResolved {
+		t.Fatalf("tenant-visible reviewing shared image must resolve, got %s", got)
+	}
+	for _, id := range []string{"custom-reviewing", "offline"} {
+		if got := ResolveImage(snap, ImageRequest{ID: id}).Status; got != ResolutionNotFound {
+			t.Fatalf("unusable image %s must be rejected, got %s", id, got)
+		}
+	}
+}
+
 func TestResolveImage_CatalogUnavailable(t *testing.T) {
 	unavail := NewImageCatalogSnapshot(false, nil)
 	res := ResolveImage(unavail, ImageRequest{Name: "PyTorch"})

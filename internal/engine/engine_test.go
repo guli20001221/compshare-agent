@@ -1942,8 +1942,8 @@ func TestRegistrySnapshotAccessorReturnsImmutableSnapshot(t *testing.T) {
 }
 
 func TestMonitorHistoryUnsupportedReplyUsesCurrentScopeWording(t *testing.T) {
-	assert.Contains(t, refusal.MonitorHistoryUnsupported, "历史监控目前一次只支持查询一台实例")
-	assert.Contains(t, refusal.MonitorHistoryUnsupported, "24 小时")
+	assert.Contains(t, refusal.MonitorHistoryUnsupported, "最多查询 20 台实例")
+	assert.Contains(t, refusal.MonitorHistoryUnsupported, "30 天")
 	assert.NotContains(t, refusal.MonitorHistoryUnsupported, "暂不支持指定历史时间段")
 }
 

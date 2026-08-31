@@ -60,7 +60,7 @@ func TestResolveCreateWithInvalidChineseZoneEntersFormEndToEnd(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, resolved.action.Arguments, "Zone", "the invalid zone value is discarded, never carried forward")
 	require.True(t, resolved.action.ReadyForIntake, "a truly-invalid zone opens the form to re-collect it")
-	require.Equal(t, []actionresolver.RejectedProblem{{Slot: "Zone", Kind: actionresolver.RejectInvalidValue}},
+	require.Equal(t, []actionresolver.RejectedProblem{{Slot: "Zone", Kind: actionresolver.RejectInvalidValue, Actor: actionresolver.RejectionActorUser}},
 		resolved.action.RejectedProblems, "华北一区 is a partial name (an invalid value), not a live zone")
 }
 

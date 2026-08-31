@@ -228,9 +228,13 @@ func cloneCustomImageResultData(wfCtx *Context) map[string]any {
 	if !ok || id == "" {
 		return nil
 	}
-	out := map[string]any{"CompShareImageId": id}
+	out := map[string]any{"CompShareImageId": id, "DeliveryState": "submitted"}
 	if progress := wfCtx.Result("查询镜像同步进度"); len(progress) > 0 {
 		out["Progress"] = progress
+		// This endpoint reports transfer progress/ETA, not the final image
+		// status. Even 100% therefore remains pending until an image-catalog
+		// read independently observes the target as usable.
+		out["DeliveryState"] = "pending"
 	}
 	return out
 }

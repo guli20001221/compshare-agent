@@ -12,8 +12,14 @@ import (
 var nowFunc = time.Now
 
 const (
-	shutdownDraftStepName = "形成定时关机草稿"
-	shutdownDraftParamKey = "__shutdown_schedule_draft"
+	shutdownDraftStepName    = "形成定时关机草稿"
+	shutdownFinalStepName    = "确认后计算关机时间"
+	shutdownReadbackStepName = "回查定时关机"
+	shutdownMinimumLead      = 5 * time.Minute
+	// The upstream repeats the five-minute check on its own clock. A timestamp
+	// exactly five minutes ahead at our write edge can fall behind that boundary
+	// while the signed request is in flight.
+	shutdownTransportAllowance = 5 * time.Second
 )
 
 // shanghaiLoc is preloaded so we never pay the cost of LoadLocation at
@@ -59,6 +65,9 @@ func resolveShutdownTime(params map[string]any) (unix int64, display string, err
 			return 0, "", fmt.Errorf("Schedule.minutes 至少为 5 分钟")
 		}
 		target = now.Add(time.Duration(minutes) * time.Minute)
+		if minutes == 5 {
+			target = target.Add(shutdownTransportAllowance)
+		}
 	case "today", "tomorrow":
 		clock, _ := schedule["local_time"].(string)
 		parsedClock, parseErr := time.ParseInLocation("15:04", strings.TrimSpace(clock), loc)
@@ -83,7 +92,7 @@ func resolveShutdownTime(params map[string]any) (unix int64, display string, err
 	default:
 		return 0, "", fmt.Errorf("Schedule.mode 必须是 after_minutes、today、tomorrow 或 absolute")
 	}
-	if target.Before(now.Add(5 * time.Minute)) {
+	if target.Before(now.Add(shutdownMinimumLead + shutdownTransportAllowance)) {
 		return 0, "", fmt.Errorf("关机时间必须至少在当前时间的 5 分钟之后")
 	}
 	return target.Unix(), formatShutdownDisplay(target, now), nil
@@ -149,6 +158,7 @@ func formatRelativeDuration(d time.Duration) string {
 	}
 	return fmt.Sprintf("约 %d 小时 %d 分钟后", hours, remainMin)
 }
+
 // SetStopSchedulerDef returns the 3-step workflow definition for setting a
 // scheduled stop on a CompShare GPU instance: query state, confirm, then set.
 func SetStopSchedulerDef() *Definition {
@@ -158,8 +168,11 @@ func SetStopSchedulerDef() *Definition {
 			stepQueryForScheduler(),
 			stepResolveSchedulerDraft(),
 			stepConfirmScheduler(),
+			stepFinalizeSchedulerAfterConfirm(),
 			stepSetStopScheduler(),
+			stepReadbackStopScheduler(),
 		},
+		ResultData: setStopSchedulerResultData,
 	}
 }
 
@@ -172,10 +185,42 @@ func stepResolveSchedulerDraft() Step {
 			if err != nil {
 				return nil, err
 			}
+			schedule, ok := wfCtx.Params["Schedule"].(map[string]any)
+			if !ok {
+				return nil, fmt.Errorf("Schedule 必须是结构化时间")
+			}
+			if strings.EqualFold(strings.TrimSpace(paramStr(schedule, "mode", "")), "after_minutes") {
+				minutes, _ := numericValue(schedule["minutes"])
+				display = fmt.Sprintf("确认后约 %.0f 分钟（按当前时间预计为 %s）", minutes, display)
+			}
 			return map[string]any{
-				"unix":    unix,
-				"display": display,
+				"preview_unix": unix,
+				"display":      display,
+				"schedule":     deepCopyValue(schedule),
 			}, nil
+		},
+	}
+}
+
+// stepFinalizeSchedulerAfterConfirm resolves the timestamp at the write edge.
+// A relative request means "N minutes after I approve", not "N minutes after
+// the card was first rendered". Calendar/absolute requests resolve to the same
+// wall-clock target, but are deliberately revalidated here so a card that sat
+// open too long cannot send an already-invalid timestamp upstream.
+func stepFinalizeSchedulerAfterConfirm() Step {
+	return Step{
+		Name: shutdownFinalStepName,
+		Type: StepResolve,
+		Resolve: func(wfCtx *Context) (map[string]any, error) {
+			draft, err := shutdownDraftFromResult(wfCtx.Result(shutdownDraftStepName))
+			if err != nil {
+				return nil, err
+			}
+			unix, display, err := resolveShutdownTime(map[string]any{"Schedule": draft["schedule"]})
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{"unix": unix, "display": display}, nil
 		},
 	}
 }
@@ -223,14 +268,6 @@ func stepConfirmScheduler() Step {
 			summary["shutdownTime"] = draft["display"]
 			return summary, nil
 		},
-		PromoteOnConfirm: func(wfCtx *Context) error {
-			draft, err := shutdownDraftFromResult(wfCtx.Result(shutdownDraftStepName))
-			if err != nil {
-				return err
-			}
-			wfCtx.Params[shutdownDraftParamKey] = deepCopyValue(draft)
-			return nil
-		},
 	}
 }
 
@@ -240,7 +277,7 @@ func stepSetStopScheduler() Step {
 		Type: StepToolCall,
 		Tool: "UpdateCompShareStopScheduler",
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			draft, err := shutdownDraftFromValue(wfCtx.Params[shutdownDraftParamKey])
+			final, err := shutdownResolvedFromResult(wfCtx.Result(shutdownFinalStepName))
 			if err != nil {
 				return nil, err
 			}
@@ -253,8 +290,20 @@ func stepSetStopScheduler() Step {
 				"Region":            region,
 				"Zone":              zone,
 				"UHostId":           wfCtx.Params["UHostId"],
-				"SchedulerStopTime": draft["unix"],
+				"SchedulerStopTime": final["unix"],
 			}, nil
+		},
+	}
+}
+
+func stepReadbackStopScheduler() Step {
+	return Step{
+		Name:     shutdownReadbackStepName,
+		Type:     StepToolCall,
+		Tool:     "DescribeCompShareInstance",
+		Optional: true,
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			return map[string]any{"UHostIds": []any{wfCtx.Params["UHostId"]}}, nil
 		},
 	}
 }
@@ -268,16 +317,48 @@ func shutdownDraftFromValue(raw any) (map[string]any, error) {
 	if !ok || draft == nil {
 		return nil, fmt.Errorf("缺少已确认的定时关机草稿")
 	}
-	unix, ok := draft["unix"].(int64)
-	if !ok || unix <= 0 {
-		return nil, fmt.Errorf("定时关机草稿中的时间无效")
-	}
 	display, ok := draft["display"].(string)
 	if !ok || strings.TrimSpace(display) == "" {
 		return nil, fmt.Errorf("定时关机草稿中的展示时间无效")
 	}
+	schedule, ok := draft["schedule"].(map[string]any)
+	if !ok || len(schedule) == 0 {
+		return nil, fmt.Errorf("定时关机草稿中的规则无效")
+	}
+	return map[string]any{"display": display, "schedule": deepCopyValue(schedule)}, nil
+}
+
+func shutdownResolvedFromResult(raw map[string]any) (map[string]any, error) {
+	unix, ok := raw["unix"].(int64)
+	if !ok || unix <= 0 {
+		return nil, fmt.Errorf("确认后的定时关机时间无效")
+	}
+	display, _ := raw["display"].(string)
 	return map[string]any{"unix": unix, "display": display}, nil
 }
+
+func setStopSchedulerResultData(wfCtx *Context) map[string]any {
+	final, err := shutdownResolvedFromResult(wfCtx.Result(shutdownFinalStepName))
+	if err != nil {
+		return nil
+	}
+	want := final["unix"].(int64)
+	observed := schedulerStopTime(wfCtx.Result(shutdownReadbackStepName))
+	return map[string]any{
+		"RequestedStopTime": want,
+		"ObservedStopTime":  observed,
+		"Verified":          observed == want,
+	}
+}
+
+func schedulerStopTime(result map[string]any) int64 {
+	host, ok := firstInstance(result)
+	if !ok {
+		return 0
+	}
+	return int64(firstNumberField(host, "SchedulerStopTime"))
+}
+
 // CancelStopSchedulerDef returns the 3-step workflow definition for cancelling
 // a scheduled stop on a CompShare GPU instance: query state, confirm, then
 // delete the scheduler task.

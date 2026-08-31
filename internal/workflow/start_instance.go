@@ -30,6 +30,14 @@ const (
 	// and memory needs while the confirmation card remains human-readable.
 	startModeCPUOnly2C4GB  = "cpu_only_2c4g"
 	startModeCPUOnly8C16GB = "cpu_only_8c16g"
+
+	// The ordinary-start upstream path may restore an archived GPU spec before
+	// it boots. Keep the pre-confirmation spec in the sealed contract so a
+	// failed request can be reconciled against a fresh Describe instead of
+	// guessing whether only the restore half committed.
+	startInitialGPUKey    = "StartInitialGPU"
+	startInitialCPUKey    = "StartInitialCPU"
+	startInitialMemoryKey = "StartInitialMemory"
 )
 
 // StartInstanceDef returns the workflow definition for starting a CompShare GPU
@@ -61,6 +69,11 @@ func stepQueryForStart() Step {
 			state := extractInstanceState(result)
 			switch state {
 			case "Stopped":
+				if host := firstUHost(result); host != nil {
+					wfCtx.Params[startInitialGPUKey] = host["GPU"]
+					wfCtx.Params[startInitialCPUKey] = host["CPU"]
+					wfCtx.Params[startInitialMemoryKey] = host["Memory"]
+				}
 				if spec := requestedWithoutGPUSpec(wfCtx); spec != "" {
 					return validateWithoutGPUStart(result, spec)
 				}

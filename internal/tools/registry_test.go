@@ -70,6 +70,26 @@ func TestDescribeCommunityImagesAllowsPopularSortCondition(t *testing.T) {
 	}
 }
 
+func TestSharingImageExactReadRemainsTenantScoped(t *testing.T) {
+	for _, tool := range Registry {
+		if tool.Function == nil || tool.Function.Name != "DescribeCompShareSharingImages" {
+			continue
+		}
+		params, _ := tool.Function.Parameters.(map[string]any)
+		properties, _ := params["properties"].(map[string]any)
+		field, ok := properties["CompShareImageId"].(map[string]any)
+		if !ok {
+			t.Fatal("shared-image exact lookup must be exposed after the upstream endpoint preserves tenant visibility")
+		}
+		description, _ := field["description"].(string)
+		if !strings.Contains(description, "共享可见性") {
+			t.Fatal("the exact-id contract must state that tenant sharing visibility still applies")
+		}
+		return
+	}
+	t.Fatal("DescribeCompShareSharingImages schema not found")
+}
+
 func TestCreateImageIDContractAllowsRecentExactConversationCandidate(t *testing.T) {
 	var idDescription, nameDescription string
 	for _, tool := range Registry {

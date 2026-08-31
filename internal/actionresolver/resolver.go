@@ -54,13 +54,13 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 	// reject records a rejection in BOTH the human-readable Rejected[] and the
 	// typed RejectedProblems[] in lockstep, so the guided-intake decision can
 	// classify the rejection by Kind without parsing the message string.
-	reject := func(slot string, kind RejectionKind, msg string) {
+	reject := func(slot string, kind RejectionKind, actor RejectionActor, msg string) {
 		result.Rejected = append(result.Rejected, msg)
-		result.RejectedProblems = append(result.RejectedProblems, RejectedProblem{Slot: slot, Kind: kind})
+		result.RejectedProblems = append(result.RejectedProblems, RejectedProblem{Slot: slot, Kind: kind, Actor: actor})
 	}
 	spec, ok := r.catalog.Lookup(proposal.Operation)
 	if !ok {
-		reject("", RejectUnknownOperation, "unknown operation")
+		reject("", RejectUnknownOperation, RejectionActorModel, "unknown operation")
 		return result
 	}
 	result.NeedsConfirm = spec.NeedsConfirm
@@ -77,13 +77,13 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 	for _, candidate := range proposal.Slots {
 		name := normalizeName(candidate.Name)
 		if !knownSource(candidate.Source) {
-			reject(name, RejectUnknownSource, fmt.Sprintf("%s: unknown candidate source", name))
+			reject(name, RejectUnknownSource, RejectionActorModel, fmt.Sprintf("%s: unknown candidate source", name))
 			adjudicated[name] = struct{}{}
 			continue
 		}
 		field, exists := spec.Fields[name]
 		if !exists {
-			reject(name, RejectUnknownField, fmt.Sprintf("unknown slot %s", name))
+			reject(name, RejectUnknownField, RejectionActorModel, fmt.Sprintf("unknown slot %s", name))
 			continue
 		}
 		// Guided forms cannot re-confirm fields outside their controls. For the
@@ -100,7 +100,7 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 		// existence and routes an outage / conflict to the right channel rather than
 		// a blanket "not verified".
 		if !field.Target && candidate.Source == SourceUserExplicit && (candidate.Evidence == nil || r.verifier == nil || !r.verifier.VerifyCandidate(candidate)) {
-			reject(name, RejectUnverifiedSource, fmt.Sprintf("%s: user-explicit source is not verified", name))
+			reject(name, RejectUnverifiedSource, RejectionActorModel, fmt.Sprintf("%s: user-explicit source is not verified", name))
 			adjudicated[name] = struct{}{}
 			continue
 		}
@@ -114,7 +114,7 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 					Slot: name, CatalogCandidates: typed.candidates, Reason: typed.Error(),
 				})
 			default:
-				reject(name, RejectInvalidValue, fmt.Sprintf("%s: %v", name, err))
+				reject(name, RejectInvalidValue, rejectionActorForCandidate(candidate), fmt.Sprintf("%s: %v", name, err))
 			}
 			adjudicated[name] = struct{}{}
 			continue
@@ -137,7 +137,7 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 				// not confirm it EXISTS (a point-query that echoed no matching id, or a
 				// fresh+complete registry that authoritatively lacks it) — not a source
 				// problem: the confirmation card, not a source label, is the SelectionProof.
-				reject(name, RejectTargetNotExist, fmt.Sprintf("%s: target existence could not be confirmed", name))
+				reject(name, RejectTargetNotExist, rejectionActorForCandidate(candidate), fmt.Sprintf("%s: target existence could not be confirmed", name))
 				adjudicated[name] = struct{}{}
 				continue
 			}
@@ -169,7 +169,10 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 	}
 	if len(result.Missing) == 0 && len(result.Conflicts) == 0 && len(result.Rejected) == 0 && len(result.DependencyFailures) == 0 && spec.ValidateResolved != nil {
 		if err := spec.ValidateResolved(result.Arguments); err != nil {
-			reject("", RejectOperationContract, err.Error())
+			// A cross-field contract error means the requested operation is not
+			// fully specified. The resolver cannot know which business choice the
+			// user intended, so the Agent must ask instead of inventing a value.
+			reject("", RejectOperationContract, RejectionActorUser, err.Error())
 		}
 	}
 	sort.Strings(result.Missing)
@@ -216,6 +219,18 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 		result.Confirmation = &ConfirmationPreview{Operation: result.Operation, Arguments: arguments}
 	}
 	return result
+}
+
+func rejectionActorForCandidate(candidate SlotCandidate) RejectionActor {
+	if candidate.UserAuthored {
+		return RejectionActorUser
+	}
+	switch candidate.Source {
+	case SourceUserExplicit, SourceUserConfirmation:
+		return RejectionActorUser
+	default:
+		return RejectionActorModel
+	}
 }
 
 func containsField(fields []string, name string) bool {

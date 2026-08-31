@@ -205,17 +205,65 @@ func BuildMonitorEnvelope(subjects []entity.InstanceSnapshot, metrics []Metric, 
 	return env
 }
 
-// BuildHistoricalMonitorEnvelope is the historical variant of BuildMonitorEnvelope:
-// identical facts, but every metric fact is marked as an aggregate over the queried
-// window (Period="range" + WindowStart/WindowEnd) so the observation carries the
-// exact historical time window as structured evidence, instead of the engine
-// correcting the model's prose after the fact.
+// BuildHistoricalMonitorEnvelope projects the historical series themselves.
+// It must not reuse BuildMonitorEnvelope's current-value projection: a range
+// result has three distinct facts (latest, average and maximum) for every
+// subject/metric pair, all scoped to the exact requested window.
 func BuildHistoricalMonitorEnvelope(subjects []entity.InstanceSnapshot, metrics []Metric, payload map[string]any, windowStart, windowEnd int64) envelope.Envelope {
-	env := BuildMonitorEnvelope(subjects, metrics, payload)
-	for i := range env.Facts {
-		env.Facts[i].Period = "range"
-		env.Facts[i].WindowStart = windowStart
-		env.Facts[i].WindowEnd = windowEnd
+	env := BuildMonitorEnvelope(subjects, nil, map[string]any{})
+	fallbackSubjectID := ""
+	if len(subjects) == 1 {
+		fallbackSubjectID = subjects[0].UHostId
+	}
+	seriesSubjects := map[string]struct{}{}
+	for _, series := range historicalMonitorSeries(metrics, payload) {
+		aggregate, ok := aggregateHistoricalSeries(series)
+		if !ok {
+			continue
+		}
+		subjectID := series.SubjectID
+		if subjectID == "" {
+			subjectID = fallbackSubjectID
+		}
+		if subjectID != "" {
+			seriesSubjects[subjectID] = struct{}{}
+		}
+		appendFact := func(value float64, aggregation string, source envelope.FactSource) {
+			env.Facts = append(env.Facts, envelope.Fact{
+				SubjectID:   subjectID,
+				Key:         series.Key,
+				Label:       series.Label,
+				Value:       formatMonitorFloat(value),
+				Unit:        series.Unit,
+				Source:      source,
+				Period:      "range",
+				WindowStart: windowStart,
+				WindowEnd:   windowEnd,
+				Aggregation: aggregation,
+			})
+		}
+		appendFact(aggregate.Latest, "latest", envelope.FactSourceAPI)
+		appendFact(aggregate.Average, "average", envelope.FactSourceComputed)
+		appendFact(aggregate.Maximum, "max", envelope.FactSourceComputed)
+	}
+	for _, subject := range subjects {
+		if subject.UHostId == "" {
+			continue
+		}
+		if _, ok := seriesSubjects[subject.UHostId]; ok {
+			continue
+		}
+		env.Facts = append(env.Facts, envelope.Fact{
+			SubjectID:   subject.UHostId,
+			Key:         "monitor_data_available",
+			Label:       "Historical monitor data available",
+			Value:       "false",
+			Source:      envelope.FactSourceAPI,
+			Period:      "range",
+			WindowStart: windowStart,
+			WindowEnd:   windowEnd,
+			Aggregation: "availability",
+		})
 	}
 	return env
 }

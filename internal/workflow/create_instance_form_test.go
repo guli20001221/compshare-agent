@@ -424,7 +424,7 @@ func TestCreateInstanceGuided_FormStepsContinueAndCreateSelectedSpec(t *testing.
 			assert.True(t, form.Step.Skippable)
 			source := fieldByKey(t, form, "ImageSource")
 			assert.Equal(t, "platform", source.Value)
-			assert.Equal(t, []string{"platform", "community", "custom"}, optionValues(source))
+			assert.Equal(t, []string{"platform", "community", "custom", "sharing"}, optionValues(source))
 			assert.Nil(t, form.Field("ImagePurpose"))
 			assert.Nil(t, form.Field("ImageType"), "source step is source-only; type/tag is the next step")
 			return ConfirmResolution{Confirmed: true}
@@ -931,7 +931,7 @@ func TestCreateInstanceGuided_SelectedPlatformImageIsValidatedBeforeCapacity(t *
 			params: map[string]any{
 				"GpuType": "4090", "Zone": "cn-wlcb-01",
 			},
-			wantError: "不可用",
+			wantError: "未找到可用镜像",
 		},
 	}
 
@@ -1056,7 +1056,7 @@ func TestGuidedImageSourceAndFacetsFormsAppearWhenNoImageIntent(t *testing.T) {
 	require.NoError(t, err)
 	source := fieldByKey(t, sourceForm, "ImageSource")
 	assert.Equal(t, "platform", source.Value)
-	assert.Equal(t, []string{"platform", "community", "custom"}, optionValues(source))
+	assert.Equal(t, []string{"platform", "community", "custom", "sharing"}, optionValues(source))
 	assert.Nil(t, sourceForm.Field("ImageType"), "the source step is source-only")
 
 	facetsForm, err := buildGuidedImageFacetsForm(wfCtx)

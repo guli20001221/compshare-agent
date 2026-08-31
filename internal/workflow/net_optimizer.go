@@ -21,6 +21,9 @@ func EnableNetOptimizerDef() *Definition {
 				"after":             wfCtx.Result("回查网络加速状态"),
 			}
 		},
+		MutationCommitted: func(wfCtx *Context) bool {
+			return !netOptimizerEnabled(wfCtx.Result("查询网络加速状态"))
+		},
 	}
 }
 

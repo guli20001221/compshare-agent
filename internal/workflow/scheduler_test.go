@@ -165,6 +165,38 @@ func schedulerMockExecutor() *mockExecutor {
 	}}
 }
 
+type schedulerReadbackExecutor struct {
+	calls     []executorCall
+	stopTime  int64
+	cancelled bool
+	describes int
+}
+
+func (e *schedulerReadbackExecutor) Execute(_ context.Context, action string, args map[string]any) (map[string]any, error) {
+	e.calls = append(e.calls, executorCall{action: action, args: args})
+	switch action {
+	case "UpdateCompShareStopScheduler":
+		e.stopTime, _ = args["SchedulerStopTime"].(int64)
+		return map[string]any{"RetCode": 0}, nil
+	case "DeleteCompShareStopScheduler":
+		e.cancelled = true
+		return map[string]any{"RetCode": 0}, nil
+	case "DescribeCompShareInstance":
+		e.describes++
+		row := map[string]any{
+			"UHostId": "uhost-xxx", "Name": "my-gpu", "State": "Running",
+			"Zone": "cn-bj2-04", "Region": "cn-bj2", "GpuType": "4090",
+			"GPU": float64(1), "ChargeType": "Dynamic",
+		}
+		if !e.cancelled && e.stopTime > 0 {
+			row["SchedulerStopTime"] = e.stopTime
+		}
+		return map[string]any{"UHostSet": []any{row}}, nil
+	default:
+		return map[string]any{"RetCode": 0}, nil
+	}
+}
+
 func TestSetStopScheduler_HappyPath(t *testing.T) {
 	withFixedNow(t)
 
@@ -181,12 +213,13 @@ func TestSetStopScheduler_HappyPath(t *testing.T) {
 
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
-	assert.Len(t, result.Steps, 4)
+	assert.Len(t, result.Steps, 6)
 
 	// Verify UpdateCompShareStopScheduler was called with correct args.
-	assert.Len(t, executor.calls, 2)
+	assert.Len(t, executor.calls, 3)
 	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
 	assert.Equal(t, "UpdateCompShareStopScheduler", executor.calls[1].action)
+	assert.Equal(t, "DescribeCompShareInstance", executor.calls[2].action)
 
 	callArgs := executor.calls[1].args
 	assert.Equal(t, "cn-bj2-04", callArgs["Zone"])
@@ -302,7 +335,7 @@ func TestSetStopScheduler_ConfirmShowsTime(t *testing.T) {
 	assert.Contains(t, shutdownTime, "北京时间")
 }
 
-func TestSetStopScheduler_ExecutesExactlyTheConfirmedTimestamp(t *testing.T) {
+func TestSetStopScheduler_RelativeTimeStartsWhenConfirmationIsAccepted(t *testing.T) {
 	withFixedNow(t)
 	fixed := fixedNow
 	executor := schedulerMockExecutor()
@@ -323,9 +356,52 @@ func TestSetStopScheduler_ExecutesExactlyTheConfirmedTimestamp(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, result.Success)
 	require.Contains(t, confirmed, fixed.Add(time.Hour).In(shanghaiLoc).Format("2006-01-02 15:04"))
-	require.Len(t, executor.calls, 2)
-	assert.Equal(t, fixed.Add(time.Hour).Unix(), executor.calls[1].args["SchedulerStopTime"],
-		"execution must consume the sealed draft, not recompute a relative time after confirmation")
+	require.Len(t, executor.calls, 3)
+	assert.Equal(t, fixed.Add(90*time.Minute).Unix(), executor.calls[1].args["SchedulerStopTime"],
+		"the sealed rule is 60 minutes after approval, not the preview's stale timestamp")
+}
+
+func TestSetStopScheduler_ExactMinimumKeepsTransportAllowance(t *testing.T) {
+	withFixedNow(t)
+	executor := schedulerMockExecutor()
+	result, err := NewEngine(executor, func(string, map[string]any) bool { return true }, nil).Run(
+		context.Background(), SetStopSchedulerDef(),
+		map[string]any{"UHostId": "uhost-xxx", "Schedule": scheduleAfter(5)},
+	)
+	require.NoError(t, err)
+	require.True(t, result.Success, result.Message)
+	got := executor.calls[1].args["SchedulerStopTime"].(int64)
+	assert.Equal(t, fixedNow.Add(5*time.Minute+shutdownTransportAllowance).Unix(), got)
+}
+
+func TestSetStopScheduler_RevalidatesAbsoluteTimeAfterConfirmation(t *testing.T) {
+	withFixedNow(t)
+	fixed := fixedNow
+	executor := schedulerMockExecutor()
+	result, err := NewEngine(executor, func(string, map[string]any) bool {
+		nowFunc = func() time.Time { return fixed.Add(8 * time.Minute) }
+		return true
+	}, nil).Run(context.Background(), SetStopSchedulerDef(), map[string]any{
+		"UHostId":  "uhost-xxx",
+		"Schedule": map[string]any{"mode": "absolute", "at": fixed.Add(10 * time.Minute).Format(time.RFC3339)},
+	})
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Equal(t, shutdownFinalStepName, result.StoppedAt)
+	assert.Len(t, executor.calls, 1, "an absolute time that expired while awaiting approval must not be written")
+}
+
+func TestSetStopScheduler_ReadbackVerifiesRequestedTime(t *testing.T) {
+	withFixedNow(t)
+	executor := &schedulerReadbackExecutor{}
+	result, err := NewEngine(executor, func(string, map[string]any) bool { return true }, nil).Run(
+		context.Background(), SetStopSchedulerDef(),
+		map[string]any{"UHostId": "uhost-xxx", "Schedule": scheduleAfter(60)},
+	)
+	require.NoError(t, err)
+	require.True(t, result.Success, result.Message)
+	assert.Equal(t, true, result.Data["Verified"])
+	assert.Equal(t, executor.stopTime, result.Data["ObservedStopTime"])
 }
 
 func TestSetStopScheduler_ConfirmDenied(t *testing.T) {
@@ -471,6 +547,7 @@ func TestCancelStopScheduler_HappyPath(t *testing.T) {
 	assert.NoError(t, err)
 	assert.True(t, result.Success)
 	assert.Len(t, result.Steps, 3)
+	assert.Nil(t, result.Data, "取消接口成功不等于已回读确认；workflow 不应伪造验证结果")
 
 	// Verify DeleteCompShareStopScheduler was called with UHostId and Region.
 	assert.Len(t, executor.calls, 2)

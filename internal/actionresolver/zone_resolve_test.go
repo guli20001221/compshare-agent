@@ -196,7 +196,7 @@ func TestResolveInvalidChineseZoneEntersIntakeForm(t *testing.T) {
 	require.False(t, resolved.ReadyForConfirmation)
 	require.True(t, resolved.ReadyForIntake, "a truly-invalid zone is form-correctable — the form re-collects it")
 	require.NotContains(t, resolved.Arguments, "Zone", "the invalid zone value is discarded, never carried forward")
-	require.Equal(t, []RejectedProblem{{Slot: "Zone", Kind: RejectInvalidValue}}, resolved.RejectedProblems,
+	require.Equal(t, []RejectedProblem{{Slot: "Zone", Kind: RejectInvalidValue, Actor: RejectionActorUser}}, resolved.RejectedProblems,
 		"华北一区 is a partial name (an invalid value), not a live zone")
 }
 

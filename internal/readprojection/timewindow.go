@@ -5,7 +5,6 @@ import (
 	"time"
 )
 
-
 var monitorNowFunc = time.Now
 
 var monitorHistoryLoc = func() *time.Location {
@@ -52,6 +51,8 @@ func ResolveMonitorHistoryWindow(window *TimeWindow) (int64, int64, bool) {
 			duration = time.Duration(window.Amount) * time.Minute
 		case "hour":
 			duration = time.Duration(window.Amount) * time.Hour
+		case "day":
+			duration = time.Duration(window.Amount) * 24 * time.Hour
 		default:
 			return 0, 0, false
 		}
@@ -69,7 +70,7 @@ func ResolveMonitorHistoryWindow(window *TimeWindow) (int64, int64, bool) {
 	default:
 		return 0, 0, false
 	}
-	if !end.After(start) || end.Sub(start) > 24*time.Hour {
+	if !end.After(start) || end.Sub(start) > 30*24*time.Hour {
 		return 0, 0, false
 	}
 	return start.Unix(), end.Unix(), true

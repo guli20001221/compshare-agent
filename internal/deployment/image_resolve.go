@@ -129,6 +129,9 @@ func ResolveImage(snap *ImageCatalogSnapshot, req ImageRequest) ImageResolution 
 	// caller re-asks or corrects rather than sealing a stale pair.
 	if id := strings.TrimSpace(req.ID); id != "" {
 		if e, ok := snap.ByID(id); ok {
+			if !ImageStatusUsable(e.Source, e.Status) || (req.Zone.IsPod && !e.Container) {
+				return ImageResolution{Status: ResolutionNotFound}
+			}
 			return ImageResolution{Status: ResolutionResolved, Selection: selectionFrom(e, ProvenanceCatalogExactID)}
 		}
 		return ImageResolution{Status: ResolutionNotFound}
@@ -210,15 +213,14 @@ func scopeBySource(entries []ImageCatalogEntry, source string) []ImageCatalogEnt
 	return out
 }
 
-// viableEntries applies the two HARD gates (and only those): an image whose
-// Status is set and not Available is dropped, and a pod zone requires a
-// container image. A GPU-support mismatch is deliberately
+// viableEntries applies the two HARD gates (and only those): source-aware image
+// status usability, and a pod zone requiring a container image. A GPU-support mismatch is deliberately
 // NOT a filter — SupportedGpuTypes is a recommendation hint (empty = unknown, not
 // unsupported), so it only bumps ranking, never rejects (recon redline #2).
 func viableEntries(entries []ImageCatalogEntry, req ImageRequest) []ImageCatalogEntry {
 	var out []ImageCatalogEntry
 	for _, e := range entries {
-		if e.Status != "" && !strings.EqualFold(e.Status, ImageStatusAvailable) {
+		if !ImageStatusUsable(e.Source, e.Status) {
 			continue
 		}
 		if req.Zone.IsPod && !e.Container {
