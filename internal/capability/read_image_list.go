@@ -67,7 +67,7 @@ type ImageListResponse struct {
 func imageListReadSpec() ReadCapabilitySpec[ImageListRequest, ImageListResponse] {
 	return ReadCapabilitySpec[ImageListRequest, ImageListResponse]{
 		Label:       imageListCapabilityLabel,
-		Description: "查询平台、自制、社区或共享镜像的实时目录，用于浏览、推荐和创建前选型。部署或运行具名模型/应用时先查社区镜像；有精确候选就据此回答，没有则如实说明。源码、权重或 adapter 问题再使用模型仓库或知识检索。",
+		Description: "查询平台、自制、社区或共享镜像的实时目录，用于推荐和创建选型。具名模型/应用先查社区镜像；有候选据此回答，无则如实说明。目录不能替代登录、默认配置、使用步骤或故障文档，这些仍查知识库。源码、权重或 adapter 问题查模型仓库或知识库。",
 		Params: objectParam(map[string]schemaNode{
 			"source": enumParam(platform.ImageSourceValues()...),
 			"query": stringParam().described(
