@@ -186,4 +186,9 @@ func TestAgentOnlyReceivesP2ContractForNormalToolRound(t *testing.T) {
 	require.True(t, ok, observation)
 	require.Equal(t, tools.AgentToolStatusSuccess, result.Status)
 	require.Equal(t, "ReadCapability_resource_info", result.Meta.Action)
+	data, ok := result.Data.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "empty", result.Meta.SourceStatus)
+	require.Equal(t, true, data["can_assert_absence"], "a successful empty upstream listing is authoritative for its query")
+	require.Len(t, eng.platformReadEvidenceThisTurn, 1, "the final gateway must receive the authoritative empty result as platform evidence")
 }
