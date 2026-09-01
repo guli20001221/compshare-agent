@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	openai "github.com/sashabaranov/go-openai"
@@ -74,9 +75,12 @@ func keptVLLMHit() knowledge.RetrievalHit {
 
 // vllmGroundedRepairResponse is the single-model budget/ceiling recovery reply:
 // plain text with a positional [1] citation that resolves to the gathered ledger
-// item (ext-vllm-oom-001). The runtime strips the marker for display.
+// item (ext-vllm-oom-001). It also carries a model-authored operational token so
+// every caller proves that recovery still crosses the common delivery boundary.
+const recoveryModelToken = "recovery-model-token-abcdefghijklmnopqrst"
+
 func vllmGroundedRepairResponse() llm.ChatResponse {
-	return llm.ChatResponse{Content: `{"answer":"可以把 max-model-len 调小来降低显存占用[1]。"}`}
+	return llm.ChatResponse{Content: `{"answer":"可以把 max-model-len 调小来降低显存占用[1]。临时地址：https://example.invalid/download?Authorization=` + recoveryModelToken + `"}`}
 }
 
 func vllmRetriever() *scriptedKnowledgeRetriever {
@@ -125,12 +129,14 @@ func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
 	assert.NotContains(t, reply, "轮次超限", "evidence was in hand — must recover, not refuse")
 	assert.Contains(t, reply, "max-model-len", "the grounded answer must flow through")
 	assert.NotContains(t, reply, "[1]", "the positional cite marker is stripped for display")
+	assert.NotContains(t, reply, recoveryModelToken, "round-ceiling recovery must cross the ordinary response redaction boundary")
 	assert.True(t, eng.ReactCeilingHitThisTurn(),
 		"trace attribution preserved: the loop DID hit the ceiling even though the user got an answer")
 	require.Len(t, eng.searchKnowledgeHitsThisTurn, 1, "the gathered hit is what recovery grounds on")
 }
 
 func TestChat_RoundCeiling_DoesNotGuessFromInstanceKeywords(t *testing.T) {
+	const sensitiveReply = "Jupyter Token：server-owned-token"
 	responses := make([]llm.ChatResponse, maxReActRounds)
 	for i := range responses {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
@@ -166,12 +172,17 @@ func TestChat_RoundCeiling_DoesNotGuessFromInstanceKeywords(t *testing.T) {
 		"DescribeCompShareInstance": describe,
 	}}
 	eng := NewWithDeps(&mockLLM{responses: responses}, exec, nil)
+	limiter := &scriptedRateLimiter{}
+	limiter.before = func(governance.Request) {
+		eng.sensitiveRepliesThisTurn = []string{sensitiveReply}
+	}
+	eng.rateLimiter = limiter
 	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
 	require.NoError(t, eng.registry.SyncFromDescribe(describe, "test"))
 
 	reply, err := eng.Chat(context.Background(), "claude-write-test 这台状态怎么样", noopStep)
 	require.NoError(t, err)
-	assert.Equal(t, reactCeilingRefusal, reply)
+	assert.Equal(t, sensitiveReply+"\n\n"+reactCeilingRefusal, reply)
 }
 
 func TestChat_RoundCeiling_DoesNotClassifyPunctuationFollowup(t *testing.T) {
@@ -255,6 +266,7 @@ func TestChat_LLMError_RecoversWhenEvidenceInHandAndCtxLive(t *testing.T) {
 	require.NoError(t, err, "evidence in hand + live ctx → recover, not error")
 	assert.Contains(t, reply, "max-model-len")
 	assert.NotContains(t, reply, "[1]")
+	assert.NotContains(t, reply, recoveryModelToken, "LLM-error recovery must cross the ordinary response redaction boundary")
 	assert.Equal(t, 3, mock.idx, "round0 search + round1 error + synthesis = exactly 3 LLM calls")
 }
 

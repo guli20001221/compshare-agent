@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/agentruntime"
+	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	openai "github.com/sashabaranov/go-openai"
@@ -59,11 +60,17 @@ func TestLengthStoppedToolCallIsNeverExecuted(t *testing.T) {
 }
 
 func TestRepeatedLengthStopsEndWithAnHonestRefusal(t *testing.T) {
+	const sensitiveReply = "Jupyter Token：server-owned-token"
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{Content: "第一次截断", StopReason: "length"},
 		{Content: "第二次截断", StopReason: "max_tokens"},
 	}}
 	eng := NewWithDeps(model, &mockExecutor{}, nil)
+	limiter := &scriptedRateLimiter{}
+	limiter.before = func(governance.Request) {
+		eng.sensitiveRepliesThisTurn = []string{sensitiveReply}
+	}
+	eng.rateLimiter = limiter
 	var completions []observability.TurnCompletionTrace
 	eng.SetTurnCompletionObserver(func(trace observability.TurnCompletionTrace) {
 		completions = append(completions, trace)
@@ -74,8 +81,9 @@ func TestRepeatedLengthStopsEndWithAnHonestRefusal(t *testing.T) {
 		OnTextDelta: func(delta string) { delivered = append(delivered, delta) },
 	})
 	require.NoError(t, err)
-	require.Equal(t, outputTruncatedRefusal, reply)
-	require.Equal(t, outputTruncatedRefusal, strings.Join(delivered, ""))
+	want := sensitiveReply + "\n\n" + outputTruncatedRefusal
+	require.Equal(t, want, reply)
+	require.Equal(t, want, strings.Join(delivered, ""))
 	require.Len(t, model.calls, 2)
 	require.Len(t, completions, 1)
 	require.Equal(t, observability.CompletionReasonModelOutputTruncated, completions[0].Reason)

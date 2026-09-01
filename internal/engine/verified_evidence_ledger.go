@@ -149,25 +149,11 @@ func (e *Engine) currentReadEvidenceLedger(question string) knowledge.EvidenceLe
 		}
 		snippet += string(raw)
 		out.Items = append(out.Items, knowledge.EvidenceItem{
-			ChunkID:      fmt.Sprintf("turn-read-%d", index+1),
-			SourceOrigin: "live_platform",
-			Confidence:   "current",
-			SourceType:   "platform_tool",
-			ScoreBucket:  "high",
-			Title:        truncateRunes("本轮平台查询："+evidence.Capability, 80),
-			Summary:      truncateRunes(strings.TrimSpace(evidence.Reply), 600),
-			Snippet:      truncateRunes(snippet, maxPlatformReadEvidenceSnippetRunes-1),
-		})
-	}
-	if len(e.verbatimBlocksThisTurn) > 0 {
-		out.Items = append(out.Items, knowledge.EvidenceItem{
-			ChunkID:      "turn-read-billing-card",
-			SourceOrigin: "live_platform",
-			Confidence:   "current",
-			SourceType:   "platform_tool",
-			ScoreBucket:  "high",
-			Title:        "本轮结构化费用卡",
-			Summary:      "服务器已向用户展示本轮实时费用卡；具体金额不在模型证据中，答复不得复述或估算金额。",
+			ChunkID:    fmt.Sprintf("turn-read-%d", index+1),
+			Title:      truncateRunes("本轮平台查询："+evidence.Capability, 80),
+			SourceType: "platform_tool",
+			Summary:    truncateRunes(strings.TrimSpace(evidence.Reply), 600),
+			Snippet:    truncateRunes(snippet, maxPlatformReadEvidenceSnippetRunes-1),
 		})
 	}
 	return out

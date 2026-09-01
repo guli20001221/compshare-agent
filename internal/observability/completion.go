@@ -15,6 +15,9 @@ type TurnCompletionTrace struct {
 	ProviderFinishReasons []string            `json:"provider_finish_reasons,omitempty"`
 	ModelAttempts         []ModelAttemptTrace `json:"model_attempts,omitempty"`
 	ToolNames             []string            `json:"tool_names,omitempty"`
+	// DirectAnswerRetryOutcome is present only when the bounded first-answer
+	// retry ran. It records the central Agent's decision without storing text.
+	DirectAnswerRetryOutcome string `json:"direct_answer_retry_outcome,omitempty"`
 }
 
 // ModelAttemptTrace describes one actual request to the provider. It is
@@ -76,6 +79,12 @@ const (
 	CompletionReasonUnclassifiedZeroModelExit = "unclassified_zero_model_exit"
 )
 
+const (
+	DirectAnswerRetryOutcomeToolSelected  = "tool_selected"
+	DirectAnswerRetryOutcomeDirectAgain   = "direct_again"
+	DirectAnswerRetryOutcomeFallbackDraft = "fallback_draft"
+)
+
 func traceCompletionObserved(trace TurnCompletionTrace) bool {
 	return trace.Class != "" ||
 		trace.Reason != "" ||
@@ -85,5 +94,6 @@ func traceCompletionObserved(trace TurnCompletionTrace) bool {
 		len(trace.ModelIDs) > 0 ||
 		len(trace.ProviderFinishReasons) > 0 ||
 		len(trace.ModelAttempts) > 0 ||
-		len(trace.ToolNames) > 0
+		len(trace.ToolNames) > 0 ||
+		trace.DirectAnswerRetryOutcome != ""
 }

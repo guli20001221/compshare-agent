@@ -10,12 +10,42 @@ import (
 
 const malformedToolProtocolReply = "本次操作没有进入安全确认流程，请重新提交；系统尚未执行任何修改。"
 
-// finalizeResponse is the single final-text gateway for the central Agent.
+// finalizeResponse is the single final-text boundary for the central Agent.
 // It does not infer intent from words in the answer. Instead it selects the
 // applicable contract from evidence that actually crossed a tool boundary.
 func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) string {
+	content, ok := e.prepareResponseDraft(draft)
+	if !ok {
+		return content
+	}
+
+	// SearchKnowledge validates only the Agent-authored draft. Ordinary read
+	// facts already reached the Agent as tool evidence, and no second read block
+	// is composed afterwards by this boundary.
+	if e.searchKnowledgeRanThisTurn {
+		content = e.finalizeAgentLoopKnowledgeAnswer(ctx, userMsg, content)
+	} else {
+		e.groundingOutcomeThisTurn = groundingUnavailable
+	}
+	return e.finishResponseDelivery(userMsg, draft, content)
+}
+
+// finalizeRecoveryResponse applies the ordinary model-text and delivery
+// boundary to an exceptional synthesis whose citation bookkeeping already ran
+// inside synthesizeOnBudgetExceeded. It performs no semantic review and starts
+// no second Agent; it only keeps private markers, credentials, sensitive
+// replies and signed-URL handling consistent with the normal final exit.
+func (e *Engine) finalizeRecoveryResponse(userMsg, draft string) string {
+	content, ok := e.prepareResponseDraft(draft)
+	if !ok {
+		return content
+	}
+	return e.finishResponseDelivery(userMsg, draft, content)
+}
+
+func (e *Engine) prepareResponseDraft(draft string) (string, bool) {
 	if security.ContainsToolProtocolMarkup(draft) {
-		return malformedToolProtocolReply
+		return malformedToolProtocolReply, false
 	}
 	// Customer-support delivery is valid only as the deterministic result of
 	// HandoffToCustomerSupport. A model-authored copy of the private marker must
@@ -29,16 +59,7 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 	}
 	content := e.guardMonitorNoDataFinalReply(draft)
 	content = security.RedactOperationalTokensInText(content)
-
-	// SearchKnowledge validates only the Agent-authored draft. Ordinary read
-	// facts already reached the Agent as tool evidence, and no second read block
-	// is composed afterwards by this gateway.
-	if e.searchKnowledgeRanThisTurn {
-		content = e.finalizeAgentLoopKnowledgeAnswer(ctx, userMsg, content)
-	} else {
-		e.groundingOutcomeThisTurn = groundingUnavailable
-	}
-	return e.finishResponseDelivery(userMsg, draft, content)
+	return content, true
 }
 
 // finalizeHostTerminalResponse applies the same delivery boundary to text the

@@ -6,6 +6,7 @@ import (
 
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
+	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -24,6 +25,26 @@ func TestSynthesizeOnBudgetExceeded_DeliversFromEvidenceOverBudget(t *testing.T)
 	require.True(t, ok, "evidence in hand + over budget must synthesize a grounded answer, not refuse")
 	assert.Contains(t, got, "max-model-len")
 	assert.NotContains(t, got, "[1]", "the [n] marker is stripped for display")
+}
+
+func TestChat_TokenBudgetRecoveryAppliesDeliveryBoundary(t *testing.T) {
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{
+			ToolCalls: []openai.ToolCall{toolCall("sk", "SearchKnowledge", `{"query":"vllm 显存不足"}`)},
+			Usage:     llm.TokenUsage{TotalTokens: 60000},
+		},
+		plannerEcho("vllm 显存不足"),
+		vllmGroundedRepairResponse(),
+	}}
+	eng := NewWithDeps(model, &mockExecutor{}, nil)
+	eng.maxTokensPerTurn = 50000
+	eng.SetKnowledgeRetriever(vllmRetriever())
+
+	reply, err := eng.Chat(context.Background(), "vllm 显存不足怎么办", noopStep)
+	require.NoError(t, err)
+	assert.Contains(t, reply, "max-model-len")
+	assert.NotContains(t, reply, recoveryModelToken,
+		"token-budget recovery must cross the ordinary response redaction boundary")
 }
 
 func TestSynthesizeOnBudgetExceeded_NoEvidenceReturnsFalse(t *testing.T) {

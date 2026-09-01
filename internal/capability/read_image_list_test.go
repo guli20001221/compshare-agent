@@ -26,8 +26,9 @@ func TestImageListRequestHasNoRequiredFields(t *testing.T) {
 func TestImageListDescriptionUsesTheLiveCatalogForNamedModelDeployment(t *testing.T) {
 	description := NewReadCapability(imageListReadSpec()).Tool.Function.Description
 	for _, want := range []string{
-		"具名模型/应用先查社区镜像",
-		"有候选据此回答",
+		"用于浏览、推荐和创建前选型",
+		"部署或运行具名模型/应用时先查社区镜像",
+		"有精确候选就据此回答",
 		"目录不能替代登录、默认配置、使用步骤或故障文档",
 		"源码、权重或 adapter 问题",
 	} {

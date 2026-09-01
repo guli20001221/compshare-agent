@@ -283,8 +283,9 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Per-session by design — it carries the turn-scoped cite-or-refuse coupling and
 		// the runtime-form projection; sharing it would cross one tenant's route decision
 		// into another's. Reset every turn.
-		"knowledgeQAAgentLoopThisTurn":  true,
-		"directAnswerToolReviewPending": true,
+		"knowledgeQAAgentLoopThisTurn":         true,
+		"directAnswerToolRetryPending":         true,
+		"directAnswerToolRetryOutcomeThisTurn": true,
 		// Optional deploy preference extractor injection + its per-turn result.
 		// Kept per-session so test doubles / future stateful wrappers cannot
 		// leak calls or extracted preferences across users.
@@ -430,12 +431,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 100, len(perSessionFields); want != got {
+	if want, got := 101, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 106, typ.NumField(); want != got {
+	if want, got := 107, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update this test's whitelists to match.", want, got)
 	}

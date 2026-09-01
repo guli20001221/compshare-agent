@@ -28,16 +28,31 @@ func TestKnowledgeLedgerForVerificationKeepsEveryCurrentTurnChunk(t *testing.T) 
 	require.Equal(t, "chunk-15", got.Items[14].ChunkID, "later searches must not be hidden by the persisted-evidence cap")
 }
 
-func TestCurrentReadEvidenceLedgerKeepsSnippetWithinGatewayLimit(t *testing.T) {
+func TestCurrentReadEvidenceLedgerKeepsRenderedReplyAndEnvelope(t *testing.T) {
 	eng := NewWithDeps(nil, nil, nil)
 	eng.platformReadEvidenceThisTurn = []platformReadEvidence{{
 		Capability: "resource_info",
-		Reply:      strings.Repeat("实", maxEvidenceGatewayFactRunes+100),
+		Reply:      "当前有一台运行中的实例。",
 		Envelope:   envelope.Envelope{Kind: envelope.KindResourceInfo},
 	}}
 
 	got := eng.currentReadEvidenceLedger("当前还有实例吗")
 
 	require.Len(t, got.Items, 1)
-	require.LessOrEqual(t, utf8.RuneCountInString(got.Items[0].Snippet), maxEvidenceGatewayFactRunes)
+	require.Contains(t, got.Items[0].Snippet, "当前有一台运行中的实例。")
+	require.Contains(t, got.Items[0].Snippet, `"kind":"resource_info"`)
+}
+
+func TestCurrentReadEvidenceLedgerKeepsSnippetWithinPlatformReadLimit(t *testing.T) {
+	eng := NewWithDeps(nil, nil, nil)
+	eng.platformReadEvidenceThisTurn = []platformReadEvidence{{
+		Capability: "resource_info",
+		Reply:      strings.Repeat("实", maxPlatformReadEvidenceSnippetRunes+100),
+		Envelope:   envelope.Envelope{Kind: envelope.KindResourceInfo},
+	}}
+
+	got := eng.currentReadEvidenceLedger("当前还有实例吗")
+
+	require.Len(t, got.Items, 1)
+	require.LessOrEqual(t, utf8.RuneCountInString(got.Items[0].Snippet), maxPlatformReadEvidenceSnippetRunes)
 }

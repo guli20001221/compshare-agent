@@ -27,7 +27,8 @@ func TestTurnCompletionTraceMarshalWiring(t *testing.T) {
 					ToolCount: 2, ToolWindowRunes: 321, ToolWindowHash: "sha256:tool-window",
 				},
 			},
-			ToolNames: []string{"DescribeCompShareInstance"},
+			ToolNames:                []string{"DescribeCompShareInstance"},
+			DirectAnswerRetryOutcome: DirectAnswerRetryOutcomeToolSelected,
 		},
 	}
 	data, err := json.Marshal(record)
@@ -48,6 +49,9 @@ func TestTurnCompletionTraceMarshalWiring(t *testing.T) {
 	}
 	if len(decoded.Completion.ToolNames) != 1 {
 		t.Fatalf("tool names lost from completion: %#v", decoded.Completion)
+	}
+	if decoded.Completion.DirectAnswerRetryOutcome != DirectAnswerRetryOutcomeToolSelected {
+		t.Fatalf("direct-answer retry outcome lost from completion: %#v", decoded.Completion)
 	}
 	if decoded.Completion.ModelProvider != "modelverse" || len(decoded.Completion.ModelIDs) != 1 || len(decoded.Completion.ProviderFinishReasons) != 2 {
 		t.Fatalf("model attribution lost from completion: %#v", decoded.Completion)

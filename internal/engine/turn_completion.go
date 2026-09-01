@@ -58,13 +58,14 @@ func (e *Engine) emitTurnCompletion() {
 		}
 	}
 	trace := observability.TurnCompletionTrace{
-		RuntimeFinishReason:   string(e.runtimeFinishReasonThisTurn),
-		ModelCalls:            e.turnModelCallsThisTurn,
-		ModelProvider:         e.turnModelProviderThisTurn,
-		ModelIDs:              append([]string(nil), e.turnModelIDsThisTurn...),
-		ProviderFinishReasons: finishReasons,
-		ModelAttempts:         attempts,
-		ToolNames:             centralAgentToolNames(e.mutatingToolsEnabled, e.mutatingToolsEnabled && e.instanceOps != nil),
+		RuntimeFinishReason:      string(e.runtimeFinishReasonThisTurn),
+		ModelCalls:               e.turnModelCallsThisTurn,
+		ModelProvider:            e.turnModelProviderThisTurn,
+		ModelIDs:                 append([]string(nil), e.turnModelIDsThisTurn...),
+		ProviderFinishReasons:    finishReasons,
+		ModelAttempts:            attempts,
+		ToolNames:                centralAgentToolNames(e.mutatingToolsEnabled, e.mutatingToolsEnabled && e.instanceOps != nil),
+		DirectAnswerRetryOutcome: e.directAnswerToolRetryOutcomeThisTurn,
 	}
 
 	trace.Class, trace.Reason = e.classifyTurnCompletion()
