@@ -222,6 +222,22 @@ func TestAutoMaterializeKnowledgeChunks_RemoteFailureKeepsSnippet(t *testing.T) 
 	assert.Equal(t, []string{"a"}, retriever.reads[0].chunkIDs)
 }
 
+func TestAutoMaterializeKnowledgeChunks_RemoteRequiresCurrentTurnSearchCapability(t *testing.T) {
+	retriever := &remoteChunkStoreRetriever{chunks: map[string]knowledge.KBChunk{
+		"a": {ChunkID: "a", Content: "remote body"},
+	}}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	ledger := knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{{ChunkID: "a", Snippet: "bounded search snippet"}}}
+
+	result := eng.autoMaterializeKnowledgeChunks(context.Background(), &ledger, []string{"a"})
+
+	assert.True(t, result.Unavailable)
+	assert.Empty(t, result.ReadIDs)
+	assert.Equal(t, "bounded search snippet", ledger.Items[0].Snippet)
+	assert.Empty(t, retriever.reads, "a remote body read requires the current turn's search capability")
+}
+
 func TestAutoMaterializeKnowledgeChunks_SkipsAlreadyReadAndStopsAtTwoPerTurn(t *testing.T) {
 	eng, _ := newChunkStoreEngine(t,
 		knowledge.KBChunk{ChunkID: "a", Content: "already visible"},
@@ -301,6 +317,7 @@ func TestReadChunkRemoteUsesOnlyCurrentTurnSearchCapability(t *testing.T) {
 
 	search := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "查询可见证据"}, noopStep)
 	assert.Contains(t, search, "远程完整正文", "a calibrated strong hit is materialized in the SearchKnowledge observation")
+	assert.Contains(t, search, `"auto_expansion_truncated_ids":["visible"]`)
 	result := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"visible", "hidden"}}, noopStep))
 	items := result["chunks"].([]any)
 	require.Len(t, items, 2)
@@ -323,7 +340,7 @@ func TestReadChunkRemoteCanReviewBelowFloorCandidateAsLowEvidence(t *testing.T) 
 			}},
 		}}},
 		chunks: map[string]knowledge.KBChunk{
-			"weak-workbuddy": {ChunkID: "weak-workbuddy", Title: "WorkBuddy 配置", Content: "读取后的完整配置正文。", SourceType: "faq"},
+			"weak-workbuddy": {ChunkID: "weak-workbuddy", Title: "WorkBuddy 配置", Content: "读取后的完整配置正文。", ContentTruncated: true, SourceType: "faq"},
 		},
 	}
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
@@ -339,6 +356,7 @@ func TestReadChunkRemoteCanReviewBelowFloorCandidateAsLowEvidence(t *testing.T) 
 	item := read["chunks"].([]any)[0].(map[string]any)
 	assert.Equal(t, readChunkStatusRead, item["status"])
 	assert.Equal(t, "读取后的完整配置正文。", item["content"])
+	assert.Equal(t, true, item["truncated"], "remote truncation must remain visible to the model")
 	require.Len(t, retriever.reads, 1)
 	assert.Equal(t, "weak-search-id", retriever.reads[0].searchID)
 

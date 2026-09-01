@@ -46,9 +46,9 @@ type knowledgeQueryPlanInput struct {
 	ProposedQuery string             `json:"agent_proposed_query"`
 }
 
-// planKnowledgeQuery adds one bounded contextualization call only for a knowledge
-// search that has prior conversation to resolve. It is not a second answer agent:
-// the call can only return a standalone answer target plus retrieval queries.
+// planKnowledgeQuery adds one bounded contextualization call for each turn's first
+// knowledge search. It is not a second answer agent: the call can only return a
+// standalone answer target plus retrieval queries.
 // Any transport, parse, or validation failure falls back to the Agent-proposed
 // query, so retrieval availability never depends on the planner.
 func (e *Engine) planKnowledgeQuery(ctx context.Context, proposed string) knowledgeQueryPlan {

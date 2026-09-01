@@ -487,15 +487,35 @@ func (e *Engine) recordReadChunksAsEvidence(chunks []knowledge.KBChunk) {
 	readLedger := knowledge.BuildSubstantiveEvidenceLedger(question, hits, len(hits), maxReadChunkRunesPerCall)
 	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(
 		e.searchKnowledgeLedgerThisTurn, readLedger, searchKnowledgeLedgerTurnMaxItems)
-	// MergeEvidenceLedgers keeps the first item per chunk_id, so a chunk already
-	// present from its search keeps the 400-rune snippet. Overwrite it.
-	snippets := map[string]string{}
-	for _, item := range readLedger.Items {
-		snippets[item.ChunkID] = item.Snippet
+	readIDs := make([]string, 0, len(chunks))
+	for _, chunk := range chunks {
+		readIDs = append(readIDs, chunk.ChunkID)
 	}
-	for i, item := range e.searchKnowledgeLedgerThisTurn.Items {
+	overwriteEvidenceSnippets(&e.searchKnowledgeLedgerThisTurn, readLedger, readIDs)
+}
+
+// overwriteEvidenceSnippets upgrades only bodies the Agent actually read.
+// MergeEvidenceLedgers intentionally keeps the first item per chunk_id, so a
+// later full-body read must replace the earlier bounded search snippet.
+func overwriteEvidenceSnippets(target *knowledge.EvidenceLedger, source knowledge.EvidenceLedger, chunkIDs []string) {
+	if target == nil || len(chunkIDs) == 0 {
+		return
+	}
+	wanted := make(map[string]struct{}, len(chunkIDs))
+	for _, chunkID := range chunkIDs {
+		if chunkID = strings.TrimSpace(chunkID); chunkID != "" {
+			wanted[chunkID] = struct{}{}
+		}
+	}
+	snippets := map[string]string{}
+	for _, item := range source.Items {
+		if _, ok := wanted[item.ChunkID]; ok && item.Snippet != "" {
+			snippets[item.ChunkID] = item.Snippet
+		}
+	}
+	for i, item := range target.Items {
 		if snippet, ok := snippets[item.ChunkID]; ok && snippet != "" {
-			e.searchKnowledgeLedgerThisTurn.Items[i].Snippet = snippet
+			target.Items[i].Snippet = snippet
 		}
 	}
 }
