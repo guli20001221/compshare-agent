@@ -53,28 +53,36 @@ func (e *Engine) authorizedWriteFailureReply(ctx context.Context, action string,
 	case "ReinstallInstanceWorkflow":
 		return e.reinstallFailureReply(ctx, params, result)
 	case "SwitchChargeTypeWorkflow":
-		return e.switchChargeTypeFailureReply(ctx, params), true
+		return e.switchChargeTypeFailureReply(ctx, params, result), true
 	default:
 		return "", false
 	}
 }
 
-func (e *Engine) switchChargeTypeFailureReply(ctx context.Context, params map[string]any) string {
+func (e *Engine) switchChargeTypeFailureReply(ctx context.Context, params map[string]any, result *workflow.Result) string {
 	id := strings.TrimSpace(fmt.Sprint(params["UHostId"]))
 	target := strings.TrimSpace(fmt.Sprint(params["DestChargeType"]))
+	failure := "计费方式切换接口返回失败"
+	afterFailure := "请勿重复提交。"
+	if result != nil {
+		if apiErr, found := tools.UpstreamAPIErrorFrom(result.Err); found && apiErr.Code == 520 {
+			failure = "账号余额不足"
+			afterFailure = "请先充值并刷新平台账单和当前计费方式，确认状态后再决定是否重新发起；请勿直接重复旧卡。"
+		}
+	}
 	snap, _, ok := e.freshInstance(ctx, id)
 	if !ok {
-		return fmt.Sprintf("实例 %s 的计费方式切换请求返回失败，随后未能读取当前计费方式，本次结果不确定。请勿重复提交。", id)
+		return fmt.Sprintf("%s；随后未能读取实例 %s 的当前计费方式，本次结果不确定。%s", failure, id, afterFailure)
 	}
 	observed := strings.TrimSpace(snap.ChargeType)
 	if observed != "" && strings.EqualFold(observed, target) {
-		return fmt.Sprintf("计费方式切换接口返回失败；实时回读仅能确认实例 %s 的主记录已显示为%s，关联存储和完整计费结果仍不确定，可能只完成了一部分。请以平台账单为准，请勿重复提交。", id, workflow.ChargeTypeLabel(observed))
+		return fmt.Sprintf("%s；实时回读仅能确认实例 %s 的主记录已显示为%s，关联存储和完整计费结果仍不确定，可能只完成了一部分。请以平台账单为准。%s", failure, id, workflow.ChargeTypeLabel(observed), afterFailure)
 	}
 	if observed == "" {
-		return fmt.Sprintf("计费方式切换接口返回失败；实时回读未返回实例 %s 的计费方式，无法确认本次结果。请勿重复提交。", id)
+		return fmt.Sprintf("%s；实时回读未返回实例 %s 的计费方式，无法确认本次结果。%s", failure, id, afterFailure)
 	}
-	return fmt.Sprintf("计费方式切换接口返回失败；实时回读显示实例 %s 当前仍为%s，尚未确认切换为%s。该接口包含多步结算和计费修改，本次结果可能不完整，请勿重复提交。",
-		id, workflow.ChargeTypeLabel(observed), workflow.ChargeTypeLabel(target))
+	return fmt.Sprintf("%s；实时回读显示实例 %s 当前仍为%s，尚未确认切换为%s。该接口包含多步结算和计费修改，本次结果可能不完整。%s",
+		failure, id, workflow.ChargeTypeLabel(observed), workflow.ChargeTypeLabel(target), afterFailure)
 }
 
 func (e *Engine) freshInstance(ctx context.Context, id string) (entity.InstanceSnapshot, map[string]any, bool) {

@@ -55,12 +55,20 @@ func invoiceStatusHandle(ctx context.Context, _ InvoiceStatusRequest, rt ReadRun
 	if err != nil {
 		return InvoiceStatusResponse{}, ReadFailureAfterTool(invoiceStatusAction, invoiceStatusCapabilityLabel, err)
 	}
+	rows := mapSliceAt(raw, "InvoiceSet")
 	items := invoiceStatusItems(raw)
 	totalCount := len(items)
 	if value, ok := numericField(raw, "TotalCount"); ok && value >= 0 {
 		totalCount = int(value)
 	}
 	if len(items) == 0 {
+		if len(rows) > 0 || totalCount > 0 {
+			return InvoiceStatusResponse{}, ReadFailureAfterTool(
+				invoiceStatusAction,
+				invoiceStatusCapabilityLabel,
+				fmt.Errorf("upstream reported %d invoice records but none could be projected", totalCount),
+			)
+		}
 		r := ReadEmpty("当前账号没有查询到发票记录。")
 		r.ToolAction = invoiceStatusAction
 		env := invoiceStatusEnvelope(nil, totalCount)

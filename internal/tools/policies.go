@@ -261,13 +261,17 @@ func internalOnlyAllowedParams(action string) []string {
 	}
 }
 
-// backendOnlyAllowedParams are response-expansion switches selected by typed
-// server capabilities. They are never model parameters.
+// backendOnlyAllowedParams are server-owned parameters selected by typed
+// capabilities and workflows. They are never model parameters.
 func backendOnlyAllowedParams(action string) []string {
-	if action == "DescribeCompShareInstance" {
+	switch action {
+	case "DescribeCompShareInstance":
 		return []string{"IncludeShareBandwidth"}
+	case "CheckCompShareResourceCapacity":
+		return []string{"UHostId"}
+	default:
+		return nil
 	}
-	return nil
 }
 
 func actionAllowsBackendZoneID(action string) bool {

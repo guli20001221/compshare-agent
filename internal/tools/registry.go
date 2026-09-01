@@ -741,7 +741,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "SwitchChargeTypeWorkflow",
-			Description: "将运行中的非抢占式、带 GPU 的按量后付费实例切换为预付费。仅用于用户要求实际切换计费方式；不用于计费咨询、创建实例或切回按量后付费。上游支持包时、包日、包月和包年，切换价格不由本接口返回。",
+			Description: "实际切换已有实例计费方式。服务端核验资格并在确认前按实时规格查询目标价格；无目标价格不出卡。不用于咨询、创建或切回按量。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1032,7 +1032,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "ResizeInstanceWorkflow",
-			Description: "修改已有实例 CPU、GPU 或内存配置的候选请求。实例必须处于关机状态；磁盘扩容不使用。",
+			Description: "修改已有实例 CPU、GPU 或内存。服务端核验类型、状态、规格、容量和价格；满足条件才出确认卡。磁盘扩容不用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

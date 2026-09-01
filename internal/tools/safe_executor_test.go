@@ -212,6 +212,34 @@ func TestBackendZoneIDIsInternalOnly(t *testing.T) {
 	assert.Equal(t, uint32(9001), internalInner.args[0]["zone_id"], "workflow-derived zone_id must reach upstream")
 }
 
+func TestResizeCapacityTargetIsWorkflowInternalOnly(t *testing.T) {
+	policy := DefaultToolExecutionPolicies()["CheckCompShareResourceCapacity"]
+	assert.NotContains(t, policy.AllowedParams, "UHostId")
+	assert.Contains(t, policy.InternalAllowedParams, "UHostId")
+
+	directInner := &spyExecutor{}
+	direct := NewSafeToolExecutor(directInner)
+	_, err := direct.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "CheckCompShareResourceCapacity",
+		Args:   map[string]any{"UHostId": "uhost-resize"},
+		Origin: OriginDirectLLM,
+	})
+	require.NoError(t, err)
+	require.Len(t, directInner.args, 1)
+	assert.NotContains(t, directInner.args[0], "UHostId")
+
+	internalInner := &spyExecutor{}
+	internal := NewSafeToolExecutor(internalInner)
+	_, err = internal.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "CheckCompShareResourceCapacity",
+		Args:   map[string]any{"UHostId": "uhost-resize"},
+		Origin: OriginWorkflowInternal,
+	})
+	require.NoError(t, err)
+	require.Len(t, internalInner.args, 1)
+	assert.Equal(t, "uhost-resize", internalInner.args[0]["UHostId"])
+}
+
 func TestBackendIsPodIsInternalOnly(t *testing.T) {
 	directInner := &spyExecutor{}
 	direct := NewSafeToolExecutor(directInner, WithMutatingToolsEnabled(true), WithConfirmFunc(func(string, map[string]any) bool { return true }))

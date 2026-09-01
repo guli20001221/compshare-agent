@@ -97,16 +97,18 @@ func resizeCapacityArgs(wfCtx *Context) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	observedPlacement, ok := supportZonePlacementForZone(wfCtx.Result("查询支持区"), zone)
-	if !ok || observedPlacement.zoneID == 0 {
-		return nil, fmt.Errorf("实时可用区目录未返回实例所在区的内部编号，无法确认目标配置当前是否可变配。")
-	}
+	isPod := isPodInstanceResult(queried)
 	placement := deployment.ZonePlacement{
-		Zone:    zone,
-		Region:  region,
-		ZoneID:  observedPlacement.zoneID,
-		AzGroup: observedPlacement.azGroup,
-		IsPod:   isPodInstanceResult(queried) || isContainerInstanceResult(queried),
+		Zone:   zone,
+		Region: region,
+		IsPod:  isPod,
+	}
+	if observed, ok := supportZonePlacementForZone(wfCtx.Result("查询支持区"), zone); ok {
+		placement.ZoneID = observed.zoneID
+		placement.AzGroup = observed.azGroup
+	}
+	if isPod && placement.ZoneID == 0 {
+		return nil, fmt.Errorf("实时可用区目录未返回实例所在区的内部编号，无法确认目标配置当前是否可变配。")
 	}
 
 	args := deployment.BuildCapacityArgs(deployment.DeploymentDraft{
@@ -117,6 +119,9 @@ func resizeCapacityArgs(wfCtx *Context) (map[string]any, error) {
 		Disks:              disks,
 		MinimalCPUPlatform: cpuPlatform,
 	})
+	// Capacity for an existing instance must use its observed billing pool;
+	// creation-only normalization would turn Dynamic into Postpay.
+	args["ChargeType"] = chargeType
 	args["UHostId"] = uhostID
 	args["MachineType"] = machineType
 	return deployment.ApplyCapacityPlacementArgs(args, placement), nil
@@ -165,6 +170,9 @@ func stepQueryForResize() Step {
 			}, nil
 		},
 		CheckResult: func(wfCtx *Context, result map[string]any) CheckOutcome {
+			if isPodInstanceResult(result) {
+				return CheckFailed("当前仅支持 uhost- 前缀实例变配，cpod- 前缀 Pod 实例暂不支持。")
+			}
 			state := extractInstanceState(result)
 			switch state {
 			case "Stopped":

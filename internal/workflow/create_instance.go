@@ -2279,6 +2279,10 @@ func chargePeriodUnit(chargeType string) string {
 		return "/天"
 	case "Month":
 		return "/月"
+	case "Year":
+		return "/年"
+	case "Dynamic":
+		return "/小时"
 	default: // Postpay / Spot are pay-as-you-go hourly
 		return "/小时"
 	}

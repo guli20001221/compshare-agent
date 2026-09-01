@@ -70,6 +70,18 @@ func TestDescribeCommunityImagesAllowsPopularSortCondition(t *testing.T) {
 	}
 }
 
+func TestSwitchChargeTypeDescriptionMatchesWorkflowBoundary(t *testing.T) {
+	description := registryDescriptions()["SwitchChargeTypeWorkflow"]
+	for _, want := range []string{"实际切换", "服务端核验", "确认前", "目标价格"} {
+		if !strings.Contains(description, want) {
+			t.Fatalf("SwitchChargeTypeWorkflow description must contain %q, got %q", want, description)
+		}
+	}
+	if strings.Contains(description, "切换价格不由本接口返回") {
+		t.Fatalf("SwitchChargeTypeWorkflow description still claims no switch price: %q", description)
+	}
+}
+
 func TestTenantImageReadsDoNotExposeUnscopedExactLookup(t *testing.T) {
 	policies := DefaultToolExecutionPolicies()
 	for _, action := range []string{"DescribeCompShareCustomImages", "DescribeCompShareSharingImages"} {
@@ -505,6 +517,9 @@ func TestInventoryToolDescriptionsSetRoutingBoundaries(t *testing.T) {
 	mustContain(t, descriptions["CreateInstanceWorkflow"], "创建实例及所选镜像")
 	mustContain(t, descriptions["CreateInstanceWorkflow"], "不会安装镜像外软件")
 	mustNotContain(t, descriptions["CreateInstanceWorkflow"], "必须使用此工具")
+	mustContain(t, descriptions["ResizeInstanceWorkflow"], "修改已有实例")
+	mustContain(t, descriptions["ResizeInstanceWorkflow"], "服务端核验")
+	mustContain(t, descriptions["ResizeInstanceWorkflow"], "满足条件才出确认卡")
 	mustContain(t, descriptions["DiagnoseBilling"], "再次询问当前费用时重新调用本工具")
 	mustContain(t, descriptions["DiagnoseInstanceInternals"], "不从列表自选")
 	mustContain(t, descriptions["DiagnoseInstanceInternals"], "不因时间失效")

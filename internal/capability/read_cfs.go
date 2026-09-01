@@ -66,7 +66,7 @@ func cfsListReadSpec() ReadCapabilitySpec[CFSListRequest, CFSResponse] {
 
 func cfsListHandle(ctx context.Context, req CFSListRequest, rt ReadRuntime) (CFSResponse, ReadResult) {
 	args := map[string]any{}
-	if req.CFS != nil {
+	if req.CFS != nil && strings.TrimSpace(req.CFS.ID) != "" {
 		cfsID := extractCFSID(req.CFS.ID)
 		if cfsID == "" {
 			result := ReadFallbackBeforeTool(platform.ReadFallbackValidation)

@@ -28,8 +28,8 @@ func TestResizeCapacity_VMUsesObservedInstanceAndZoneFacts(t *testing.T) {
 	assert.Equal(t, "uhost-test", call.args["UHostId"])
 	assert.Equal(t, "4090", call.args["GpuType"])
 	assert.Equal(t, "G", call.args["MachineType"])
-	assert.Equal(t, "Auto", call.args["MinimalCpuPlatform"])
-	assert.Equal(t, "Postpay", call.args["ChargeType"])
+	assert.Equal(t, "Amd/Epyc2", call.args["MinimalCpuPlatform"])
+	assert.Equal(t, "Dynamic", call.args["ChargeType"])
 	assert.Equal(t, "img-001", call.args["CompShareImageId"])
 	assert.Equal(t, "cn-sh2-02", call.args["Zone"])
 	assert.Equal(t, "cn-sh2", call.args["Region"])
@@ -38,29 +38,59 @@ func TestResizeCapacity_VMUsesObservedInstanceAndZoneFacts(t *testing.T) {
 	require.Equal(t, []any{map[string]any{"IsBoot": true, "Type": "CLOUD_SSD", "Size": uint32(100)}}, call.args["Disks"])
 }
 
-func TestResizeCapacity_PodUsesZoneIDWithoutVMPlacement(t *testing.T) {
-	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance":    podStoppedInstanceResult(),
-		"DescribeCompShareSupportZone": resizeSupportZonesResult("cn-pod-01", "cn-pod", 9001, 3001, true),
-		"DescribeAvailableCompShareInstanceTypes": resizeInstanceTypesResult("4090", "cn-pod-01", 1,
-			specCandidate{CPU: 16, MemoryMB: 65536}),
-		"CheckCompShareResourceCapacity":   resizeCapacityResult(1, 16, 64, true),
-		"GetCompShareInstanceUpgradePrice": {"Price": float64(1.5)},
-		"ResizeCompShareInstance":          {"RetCode": 0},
-	}}
+func TestResizeCapacity_VMDoesNotDependOnSupportZoneCatalog(t *testing.T) {
+	executor := &mockExecutor{
+		failOn: "DescribeCompShareSupportZone",
+		results: map[string]map[string]any{
+			"DescribeCompShareInstance": stoppedInstanceResult(),
+			"DescribeAvailableCompShareInstanceTypes": resizeInstanceTypesResult("4090", "cn-sh2-02", 2,
+				specCandidate{CPU: 16, MemoryMB: 65536}),
+			"CheckCompShareResourceCapacity":   resizeCapacityResult(2, 16, 64, true),
+			"GetCompShareInstanceUpgradePrice": {"Price": float64(1.5)},
+			"ResizeCompShareInstance":          {"RetCode": 0},
+		},
+	}
 	result, err := NewEngine(executor, func(string, map[string]any) bool { return true }, nil).Run(
-		context.Background(), ResizeInstanceDef(), map[string]any{"UHostId": "cpod-test", "Cpu": float64(16)})
+		context.Background(), ResizeInstanceDef(), map[string]any{"UHostId": "uhost-test", "Gpu": float64(2)})
 
 	require.NoError(t, err)
 	require.True(t, result.Success)
 	call, ok := findExecutorCall(executor.calls, "CheckCompShareResourceCapacity")
 	require.True(t, ok)
-	assert.Equal(t, "cpod-test", call.args["UHostId"])
-	assert.Equal(t, true, call.args["IsPod"])
-	assert.Equal(t, uint32(9001), call.args["zone_id"])
-	assert.NotContains(t, call.args, "Zone")
-	assert.NotContains(t, call.args, "Region")
-	assert.NotContains(t, call.args, "az_group")
+	assert.Equal(t, "cn-sh2-02", call.args["Zone"])
+	assert.Equal(t, "cn-sh2", call.args["Region"])
+	assert.NotContains(t, call.args, "zone_id")
+}
+
+func TestResizeCapacity_CPodStopsAfterDescribe(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": podStoppedInstanceResult(),
+	}}
+	confirmed := false
+	result, err := NewEngine(executor, func(string, map[string]any) bool {
+		confirmed = true
+		return true
+	}, nil).Run(context.Background(), ResizeInstanceDef(), map[string]any{"UHostId": "cpod-test", "Cpu": float64(16)})
+
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	assert.Equal(t, "查询实例", result.StoppedAt)
+	assert.Contains(t, result.Message, "cpod-")
+	assert.False(t, confirmed)
+	require.Len(t, executor.calls, 1)
+	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
+	_, checked := findExecutorCall(executor.calls, "CheckCompShareResourceCapacity")
+	assert.False(t, checked)
+	_, resized := findExecutorCall(executor.calls, "ResizeCompShareInstance")
+	assert.False(t, resized)
+}
+
+func TestResizeCapacity_UHostContainerIsNotTreatedAsPod(t *testing.T) {
+	wfCtx := NewContext(map[string]any{"UHostId": "uhost-container-test", "Gpu": float64(2)})
+	outcome := stepQueryForResize().CheckResult(wfCtx, containerStoppedInstanceResult())
+
+	assert.True(t, outcome.OK)
+	assert.NotContains(t, outcome.Message, "cpod-")
 }
 
 func TestResizeCapacity_SoldOutStopsBeforePriceAndConfirmation(t *testing.T) {
