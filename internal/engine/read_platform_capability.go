@@ -147,9 +147,12 @@ func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabil
 	if readResult.Status == platform.ReadStatusUnavailable {
 		return e.buildUnavailableObservation(action, capabilityLabel, readResult, onStep)
 	}
-	// Absence is asserted only against a registry still fresh as of `now`: a
-	// stale-but-complete snapshot must not tell the model "you have none".
-	observation := e.buildReadObservation(action, capabilityLabel, readResult, snapshot.CanAssertAbsenceAt(now), onStep)
+	// ReadEmpty means the upstream query itself completed and returned no rows, so
+	// the model may state that scoped absence. For other outcomes, only the
+	// session's post-read registry may establish account-wide absence; a full
+	// resource listing can refresh it during reg.Run.
+	canAssertAbsence := readResult.Status == platform.ReadStatusEmpty || e.RegistrySnapshot().CanAssertAbsenceAt(now)
+	observation := e.buildReadObservation(action, capabilityLabel, readResult, canAssertAbsence, onStep)
 	return observation
 }
 
@@ -187,7 +190,7 @@ func (e *Engine) buildUnavailableObservation(action, capabilityLabel string, r c
 // observation shape. It builds directly off the typed capability.ReadResult and
 // the platform status vocabulary; RouteStatus is the one derived field.
 func (e *Engine) buildReadObservation(action, capabilityLabel string, result capability.ReadResult, canAssertAbsence bool, onStep func(StepEvent)) string {
-	result = e.contextEnvelopeForPlainDirectReply(result)
+	result = e.contextEnvelopeForPlainDirectReply(result, action)
 	observation := ReadCapabilityObservation{
 		Capability:       capabilityLabel,
 		Status:           result.Status,
@@ -198,7 +201,8 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 		Envelope:         result.Envelope,
 		CanAssertAbsence: canAssertAbsence,
 	}
-	if result.Status == platform.ReadStatusHandled && !result.NeedsClarification && result.Envelope != nil {
+	if !result.NeedsClarification && result.Envelope != nil &&
+		(result.Status == platform.ReadStatusHandled || (result.Status == platform.ReadStatusEmpty && canAssertAbsence)) {
 		e.recordPlatformReadEvidence(capabilityLabel, result)
 	}
 	if result.Status == platform.ReadStatusHandled && !result.NeedsClarification &&

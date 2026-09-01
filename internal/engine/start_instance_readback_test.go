@@ -87,7 +87,7 @@ func TestCPUOnlyStartFailureReadsBackTheObservedResult(t *testing.T) {
 	}
 }
 
-func TestOrdinaryStartFailureDoesNotUseTheCPUOnlyReadback(t *testing.T) {
+func TestOrdinaryStartFailureAlsoReadsBackTheObservedResult(t *testing.T) {
 	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
 		if action == "DescribeCompShareInstance" {
 			return cpuOnlyStartInstance("Stopped", 1, "H20", 16, 245760), nil
@@ -101,8 +101,10 @@ func TestOrdinaryStartFailureDoesNotUseTheCPUOnlyReadback(t *testing.T) {
 		"UHostId": "uhost-1", "StartMode": "normal",
 	}, zoneRefData(nil)), onStep)
 
-	assert.NotContains(t, reply, "结果不确定")
-	assert.Equal(t, []string{"DescribeCompShareInstance", "StartCompShareInstance"}, executor.calls)
+	assert.Contains(t, reply, "截至本次回读仍处于已关机")
+	assert.Contains(t, reply, "未观察到启动完成")
+	assert.Contains(t, reply, "请勿重复提交")
+	assert.Equal(t, []string{"DescribeCompShareInstance", "StartCompShareInstance", "DescribeCompShareInstance"}, executor.calls)
 	var failure *StepEvent
 	for i := range *events {
 		if (*events)[i].Action == "StartInstanceWorkflow" && (*events)[i].Type == StepBlocked {
@@ -111,6 +113,34 @@ func TestOrdinaryStartFailureDoesNotUseTheCPUOnlyReadback(t *testing.T) {
 	}
 	require.NotNil(t, failure)
 	assert.Equal(t, "UPSTREAM_RETCODE_120", failure.ErrorCode)
+}
+
+func TestOrdinaryStartFailureReportsACommittedGPUReactivation(t *testing.T) {
+	describeCalls := 0
+	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			describeCalls++
+			if describeCalls == 1 {
+				return cpuOnlyStartInstance("Stopped", 0, "4090", 2, 4096), nil
+			}
+			return cpuOnlyStartInstance("Stopped", 1, "4090", 16, 65536), nil
+		case "StartCompShareInstance":
+			return nil, tools.NewUpstreamAPIError(120, "synthetic upstream failure")
+		default:
+			return map[string]any{"RetCode": 0}, nil
+		}
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, func(string, map[string]any) bool { return true })
+
+	reply := eng.executeResolvedWorkflow(context.Background(), mustConfirmable("StartInstanceWorkflow", map[string]any{
+		"UHostId": "uhost-1", "StartMode": "normal",
+	}, zoneRefData(nil)), noopStep)
+
+	assert.Contains(t, reply, "GPU 规格恢复已发生")
+	assert.Contains(t, reply, "启动尚未完成")
+	assert.Contains(t, reply, "请勿重复提交")
+	assert.Equal(t, []string{"DescribeCompShareInstance", "StartCompShareInstance", "DescribeCompShareInstance"}, executor.calls)
 }
 
 func cpuOnlyStartInstance(state string, gpu int, gpuType string, cpu, memory int) map[string]any {

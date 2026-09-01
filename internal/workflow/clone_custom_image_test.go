@@ -60,6 +60,7 @@ func TestCloneCustomImage_HappyPathSealsOneVerifiedTarget(t *testing.T) {
 	assert.Equal(t, "training-base", preview["SourceImageName"])
 	assert.Equal(t, "上海二B", preview["TargetZoneName"])
 	assert.Equal(t, "cimg-cloned", result.Data["CompShareImageId"])
+	assert.Equal(t, "pending", result.Data["DeliveryState"])
 
 	syncCall, ok := findExecutorCall(executor.calls, "SyncCompShareCustomImage")
 	require.True(t, ok)
@@ -72,6 +73,20 @@ func TestCloneCustomImage_HappyPathSealsOneVerifiedTarget(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "cimg-cloned", progressCall.args["CompShareImageId"])
 	assert.Equal(t, uint32(8200), progressCall.args["zone_id"])
+}
+
+func TestCloneCustomImage_ProgressOneHundredIsNotProofOfAvailability(t *testing.T) {
+	executor := cloneCustomImageExecutor()
+	executor.results["DescribeCompShareCustomImageSyncDetail"] = map[string]any{"Progress": "100"}
+	eng := NewEngine(executor, func(string, map[string]any) bool { return true }, nil)
+
+	result, err := eng.Run(context.Background(), CloneCustomImageDef(), map[string]any{
+		"CompShareImageId": "cimg-source", "Zone": "cn-sh2-02", "TargetImageName": "training-copy",
+	}, WithReferenceData(cloneCustomImageReferenceData(deployment.ImageStatusAvailable, "cn-wlcb-01", 10027)))
+
+	require.NoError(t, err)
+	require.True(t, result.Success, result.Message)
+	assert.Equal(t, "pending", result.Data["DeliveryState"])
 }
 
 func TestCloneCustomImage_RejectsSameZoneBeforeConfirmation(t *testing.T) {

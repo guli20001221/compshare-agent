@@ -73,10 +73,10 @@ func (e *Engine) resolveImageCatalogSnapshotForSpec(
 //     TotalCount=0 even when that row exists;
 //   - community returns one CompshareImageGroup with the matching version in Data.
 //
-// Custom and sharing point reads are intentionally not used here: those upstream
-// branches can change the tenant scope or bypass the sharing-list visibility
-// filter when given a known id. They are therefore fetched as the current
-// tenant's bounded list and matched locally.
+// Custom and sharing point reads are intentionally not used here: those
+// upstream branches can change the tenant scope or bypass the sharing-list
+// visibility filter when given a known id. They are therefore fetched as the
+// current tenant's paginated list and matched locally.
 //
 // Resolution therefore reads the rows, never TotalCount. A typed "this image does
 // not exist in this source" response is an available-but-empty catalog; transport

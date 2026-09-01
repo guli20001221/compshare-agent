@@ -324,49 +324,109 @@ type monitorHistoricalPoint struct {
 }
 
 type monitorHistoricalSeries struct {
-	Key    string
-	Label  string
-	Unit   string
-	Metric Metric
-	Points []monitorHistoricalPoint
+	SubjectID string
+	Key       string
+	Label     string
+	Unit      string
+	Metric    Metric
+	Points    []monitorHistoricalPoint
+}
+
+type monitorHistoricalAggregate struct {
+	Latest  float64
+	Average float64
+	Maximum float64
+	PeakAt  int64
+}
+
+func aggregateHistoricalSeries(item monitorHistoricalSeries) (monitorHistoricalAggregate, bool) {
+	if len(item.Points) == 0 {
+		return monitorHistoricalAggregate{}, false
+	}
+	latest := item.Points[len(item.Points)-1]
+	peak := item.Points[0]
+	sum := 0.0
+	for _, point := range item.Points {
+		sum += point.Value
+		if point.Value > peak.Value {
+			peak = point
+		}
+	}
+	return monitorHistoricalAggregate{
+		Latest:  latest.Value,
+		Average: sum / float64(len(item.Points)),
+		Maximum: peak.Value,
+		PeakAt:  peak.Timestamp,
+	}, true
 }
 
 func RenderHistoricalMonitorSummary(metrics []Metric, payload map[string]any, windowStart, windowEnd int64) string {
 	prefix := historicalMonitorWindowPrefix(windowStart, windowEnd)
 	series := historicalMonitorSeries(metrics, payload)
+	subjectIDs := historicalMonitorSubjectIDs(payload)
 	if len(series) == 0 {
+		if len(metrics) > 0 && len(subjectIDs) > 0 {
+			return prefix + "\n" + strings.Join(historicalMissingMetricRows(subjectIDs, metrics), "\n")
+		}
 		if len(historicalMonitorSeries(nil, payload)) > 0 {
 			return prefix + noRequestedMonitorValuesReply
 		}
+		if len(subjectIDs) > 1 {
+			parts := make([]string, 0, len(subjectIDs))
+			for _, id := range subjectIDs {
+				parts = append(parts, "- "+id+"：未返回请求的监控数据")
+			}
+			return prefix + "\n" + strings.Join(parts, "\n")
+		}
 		return prefix + noMonitorValuesReply
 	}
-	parts := make([]string, 0, len(series))
+	fallbackSubjectID := ""
+	if len(subjectIDs) == 1 {
+		fallbackSubjectID = subjectIDs[0]
+	}
+	presentMetrics := historicalMonitorMetricsBySubject(series, fallbackSubjectID)
+	multipleSubjects := len(subjectIDs) > 1
+	parts := make([]string, 0, len(series)+len(subjectIDs))
 	for _, item := range series {
-		if len(item.Points) == 0 {
+		aggregate, ok := aggregateHistoricalSeries(item)
+		if !ok {
 			continue
 		}
-		latest := item.Points[len(item.Points)-1]
-		sum := 0.0
-		peak := item.Points[0]
-		for _, p := range item.Points {
-			sum += p.Value
-			if p.Value > peak.Value {
-				peak = p
-			}
-		}
-		avg := sum / float64(len(item.Points))
 		label := item.Label
 		if label == "" {
 			label = item.Key
 		}
-		peakAt := time.Unix(peak.Timestamp, 0).In(monitorHistoryLoc).Format("2006-01-02 15:04")
+		if multipleSubjects && item.SubjectID != "" {
+			label = item.SubjectID + " · " + label
+		}
+		peakAt := time.Unix(aggregate.PeakAt, 0).In(monitorHistoryLoc).Format("2006-01-02 15:04")
 		parts = append(parts, fmt.Sprintf("- %s：最新 %s%s，平均 %s%s，峰值 %s%s（%s）",
 			label,
-			formatMonitorFloat(latest.Value), item.Unit,
-			formatMonitorFloat(avg), item.Unit,
-			formatMonitorFloat(peak.Value), item.Unit,
+			formatMonitorFloat(aggregate.Latest), item.Unit,
+			formatMonitorFloat(aggregate.Average), item.Unit,
+			formatMonitorFloat(aggregate.Maximum), item.Unit,
 			peakAt,
 		))
+	}
+	if len(metrics) > 0 {
+		for _, id := range subjectIDs {
+			for _, metric := range uniqueMonitorMetrics(metrics) {
+				if presentMetrics[id][metric] {
+					continue
+				}
+				label := monitorMetricReplyLabel(metric)
+				if multipleSubjects {
+					label = id + " · " + label
+				}
+				parts = append(parts, "- "+label+"未返回数据")
+			}
+		}
+	} else if multipleSubjects {
+		for _, id := range subjectIDs {
+			if len(presentMetrics[id]) == 0 {
+				parts = append(parts, "- "+id+"：未返回请求的监控数据")
+			}
+		}
 	}
 	if len(parts) == 0 {
 		return prefix + noMonitorValuesReply
@@ -374,6 +434,39 @@ func RenderHistoricalMonitorSummary(metrics []Metric, payload map[string]any, wi
 	// The window prefix stays its own line: it qualifies every row under it, and
 	// run together with the first metric it read as part of that metric.
 	return prefix + "\n" + strings.Join(parts, "\n")
+}
+
+func historicalMonitorMetricsBySubject(series []monitorHistoricalSeries, fallbackSubjectID string) map[string]map[Metric]bool {
+	present := map[string]map[Metric]bool{}
+	for _, item := range series {
+		if _, ok := aggregateHistoricalSeries(item); !ok || item.Metric == "" {
+			continue
+		}
+		subjectID := item.SubjectID
+		if subjectID == "" {
+			subjectID = fallbackSubjectID
+		}
+		if present[subjectID] == nil {
+			present[subjectID] = map[Metric]bool{}
+		}
+		present[subjectID][item.Metric] = true
+	}
+	return present
+}
+
+func historicalMissingMetricRows(subjectIDs []string, metrics []Metric) []string {
+	multipleSubjects := len(subjectIDs) > 1
+	rows := make([]string, 0, len(subjectIDs)*len(metrics))
+	for _, id := range subjectIDs {
+		for _, metric := range uniqueMonitorMetrics(metrics) {
+			label := monitorMetricReplyLabel(metric)
+			if multipleSubjects {
+				label = id + " · " + label
+			}
+			rows = append(rows, "- "+label+"未返回数据")
+		}
+	}
+	return rows
 }
 
 // historicalMonitorWindowPrefix renders the queried Beijing window as a
@@ -388,7 +481,31 @@ func historicalMonitorWindowPrefix(start, end int64) string {
 	}
 	startAt := time.Unix(start, 0).In(monitorHistoryLoc)
 	endAt := time.Unix(end, 0).In(monitorHistoryLoc)
-	return fmt.Sprintf("北京时间 %s ~ %s（历史时间窗）：", startAt.Format("2006-01-02 15:04"), endAt.Format("15:04"))
+	return fmt.Sprintf("北京时间 %s ~ %s（历史时间窗）：", startAt.Format("2006-01-02 15:04"), endAt.Format("2006-01-02 15:04"))
+}
+
+func historicalMonitorSubjectIDs(payload map[string]any) []string {
+	data, _ := payload["Data"].(map[string]any)
+	if data == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	for _, key := range []string{"List", "PodList"} {
+		for _, raw := range mapSliceAt(data, key) {
+			row, _ := raw.(map[string]any)
+			id, _ := row["UHostId"].(string)
+			id = strings.TrimSpace(id)
+			if id != "" {
+				seen[id] = struct{}{}
+			}
+		}
+	}
+	ids := make([]string, 0, len(seen))
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
 }
 
 func historicalMonitorSeries(metrics []Metric, payload map[string]any) []monitorHistoricalSeries {
@@ -402,6 +519,7 @@ func historicalMonitorSeries(metrics []Metric, payload map[string]any) []monitor
 		if instance == nil {
 			continue
 		}
+		subjectID, _ := instance["UHostId"].(string)
 		for _, metricItem := range mapSliceAt(instance, "Metrics") {
 			metric, _ := metricItem.(map[string]any)
 			if metric == nil {
@@ -423,7 +541,7 @@ func historicalMonitorSeries(metrics []Metric, payload map[string]any) []monitor
 					key += "." + suffix
 					label += " (" + suffix + ")"
 				}
-				out = append(out, monitorHistoricalSeries{Key: key, Label: label, Unit: def.Unit, Metric: def.Metric, Points: points})
+				out = append(out, monitorHistoricalSeries{SubjectID: subjectID, Key: key, Label: label, Unit: def.Unit, Metric: def.Metric, Points: points})
 			}
 		}
 	}
@@ -432,6 +550,7 @@ func historicalMonitorSeries(metrics []Metric, payload map[string]any) []monitor
 		if instance == nil {
 			continue
 		}
+		subjectID, _ := instance["UHostId"].(string)
 		metricItems, _ := instance["Metrics"].(map[string]any)
 		if metricItems == nil {
 			continue
@@ -446,7 +565,7 @@ func historicalMonitorSeries(metrics []Metric, payload map[string]any) []monitor
 				continue
 			}
 			if points := historicalPointsFromValues(values); len(points) > 0 {
-				out = append(out, monitorHistoricalSeries{Key: def.Key, Label: def.Label, Unit: def.Unit, Metric: def.Metric, Points: points})
+				out = append(out, monitorHistoricalSeries{SubjectID: subjectID, Key: def.Key, Label: def.Label, Unit: def.Unit, Metric: def.Metric, Points: points})
 			}
 		}
 		gpuItems, _ := metricItems["Gpu"].([]any)
@@ -473,12 +592,18 @@ func historicalMonitorSeries(metrics []Metric, payload map[string]any) []monitor
 					key += "." + suffix
 					label += " (" + suffix + ")"
 				}
-				out = append(out, monitorHistoricalSeries{Key: key, Label: label, Unit: def.Unit, Metric: def.Metric, Points: points})
+				out = append(out, monitorHistoricalSeries{SubjectID: subjectID, Key: key, Label: label, Unit: def.Unit, Metric: def.Metric, Points: points})
 			}
 			addGPU("Util", "GpuUtil")
 			addGPU("Memory", "GpuMemory")
 		}
 	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if out[i].SubjectID != out[j].SubjectID {
+			return out[i].SubjectID < out[j].SubjectID
+		}
+		return out[i].Key < out[j].Key
+	})
 	return out
 }
 

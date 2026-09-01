@@ -205,6 +205,13 @@ func TestResourceHandle_EmptyListIsStructuredEmpty(t *testing.T) {
 	result := runResource(t, &fakeReadExec{result: describeFixture()}, nil, ResourceInfoRequest{})
 
 	require.Equal(t, platform.ReadStatusEmpty, result.Status)
+	require.Equal(t, resourceInfoAction, result.ToolAction)
+	require.NotNil(t, result.Envelope)
+	foundCount := false
+	for _, fact := range result.Envelope.Facts {
+		foundCount = foundCount || (fact.Key == "account_instance_count" && fact.Value == "0")
+	}
+	assert.True(t, foundCount, "the empty result must remain visible to the final evidence gateway")
 }
 
 // TestResourceHandle_AmbiguousNameIsConflict: a name matching multiple instances
@@ -314,6 +321,12 @@ func TestResourceHandle_ColdIDResponseMismatchIsEmpty(t *testing.T) {
 		"a response that does not echo the requested id yields Empty, not a wrong-instance Handled")
 	assert.NotContains(t, result.Reply, "uhost-other")
 	assert.Empty(t, result.Effects, "a mismatched response verifies no instance existence")
+	require.NotNil(t, result.Envelope)
+	foundAbsent := false
+	for _, fact := range result.Envelope.Facts {
+		foundAbsent = foundAbsent || (fact.SubjectID == "uhost-requested" && fact.Key == "exists" && fact.Value == "false")
+	}
+	assert.True(t, foundAbsent, "the exact point-query absence must keep its queried instance scope")
 }
 
 // TestResourceHandle_EmitsVerifiedInstancesEffect: a same-id-verified response

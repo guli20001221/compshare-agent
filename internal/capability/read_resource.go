@@ -5,6 +5,7 @@ import (
 
 	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/entity"
+	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/readprojection"
@@ -180,7 +181,23 @@ func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime
 	if len(instances) == 0 {
 		// Query succeeded but nothing is present/matched — a structured Empty read.
 		// The Agent pairs this with CanAssertAbsence to state "you have none".
-		return ResourceInfoResponse{}, ReadEmpty(readprojection.RenderResourceSummary(nil, envMeta))
+		env := readprojection.BuildResourceEnvelopeWithMetaAndZoneCatalog(nil, envMeta, rt.ZoneCatalog)
+		if len(ids) == 0 {
+			env.Facts = append(env.Facts, envelope.Fact{
+				Key: "account_instance_count", Label: "当前账号实例数", Value: "0", Source: envelope.FactSourceAPI,
+			})
+		} else {
+			for _, id := range ids {
+				env.Subjects = append(env.Subjects, envelope.Subject{ID: id, Type: envelope.SubjectInstance})
+				env.Facts = append(env.Facts, envelope.Fact{
+					SubjectID: id, Key: "exists", Label: "当前账号中是否存在", Value: "false", Source: envelope.FactSourceAPI,
+				})
+			}
+		}
+		result := ReadEmpty(readprojection.RenderResourceSummary(nil, envMeta))
+		result.ToolAction = resourceInfoAction
+		result.Envelope = &env
+		return ResourceInfoResponse{}, result
 	}
 	return ResourceInfoResponse{
 		Instances:           instances,

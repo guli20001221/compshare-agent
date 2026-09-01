@@ -718,18 +718,12 @@ func TestConfirmedFollowUpExecutesThroughResolvedTargetAuthority(t *testing.T) {
 	require.Contains(t, executor.calls, "StopCompShareInstance")
 }
 
-func TestDeterministicReinstallReplyDoesNotInventANewPassword(t *testing.T) {
-	withoutPassword, ok := deterministicWorkflowReply("ReinstallInstanceWorkflow", map[string]any{"UHostId": "uhost-1"})
+func TestDeterministicReinstallReplyDoesNotInventLoginCredentialState(t *testing.T) {
+	reply, ok := deterministicWorkflowReply("ReinstallInstanceWorkflow", map[string]any{"UHostId": "uhost-1"})
 	require.True(t, ok)
-	require.Contains(t, withoutPassword, "未设置新密码")
-	require.NotContains(t, withoutPassword, "刚设置")
-
-	withPassword, ok := deterministicWorkflowReply("ReinstallInstanceWorkflow", map[string]any{
-		"UHostId": "uhost-1", "PasswordConfigured": true,
-	})
-	require.True(t, ok)
-	require.Contains(t, withPassword, "刚设置")
-	require.NotContains(t, withPassword, "secret")
+	require.Contains(t, reply, "以控制台显示为准")
+	require.NotContains(t, reply, "原登录凭据")
+	require.NotContains(t, reply, "刚设置")
 }
 
 func TestDeterministicResizeCFSReplyCannotBeRestatedAsReadOnlyEstimate(t *testing.T) {

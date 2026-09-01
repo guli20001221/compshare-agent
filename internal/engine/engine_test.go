@@ -1942,8 +1942,8 @@ func TestRegistrySnapshotAccessorReturnsImmutableSnapshot(t *testing.T) {
 }
 
 func TestMonitorHistoryUnsupportedReplyUsesCurrentScopeWording(t *testing.T) {
-	assert.Contains(t, refusal.MonitorHistoryUnsupported, "历史监控目前一次只支持查询一台实例")
-	assert.Contains(t, refusal.MonitorHistoryUnsupported, "24 小时")
+	assert.Contains(t, refusal.MonitorHistoryUnsupported, "最多查询 20 台实例")
+	assert.Contains(t, refusal.MonitorHistoryUnsupported, "30 天")
 	assert.NotContains(t, refusal.MonitorHistoryUnsupported, "暂不支持指定历史时间段")
 }
 
@@ -1999,8 +1999,11 @@ func TestChat_TokenBudgetExceeded_BreaksAtIterationBoundary(t *testing.T) {
 	onStep, events := collectSteps()
 	var hardBlockHits []observability.EngineHardBlockTrace
 
-	eng := NewWithDeps(mock, &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": {"UHostSet": []any{}, "RetCode": 0},
+	// This test is about the iteration boundary, not evidence-based recovery.
+	// Keep the tool call non-evidentiary so a successful read cannot legitimately
+	// trigger the separate one-call synthesis path.
+	eng := NewWithDeps(mock, &mockExecutorFn{fn: func(string, map[string]any) (map[string]any, error) {
+		return nil, fmt.Errorf("test upstream failure")
 	}}, nil)
 	eng.maxTokensPerTurn = 50000
 	eng.SetHardBlockObserver(func(t observability.EngineHardBlockTrace) {

@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"errors"
+	"strings"
 
 	"github.com/compshare-agent/internal/deployment"
 )
@@ -18,6 +19,7 @@ func CreateDiskDef() *Definition {
 			stepConfirmCreateDisk(),
 			stepCreateAndAttachDisk(),
 		},
+		ResultData: createDiskResultData,
 	}
 }
 
@@ -170,4 +172,13 @@ func stepCreateAndAttachDisk() Step {
 			return addRequiredPodPlacementArgs(args, queried, wfCtx.Result("查询支持区"))
 		},
 	}
+}
+
+func createDiskResultData(wfCtx *Context) map[string]any {
+	result := wfCtx.Result("创建并挂载数据盘")
+	id := strings.TrimSpace(paramStr(result, "UDiskId", ""))
+	if id == "" {
+		return nil
+	}
+	return map[string]any{"UDiskId": id}
 }

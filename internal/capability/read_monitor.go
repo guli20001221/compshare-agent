@@ -84,7 +84,7 @@ func (r MonitorHistoryRequest) MissingFields() []platform.MissingField {
 func monitorHistoryReadSpec() ReadCapabilitySpec[MonitorHistoryRequest, MonitorResponse] {
 	return ReadCapabilitySpec[MonitorHistoryRequest, MonitorResponse]{
 		Label:       monitorHistoryCapabilityLabel,
-		Description: "查询单个已有实例在明确起止时间内的 CPU、内存、GPU 或显存历史监控。时间范围最多 24 小时；当前值查询使用实时监控能力。",
+		Description: "查询最多 20 个实例、30 天内的 CPU、内存、GPU 或显存历史监控；当前值使用实时监控能力。",
 		Params: objectParam(map[string]schemaNode{
 			"targets":     targetRefsParam(),
 			"metrics":     metricsParam(),
@@ -99,11 +99,6 @@ func monitorHistoryHandle(ctx context.Context, req MonitorHistoryRequest, rt Rea
 	instances, ids, terminal := resolveMonitorTargets(ctx, req.Targets, rt)
 	if terminal.Status != "" {
 		return MonitorResponse{}, terminal
-	}
-	// Historical monitoring is single-instance (the upstream API returns one
-	// series set per call, and the renderer aggregates one host).
-	if len(ids) != 1 {
-		return MonitorResponse{}, ReadFallbackBeforeTool(platform.ReadFallbackValidation)
 	}
 	start, end, ok := readprojection.ResolveMonitorHistoryWindow(req.TimeWindow)
 	if !ok {

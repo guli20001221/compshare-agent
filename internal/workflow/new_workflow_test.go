@@ -1078,7 +1078,7 @@ func TestReinstall_CommunityImageLookupAccepted(t *testing.T) {
 		"DescribeCompShareInstance": stoppedInstanceResult(),
 		"DescribeCompShareImages":   {"ImageSet": []any{}},
 		"DescribeCommunityImages": {"ImageSet": []any{
-			map[string]any{"CompShareImageId": "comm-img-001", "Name": "DeepSeek-R1:32b", "Container": "False"},
+			map[string]any{"CompShareImageId": "comm-img-001", "Name": "DeepSeek-R1:32b", "Container": "False", "Price": float64(12.5)},
 		}},
 		"DescribeCompShareCustomImages":  {"ImageSet": []any{}},
 		"DescribeCompShareSharingImages": {"ImageSet": []any{}},
@@ -1103,8 +1103,93 @@ func TestReinstall_CommunityImageLookupAccepted(t *testing.T) {
 	require.NotNil(t, confirmArgs)
 	assert.Equal(t, "DeepSeek-R1:32b", confirmArgs["target_image_name"])
 	assert.Equal(t, "community", confirmArgs["target_image_source"])
+	assert.Contains(t, confirmArgs["target_image_price"], "12.50")
 	_, reinstalled := findExecutorCall(executor.calls, "ReinstallCompShareInstance")
 	assert.True(t, reinstalled)
+}
+
+func TestReinstallFailureDraftCapturesThePreConfirmImageFromTheInstanceRow(t *testing.T) {
+	instance := stoppedInstanceResult()
+	host := instance["UHostSet"].([]any)[0].(map[string]any)
+	host["CompShareImageId"] = "img-current"
+	host["CompShareImageName"] = "Ubuntu 22.04"
+	executor := &mockExecutor{
+		results: map[string]map[string]any{
+			"DescribeCompShareInstance": instance,
+			"DescribeCompShareImages": {"ImageSet": []any{map[string]any{
+				"CompShareImageId": "img-current", "Name": "Ubuntu 22.04", "Container": "False",
+			}}},
+		},
+		failOn: "ReinstallCompShareInstance",
+	}
+	result, err := NewEngine(executor, func(string, map[string]any) bool { return true }, nil).Run(
+		context.Background(), ReinstallInstanceDef(), map[string]any{
+			"UHostId": "uhost-test", "CompShareImageId": "img-current", "ImageSource": "platform",
+		},
+	)
+	require.NoError(t, err)
+	require.False(t, result.Success)
+	require.NotNil(t, result.Failure)
+	assert.Equal(t, "img-current", result.Failure.Draft["InitialImageId"])
+	assert.Equal(t, "Ubuntu 22.04", result.Failure.Draft["InitialImageName"])
+	assert.Equal(t, "img-current", result.Failure.Draft["TargetImageId"])
+}
+
+func TestReinstallTenantImageSourcesNeverUsePointReads(t *testing.T) {
+	for _, source := range []string{"custom", "sharing"} {
+		t.Run(source, func(t *testing.T) {
+			args, ok := reinstallImageLookupArgs(NewContext(map[string]any{
+				"ImageSource":      source,
+				"CompShareImageId": "compshareImage-tenant-visible",
+			}), source)
+			require.True(t, ok)
+			assert.Equal(t, maxCustomImageQueryLimit, args["Limit"])
+			assert.NotContains(t, args, "CompShareImageId")
+		})
+	}
+}
+
+func TestReinstallTenantImageOutsideBrowsePageUsesVerifiedTenantSnapshot(t *testing.T) {
+	const imageID = "compshareImage-shared-beyond-first-page"
+	wfCtx := NewContext(map[string]any{
+		"ImageSource":      "sharing",
+		"CompShareImageId": imageID,
+	})
+	wfCtx.StepResults["查询共享目标镜像"] = map[string]any{
+		"ImageSet": []any{map[string]any{
+			"CompShareImageId": "compshareImage-other",
+			"Name":             "另一张共享镜像",
+			"Status":           "Available",
+		}},
+	}
+	wfCtx.referenceData = ReferenceData{ImageCatalog: deployment.NewImageCatalogSnapshot(true, []deployment.ImageCatalogEntry{{
+		ID: imageID, Name: "租户可见的共享镜像", Source: "sharing", Status: deployment.ImageStatusReviewing,
+	}})}
+
+	image, ok := targetReinstallImage(wfCtx)
+	require.True(t, ok)
+	assert.Equal(t, imageID, image.ID)
+	assert.Equal(t, "sharing", image.Source)
+}
+
+func TestReinstall_CommunityImageWithoutPriceStopsBeforeConfirmation(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": stoppedInstanceResult(),
+		"DescribeCommunityImages": {"ImageSet": []any{
+			map[string]any{"CompShareImageId": "comm-img-001", "Name": "DeepSeek-R1:32b", "Container": "False"},
+		}},
+	}}
+	result, err := NewEngine(executor, func(string, map[string]any) bool {
+		t.Fatal("a paid community-image reinstall cannot be confirmed without its catalog price")
+		return false
+	}, nil).Run(context.Background(), ReinstallInstanceDef(), map[string]any{
+		"UHostId": "uhost-test", "CompShareImageId": "comm-img-001", "ImageSource": "community",
+	})
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Contains(t, result.Message, "未返回价格")
+	_, reinstalled := findExecutorCall(executor.calls, "ReinstallCompShareInstance")
+	assert.False(t, reinstalled)
 }
 
 func TestReinstall_PodRejectsNonContainerImageBeforeConfirm(t *testing.T) {

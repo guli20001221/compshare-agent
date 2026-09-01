@@ -133,7 +133,7 @@ func TestPlatformImagePointQueryUsesImageSetWhenTotalCountIsZero(t *testing.T) {
 	assert.Equal(t, []string{"DescribeCompShareImages"}, executor.calls)
 }
 
-func TestCustomAndSharingVerificationStayInsideTenantScopedLists(t *testing.T) {
+func TestTenantImageVerificationUsesScopedLists(t *testing.T) {
 	tests := []struct {
 		source string
 		action string
@@ -165,9 +165,8 @@ func TestCustomAndSharingVerificationStayInsideTenantScopedLists(t *testing.T) {
 			entry, ok := snap.ByID(imageID)
 			require.True(t, ok)
 			assert.Equal(t, tt.source, entry.Source)
-			assert.NotContains(t, gotArgs, "CompShareImageId",
-				"自制/共享点查会绕过租户可见范围，必须使用租户列表后本地匹配")
 			assert.Equal(t, 100, gotArgs["Limit"])
+			assert.NotContains(t, gotArgs, "CompShareImageId")
 			assert.Equal(t, 0, gotArgs["Offset"])
 			assert.Equal(t, []string{tt.action}, executor.calls)
 		})
@@ -226,6 +225,8 @@ func TestMissingImageAcrossAllCandidateSourcesIsNotAnOutage(t *testing.T) {
 			return nil, tools.NewUpstreamAPIError(8039, "Resource not exist [compshareImage-stale]")
 		case "DescribeCompShareCustomImages":
 			return map[string]any{"TotalCount": float64(0), "ImageSet": []any{}}, nil
+		case "DescribeCompShareSharingImages":
+			return map[string]any{"TotalCount": float64(0), "ImageSet": []any{}}, nil
 		default:
 			t.Fatalf("unexpected action %s", action)
 			return nil, nil
@@ -245,7 +246,38 @@ func TestMissingImageAcrossAllCandidateSourcesIsNotAnOutage(t *testing.T) {
 		"所有候选来源都明确回答无此 ID 时，应当拒绝 ID，而不是谎称目录不可用")
 	assert.Zero(t, snap.Len())
 	assert.Empty(t, source)
-	assert.Equal(t, []string{"DescribeCompShareImages", "DescribeCommunityImages", "DescribeCompShareCustomImages"}, executor.calls)
+	assert.Equal(t, []string{"DescribeCompShareImages", "DescribeCommunityImages", "DescribeCompShareCustomImages", "DescribeCompShareSharingImages"}, executor.calls)
+}
+
+func TestCreateExactImageIDCanResolveToSharingWithoutADeclaredSource(t *testing.T) {
+	const imageID = "compshareImage-shared-visible"
+	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+		if action == "DescribeCompShareSharingImages" {
+			return map[string]any{"ImageSet": []any{map[string]any{
+				"CompShareImageId": imageID,
+				"Name":             "共享训练环境",
+				"Status":           "Available",
+			}}}, nil
+		}
+		if action == "DescribeCommunityImages" {
+			return nil, tools.NewUpstreamAPIError(8039, "Resource not exist ["+imageID+"]")
+		}
+		return map[string]any{"ImageSet": []any{}}, nil
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	catalog, err := actionresolver.BuildCatalog()
+	require.NoError(t, err)
+	create, ok := catalog.Lookup("CreateInstanceWorkflow")
+	require.True(t, ok)
+
+	snap, source := eng.resolveImageCatalogSnapshotForSpec(context.Background(), create, "", imageID, false)
+
+	require.True(t, snap.Available())
+	entry, ok := snap.ByID(imageID)
+	require.True(t, ok)
+	assert.Equal(t, "共享训练环境", entry.Name)
+	assert.Equal(t, "sharing", entry.Source)
+	assert.Equal(t, "sharing", source)
 }
 
 func TestImageCatalogDependencyFailureStaysUnavailable(t *testing.T) {

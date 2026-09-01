@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 
+	"github.com/compshare-agent/internal/actionresolver"
 	"github.com/compshare-agent/internal/tools"
 )
 
@@ -37,6 +38,19 @@ func agentToolObservation(action, raw string) string {
 
 	status := stringField(object, "status")
 	meta := tools.AgentToolMeta{SourceStatus: status}
+	// Repair a malformed model proposal before asking the user for any other
+	// missing field. Otherwise the same invalid field survives the next call and
+	// the user is asked to compensate for an error the Agent can fix itself.
+	if modelOwnsRejectedProposal(object["rejection_details"]) {
+		result := tools.AgentToolInvalidToolCall(
+			action,
+			tools.AgentToolCodeInvalidArguments,
+			"工具参数不符合该操作的声明。请根据 data.rejection_details 修正字段后重新调用；不要要求用户重复已经提供的信息。",
+			meta,
+		)
+		result.Data = toolObservationData(object)
+		return tools.MarshalAgentToolResult(result)
+	}
 	if missing := stringFields(object, "missing_fields", "missing"); len(missing) > 0 {
 		meta.MissingFields = missing
 		return tools.MarshalAgentToolResult(tools.AgentToolNeedsInput(
@@ -83,8 +97,9 @@ func agentToolObservation(action, raw string) string {
 			action, toolObservationData(object), "CONFLICTING_SELECTION", "候选值存在冲突，需要用户选择。", meta))
 	}
 	if nonEmptyCollection(object["rejected"]) {
+		data := toolObservationData(object)
 		return tools.MarshalAgentToolResult(tools.AgentToolNeedsInput(
-			action, toolObservationData(object), "INVALID_FIELD_VALUE", "已提供的字段不符合要求，需要用户修正。", meta))
+			action, data, "INVALID_FIELD_VALUE", "用户提供的字段不符合该操作要求，需要用户修正。", meta))
 	}
 	if nonEmptyCollection(object["dependency_failures"]) {
 		return tools.MarshalAgentToolResult(tools.AgentToolRetryLater(
@@ -139,12 +154,33 @@ func searchKnowledgeHasNoCitableEvidence(action string, object map[string]any) b
 func toolObservationData(object map[string]any) map[string]any {
 	data := make(map[string]any, len(object))
 	for key, value := range object {
-		if key == "error" || key == "status" {
+		if key == "error" || key == "status" || key == "rejected" {
 			continue
 		}
 		data[key] = value
 	}
 	return data
+}
+
+// modelOwnsRejectedProposal reads only the value-free resolver classification.
+// Older/untyped results fall back to ask_user rather than assuming ownership.
+// If a proposal contains both model- and user-owned problems, the model repairs
+// its own call first; a remaining user problem is surfaced on the next attempt.
+func modelOwnsRejectedProposal(raw any) bool {
+	details, ok := raw.([]any)
+	if !ok || len(details) == 0 {
+		return false
+	}
+	for _, item := range details {
+		detail, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		if stringField(detail, "actor") == string(actionresolver.RejectionActorModel) {
+			return true
+		}
+	}
+	return false
 }
 
 func stringField(object map[string]any, key string) string {

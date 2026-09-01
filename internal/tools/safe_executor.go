@@ -21,13 +21,13 @@ import (
 )
 
 var (
-	ErrPolicyMissing                = errors.New("tool execution policy missing")
-	ErrDestructiveAction            = errors.New("destructive action refused")
-	ErrUserDeclined                 = errors.New("user declined confirmation")
-	ErrNonExternalAction            = errors.New("non-external action cannot be executed by API executor")
-	ErrToolCapExceeded              = errors.New("tool cap exceeded")
-	ErrHistoryWindowExceeded        = errors.New("history window exceeded")
-	ErrMutatingActionDisabled       = errors.New("mutating action disabled")
+	ErrPolicyMissing          = errors.New("tool execution policy missing")
+	ErrDestructiveAction      = errors.New("destructive action refused")
+	ErrUserDeclined           = errors.New("user declined confirmation")
+	ErrNonExternalAction      = errors.New("non-external action cannot be executed by API executor")
+	ErrToolCapExceeded        = errors.New("tool cap exceeded")
+	ErrHistoryWindowExceeded  = errors.New("history window exceeded")
+	ErrMutatingActionDisabled = errors.New("mutating action disabled")
 	// ErrCFSZoneUnresolved is returned when GetCompShareCFSUpgradePrice cannot
 	// resolve the internal zone_id. The upstream otherwise returns a misleading
 	// zero-price success, so this path fails closed.
@@ -71,8 +71,9 @@ type SafeToolExecutor struct {
 	policies             map[string]ToolExecutionPolicy
 	confirm              ConfirmFunc
 	mutatingToolsEnabled bool
-	// zoneCatalog resolves a Zone string to its numeric ZoneID for
-	// resolveJupyterTokenZoneID. Defaults to the shared, process-wide,
+	// zoneCatalog resolves public Zone strings to numeric ZoneIDs for upstream
+	// endpoints whose model-facing contracts deliberately hide that field.
+	// Defaults to the shared, process-wide,
 	// TTL-cached zones.Default() (same instance engine.Engine uses for the
 	// create/deploy paths); tests inject zones.NewCatalog(0) for isolation
 	// (same convention as engine.Engine.zoneCatalog).
@@ -100,7 +101,7 @@ func WithPolicies(policies map[string]ToolExecutionPolicy) SafeOption {
 	}
 }
 
-// WithZoneCatalog overrides the zone catalog used by resolveJupyterTokenZoneID.
+// WithZoneCatalog overrides the catalog used for numeric backend zone lookup.
 // Tests should pass zones.NewCatalog(0) for isolation from the shared cache.
 func WithZoneCatalog(cat *zones.Catalog) SafeOption {
 	return func(s *SafeToolExecutor) {
@@ -296,19 +297,82 @@ func (s *SafeToolExecutor) executeWithRetry(ctx context.Context, policy ToolExec
 	return nil, attempts, lastErr
 }
 
-// resolveBackendZoneID supplies the internal numeric zone required by CFS
-// upgrade pricing and Pod Jupyter-token calls. The model cannot provide this
-// field; it is derived from an authoritative resource description. Existing
-// caller-supplied values pass through unchanged.
+// resolveBackendZoneID supplies internal numeric zones that the upstream reads
+// but the model-facing contracts deliberately do not expose. Existing
+// caller-supplied values from an internal workflow pass through unchanged.
 func (s *SafeToolExecutor) resolveBackendZoneID(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
 	switch action {
 	case "GetCompShareCFSUpgradePrice":
 		return s.resolveCFSUpgradeZoneID(ctx, args)
+	case "DescribeCFS":
+		return s.resolveCFSListZoneID(ctx, args)
+	case "StartCompShareInstance", "StopCompShareInstance":
+		return s.resolvePodLifecycleZoneID(ctx, action, args)
 	case "DescribeCompShareJupyterToken":
 		return s.resolveJupyterTokenZoneID(ctx, args)
 	default:
 		return args, nil
 	}
+}
+
+// resolvePodLifecycleZoneID supplies the routing fact used by the upstream
+// Start/Stop dispatcher. UHost requests need no numeric zone; cpod requests do.
+// This is routing for an existing, already-described instance, so an exact
+// Zone-to-ID match from the last good catalog remains usable during a transient
+// catalog refresh failure. New resource selection continues to use GetStrict.
+func (s *SafeToolExecutor) resolvePodLifecycleZoneID(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+	if hasNonZeroUint(args["zone_id"]) || !platform.IsPodInstanceID(stringArg(args["UHostId"])) {
+		return args, nil
+	}
+	zone := strings.TrimSpace(stringArg(args["Zone"]))
+	if zone == "" {
+		return nil, fmt.Errorf("%s: pod instance zone is missing", action)
+	}
+	topOrg, org := identityFromContext(ctx)
+	zoneList, err := s.zoneCatalog.Get(ctx, originExecutor{safe: s, origin: OriginDiagnosisInternal}, topOrg, org)
+	if err != nil {
+		return nil, fmt.Errorf("%s: support-zone catalog unavailable: %w", action, err)
+	}
+	canonical, ok := zones.ExactZone(zoneList, zone)
+	if !ok {
+		return nil, fmt.Errorf("%s: zone %s is not in the live support-zone catalog", action, zone)
+	}
+	zoneID := zoneIDForZoneString(zoneList, canonical)
+	if zoneID == 0 {
+		return nil, fmt.Errorf("%s: numeric zone id is unavailable for %s", action, zone)
+	}
+	out := copyMap(args)
+	out["zone_id"] = zoneID
+	return out, nil
+}
+
+// resolveCFSListZoneID makes the public DescribeCFS(Zone) contract true. The
+// upstream list endpoint filters only on BaseRequest.zone_id; forwarding the
+// human Zone/Region strings alone would silently return every CFS in the account.
+func (s *SafeToolExecutor) resolveCFSListZoneID(ctx context.Context, args map[string]any) (map[string]any, error) {
+	if hasNonZeroUint(args["zone_id"]) || strings.TrimSpace(stringArg(args["CfsId"])) != "" {
+		return args, nil
+	}
+	zone := strings.TrimSpace(stringArg(args["Zone"]))
+	if zone == "" {
+		return args, nil
+	}
+	topOrg, org := identityFromContext(ctx)
+	zoneList, err := s.zoneCatalog.Get(ctx, originExecutor{safe: s, origin: OriginDiagnosisInternal}, topOrg, org)
+	if err != nil {
+		return nil, fmt.Errorf("%w for %s: support-zone catalog unavailable", ErrCFSZoneUnresolved, zone)
+	}
+	canonical, ok := zones.ExactZone(zoneList, zone)
+	if !ok {
+		return nil, fmt.Errorf("%w for %s: zone is not in the live support-zone catalog", ErrCFSZoneUnresolved, zone)
+	}
+	zoneID := zoneIDForZoneString(zoneList, canonical)
+	if zoneID == 0 {
+		return nil, fmt.Errorf("%w for %s: numeric zone id is unavailable", ErrCFSZoneUnresolved, zone)
+	}
+	out := copyMap(args)
+	out["zone_id"] = zoneID
+	return out, nil
 }
 
 // resolveCFSUpgradeZoneID derives the required zone from DescribeCFS. It rejects
@@ -606,8 +670,8 @@ func checkPolicyCaps(policy ToolExecutionPolicy, args map[string]any) error {
 	}
 	if policy.MaxHistoryWindowSeconds > 0 {
 		window, ok := requestedHistoryWindowSeconds(args)
-		if ok && countRequestedTargets(args) != 1 {
-			return fmt.Errorf("%w: requested historical monitor for %d targets; expected exactly 1", ErrHistoryWindowExceeded, countRequestedTargets(args))
+		if ok && countRequestedTargets(args) < 1 {
+			return fmt.Errorf("%w: historical monitor requires at least one target", ErrHistoryWindowExceeded)
 		}
 		if ok && window > int64(policy.MaxHistoryWindowSeconds) {
 			return fmt.Errorf("%w: requested %d seconds exceeds max %d", ErrHistoryWindowExceeded, window, policy.MaxHistoryWindowSeconds)

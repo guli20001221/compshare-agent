@@ -55,7 +55,21 @@ func TestResolveCorrectableInvalidValueOpensIntake(t *testing.T) {
 	require.False(t, resolved.ReadyForConfirmation)
 	require.True(t, resolved.ReadyForIntake, "an invalid value on a collectable field opens the form to re-collect it")
 	require.NotContains(t, resolved.Arguments, "Cpu", "the invalid value is discarded, never carried forward")
-	require.Equal(t, []RejectedProblem{{Slot: "Cpu", Kind: RejectInvalidValue}}, resolved.RejectedProblems)
+	require.Equal(t, []RejectedProblem{{Slot: "Cpu", Kind: RejectInvalidValue, Actor: RejectionActorUser}}, resolved.RejectedProblems)
+}
+
+func TestInvalidValueRecordsWhoCanCorrectIt(t *testing.T) {
+	catalog, err := BuildCatalog()
+	require.NoError(t, err)
+	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
+
+	resolved := resolver.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
+		{Name: "Cpu", Value: "not-a-number", Source: SourceAgentInference},
+	}})
+
+	require.Equal(t, []RejectedProblem{{
+		Slot: "Cpu", Kind: RejectInvalidValue, Actor: RejectionActorModel,
+	}}, resolved.RejectedProblems)
 }
 
 // A rejection that is NOT a form-correctable invalid value must still block the
@@ -105,7 +119,9 @@ func TestCreateCollectableFieldsAreDeclaredNotDerived(t *testing.T) {
 	require.ElementsMatch(t,
 		[]string{"GpuType", "Zone", "Gpu", "Cpu", "Memory", "ImageSource", "ImageName", "ChargeType"},
 		spec.Intake.CollectableFields)
-	require.NotContains(t, spec.Fields, "Name", "free-form model output must not name a newly created instance")
+	require.Contains(t, spec.Fields, "Name")
+	require.Contains(t, spec.Intake.UserSuppliedOptionalFields, "Name",
+		"the guided form has no name control, so only a user-authored name may enter the sealed create contract")
 }
 
 // intakeSpecForOperation rejects a misdeclared collectable set at build time — a
@@ -193,7 +209,7 @@ func TestWorkflowFieldSourcePoliciesAreDeclared(t *testing.T) {
 		spec, ok := catalog.Lookup(operation)
 		require.True(t, ok)
 		if operation == "CreateInstanceWorkflow" {
-			require.Equal(t, []string{"DataDiskSize", "SystemDiskSize"}, spec.Intake.UserSuppliedOptionalFields)
+			require.Equal(t, []string{"DataDiskSize", "Name", "SystemDiskSize"}, spec.Intake.UserSuppliedOptionalFields)
 		} else {
 			require.Empty(t, spec.Intake.UserSuppliedOptionalFields)
 		}
@@ -251,10 +267,12 @@ func TestGroundedOptionalCreateFieldsRemainInTheContract(t *testing.T) {
 	resolved := resolver.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
 		{Name: "GpuType", Value: "H20", Source: SourceAgentInference},
 		{Name: "SystemDiskSize", Value: "190GB", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "190GB"}},
+		{Name: "Name", Value: "codex-e2e", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "codex-e2e"}},
 	}})
 
 	require.True(t, resolved.ReadyForConfirmation)
 	require.Equal(t, float64(190), resolved.Arguments["SystemDiskSize"])
+	require.Equal(t, "codex-e2e", resolved.Arguments["Name"])
 }
 
 func TestInvalidUserSuppliedOptionalFieldBlocksIntake(t *testing.T) {
@@ -267,7 +285,7 @@ func TestInvalidUserSuppliedOptionalFieldBlocksIntake(t *testing.T) {
 		{Name: "SystemDiskSize", Value: "not-a-size", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "not-a-size"}},
 	}})
 
-	require.Equal(t, []RejectedProblem{{Slot: "SystemDiskSize", Kind: RejectInvalidValue}}, resolved.RejectedProblems)
+	require.Equal(t, []RejectedProblem{{Slot: "SystemDiskSize", Kind: RejectInvalidValue, Actor: RejectionActorUser}}, resolved.RejectedProblems)
 	require.False(t, resolved.ReadyForConfirmation, "a rejected value never confirms straight through")
 	require.False(t, resolved.ReadyForIntake, "the form cannot recollect an invalid disk size")
 	require.NotContains(t, resolved.Arguments, "SystemDiskSize", "the bad value is dropped, never carried into the create")
@@ -288,7 +306,7 @@ func TestInvalidExactImageIDCannotBeDiscardedIntoAnUnrelatedPicker(t *testing.T)
 	}})
 
 	require.Contains(t, resolved.RejectedProblems,
-		RejectedProblem{Slot: "CompShareImageId", Kind: RejectInvalidValue})
+		RejectedProblem{Slot: "CompShareImageId", Kind: RejectInvalidValue, Actor: RejectionActorModel})
 	require.False(t, resolved.ReadyForConfirmation)
 	require.False(t, resolved.ReadyForIntake,
 		"精确 ID 无效时必须阻断，不能静默丢掉后让卡片换成另一个镜像")

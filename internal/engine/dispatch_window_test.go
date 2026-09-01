@@ -195,6 +195,7 @@ func TestRequestToolCarriesNormalizedEnumUserQuotes(t *testing.T) {
 	require.Contains(t, parameters["required"], proposalImageSourceUserQuoteField)
 	source := properties["ImageSource"].(map[string]any)
 	require.Contains(t, source["description"], proposalImageSourceUserQuoteField)
+	require.Contains(t, source["enum"], "sharing")
 
 	got := proposalArgsForOperation("CreateInstanceWorkflow", map[string]any{
 		"GpuType":                         "4090",

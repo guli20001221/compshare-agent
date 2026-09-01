@@ -101,6 +101,12 @@ func buildToolExecutionPolicies() map[string]ToolExecutionPolicy {
 		if action == "SyncCompShareCustomImage" {
 			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "TargetZoneIds")
 		}
+		if action == "DescribeCompShareCustomImages" {
+			// A just-completed custom-image creation may read back the exact id
+			// returned by that same write. Keep that server-derived value off the
+			// model schema while allowing the workflow-internal status check.
+			policy.InternalAllowedParams = appendAllowedParam(policy.InternalAllowedParams, "CompShareImageId")
+		}
 		policies[action] = policy
 	}
 
@@ -201,7 +207,7 @@ func policyForAction(action string) ToolExecutionPolicy {
 	if action == "GetCompShareInstanceMonitor" {
 		policy.HistoryMonitorGuard = true
 		policy.MaxTargetsPerCall = 20
-		policy.MaxHistoryWindowSeconds = 86400
+		policy.MaxHistoryWindowSeconds = 30 * 86400
 	}
 	if action == "GetCompShareInstancePrice" || action == "GetCompShareInstanceUserPrice" {
 		policy.MaxTargetsPerCall = 20
@@ -231,6 +237,8 @@ func internalOnlyAllowedParams(action string) []string {
 		return []string{"SourceCompShareImageId", "TargetImageName", "TargetImageDescription"}
 	case "DescribeCompShareCustomImageSyncDetail":
 		return []string{"CompShareImageId"}
+	case "StartCompShareInstance":
+		return []string{"UHostId", "WithoutGpuSpec", "Zone", "Region"}
 	case "StopCompShareInstance":
 		return []string{"UHostId", "Zone", "Region"}
 	case "UpdateCompShareInstancePorts":
@@ -272,6 +280,8 @@ func actionAllowsBackendZoneID(action string) bool {
 		"DescribeCFS",
 		"CreateCFS",
 		"ResizeCFS",
+		"StartCompShareInstance",
+		"StopCompShareInstance",
 		"CreateCompShareCustomImage",
 		"GetCompShareImageCreateProgress",
 		"DescribeCompShareCustomImageSyncDetail",

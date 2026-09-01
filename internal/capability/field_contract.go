@@ -95,10 +95,10 @@ func metricsParam() schemaNode { return arrayParam(enumParam(platform.MetricValu
 
 func timeWindowParam() schemaNode {
 	return objectParam(map[string]schemaNode{
-		"type":        enumParam(platform.TimeWindowTypeValues()...).described("preset 表示今天/昨天；relative 表示最近 N 分钟/小时；absolute 表示用户明确给出的起止时间。"),
+		"type":        enumParam(platform.TimeWindowTypeValues()...).described("preset 表示今天/昨天；relative 表示最近 N 分钟/小时/天；absolute 表示用户明确给出的起止时间。"),
 		"preset":      enumParam("yesterday", "today").described("仅 type=preset 时填写；不要把今天或昨天换算为日期。"),
 		"amount":      integerParam(1).described("仅 type=relative 时填写的正整数。"),
-		"unit":        enumParam("minute", "hour").described("仅 type=relative 时填写。"),
+		"unit":        enumParam("minute", "hour", "day").described("仅 type=relative 时填写。"),
 		"start":       stringParam().described("仅 type=absolute；必须来自用户明确写出的时间，格式为 RFC3339 或 YYYY-MM-DD HH:MM。"),
 		"end":         stringParam().described("仅 type=absolute；必须来自用户明确写出的时间，格式为 RFC3339 或 YYYY-MM-DD HH:MM。"),
 		"timezone":    enumParam("Asia/Shanghai", "UTC").described("可省略，默认 Asia/Shanghai。"),

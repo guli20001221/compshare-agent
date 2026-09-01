@@ -145,6 +145,10 @@ func (e *Engine) Run(ctx context.Context, def *Definition, params map[string]any
 	}
 
 	result.Success = true
+	result.MutationCommitted = true
+	if def.MutationCommitted != nil {
+		result.MutationCommitted = def.MutationCommitted(wfCtx)
+	}
 	if def.ResultData != nil {
 		result.Data = def.ResultData(wfCtx)
 	}

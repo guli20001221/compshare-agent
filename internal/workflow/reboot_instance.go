@@ -23,12 +23,15 @@ func stepQueryForReboot() Step {
 				"UHostIds": []any{wfCtx.Params["UHostId"]},
 			}, nil
 		},
-		CheckResult: func(_ *Context, result map[string]any) CheckOutcome {
+		CheckResult: func(wfCtx *Context, result map[string]any) CheckOutcome {
 			state := extractInstanceState(result)
 			switch state {
 			case "":
 				return CheckFailed("未找到该实例。")
 			case "Running":
+				if host := firstUHost(result); host != nil {
+					wfCtx.Params["RebootInitialStartTime"] = host["StartTime"]
+				}
 				return CheckPassed()
 			case "Stopped":
 				return CheckFailed("实例当前是关机状态，无法重启。请先开机。")

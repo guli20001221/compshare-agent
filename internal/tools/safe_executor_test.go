@@ -365,7 +365,7 @@ func TestDefaultPoliciesAttachMonitorCaps(t *testing.T) {
 	policy := policies["GetCompShareInstanceMonitor"]
 
 	assert.Equal(t, 20, policy.MaxTargetsPerCall)
-	assert.Equal(t, 86400, policy.MaxHistoryWindowSeconds)
+	assert.Equal(t, 30*86400, policy.MaxHistoryWindowSeconds)
 	assert.Equal(t, 20, policies["GetCompShareInstancePrice"].MaxTargetsPerCall)
 	assert.Equal(t, 20, policies["GetCompShareInstanceUserPrice"].MaxTargetsPerCall)
 }
@@ -427,11 +427,11 @@ func TestSafeExecutorRejectsMonitorHistoryWindowCapBeforeCallingInner(t *testing
 		args map[string]any
 	}{
 		{
-			name: "over 24h json number window",
+			name: "over 30d json number window",
 			args: map[string]any{
 				"UHostIds":  []any{"uhost-1"},
 				"StartTime": json.Number("1777471200"),
-				"EndTime":   json.Number("1777557601"),
+				"EndTime":   json.Number("1780063201"),
 			},
 		},
 		{
@@ -445,10 +445,6 @@ func TestSafeExecutorRejectsMonitorHistoryWindowCapBeforeCallingInner(t *testing
 		{
 			name: "production json float64 timestamps cannot overflow around cap",
 			args: mustUnmarshalArgs(t, `{"UHostIds":["uhost-1"],"StartTime":0,"EndTime":1e20}`),
-		},
-		{
-			name: "historical window is single target only",
-			args: mustUnmarshalArgs(t, `{"UHostIds":["uhost-1","uhost-2"],"StartTime":1777471200,"EndTime":1777474800}`),
 		},
 		{
 			name: "historical window requires a target",
@@ -485,13 +481,13 @@ func TestSafeExecutorRejectsMonitorHistoryWindowCapBeforeCallingInner(t *testing
 	}
 }
 
-func TestSafeExecutorAllowsSingleTargetMonitorHistoryWindow(t *testing.T) {
+func TestSafeExecutorAllowsBatchMonitorHistoryWindowWithinTargetCap(t *testing.T) {
 	inner := &spyExecutor{result: map[string]any{"RetCode": 0}}
 	safe := NewSafeToolExecutor(inner)
 
 	result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
 		Action: "GetCompShareInstanceMonitor",
-		Args:   mustUnmarshalArgs(t, `{"UHostIds":["uhost-1"],"StartTime":1777471200,"EndTime":1777474800}`),
+		Args:   mustUnmarshalArgs(t, `{"UHostIds":["uhost-1","uhost-2"],"StartTime":1777471200,"EndTime":1780063200}`),
 		Origin: OriginDirectLLM,
 	})
 
@@ -1099,11 +1095,15 @@ type routedCall struct {
 // single spyExecutor's uniform response is not enough.
 type routedExecutor struct {
 	results map[string]map[string]any
+	errors  map[string]error
 	calls   []routedCall
 }
 
 func (r *routedExecutor) Execute(_ context.Context, action string, args map[string]any) (map[string]any, error) {
 	r.calls = append(r.calls, routedCall{action: action, args: args})
+	if err := r.errors[action]; err != nil {
+		return nil, err
+	}
 	if result, ok := r.results[action]; ok {
 		return result, nil
 	}
@@ -1180,6 +1180,95 @@ func TestGetCompShareCFSUpgradePrice_PreResolvedZoneIDSkipsExtraDescribe(t *test
 	require.Len(t, inner.calls, 1, "a pre-resolved zone_id must not trigger a redundant DescribeCFS lookup")
 	assert.Equal(t, "GetCompShareCFSUpgradePrice", inner.calls[0].action)
 	assert.Equal(t, uint32(7777), inner.calls[0].args["zone_id"])
+}
+
+func TestDescribeCFS_ResolvesHumanZoneToBackendZoneID(t *testing.T) {
+	inner := &routedExecutor{results: map[string]map[string]any{
+		"DescribeCompShareSupportZone": {
+			"ZoneInfo": []any{map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "ZoneId": float64(5001)}},
+		},
+	}}
+	safe := NewSafeToolExecutor(inner, WithZoneCatalog(zones.NewCatalog(0)))
+	ctx := WithUser(context.Background(), UserContext{TopOrganizationID: 66391350, OrganizationID: 64404856})
+
+	_, err := safe.ExecuteSafe(ctx, SafeToolRequest{
+		Action: "DescribeCFS", Args: map[string]any{"Zone": "cn-bj2-03"}, Origin: OriginDirectLLM,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, inner.calls, 2)
+	assert.Equal(t, "DescribeCompShareSupportZone", inner.calls[0].action)
+	assert.Equal(t, "DescribeCFS", inner.calls[1].action)
+	assert.Equal(t, uint32(5001), inner.calls[1].args["zone_id"])
+}
+
+func TestPodLifecycleWriteResolvesBackendZoneID(t *testing.T) {
+	inner := &routedExecutor{results: map[string]map[string]any{
+		"DescribeCompShareSupportZone": {
+			"ZoneInfo": []any{map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "ZoneId": float64(5001)}},
+		},
+	}}
+	safe := NewSafeToolExecutor(inner, WithZoneCatalog(zones.NewCatalog(0)))
+	ctx := WithUser(context.Background(), UserContext{TopOrganizationID: 66391350, OrganizationID: 64404856})
+
+	_, err := safe.ExecuteSafe(ctx, SafeToolRequest{
+		Action: "StartCompShareInstance",
+		Args:   map[string]any{"UHostId": "cpod-abc", "Zone": "cn-bj2-03", "Region": "cn-bj2"},
+		Origin: OriginWorkflowInternal,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, inner.calls, 2)
+	assert.Equal(t, "StartCompShareInstance", inner.calls[1].action)
+	assert.Equal(t, "cpod-abc", inner.calls[1].args["UHostId"])
+	assert.Equal(t, uint32(5001), inner.calls[1].args["zone_id"])
+}
+
+func TestPodLifecycleUsesLastGoodZoneRouteWhenCatalogRefreshFails(t *testing.T) {
+	for _, action := range []string{"StartCompShareInstance", "StopCompShareInstance"} {
+		t.Run(action, func(t *testing.T) {
+			inner := &routedExecutor{results: map[string]map[string]any{
+				"DescribeCompShareSupportZone": {
+					"ZoneInfo": []any{map[string]any{"Zone": "cn-bj2-03", "Region": "cn-bj2", "ZoneId": float64(5001)}},
+				},
+			}}
+			catalog := zones.NewCatalog(0)
+			ctx := WithUser(context.Background(), UserContext{TopOrganizationID: 66391350, OrganizationID: 64404856})
+			_, err := catalog.Get(ctx, inner, 66391350, 64404856)
+			require.NoError(t, err)
+
+			inner.calls = nil
+			inner.errors = map[string]error{"DescribeCompShareSupportZone": errors.New("temporary catalog failure")}
+			safe := NewSafeToolExecutor(inner, WithZoneCatalog(catalog))
+			result, err := safe.ExecuteSafe(ctx, SafeToolRequest{
+				Action: action,
+				Args:   map[string]any{"UHostId": "cpod-abc", "Zone": "cn-bj2-03", "Region": "cn-bj2"},
+				Origin: OriginWorkflowInternal,
+			})
+
+			require.NoError(t, err)
+			require.NotNil(t, result)
+			assert.Equal(t, uint32(5001), result.Args["zone_id"])
+			require.Len(t, inner.calls, 2)
+			assert.Equal(t, "DescribeCompShareSupportZone", inner.calls[0].action)
+			assert.Equal(t, action, inner.calls[1].action)
+		})
+	}
+}
+
+func TestStopWorkflowPreservesResolvedBackendZoneID(t *testing.T) {
+	inner := &routedExecutor{}
+	safe := NewSafeToolExecutor(inner)
+
+	_, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "StopCompShareInstance",
+		Args:   map[string]any{"UHostId": "cpod-abc", "Zone": "cn-bj2-03", "Region": "cn-bj2", "zone_id": uint32(5001)},
+		Origin: OriginWorkflowInternal,
+	})
+
+	require.NoError(t, err)
+	require.Len(t, inner.calls, 1)
+	assert.Equal(t, uint32(5001), inner.calls[0].args["zone_id"])
 }
 
 func TestCustomImageWorkflowInternalArgsSurvivePolicyBoundary(t *testing.T) {

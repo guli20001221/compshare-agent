@@ -84,7 +84,7 @@ const (
 
 const (
 	toolCapExceededMessage         = "本次最多支持查询 20 台实例，请缩小范围后重试。"
-	historyWindowExceededMessage   = "历史监控时间窗最多支持 24 小时，请缩短时间范围后重试。"
+	historyWindowExceededMessage   = "历史监控时间窗最多支持 30 天，请缩短时间范围后重试。"
 	readExpensiveTurnBudgetMessage = "本轮读取类查询次数已达上限，请缩小问题范围后重试。"
 	// One recovery is enough to turn a transient short output into a complete,
 	// smaller answer. Repeating it indefinitely burns the same turn budget while
@@ -4021,21 +4021,13 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 			onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "工作流返回结构化缺参结果，由中央 Agent 结合上下文处理"})
 			return string(payload)
 		}
-		if action == "StartInstanceWorkflow" {
-			if reply, ok := e.cpuOnlyStartFailureReply(ctx, finalParams, result); ok {
-				// Upstream may have committed the CPU-only resize before reporting
-				// that the subsequent boot failed. Do not carry the pre-start snapshot.
-				e.markRegistryInvalidated(action)
-				onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, result.Err))
-				return finalReplyPrefix + reply
-			}
-		}
-		if action == "StartInstanceWorkflow" && ordinaryStartMode(finalParams) {
-			if apiErr, ok := tools.UpstreamAPIErrorFrom(result.Err); ok && (apiErr.Code == 8357 || apiErr.Code == 226604) {
-				msg := "该实例原带卡规格当前库存不足，本次没有启动，也不会自动改成无卡规格。可以稍后重试；如果你确实不需要 GPU，可以告诉我用途或所需 CPU、内存，我会在新的确认卡中展示合适的 CPU-only 档位。"
-				onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, result.Err))
-				return finalReplyPrefix + msg
-			}
+		if reply, ok := e.authorizedWriteFailureReply(ctx, action, finalParams, result); ok {
+			// The upstream call may have committed before returning an error. A
+			// fresh readback, not the pre-write session snapshot, now owns the
+			// answer. Never invite an automatic retry of a result that may exist.
+			e.markRegistryInvalidated(action)
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, result.Err))
+			return finalReplyPrefix + reply
 		}
 		if msg, ok := friendlyMessageFromText(result.Message); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, result.Err))
@@ -4081,7 +4073,7 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		return finalReplyPrefix + reply
 	}
 
-	if result.Success {
+	if result.Success && result.MutationCommitted {
 		e.markRegistryInvalidated(action)
 		e.recordCreatedInstanceReferent(action, finalParams, result)
 		// Record the commit BEFORE choosing how to narrate it. From here the write
@@ -4108,6 +4100,12 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		// an incorrect claim that the image is already available.
 		if action == "CreateCustomImageWorkflow" {
 			return finalReplyPrefix + customImageWorkflowReply(result)
+		}
+		if action == "CloneCustomImageWorkflow" {
+			return finalReplyPrefix + cloneCustomImageWorkflowReply(result)
+		}
+		if reply, ok := scheduledShutdownWorkflowReply(action, finalParams, result); ok {
+			return finalReplyPrefix + reply
 		}
 		// Successful no-return-data or password-bearing workflows return a
 		// deterministic final reply so the engine SKIPS the post-workflow LLM
@@ -4188,10 +4186,7 @@ func deterministicWorkflowReply(action string, args map[string]any) (string, boo
 	case "ResetPasswordWorkflow":
 		return fmt.Sprintf("✅ 已为实例 %s 重置密码。出于安全考虑，密码不会在对话中回显。", uhost), true
 	case "ReinstallInstanceWorkflow":
-		if configured, _ := args["PasswordConfigured"].(bool); configured {
-			return fmt.Sprintf("✅ 已为实例 %s 发起重装系统。出于安全考虑，新密码不会在对话中回显；请使用你刚设置的密码登录。", uhost), true
-		}
-		return fmt.Sprintf("✅ 已为实例 %s 发起重装系统。本次未设置新密码，请继续使用原登录凭据。", uhost), true
+		return fmt.Sprintf("✅ 已为实例 %s 发起重装。登录凭据由平台沿用或按目标镜像类型生成，请以控制台显示为准。", uhost), true
 	case "ResizeCFSWorkflow":
 		cfsID := strings.TrimSpace(fmt.Sprint(args["CfsId"]))
 		size, _ := firstNumberAny(args, "Size")
@@ -4202,19 +4197,6 @@ func deterministicWorkflowReply(action string, args map[string]any) (string, boo
 	default:
 		return "", false
 	}
-}
-
-func ordinaryStartMode(args map[string]any) bool {
-	if spec, ok := args["WithoutGpuSpec"].(string); ok && strings.TrimSpace(spec) != "" {
-		return false
-	}
-	raw, ok := args["StartMode"]
-	if !ok {
-		return true
-	}
-	mode, _ := raw.(string)
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	return mode == "" || mode == "normal"
 }
 
 // committedWriteFallbackReply is the sentence the user gets when a write has
@@ -4231,6 +4213,12 @@ func ordinaryStartMode(args map[string]any) bool {
 func committedWriteFallbackReply(action string, params map[string]any, result *workflow.Result) string {
 	if action == "StopInstanceWorkflow" {
 		return stopInstanceWorkflowReply(params)
+	}
+	if reply, ok := scheduledShutdownWorkflowReply(action, params, result); ok {
+		return reply
+	}
+	if action == "CloneCustomImageWorkflow" {
+		return cloneCustomImageWorkflowReply(result)
 	}
 	if reply, ok := deterministicWorkflowReply(action, params); ok {
 		return reply
@@ -4270,10 +4258,17 @@ func createInstanceDeliveryReply(result *workflow.Result) (string, bool) {
 	}
 	idText := strings.Join(ids, "、")
 	data := result.Data
+	dataDiskNote, hasDataDisk := createDataDiskDeliveryNote(data)
+	finish := func(reply string, deterministic bool) (string, bool) {
+		if !hasDataDisk {
+			return reply, deterministic
+		}
+		return strings.TrimSpace(reply + " " + dataDiskNote), true
+	}
 	readback, _ := data["ActualReadbackAvailable"].(bool)
 	observed, _ := data["Observed"].([]map[string]any)
 	if !readback || len(observed) != len(ids) {
-		return fmt.Sprintf("创建接口已返回实例 ID：%s，但尚未取得完整的创建后状态，暂不能确认实例是否可用。请勿重复创建，请稍后在控制台查看实例状态。", idText), true
+		return finish(fmt.Sprintf("创建接口已返回实例 ID：%s，但尚未取得完整的创建后状态，暂不能确认实例是否可用。请勿重复创建，请稍后在控制台查看实例状态。", idText), true)
 	}
 
 	hasInstallFail := false
@@ -4306,17 +4301,17 @@ func createInstanceDeliveryReply(result *workflow.Result) (string, bool) {
 		if mismatchText != "" {
 			reply += "；创建后规格也与确认内容不一致：" + mismatchText
 		}
-		return reply + "。本次不能视为交付成功，请勿重复创建。", true
+		return finish(reply+"。本次不能视为交付成功，请勿重复创建。", true)
 	}
 	if mismatchText != "" {
-		return fmt.Sprintf("实例已创建（ID：%s），但创建后规格与确认内容不一致：%s。本次不能视为按确认规格交付，请勿重复创建。", idText, mismatchText), true
+		return finish(fmt.Sprintf("实例已创建（ID：%s），但创建后规格与确认内容不一致：%s。本次不能视为按确认规格交付，请勿重复创建。", idText, mismatchText), true)
 	}
 	if !createSpecReadbackComplete(data, observed) {
-		return fmt.Sprintf("实例已创建（ID：%s），但创建后规格回读不完整，暂不能确认是否按确认内容交付。请勿重复创建，请稍后在控制台核对实例规格。", idText), true
+		return finish(fmt.Sprintf("实例已创建（ID：%s），但创建后规格回读不完整，暂不能确认是否按确认内容交付。请勿重复创建，请稍后在控制台核对实例规格。", idText), true)
 	}
 	if unexpectedState != "" {
-		return fmt.Sprintf("实例记录已创建（ID：%s），当前状态为%s，尚未确认可用。请勿重复创建，请稍后查看实例状态。",
-			idText, readprojection.ResourceStateLabel(unexpectedState)), true
+		return finish(fmt.Sprintf("实例记录已创建（ID：%s），当前状态为%s，尚未确认可用。请勿重复创建，请稍后查看实例状态。",
+			idText, readprojection.ResourceStateLabel(unexpectedState)), true)
 	}
 	if hasInitializing || hasStarting {
 		phase := "正在初始化"
@@ -4325,9 +4320,25 @@ func createInstanceDeliveryReply(result *workflow.Result) (string, bool) {
 		} else if hasStarting {
 			phase = "正在初始化或启动"
 		}
-		return fmt.Sprintf("✅ 已创建实例 %s，%s，进入运行状态后即可使用。", idText, phase), false
+		return finish(fmt.Sprintf("✅ 已创建实例 %s，%s，进入运行状态后即可使用。", idText, phase), false)
 	}
-	return fmt.Sprintf("✅ 已创建实例 %s。", idText), false
+	return finish(fmt.Sprintf("✅ 已创建实例 %s。", idText), false)
+}
+
+func createDataDiskDeliveryNote(data map[string]any) (string, bool) {
+	if data == nil {
+		return "", false
+	}
+	delivery, ok := data["DataDiskDelivery"].(map[string]any)
+	if !ok {
+		return "", false
+	}
+	switch strings.ToLower(strings.TrimSpace(fmt.Sprint(delivery["State"]))) {
+	case "verified":
+		return "创建时请求的数据盘已由创建后回读确认挂载完成。", true
+	default:
+		return "创建时请求的数据盘由平台异步创建并挂载，本次回读尚未确认完成；请稍后查看磁盘状态，请勿重复创建实例或数据盘。", true
+	}
 }
 
 func createSpecReadbackComplete(data map[string]any, observed []map[string]any) bool {

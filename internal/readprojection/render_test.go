@@ -6,6 +6,7 @@ import (
 
 	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/entity"
+	"github.com/compshare-agent/internal/envelope"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -186,8 +187,48 @@ func TestExtractMonitorScalarsSharesRendererVocabulary(t *testing.T) {
 func TestRenderHistoricalMonitorSummaryStatesWindow(t *testing.T) {
 	// 1777442400 = 2026-04-29 14:00, 1777444200 = 14:30 (Asia/Shanghai, UTC+8).
 	got := RenderHistoricalMonitorSummary(nil, map[string]any{}, 1777442400, 1777444200)
-	assert.Contains(t, got, "北京时间 2026-04-29 14:00 ~ 14:30（历史时间窗）", "the reply states the exact queried window")
+	assert.Contains(t, got, "北京时间 2026-04-29 14:00 ~ 2026-04-29 14:30（历史时间窗）", "the reply states the exact queried window")
 	assert.Contains(t, got, "未返回监控数据", "empty payload is window-scoped no-data, never a fabricated 0%/healthy value")
+}
+
+func TestHistoricalBatchKeepsSeriesOwnershipAndNamesEmptySubject(t *testing.T) {
+	payload := map[string]any{"Data": map[string]any{"List": []any{
+		map[string]any{
+			"UHostId": "uhost-a",
+			"Metrics": []any{monitorMetric("uhost_cpu_used", nil, 12)},
+		},
+		map[string]any{"UHostId": "uhost-b", "Metrics": []any{}},
+	}}}
+
+	got := RenderHistoricalMonitorSummary([]Metric{MetricCPU}, payload, 1777442400, 1777444200)
+	assert.Contains(t, got, "uhost-a · CPU 使用率")
+	assert.Contains(t, got, "uhost-b · CPU 使用率未返回数据")
+
+	env := BuildHistoricalMonitorEnvelope([]entity.InstanceSnapshot{{UHostId: "uhost-a"}, {UHostId: "uhost-b"}}, []Metric{MetricCPU}, payload, 1777442400, 1777444200)
+	foundAbsence := false
+	for _, fact := range env.Facts {
+		if fact.SubjectID == "uhost-b" && fact.Key == "missing_cpu_usage" && fact.Value == "未返回数据" {
+			foundAbsence = true
+		}
+	}
+	assert.True(t, foundAbsence, "the structured observation must preserve the empty subject")
+}
+
+func TestHistoricalMonitorNamesAMissingRequestedMetricBesidePresentData(t *testing.T) {
+	payload := map[string]any{"Data": map[string]any{"List": []any{
+		map[string]any{
+			"UHostId": "uhost-a",
+			"Metrics": []any{monitorMetric("uhost_cpu_used", nil, 8)},
+		},
+	}}}
+
+	got := RenderHistoricalMonitorSummary([]Metric{MetricCPU, MetricGPU}, payload, 1777442400, 1777444200)
+	assert.Contains(t, got, "- CPU 使用率：最新 8%")
+	assert.Contains(t, got, "- GPU 使用率未返回数据")
+
+	env := BuildHistoricalMonitorEnvelope([]entity.InstanceSnapshot{{UHostId: "uhost-a"}}, []Metric{MetricCPU, MetricGPU}, payload, 1777442400, 1777444200)
+	assertEnvelopeFact(t, env, "uhost-a", "cpu_usage", "8")
+	assertEnvelopeFactWithSource(t, env, "uhost-a", "missing_gpu_usage", "未返回数据", envelope.FactSourceComputed)
 }
 
 // An unset window (current monitor / window-less caller) adds no prefix.

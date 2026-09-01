@@ -235,6 +235,11 @@ func (e *Engine) currentReadEvidenceLedger(question string) knowledge.EvidenceLe
 		if err != nil {
 			continue
 		}
+		snippet := strings.TrimSpace(evidence.Reply)
+		if snippet != "" {
+			snippet += "\n"
+		}
+		snippet += string(raw)
 		out.Items = append(out.Items, knowledge.EvidenceItem{
 			ChunkID:      fmt.Sprintf("turn-read-%d", index+1),
 			SourceOrigin: "live_platform",
@@ -243,7 +248,7 @@ func (e *Engine) currentReadEvidenceLedger(question string) knowledge.EvidenceLe
 			ScoreBucket:  "high",
 			Title:        truncateRunes("本轮平台查询："+evidence.Capability, 80),
 			Summary:      truncateRunes(strings.TrimSpace(evidence.Reply), 600),
-			Snippet:      truncateRunes(string(raw), 2000),
+			Snippet:      truncateRunes(snippet, maxEvidenceGatewayFactRunes-1),
 		})
 	}
 	if len(e.verbatimBlocksThisTurn) > 0 {

@@ -321,14 +321,18 @@ func conversationTranscriptRunes(pair ConversationPair) int {
 // contextEnvelopeForPlainDirectReply gives every deterministic handled reply an
 // evidence boundary. Conversation remains TaskSpec understanding context and
 // can never launder a user's false premise into a fact.
-func (e *Engine) contextEnvelopeForPlainDirectReply(result capability.ReadResult) capability.ReadResult {
-	if result.Envelope != nil || result.Status != platform.ReadStatusHandled || result.NeedsClarification ||
+func (e *Engine) contextEnvelopeForPlainDirectReply(result capability.ReadResult, fallbackAction string) capability.ReadResult {
+	if result.Envelope != nil ||
+		(result.Status != platform.ReadStatusHandled && result.Status != platform.ReadStatusEmpty) ||
+		result.NeedsClarification ||
 		strings.TrimSpace(result.Reply) == "" {
 		return result
 	}
 	sources := []string{}
 	if action := strings.TrimSpace(result.ToolAction); action != "" {
 		sources = append(sources, action)
+	} else if fallbackAction = strings.TrimSpace(fallbackAction); fallbackAction != "" {
+		sources = append(sources, fallbackAction)
 	}
 	env := envelope.Envelope{
 		Kind:          envelope.KindContextualDirectReply,

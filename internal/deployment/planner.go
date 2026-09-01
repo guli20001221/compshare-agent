@@ -13,6 +13,7 @@ const (
 	ImageTypeCommunity = "Community"
 
 	ImageStatusAvailable = "Available"
+	ImageStatusReviewing = "Reviewing"
 
 	ChargeTypePostpay = "Postpay"
 	ChargeTypeDay     = "Day"

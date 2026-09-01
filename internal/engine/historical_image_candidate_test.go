@@ -124,7 +124,7 @@ func TestStaleHistoricalImageIDIsRejectedWithoutClaimingCatalogOutage(t *testing
 
 	require.NoError(t, err)
 	require.Contains(t, resolved.action.RejectedProblems,
-		actionresolver.RejectedProblem{Slot: "CompShareImageId", Kind: actionresolver.RejectInvalidValue})
+		actionresolver.RejectedProblem{Slot: "CompShareImageId", Kind: actionresolver.RejectInvalidValue, Actor: actionresolver.RejectionActorModel})
 	assert.Empty(t, resolved.action.DependencyFailures,
 		"上游明确报告所有来源都无此镜像时，不能误报成目录不可用")
 	assert.NotContains(t, resolved.action.Arguments, "CompShareImageId")
@@ -181,7 +181,7 @@ func TestLocalizedUserImageSourceIsAConstraint(t *testing.T) {
 	require.Zero(t, communityCalls,
 		"用户明确选择平台来源后，不能为了让 ID 命中而静默改查社区来源")
 	require.Contains(t, resolved.action.RejectedProblems,
-		actionresolver.RejectedProblem{Slot: "CompShareImageId", Kind: actionresolver.RejectInvalidValue})
+		actionresolver.RejectedProblem{Slot: "CompShareImageId", Kind: actionresolver.RejectInvalidValue, Actor: actionresolver.RejectionActorModel})
 	require.False(t, resolved.action.ReadyForConfirmation)
 }
 

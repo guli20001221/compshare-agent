@@ -47,6 +47,25 @@ func TestMonitorHistoryWindowAcceptsRelativeMinutes(t *testing.T) {
 	assert.Equal(t, time.Date(2026, 6, 22, 12, 0, 0, 0, loc).Unix(), end)
 }
 
+func TestMonitorHistoryWindowAcceptsThirtyDaysButNotMore(t *testing.T) {
+	orig := monitorNowFunc
+	loc := monitorHistoryLoc
+	monitorNowFunc = func() time.Time { return time.Date(2026, 6, 30, 12, 0, 0, 0, loc) }
+	t.Cleanup(func() { monitorNowFunc = orig })
+
+	start, end, ok := ResolveMonitorHistoryWindow(&TimeWindow{
+		Type: TimeWindowRelative, Amount: 30, Unit: "day",
+	})
+	require.True(t, ok)
+	assert.Equal(t, time.Date(2026, 5, 31, 12, 0, 0, 0, loc).Unix(), start)
+	assert.Equal(t, time.Date(2026, 6, 30, 12, 0, 0, 0, loc).Unix(), end)
+
+	_, _, ok = ResolveMonitorHistoryWindow(&TimeWindow{
+		Type: TimeWindowRelative, Amount: 31, Unit: "day",
+	})
+	assert.False(t, ok)
+}
+
 func TestMonitorHistoryWindowYesterdayIsComputedByServer(t *testing.T) {
 	orig := monitorNowFunc
 	loc := monitorHistoryLoc
@@ -61,13 +80,34 @@ func TestMonitorHistoryWindowYesterdayIsComputedByServer(t *testing.T) {
 	assert.Equal(t, time.Date(2026, 7, 20, 0, 0, 0, 0, loc).Unix(), end)
 }
 
-func TestMonitorHistoryWindowRejectsMixedOrInvalidContracts(t *testing.T) {
+func TestMonitorHistoryWindowUsesTypeAsTheFieldDiscriminator(t *testing.T) {
+	orig := monitorNowFunc
+	loc := monitorHistoryLoc
+	monitorNowFunc = func() time.Time { return time.Date(2026, 7, 20, 14, 0, 0, 0, loc) }
+	t.Cleanup(func() { monitorNowFunc = orig })
+
+	start, end, ok := ResolveMonitorHistoryWindow(&TimeWindow{
+		Type: TimeWindowRelative, Amount: 1, Unit: "day",
+		Preset: "today", Start: "", End: "",
+	})
+	require.True(t, ok)
+	assert.Equal(t, time.Date(2026, 7, 19, 14, 0, 0, 0, loc).Unix(), start)
+	assert.Equal(t, time.Date(2026, 7, 20, 14, 0, 0, 0, loc).Unix(), end)
+
+	start, end, ok = ResolveMonitorHistoryWindow(&TimeWindow{
+		Type: TimeWindowPreset, Preset: "yesterday",
+		Amount: 1, Unit: "day", Start: "stale", End: "stale",
+	})
+	require.True(t, ok)
+	assert.Equal(t, time.Date(2026, 7, 19, 0, 0, 0, 0, loc).Unix(), start)
+	assert.Equal(t, time.Date(2026, 7, 20, 0, 0, 0, 0, loc).Unix(), end)
+}
+
+func TestMonitorHistoryWindowRejectsInvalidActiveFields(t *testing.T) {
 	cases := []TimeWindow{
 		{Type: TimeWindowRelative, Amount: 3, Unit: "month"},
 		{Type: TimeWindowRelative, Amount: 0, Unit: "hour"},
-		{Type: TimeWindowRelative, Amount: 3, Unit: "hour", Preset: "yesterday"},
 		{Type: TimeWindowAbsolute, Start: "2026-06-21 10:00", End: "2026-06-21 09:00"},
-		{Type: TimeWindowPreset, Preset: "yesterday", Start: "2025-01-01 00:00"},
 		{Type: TimeWindowPreset, Preset: "yesterday", Timezone: "Mars/Base"},
 	}
 	for i := range cases {

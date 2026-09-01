@@ -572,12 +572,21 @@ func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal
 		}
 		candidate.Source = actionresolver.SourceAgentInference
 		candidate.Evidence = nil
+		candidate.UserAuthored = false
 
 		field, known := spec.Fields[candidate.Name]
 		if !known {
 			continue
 		}
 		value, isString := candidate.Value.(string)
+		// Attribution is intentionally weaker than provenance. An invalid literal
+		// can be visibly user-authored even though it cannot pass the field codec
+		// and therefore must never gain SourceUserExplicit. Remember that fact only
+		// so the outer Agent asks the user to correct it instead of retrying its own
+		// call. This bit is not serialized and cannot authorize a write.
+		if isString && uniqueUserAuthoredLiteral([]rune(view.CurrentQuestion), []rune(value)) {
+			candidate.UserAuthored = true
+		}
 		// A deterministic binding OWNS the instance target: the server bound the
 		// user's verifiable reference to this exact id, overriding whatever id the
 		// model proposed (a "第2台" that the model answered with the 第1台's id is
@@ -719,7 +728,7 @@ func (e *Engine) machineTypeCatalogSnapshot(ctx context.Context, spec actionreso
 // current user literally supplied. It is deliberately schema-driven: only an
 // operation with exactly one CodecImage field may receive the value, and this
 // helper never guesses the image source from the id. The resolver below verifies
-// it against the live platform/community/custom catalogs before it can enter a
+// it against the live platform/community/custom/sharing catalogs before it can enter a
 // create contract.
 //
 // The Agent remains the conversation interpreter. When the turn contains two
@@ -894,6 +903,39 @@ func uniqueQuoteForCodec(text, quote []rune, codec actionresolver.SlotCodecKind)
 		return 0, 0, false
 	}
 	return start, start + len(quote), true
+}
+
+// uniqueUserAuthoredLiteral answers only whether a proposed string visibly came
+// from the current user message. It does not validate the value or grant trusted
+// provenance. CJK text may be adjacent to prose; ASCII identifiers retain their
+// ASCII token boundary so a shortened value cannot borrow a longer token's text.
+func uniqueUserAuthoredLiteral(text, literal []rune) bool {
+	if len(literal) == 0 || len(literal) > len(text) {
+		return false
+	}
+	start := -1
+	for offset := 0; offset+len(literal) <= len(text); offset++ {
+		if string(text[offset:offset+len(literal)]) != string(literal) {
+			continue
+		}
+		if isASCIIOnly(literal) && !opaqueIdentifierSpan(text, offset, offset+len(literal)) {
+			continue
+		}
+		if start >= 0 {
+			return false
+		}
+		start = offset
+	}
+	return start >= 0
+}
+
+func isASCIIOnly(value []rune) bool {
+	for _, r := range value {
+		if r > unicode.MaxASCII {
+			return false
+		}
+	}
+	return true
 }
 
 // uniqueEquivalentCapacityLiteral finds the one current-message capacity whose
@@ -1094,6 +1136,17 @@ func resolvedActionForModel(resolved actionresolver.ResolvedAction) string {
 	raw, _ := json.Marshal(resolved)
 	var wire map[string]any
 	_ = json.Unmarshal(raw, &wire)
+	if len(resolved.RejectedProblems) > 0 {
+		details := make([]any, 0, len(resolved.RejectedProblems))
+		for _, problem := range resolved.RejectedProblems {
+			details = append(details, map[string]any{
+				"slot":  problem.Slot,
+				"kind":  problem.Kind.String(),
+				"actor": string(problem.Actor),
+			})
+		}
+		wire["rejection_details"] = details
+	}
 	payload, _ := json.Marshal(security.RedactForLLM(wire))
 	return string(payload)
 }

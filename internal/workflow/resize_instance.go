@@ -47,6 +47,11 @@ func stepQueryForResize() Step {
 				if !resizeHasEffectiveSpecChange(wfCtx.Params, result) {
 					return CheckFailed("目标配置与当前配置一致，无需变配。")
 				}
+				if host := firstUHost(result); host != nil {
+					wfCtx.Params["ResizeInitialCPU"] = host["CPU"]
+					wfCtx.Params["ResizeInitialGPU"] = host["GPU"]
+					wfCtx.Params["ResizeInitialMemory"] = host["Memory"]
+				}
 				return CheckPassed()
 			case "":
 				return CheckFailed("未找到该实例。")

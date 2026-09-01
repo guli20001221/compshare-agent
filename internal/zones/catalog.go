@@ -117,8 +117,9 @@ func Default() *Catalog { return defaultCatalog }
 // Get returns the cached zone list, refreshing via the executor when the cache
 // is empty or stale. On refresh failure it returns the last good cache (stale)
 // when available, so a transient API blip doesn't disable zone resolution. This
-// lenient read is for READ-ONLY display, where a slightly stale zone list is
-// acceptable — a write path must use GetStrict.
+// lenient read is for display and for resolving an existing resource's stable
+// Zone string to its backend routing ID. New resource selection and other writes
+// whose validity depends on the current catalog use GetStrict.
 func (c *Catalog) Get(ctx context.Context, exec Executor, topOrg, org uint32) ([]ZoneInfo, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -141,10 +142,10 @@ func (c *Catalog) Get(ctx context.Context, exec Executor, topOrg, org uint32) ([
 
 // GetStrict is Get without the serve-stale fallback: a cache still inside its TTL
 // is reused, but an EXPIRED cache whose refresh fails returns the error rather
-// than stale data. Write paths (create / CFS / net-optimizer) use it so a
-// mutating action never runs on a zone list that may have changed upstream since
-// it was last fetched — the S1 rule that a write must refuse rather than fall
-// back to old zone data. Read-only display keeps the lenient Get.
+// than stale data. Writes whose target validity depends on the current catalog
+// (create / CFS / net-optimizer) use it so they never act on a zone list that may
+// have changed upstream. Read-only display and routing an existing instance keep
+// the lenient Get.
 func (c *Catalog) GetStrict(ctx context.Context, exec Executor, topOrg, org uint32) ([]ZoneInfo, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

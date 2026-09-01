@@ -5,7 +5,6 @@ import (
 	"time"
 )
 
-
 var monitorNowFunc = time.Now
 
 var monitorHistoryLoc = func() *time.Location {
@@ -30,9 +29,6 @@ func ResolveMonitorHistoryWindow(window *TimeWindow) (int64, int64, bool) {
 	var start, end time.Time
 	switch window.Type {
 	case TimeWindowPreset:
-		if window.Amount != 0 || window.Unit != "" || window.Start != "" || window.End != "" {
-			return 0, 0, false
-		}
 		switch window.Preset {
 		case "yesterday":
 			start = startOfDayIn(now, loc).AddDate(0, 0, -1)
@@ -43,7 +39,7 @@ func ResolveMonitorHistoryWindow(window *TimeWindow) (int64, int64, bool) {
 			return 0, 0, false
 		}
 	case TimeWindowRelative:
-		if window.Preset != "" || window.Start != "" || window.End != "" || window.Amount <= 0 {
+		if window.Amount <= 0 {
 			return 0, 0, false
 		}
 		var duration time.Duration
@@ -52,14 +48,13 @@ func ResolveMonitorHistoryWindow(window *TimeWindow) (int64, int64, bool) {
 			duration = time.Duration(window.Amount) * time.Minute
 		case "hour":
 			duration = time.Duration(window.Amount) * time.Hour
+		case "day":
+			duration = time.Duration(window.Amount) * 24 * time.Hour
 		default:
 			return 0, 0, false
 		}
 		start, end = now.Add(-duration), now
 	case TimeWindowAbsolute:
-		if window.Preset != "" || window.Amount != 0 || window.Unit != "" {
-			return 0, 0, false
-		}
 		var startOK, endOK bool
 		start, startOK = parseMonitorTimestamp(window.Start, loc)
 		end, endOK = parseMonitorTimestamp(window.End, loc)
@@ -69,7 +64,7 @@ func ResolveMonitorHistoryWindow(window *TimeWindow) (int64, int64, bool) {
 	default:
 		return 0, 0, false
 	}
-	if !end.After(start) || end.Sub(start) > 24*time.Hour {
+	if !end.After(start) || end.Sub(start) > 30*24*time.Hour {
 		return 0, 0, false
 	}
 	return start.Unix(), end.Unix(), true

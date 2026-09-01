@@ -70,6 +70,30 @@ func TestDescribeCommunityImagesAllowsPopularSortCondition(t *testing.T) {
 	}
 }
 
+func TestTenantImageReadsDoNotExposeUnscopedExactLookup(t *testing.T) {
+	policies := DefaultToolExecutionPolicies()
+	for _, action := range []string{"DescribeCompShareCustomImages", "DescribeCompShareSharingImages"} {
+		properties := registryToolProperties(t, action)
+		if _, ok := properties["CompShareImageId"]; ok {
+			t.Fatalf("%s must list the tenant-visible catalog and match exact ids locally", action)
+		}
+		for _, key := range []string{"Offset", "Limit"} {
+			if _, ok := properties[key]; !ok {
+				t.Fatalf("%s must retain pagination field %s", action, key)
+			}
+		}
+		if containsString(policies[action].AllowedParams, "CompShareImageId") {
+			t.Fatalf("%s must not accept a model-origin exact id", action)
+		}
+	}
+	if !containsString(policies["DescribeCompShareCustomImages"].InternalAllowedParams, "CompShareImageId") {
+		t.Fatal("the custom-image creation workflow must retain its server-derived status readback id")
+	}
+	if containsString(policies["DescribeCompShareSharingImages"].InternalAllowedParams, "CompShareImageId") {
+		t.Fatal("shared-image exact ids must remain list-scoped even for internal callers")
+	}
+}
+
 func TestCreateImageIDContractAllowsRecentExactConversationCandidate(t *testing.T) {
 	var idDescription, nameDescription string
 	for _, tool := range Registry {
@@ -331,6 +355,7 @@ func TestAlignedToolSchemasMatchCurrentUpstreamContracts(t *testing.T) {
 		tool, field string
 		max         int
 	}{
+		{"CreateInstanceWorkflow", "Name", 63},
 		{"RenameInstanceWorkflow", "Name", 63},
 		{"CreateCustomImageWorkflow", "Name", 50},
 		{"CloneCustomImageWorkflow", "TargetImageName", 50},
@@ -342,9 +367,6 @@ func TestAlignedToolSchemasMatchCurrentUpstreamContracts(t *testing.T) {
 		if pattern, _ := field["pattern"].(string); pattern == "" {
 			t.Errorf("%s.%s must expose the upstream name character contract", tc.tool, tc.field)
 		}
-	}
-	if _, ok := properties("CreateInstanceWorkflow")["Name"]; ok {
-		t.Error("CreateInstanceWorkflow must leave naming to the platform; RenameInstanceWorkflow owns explicit names")
 	}
 }
 

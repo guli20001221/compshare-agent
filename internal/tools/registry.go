@@ -393,7 +393,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "GetCompShareInstanceMonitor",
-			Description: "查询实例监控数据，如 CPU、内存、GPU、显存使用率。实时监控只传 UHostIds；历史监控必须传单个实例且同时传 StartTime/EndTime，时间窗最多 24 小时。",
+			Description: "查询实例 CPU、内存、GPU、显存监控。实时仅传 UHostIds；历史需同时传 StartTime/EndTime，最多 20 台、30 天。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -424,10 +424,6 @@ var Registry = []openai.Tool{
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"CompShareImageId": map[string]any{
-						"type":        "string",
-						"description": "镜像 ID（可选，传则查特定镜像）",
-					},
 					"Offset": map[string]any{
 						"type":        "integer",
 						"description": "分页偏移，默认 0",
@@ -445,14 +441,10 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DescribeCompShareSharingImages",
-			Description: "查询其他账号共享给当前账号的镜像列表。用于回答“共享给我的镜像”“别人共享给我的镜像在哪看”；不用于社区公开镜像列表，也不用于把自己的镜像共享给别人。",
+			Description: "查询当前账号可用的共享镜像，也为创建实例提供 sharing 候选；不是社区镜像或对外共享操作。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"CompShareImageId": map[string]any{
-						"type":        "string",
-						"description": "按共享镜像 ID 精确查询。",
-					},
 					"Limit": map[string]any{
 						"type":        "integer",
 						"description": "分页大小，默认 20。",
@@ -589,7 +581,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateInstanceWorkflow",
-			Description: "创建实例及所选镜像；配置不完整时进入引导卡。用户要求创建时使用，价格、库存或方法查询不用。不会安装镜像外软件；部署应用前，先确认镜像已内置或有可执行安装来源/计划，否则确认是否只要运行环境。支持平台、社区和自制镜像。",
+			Description: "创建实例及所选镜像；信息不全时引导补全。仅用于创建，不用于询价或库存查询。不会安装镜像外软件。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -618,6 +610,12 @@ var Registry = []openai.Tool{
 						"type":        "number",
 						"description": "内存大小，单位 MB（可选）。不指定时使用平台默认值。如 64GB = 65536。需与 Cpu 一起构成合法配比。",
 					},
+					"Name": map[string]any{
+						"type":        "string",
+						"description": "用户指定的实例名；未指定则省略。",
+						"maxLength":   63,
+						"pattern":     `^[\u4E00-\u9FA5A-Za-z0-9_,.:-]+$`,
+					},
 					"SystemDiskSize": map[string]any{
 						"type":        "string",
 						"description": "系统盘容量原文（如 190GB）；用户未指定则省略。",
@@ -628,8 +626,8 @@ var Registry = []openai.Tool{
 					},
 					"ImageSource": map[string]any{
 						"type":        "string",
-						"description": "镜像来源：platform（平台镜像，默认）/ community（社区镜像）/ custom（当前账户的自制镜像）。仅在用户明确说出来源，或 ID 来自近期已展示的镜像推荐且来源已知时填写。用户直接给出精确 CompShareImageId 但未说来源时，填写 ID 并省略本字段；服务端会通过实时目录确定其实际来源。",
-						"enum":        []string{"platform", "community", "custom"},
+						"description": "镜像来源：platform（平台镜像，默认）/ community（社区镜像）/ custom（当前账户的自制镜像）/ sharing（其他账户共享给当前账户的镜像）。仅在用户明确说出来源，或 ID 来自近期已展示的镜像推荐且来源已知时填写。用户直接给出精确 CompShareImageId 但未说来源时，填写 ID 并省略本字段；服务端会通过实时目录确定其实际来源。",
+						"enum":        []string{"platform", "community", "custom", "sharing"},
 					},
 					"ImageName": map[string]any{
 						"type":        "string",
@@ -786,7 +784,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "SetStopSchedulerWorkflow",
-			Description: "为运行中的非抢占式实例设置定时关机的候选请求。支持相对时间或绝对时间；取消已有定时关机应使用取消操作。",
+			Description: "为非抢占式实例设置定时关机的候选请求。支持相对时间或绝对时间；取消已有定时关机应使用取消操作。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1041,7 +1039,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "ReinstallInstanceWorkflow",
-			Description: "使用选定镜像重装已有实例的候选请求。重装会清除系统盘数据；仅咨询镜像或不接受清盘风险时不使用。",
+			Description: "重装实例。Pod 复用系统盘/CFS、替换镜像和默认端口；UHost 容器替换容器文件系统；普通虚机替换系统盘。具体影响见确认卡。仅咨询镜像时不用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

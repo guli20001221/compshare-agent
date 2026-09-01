@@ -150,27 +150,30 @@ func TestMonitorCurrentHandle_UpstreamError(t *testing.T) {
 	assert.Equal(t, "monitor_query"+": "+FriendlyReadFailureReply, result.Reply)
 }
 
-// monitorHistoryFixture is a recognized monitor payload with a multi-point CPU
-// series for the historical (aggregated) renderer.
-func monitorHistoryFixture(uhostID string) map[string]any {
-	return map[string]any{
-		"Data": map[string]any{
-			"List": []any{
+// monitorHistoryFixture is a recognized monitor payload with one multi-point CPU
+// series per requested instance for the historical (aggregated) renderer.
+func monitorHistoryFixture(uhostIDs ...string) map[string]any {
+	instances := make([]any, 0, len(uhostIDs))
+	for index, uhostID := range uhostIDs {
+		base := float64(10 + index*10)
+		instances = append(instances, map[string]any{
+			"UHostId": uhostID,
+			"Metrics": []any{
 				map[string]any{
-					"UHostId": uhostID,
-					"Metrics": []any{
-						map[string]any{
-							"MetricKey": "uhost_cpu_used",
-							"Results": []any{map[string]any{
-								"Values": []any{
-									map[string]any{"Timestamp": float64(1778173200), "Value": float64(10)},
-									map[string]any{"Timestamp": float64(1778176800), "Value": float64(30)},
-								},
-							}},
+					"MetricKey": "uhost_cpu_used",
+					"Results": []any{map[string]any{
+						"Values": []any{
+							map[string]any{"Timestamp": float64(1778173200), "Value": base},
+							map[string]any{"Timestamp": float64(1778176800), "Value": base + 20},
 						},
-					},
+					}},
 				},
 			},
+		})
+	}
+	return map[string]any{
+		"Data": map[string]any{
+			"List": instances,
 		},
 	}
 }
@@ -208,10 +211,11 @@ func TestMonitorHistoryHandle_ResolvesWindowAndCallsMonitor(t *testing.T) {
 	assert.Contains(t, result.Reply, "峰值")
 }
 
-// TestMonitorHistoryHandle_MultiTargetRejected: historical monitoring is single
-// instance; two resolved targets is a validation fallback before any tool call.
-func TestMonitorHistoryHandle_MultiTargetRejected(t *testing.T) {
-	exec := &fakeReadExec{result: monitorHistoryFixture("uhost-a")}
+// Explicit historical ranges remain intact for a batch upstream. The reply and
+// structured envelope must keep the two instances distinguishable instead of
+// merging same-named CPU series into one apparent host.
+func TestMonitorHistoryHandle_MultiTargetPreservesSubjectsAndRangeAggregates(t *testing.T) {
+	exec := &fakeReadExec{result: monitorHistoryFixture("uhost-a", "uhost-b")}
 	resolver := refundResolver(t, [2]string{"uhost-a", "train-a"}, [2]string{"uhost-b", "train-b"})
 
 	result := runMonitorHistory(t, exec, resolver, MonitorHistoryRequest{
@@ -222,9 +226,24 @@ func TestMonitorHistoryHandle_MultiTargetRejected(t *testing.T) {
 		TimeWindow: &platform.TimeWindow{Type: platform.TimeWindowAbsolute, Start: "2026-05-08 01:00", End: "2026-05-08 02:00"},
 	})
 
-	require.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)
-	assert.Equal(t, platform.ReadFallbackValidation, result.FallbackReason)
-	assert.Empty(t, exec.calls)
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	require.Len(t, exec.calls, 1)
+	assert.Equal(t, []string{"uhost-a", "uhost-b"}, exec.calls[0].args["UHostIds"])
+	assert.Contains(t, result.Reply, "uhost-a · CPU 使用率")
+	assert.Contains(t, result.Reply, "uhost-b · CPU 使用率")
+	require.NotNil(t, result.Envelope)
+	require.Len(t, result.Envelope.Subjects, 2)
+	require.Len(t, result.Envelope.Facts, 6)
+	for _, subjectID := range []string{"uhost-a", "uhost-b"} {
+		aggregations := map[string]bool{}
+		for _, fact := range result.Envelope.Facts {
+			if fact.SubjectID == subjectID && fact.Key == "cpu_usage" {
+				aggregations[fact.Aggregation] = true
+				assert.Equal(t, "range", fact.Period)
+			}
+		}
+		assert.Equal(t, map[string]bool{"latest": true, "average": true, "max": true}, aggregations)
+	}
 }
 
 // TestMonitorHistoryHandle_InvalidWindowRejected: an unparseable window is a
