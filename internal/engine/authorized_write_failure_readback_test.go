@@ -5,6 +5,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,6 +20,7 @@ func TestAuthorizedWriteFailureReadbackCoversEveryCompoundMutation(t *testing.T)
 		sent       map[string]any
 		readAction string
 		readback   map[string]any
+		writeErr   error
 		contains   []string
 	}{
 		{
@@ -101,7 +103,8 @@ func TestAuthorizedWriteFailureReadbackCoversEveryCompoundMutation(t *testing.T)
 			readback: map[string]any{"UHostSet": []any{map[string]any{
 				"UHostId": "uhost-1", "ChargeType": "Month",
 			}}},
-			contains: []string{"接口返回失败", "主记录已显示为包月", "完整计费结果仍不确定", "可能只完成了一部分", "请勿重复提交"},
+			writeErr: tools.NewUpstreamAPIError(520, "balance not enough"),
+			contains: []string{"账号余额不足", "主记录已显示为包月", "完整计费结果仍不确定", "可能只完成了一部分", "请先充值", "刷新平台账单和当前计费方式", "请勿直接重复旧卡"},
 		},
 	}
 
@@ -115,8 +118,12 @@ func TestAuthorizedWriteFailureReadbackCoversEveryCompoundMutation(t *testing.T)
 				return tt.readback, nil
 			}}
 			eng := NewWithDeps(&mockLLM{}, executor, nil)
+			writeErr := tt.writeErr
+			if writeErr == nil {
+				writeErr = errors.New("synthetic write failure")
+			}
 			reply, ok := eng.authorizedWriteFailureReply(context.Background(), tt.action, tt.params, &workflow.Result{
-				Err:     errors.New("synthetic write failure"),
+				Err:     writeErr,
 				Failure: &workflow.StepFailure{Step: tt.step, Args: tt.sent, ExecutionAuthorized: true},
 			})
 			require.True(t, ok)

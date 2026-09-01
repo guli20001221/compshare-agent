@@ -70,6 +70,27 @@ func TestInvoiceStatusEmptyAndFailureStayTyped(t *testing.T) {
 	assert.Equal(t, invoiceStatusAction, failed.ToolAction)
 }
 
+func TestInvoiceStatusDoesNotReportEmptyWhenUpstreamRecordsCannotBeProjected(t *testing.T) {
+	for name, upstream := range map[string]map[string]any{
+		"row without a usable invoice id": {
+			"TotalCount": float64(1),
+			"InvoiceSet": []any{map[string]any{"InvoiceID": "not-numeric"}},
+		},
+		"positive total without projected rows": {
+			"TotalCount": float64(2),
+			"InvoiceSet": []any{},
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := runInvoiceStatus(t, &fakeReadExec{result: upstream})
+
+			assert.Equal(t, platform.ReadStatusFailureAfterTool, result.Status)
+			assert.Equal(t, invoiceStatusAction, result.ToolAction)
+			assert.NotContains(t, result.Reply, "没有查询到发票记录")
+		})
+	}
+}
+
 func TestInvoiceStatusIsAConcreteModelVisibleRead(t *testing.T) {
 	toolName := ReadToolName(intent.IntentInvoiceStatus)
 	reg, ok := RegisteredReadForTool(toolName)
