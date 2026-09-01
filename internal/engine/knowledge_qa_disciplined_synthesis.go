@@ -30,10 +30,9 @@ type knowledgeSynthesisOutput struct {
 // grounded on it rather than discarding the turn for a bare "请简化问题".
 //
 // It is a SINGLE central-Agent model call (no verifier persona, no repair prompt),
-// and its output is only a candidate. The caller first runs the final evidence
-// gateway, then acceptBudgetSynthesis records citation/verification state and
-// strips markers. Keeping those effects after the gateway prevents a rejected
-// recovery draft from becoming durable "verified" evidence. Returns ("", false) when THIS
+// and its output goes through the same deterministic, fail-open citation handling
+// as the normal exit: markers that resolve are recorded, all markers are stripped
+// for display, and the answer ships even if uncited. Returns ("", false) when THIS
 // TURN retrieved nothing (the "no evidence → refuse, never fabricate" guard) or the
 // call fails — in which case the caller keeps the canned budget refusal.
 //
@@ -90,14 +89,9 @@ func (e *Engine) synthesizeOnBudgetExceeded(ctx context.Context, userMsg string)
 	if answer == "" {
 		return "", false
 	}
-	return answer, true
-}
-
-// acceptBudgetSynthesis applies the side effects that make a terminal recovery
-// durable. It is called only after the evidence gateway passed the candidate.
-func (e *Engine) acceptBudgetSynthesis(userMsg, answer string) string {
-	resolved := e.resolvedKnowledgeQuestion(userMsg)
-	ledger := e.currentTurnEvidenceLedger(resolved)
+	// A verbatim evidence echo is recorded, never refused: this recovery answer is
+	// the only answer the turn will produce, and the evidence it echoes is
+	// customer-safe corpus text.
 	e.recordAnswerEvidenceEcho(answer)
 	if report := knowledge.ValidateGroundedCitations(answer, ledger); report.HasCitation {
 		e.emitSearchKnowledgeCitationTrace(report)
@@ -107,5 +101,5 @@ func (e *Engine) acceptBudgetSynthesis(userMsg, answer string) string {
 	}
 	e.retractKnowledgeHardBlock()
 	e.groundingOutcomeThisTurn = groundingRepaired
-	return knowledge.StripCiteMarkers(answer)
+	return knowledge.StripCiteMarkers(answer), true
 }

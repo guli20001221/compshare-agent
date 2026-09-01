@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/knowledge"
@@ -13,6 +14,87 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestExecuteSearchKnowledgeAutoExpandsOnlyIndividuallyStrongHits(t *testing.T) {
+	strongTail := "强命中正文末尾-唯一参数"
+	weakTail := "弱命中正文末尾-不得自动展开"
+	strongBody := strings.Repeat("强命中前文。", 100) + strongTail
+	weakBody := strings.Repeat("弱命中前文。", 100) + weakTail
+	retriever := &chunkStoreRetriever{
+		scriptedKnowledgeRetriever: scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+			Enabled: true, HybridMode: knowledge.RetrievalModeQwen3RRF, RerankerMode: "qwen3-reranker-8b",
+			HitItems: []knowledge.RetrievalHit{
+				{Kept: true, Score: 0.92, Chunk: knowledge.KBChunk{ChunkID: "strong", Title: "强命中", Content: strongBody}},
+				{Kept: true, Score: 0.31, Chunk: knowledge.KBChunk{ChunkID: "weak", Title: "弱命中", Content: weakBody}},
+			},
+		}}},
+		chunks: map[string]knowledge.KBChunk{
+			"strong": {ChunkID: "strong", Title: "强命中", Content: strongBody},
+			"weak":   {ChunkID: "weak", Title: "弱命中", Content: weakBody},
+		},
+	}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+
+	out := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "当前规则"}, noopStep)
+
+	assert.Contains(t, out, strongTail)
+	assert.NotContains(t, out, weakTail, "a strong top hit must not promote a lower hit below the floor")
+	assert.Contains(t, out, `"auto_expanded_chunk_ids":["strong"]`)
+	assert.Contains(t, eng.readChunkIDsThisTurn, "strong")
+	assert.NotContains(t, eng.readChunkIDsThisTurn, "weak")
+	require.Len(t, eng.searchKnowledgeLedgerThisTurn.Items, 2)
+	assert.Contains(t, eng.searchKnowledgeLedgerThisTurn.Items[0].Snippet, strongTail)
+	assert.NotContains(t, eng.searchKnowledgeLedgerThisTurn.Items[1].Snippet, weakTail)
+}
+
+func TestExecuteSearchKnowledgeAutoExpansionFailureKeepsSearchSnippet(t *testing.T) {
+	tail := "远程正文末尾-本次不可用"
+	body := strings.Repeat("远程搜索节选。", 100) + tail
+	retriever := &remoteChunkStoreRetriever{
+		scriptedKnowledgeRetriever: scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+			Enabled: true, SearchID: "search-1", HybridMode: knowledge.RetrievalModeQwen3RRF, RerankerMode: "qwen3-reranker-8b",
+			HitItems: []knowledge.RetrievalHit{{
+				Kept: true, Score: 0.91, Chunk: knowledge.KBChunk{ChunkID: "remote", Title: "远程命中", Content: body},
+			}},
+		}}},
+		err: fmt.Errorf("temporary body read failure"),
+	}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+
+	out := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "远程规则"}, noopStep)
+
+	assert.Contains(t, out, `"auto_expansion_unavailable":true`)
+	assert.NotContains(t, out, tail)
+	assert.Contains(t, out, "远程搜索节选")
+	require.Len(t, retriever.reads, 1)
+	assert.NotContains(t, eng.readChunkIDsThisTurn, "remote")
+}
+
+func TestExecuteSearchKnowledgeDoesNotAutoExpandUnjudgedRRFFallback(t *testing.T) {
+	tail := "RRF回退正文末尾-需显式读取"
+	body := strings.Repeat("回退节选。", 100) + tail
+	retriever := &chunkStoreRetriever{
+		scriptedKnowledgeRetriever: scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
+			Enabled: true, HybridMode: knowledge.RetrievalModeQwen3RRF,
+			RerankerFallbackReason: "reranker_timeout",
+			HitItems: []knowledge.RetrievalHit{{
+				Kept: true, Score: 0.031, Chunk: knowledge.KBChunk{ChunkID: "rrf", Content: body},
+			}},
+		}}},
+		chunks: map[string]knowledge.KBChunk{"rrf": {ChunkID: "rrf", Content: body}},
+	}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+
+	out := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "回退检索"}, noopStep)
+
+	assert.Contains(t, out, "rrf")
+	assert.NotContains(t, out, tail)
+	assert.NotContains(t, out, "auto_expanded_chunk_ids")
+	assert.Empty(t, eng.readChunkIDsThisTurn)
+}
 
 // TestExecuteSearchKnowledge_LocalDispatchSubstantive proves the P3 hinge: the
 // SearchKnowledge ReAct tool dispatches LOCALLY on the engine retriever (never

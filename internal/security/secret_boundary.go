@@ -333,16 +333,6 @@ func RestoreUserProvidedCredentialURLs(redactedText, userText, draft string) str
 
 func credentialURLsInText(text string) []string {
 	var urls []string
-	for _, candidate := range urlsInText(text) {
-		if guardrails.ContainsCredential(candidate) {
-			urls = append(urls, candidate)
-		}
-	}
-	return urls
-}
-
-func urlsInText(text string) []string {
-	var urls []string
 	for len(text) > 0 {
 		beforeHTTPS, afterHTTPS, hasHTTPS := strings.Cut(text, "https://")
 		beforeHTTP, afterHTTP, hasHTTP := strings.Cut(text, "http://")
@@ -366,7 +356,9 @@ func urlsInText(text string) []string {
 			text = after[consumed:]
 			continue
 		}
-		urls = append(urls, candidate)
+		if guardrails.ContainsCredential(candidate) {
+			urls = append(urls, candidate)
+		}
 		text = after[consumed:]
 	}
 	return urls
@@ -391,41 +383,6 @@ func credentialURLClosingDelimiter(text string) string {
 // conversation pair that produced it.
 func RedactUserConversationText(s string) string {
 	return RedactOperationalTokensInText(guardrails.RedactPII(s))
-}
-
-// RedactEvidenceText is stricter than the ordinary live-turn boundary. Signed
-// URLs may be echoed back to the user by the dedicated response flow, but their
-// query credentials are irrelevant to evidence classification and retrieval.
-// Removing them here prevents a host-forced knowledge search from copying a
-// one-time capability into planner prompts, transcripts or retrieval logs.
-func RedactEvidenceText(s string) string {
-	for _, rawURL := range urlsInText(s) {
-		parsed, err := url.Parse(rawURL)
-		if err != nil {
-			continue
-		}
-		query := parsed.Query()
-		changed := false
-		for key := range query {
-			normalized := strings.ToLower(key)
-			normalized = strings.Map(func(r rune) rune {
-				if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
-					return r
-				}
-				return -1
-			}, normalized)
-			if guardrails.IsCredentialKey(key) || strings.Contains(normalized, "signature") || normalized == "sig" {
-				query.Set(key, redactedValue)
-				changed = true
-			}
-		}
-		if !changed {
-			continue
-		}
-		parsed.RawQuery = query.Encode()
-		s = strings.ReplaceAll(s, rawURL, parsed.String())
-	}
-	return RedactUserConversationText(s)
 }
 
 // RedactAssistantConversationText returns the persisted form of an assistant

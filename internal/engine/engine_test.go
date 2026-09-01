@@ -972,7 +972,7 @@ func TestChat_LLMRateLimitDenialSkipsLLM(t *testing.T) {
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	limiter.before = func(governance.Request) {
 		// Model a protected read that completed before the next Agent call was
-		// denied. The terminal rate-limit message must not discard its result.
+		// denied. The terminal message must not discard its server-owned result.
 		eng.sensitiveRepliesThisTurn = []string{sensitiveReply}
 	}
 	eng.rateLimiter = limiter
@@ -1323,6 +1323,31 @@ func (m *streamingScriptedLLM) Chat(_ context.Context, req llm.ChatRequest) (*ll
 	return &resp, nil
 }
 
+type verbatimThenFailingLLM struct {
+	calls int
+}
+
+func (m *verbatimThenFailingLLM) Chat(_ context.Context, _ llm.ChatRequest) (*llm.ChatResponse, error) {
+	m.calls++
+	if m.calls == 1 {
+		return &llm.ChatResponse{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseBilling", `{"UHostId":"uhost-bill-001"}`),
+		}}, nil
+	}
+	return nil, fmt.Errorf("test model failure after billing card")
+}
+
+func billingStreamExecutor() *mockExecutor {
+	return &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-bill-001", "State": "Running", "ChargeType": "Dynamic",
+				"InstancePrice": float64(1), "DiskPrice": float64(0.1),
+			}},
+		},
+	}}
+}
+
 // The web client renders the assistant bubble from the token stream, not from the
 // returned reply — the reply is only what gets persisted. So a verbatim block that
 // lands in one but not the other is a user-visible bug, and every test and live
@@ -1334,19 +1359,11 @@ func (m *streamingScriptedLLM) Chat(_ context.Context, req llm.ChatRequest) (*ll
 // disagree about what the assistant said.
 func TestVerbatimBillingBlockStreamsExactlyAsItIsPersisted(t *testing.T) {
 	const cpuAnswer = "CPU 100% 的原因是 3 个 kworkerd 进程占满了核心。"
-	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": {
-			"UHostSet": []any{map[string]any{
-				"UHostId": "uhost-bill-001", "State": "Running", "ChargeType": "Dynamic",
-				"InstancePrice": float64(1), "DiskPrice": float64(0.1),
-			}},
-		},
-	}}
 	mock := &streamingScriptedLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("tc1", "DiagnoseBilling", `{"UHostId":"uhost-bill-001"}`)}},
 		{Content: cpuAnswer},
 	}}
-	eng := NewWithDeps(mock, executor, nil)
+	eng := NewWithDeps(mock, billingStreamExecutor(), nil)
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},
 	}
@@ -1371,6 +1388,110 @@ func TestVerbatimBillingBlockStreamsExactlyAsItIsPersisted(t *testing.T) {
 		"the card must be streamed exactly once — twice renders it twice in the bubble")
 	assert.Less(t, strings.Index(streamed, card), strings.Index(streamed, cpuAnswer),
 		"the card must stream before the answer that follows it")
+}
+
+func TestMultipleVerbatimBlocksStreamExactlyAsPersisted(t *testing.T) {
+	const finalAnswer = "两张费用卡对应两次独立核验。"
+	mock := &streamingScriptedLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseBilling", `{"UHostId":"uhost-bill-001"}`),
+			toolCall("tc2", "DiagnoseBilling", `{"UHostId":"uhost-bill-002"}`),
+		}},
+		{Content: finalAnswer},
+	}}
+	eng := NewWithDeps(mock, billingStreamExecutor(), nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	var deltas []string
+	reply, err := eng.ChatWithOptions(context.Background(), "分别核验两次这台实例的费用", noopStep, ChatOptions{
+		OnTextDelta: func(d string) { deltas = append(deltas, d) },
+	})
+	require.NoError(t, err)
+	require.Len(t, eng.verbatimBlocksThisTurn, 2)
+
+	expected := strings.Join(eng.verbatimBlocksThisTurn, verbatimBlockSeparator) + verbatimBlockSeparator + finalAnswer
+	streamed := strings.Join(deltas, "")
+	assert.Equal(t, expected, reply)
+	assert.Equal(t, reply, streamed,
+		"multiple verbatim blocks must have the same separators in the stream and persisted reply")
+}
+
+func TestDeterministicFinalAfterVerbatimBlockStreamsExactlyAsPersisted(t *testing.T) {
+	mock := &streamingScriptedLLM{responses: []llm.ChatResponse{{
+		ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseBilling", `{"UHostId":"uhost-bill-001"}`),
+			toolCall("tc2", tools.CustomerSupportHandoffName, `{}`),
+		},
+	}}}
+	eng := NewWithDeps(mock, billingStreamExecutor(), nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	var deltas []string
+	reply, err := eng.ChatWithOptions(context.Background(), "核验费用后转人工", noopStep, ChatOptions{
+		OnTextDelta: func(d string) { deltas = append(deltas, d) },
+	})
+	require.NoError(t, err)
+	require.Len(t, eng.verbatimBlocksThisTurn, 1)
+
+	expected := eng.verbatimBlocksThisTurn[0] + verbatimBlockSeparator + refusal.HumanAgentTransfer
+	streamed := strings.Join(deltas, "")
+	assert.Equal(t, expected, reply)
+	assert.Equal(t, reply, streamed,
+		"a deterministic final must be emitted after an already-streamed verbatim block")
+}
+
+func TestVerbatimBlockSurvivesALaterModelFailure(t *testing.T) {
+	model := &verbatimThenFailingLLM{}
+	eng := NewWithDeps(model, billingStreamExecutor(), nil)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	var deltas []string
+	reply, err := eng.ChatWithOptions(context.Background(), "核验这台实例的费用", noopStep, ChatOptions{
+		OnTextDelta: func(d string) { deltas = append(deltas, d) },
+	})
+	require.NoError(t, err, "an already-delivered verified block must not be downgraded to an error turn")
+	require.Len(t, eng.verbatimBlocksThisTurn, 1)
+	assert.Equal(t, eng.verbatimBlocksThisTurn[0], reply)
+	assert.Equal(t, reply, strings.Join(deltas, ""),
+		"the persisted reply must remain byte-identical to the block already streamed")
+	assert.Equal(t, 2, model.calls)
+	require.NotEmpty(t, eng.messages)
+	assert.Equal(t, verbatimBillingHistoryCompletion, eng.messages[len(eng.messages)-1].Content,
+		"model history keeps only the amount-free completion marker")
+}
+
+func TestVerbatimBlockFailureStillDeliversServerOwnedSensitiveReply(t *testing.T) {
+	const sensitiveReply = "Jupyter Token：server-owned-token"
+	model := &verbatimThenFailingLLM{}
+	eng := NewWithDeps(model, billingStreamExecutor(), nil)
+	limiter := &scriptedRateLimiter{}
+	limiter.before = func(governance.Request) {
+		eng.sensitiveRepliesThisTurn = []string{sensitiveReply}
+	}
+	eng.rateLimiter = limiter
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	var deltas []string
+	reply, err := eng.ChatWithOptions(context.Background(), "核验费用并保留刚返回的登录信息", noopStep, ChatOptions{
+		OnTextDelta: func(d string) { deltas = append(deltas, d) },
+	})
+	require.NoError(t, err)
+	require.Len(t, eng.verbatimBlocksThisTurn, 1)
+
+	expected := eng.verbatimBlocksThisTurn[0] + verbatimBlockSeparator + sensitiveReply
+	assert.Equal(t, expected, reply)
+	assert.Equal(t, reply, strings.Join(deltas, ""),
+		"the common delivery boundary must preserve both server-owned results after the later model failure")
+	assert.Equal(t, verbatimBillingHistoryCompletion, eng.messages[len(eng.messages)-1].Content,
+		"neither the billing figures nor the sensitive reply enter model history")
 }
 
 func TestDiagnoseBillingConsumesMultipleReadExpensiveQuotaUnits(t *testing.T) {
@@ -1985,6 +2106,7 @@ func TestNormalizeMsg(t *testing.T) {
 // boundary placement as a test so future refactors can't silently move
 // the check inside the tool_call inner loop.
 func TestChat_TokenBudgetExceeded_BreaksAtIterationBoundary(t *testing.T) {
+	const sensitiveReply = "Jupyter Token：server-owned-token"
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		// Round 0: emits a tool_call AND reports 60k tokens (over the
 		// 50k cap). Second response would be returned if round 1 ran.
@@ -2005,6 +2127,11 @@ func TestChat_TokenBudgetExceeded_BreaksAtIterationBoundary(t *testing.T) {
 	eng := NewWithDeps(mock, &mockExecutorFn{fn: func(string, map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("test upstream failure")
 	}}, nil)
+	limiter := &scriptedRateLimiter{}
+	limiter.before = func(governance.Request) {
+		eng.sensitiveRepliesThisTurn = []string{sensitiveReply}
+	}
+	eng.rateLimiter = limiter
 	eng.maxTokensPerTurn = 50000
 	eng.SetHardBlockObserver(func(t observability.EngineHardBlockTrace) {
 		hardBlockHits = append(hardBlockHits, t)
@@ -2015,7 +2142,7 @@ func TestChat_TokenBudgetExceeded_BreaksAtIterationBoundary(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "4090什么配置", onStep)
 	require.NoError(t, err)
-	assert.Equal(t, tokenBudgetExceededMessage, reply,
+	assert.Equal(t, sensitiveReply+"\n\n"+tokenBudgetExceededMessage, reply,
 		"budget exceeded should short-circuit to the canned reply, not the round-1 LLM response")
 
 	// Exactly one LLM call: round 0 happens, round 1 hits the gate.

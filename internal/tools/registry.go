@@ -43,7 +43,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "SearchKnowledge",
-			Description: "检索平台文档和技术证据。用于稳定的产品规则、操作方法、技术原理和故障知识；平台当前目录、可用性、状态、价格、库存或热度使用对应只读能力。返回本轮可引用的证据条目。",
+			Description: "检索平台文档和技术证据。用于稳定的产品规则、操作方法、技术原理和故障知识；平台当前目录、可用性、状态、价格、库存或热度使用对应只读能力。返回本轮可引用的证据条目；最强的少量命中可能已包含完整正文。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -64,7 +64,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "ReadChunk",
-			Description: "按 chunk_id 读取知识条目的完整正文。SearchKnowledge 返回的 snippet 只是节选，正文更长；当节选被截断、只给出结论而没有给出具体参数/步骤/取值，或据此无法确定答案时，必须先用本工具读全文再作答，不要凭节选推测。只能读 SearchKnowledge 已返回过的 chunk_id。",
+			Description: "按 chunk_id 读取知识条目的完整正文。SearchKnowledge 未自动展开的 snippet 只是节选；当节选被截断、只给出结论而没有给出具体参数/步骤/取值，或据此无法确定答案时，先用本工具读全文，不要凭节选推测。只能读 SearchKnowledge 已返回过的 chunk_id。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

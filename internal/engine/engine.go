@@ -80,6 +80,10 @@ const (
 	// truncatedOutputRecoveryInstruction is ephemeral: it belongs only to the
 	// next model attempt and is never stored as conversation memory.
 	truncatedOutputRecoveryInstruction = "上一条模型输出被上游长度限制截断，未被采纳。请基于现有上下文直接给出完整、简洁的下一步；如需调用工具，只输出一个完整且合法的工具调用。"
+	// directAnswerToolRetryInstruction gives the same central Agent one bounded
+	// chance to reconsider a first-round tool-free answer. It does not classify
+	// the question, inspect the draft, or execute a tool on the model's behalf.
+	directAnswerToolRetryInstruction = "在给出最终答复前，再判断本轮是否需要工具：如果答复会包含尚未由本轮观察支持的优云平台事实，请现在调用与事实所在层一致的现有只读工具；稳定规则、操作方法和故障知识使用 SearchKnowledge，当前目录、状态、价格、库存和实例详情使用对应实时能力。如果只是普通对话，或无需平台事实即可回答，则直接自然回答。不要提及本提醒。"
 )
 
 const (
@@ -141,11 +145,12 @@ type ChatOptions struct {
 	// provide one, ChatWithOptions creates an engine-local identity for this
 	// turn. It is trace/context metadata only and grants no execution authority.
 	TurnID string
-	// OnTextDelta, if non-nil, receives the final validated LLM reply in its
+	// OnTextDelta, if non-nil, receives the final validated reply in its
 	// original chunk order, never intermediate ReAct/tool-call text. It is
-	// intentionally emitted after the response gateway rather than speculatively
+	// intentionally emitted after the delivery boundary rather than speculatively
 	// token-by-token, so the rendered stream cannot disagree with persisted text.
-	// Deterministic reply branches skip the LLM and therefore never call this.
+	// Deterministic server replies use the same callback so live and persisted
+	// output stay byte-identical.
 	OnTextDelta func(string)
 	// OnUsage, if non-nil, is called once after the final LLM call returns its
 	// usage data.
@@ -185,9 +190,8 @@ type ChatOptions struct {
 
 // Engine runs the ReAct loop: User → LLM → Tool → LLM → ... → Reply.
 type Engine struct {
-	llmClient             LLMClient
-	evidenceGatewayClient LLMClient
-	safeExecutor          *tools.SafeToolExecutor
+	llmClient    LLMClient
+	safeExecutor *tools.SafeToolExecutor
 	// externalExecutor is the RAW (unfiltered) shared executor. Used only for
 	// read-only L0 catalog calls that must pass gateway-identity args the
 	// SafeToolExecutor would strip (e.g. DescribeCompShareSupportZone needs
@@ -233,6 +237,12 @@ type Engine struct {
 	// Per-session/per-turn for the same reason as the hits above. Reset every turn.
 	readChunkCallsThisTurn int
 	readChunkIDsThisTurn   map[string]struct{}
+	// automaticKnowledgeBody* bounds deterministic full-body enrichment inside
+	// SearchKnowledge. It is separate from the model-visible ReadChunk budget:
+	// the Agent already chose retrieval, and this removes one fragile follow-up
+	// decision for the strongest accepted evidence only.
+	automaticKnowledgeBodyRunesThisTurn int
+	automaticKnowledgeBodyIDsThisTurn   map[string]struct{}
 	// searchKnowledgeCapabilitiesThisTurn maps only model-visible chunk IDs to
 	// the short-lived remote search_id that surfaced them. It is intentionally
 	// engine-local: sharing it through the process-wide retriever would let one
@@ -264,6 +274,12 @@ type Engine struct {
 	// Agent chose it. Citation finalization uses this post-hoc fact; there is no
 	// pre-turn knowledge classifier. Reset per turn.
 	knowledgeQAAgentLoopThisTurn bool
+	// directAnswerToolRetryPending is local to the current ReAct run. It keeps
+	// the retry in the sole Agent loop and is never persisted as semantic state.
+	directAnswerToolRetryPending bool
+	// directAnswerToolRetryOutcomeThisTurn is content-free telemetry for the
+	// bounded retry. Empty means the retry did not run.
+	directAnswerToolRetryOutcomeThisTurn string
 	// maxTokensPerTurn caps total LLM tokens (prompt + completion) per
 	// user turn. 0 = disabled. Copied from SharedDeps in NewSession.
 	maxTokensPerTurn int
@@ -350,12 +366,8 @@ type Engine struct {
 	// renders a second user-facing answer: the Agent sees the same evidence and
 	// writes the final Markdown itself.
 	platformReadEvidenceThisTurn []platformReadEvidence
-	// agentToolEvidenceThisTurn contains sanitized successful results from
-	// non-read tools for final-answer verification only. It never persists and
-	// never authorizes another action.
-	agentToolEvidenceThisTurn []knowledge.EvidenceItem
 	// sensitiveRepliesThisTurn contains credentials intentionally withheld from
-	// model context. The response gateway delivers each one once.
+	// model context. The final delivery boundary emits each one once.
 	sensitiveRepliesThisTurn []string
 	// committedWriteRepliesThisTurn preserves truthful, model-free completion
 	// text if narration fails after an upstream write has committed.
@@ -403,14 +415,6 @@ type Engine struct {
 	promptSectionIDsThisTurn       []string
 	verifiedEvidenceUpdateThisTurn string
 	groundingOutcomeThisTurn       string
-	// The evidence gateway is a final-answer quality control, not another
-	// evidence store. These bounded fields record only its closed-set decision;
-	// prompts, drafts and evidence text never enter trace metadata.
-	evidenceRequiredThisTurn        bool
-	evidenceHadThisTurn             bool
-	evidenceDecisionThisTurn        string
-	evidenceReasonThisTurn          string
-	evidenceCorrectionCountThisTurn int
 	// Per-turn instance-binding observability. Captured at turn
 	// entry / refreshSystemPrompt, read post-turn by the trace recorder. Per-turn
 	// by design (reset every turn) — a shared value would attribute one tenant's
@@ -471,10 +475,9 @@ type Engine struct {
 // KnowledgeRetriever is exported so server bootstrap
 // can assign it on immutable process-wide dependencies before sessions start.
 type SharedDeps struct {
-	LLMClient             LLMClient
-	EvidenceGatewayClient LLMClient
-	KnowledgeRetriever    KnowledgeRetriever
-	RateLimiter           governance.RateLimiter
+	LLMClient          LLMClient
+	KnowledgeRetriever KnowledgeRetriever
+	RateLimiter        governance.RateLimiter
 	// MaxTokensPerTurn caps total LLM tokens summed across one user turn.
 	// 0 = disabled. Process-wide constant; copied into every NewSession.
 	MaxTokensPerTurn int
@@ -504,10 +507,8 @@ func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
 	if strings.TrimSpace(cfg.Agent.LLM.Model) == "" {
 		return nil, errors.New("engine.NewSharedDeps: agent.llm.model is required")
 	}
-	client := llm.NewClient(cfg.Agent.LLM)
 	return &SharedDeps{
-		LLMClient:             client,
-		EvidenceGatewayClient: client,
+		LLMClient: llm.NewClient(cfg.Agent.LLM),
 		// InMemoryRateLimiter is process-local and suitable for local demo or
 		// single-instance deployment only. Multi-replica production needs a
 		// centralized limiter such as Redis or an API gateway.
@@ -532,11 +533,10 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 	}
 	eng := &Engine{
 		// ── shared (pointer-equal across sessions) ──
-		llmClient:             deps.LLMClient,
-		evidenceGatewayClient: deps.EvidenceGatewayClient,
-		knowledgeRetriever:    deps.KnowledgeRetriever,
-		rateLimiter:           deps.RateLimiter,
-		maxTokensPerTurn:      deps.MaxTokensPerTurn,
+		llmClient:          deps.LLMClient,
+		knowledgeRetriever: deps.KnowledgeRetriever,
+		rateLimiter:        deps.RateLimiter,
+		maxTokensPerTurn:   deps.MaxTokensPerTurn,
 
 		// ── per-session (fresh instance every call) ──
 		confirmFn:             opts.ConfirmFn,
@@ -602,14 +602,6 @@ func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
 
 func (e *Engine) SetKnowledgeRetriever(retriever KnowledgeRetriever) {
 	e.knowledgeRetriever = retriever
-}
-
-// SetEvidenceGatewayClient enables the final evidence decision in focused
-// tests. Production receives the same stateless LLM client through SharedDeps;
-// NewWithDeps intentionally leaves it disabled so legacy unit fixtures keep
-// exercising the behavior they were written for.
-func (e *Engine) SetEvidenceGatewayClient(client LLMClient) {
-	e.evidenceGatewayClient = client
 }
 
 func (e *Engine) SetRetrievalTraceObserver(observer func(observability.RetrievalTrace)) {
@@ -1065,6 +1057,10 @@ func (e *Engine) SetSessionState(state SessionState, version int) {
 	// The first explicit user target or server-rendered selection writes these
 	// fields through the normal CAS path at a positive version.
 	if version <= 0 {
+		// Verified evidence is server-owned retrieval provenance. The client may
+		// submit arbitrary Context when creating a session, but it cannot mint
+		// citations that later turns would treat as already verified.
+		state.VerifiedEvidence = nil
 		state.SelectedInstanceID = ""
 		state.SelectedInstanceName = ""
 		state.SelectedInstanceSource = ""
@@ -1074,10 +1070,6 @@ func (e *Engine) SetSessionState(state SessionState, version int) {
 		state.PendingSelectionProducedAtUnix = 0
 		state.PendingSelectionTTLSeconds = 0
 		state.PendingSelectionItems = nil
-		// Verified evidence is also server-owned authority: the final gateway
-		// treats it as factual support on later turns. A CreateSession client may
-		// preserve opaque context, but cannot mint a verified knowledge ledger.
-		state.VerifiedEvidence = nil
 	}
 	e.sessionState = state
 	e.sessionStateVersion = version
@@ -1285,16 +1277,13 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.promptSectionIDsThisTurn = nil
 	e.verifiedEvidenceUpdateThisTurn = evidenceUpdateNone
 	e.groundingOutcomeThisTurn = "unavailable"
-	e.evidenceRequiredThisTurn = false
-	e.evidenceHadThisTurn = false
-	e.evidenceDecisionThisTurn = evidenceDecisionSkipped
-	e.evidenceReasonThisTurn = evidenceOutcomeNotAttempted
-	e.evidenceCorrectionCountThisTurn = 0
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
 	e.answerEchoedChunkIDThisTurn = ""
 	e.readChunkCallsThisTurn = 0
 	e.readChunkIDsThisTurn = nil
+	e.automaticKnowledgeBodyRunesThisTurn = 0
+	e.automaticKnowledgeBodyIDsThisTurn = nil
 	e.searchKnowledgeCapabilitiesThisTurn = nil
 	e.belowFloorKnowledgeIDsThisTurn = nil
 	e.searchKnowledgeCallsThisTurn = 0
@@ -1305,12 +1294,13 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeActivityIDsByChunkID = nil
 	e.verifiedInstanceEvidenceThisTurn = map[string]struct{}{}
 	e.platformReadEvidenceThisTurn = nil
-	e.agentToolEvidenceThisTurn = nil
 	e.sensitiveRepliesThisTurn = nil
 	e.committedWriteRepliesThisTurn = nil
 	e.toolResultsByCallThisTurn = map[string]string{}
 	e.actionProposalDispositionThisTurn = ""
 	e.knowledgeQAAgentLoopThisTurn = false
+	e.directAnswerToolRetryPending = false
+	e.directAnswerToolRetryOutcomeThisTurn = ""
 	e.instanceOpsRanThisTurn = false
 	// Deliver any notice left by a diagnosis that ended without a verdict. It goes to the USER, on
 	// the activity stream, and is never appended to e.messages — the model must not restate,
@@ -1393,6 +1383,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// memory representation.
 	truncatedOutputRecoveries := 0
 	recoverTruncatedOutput := false
+	directAnswerToolRetryDraft := ""
 	emitTerminalText := func(text string) {
 		if opts.OnTextDelta == nil || text == "" {
 			return
@@ -1402,26 +1393,48 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		}
 		opts.OnTextDelta(text)
 	}
-	committedWriteFallback := func(fallback string) (string, bool) {
-		reply, ok := e.committedWriteRecoveryReply()
-		if !ok {
-			return fallback, false
-		}
-		e.recordEvidenceGatewayHostOutcome(evidenceDecisionSkipped, evidenceOutcomeCommittedWrite)
-		return reply, true
-	}
 	finishCommittedWrite := func() (agentruntime.Result, bool) {
-		reply, ok := committedWriteFallback("")
+		reply, ok := e.committedWriteRecoveryReply()
 		if !ok {
 			return agentruntime.Result{}, false
 		}
 		reply = e.finalizeHostTerminalResponse(llmCurrentUserMsg, reply)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: reply,
+			Role: openai.ChatMessageRoleAssistant, Content: reply,
 		})
 		emitTerminalText(reply)
 		return agentruntime.Final(reply, agentruntime.FinishDeterministicReply), true
+	}
+	finishDirectAnswerToolRetryDraft := func() (agentruntime.Result, bool) {
+		if strings.TrimSpace(directAnswerToolRetryDraft) == "" {
+			return agentruntime.Result{}, false
+		}
+		e.directAnswerToolRetryOutcomeThisTurn = observability.DirectAnswerRetryOutcomeFallbackDraft
+		content := e.finalizeResponse(ctx, userMsg, directAnswerToolRetryDraft)
+		e.commitDisplayedResourceSelectionIfVisible(content)
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role: openai.ChatMessageRoleAssistant, Content: content,
+		})
+		emitTerminalText(content)
+		directAnswerToolRetryDraft = ""
+		e.directAnswerToolRetryPending = false
+		return agentruntime.Final(content, agentruntime.FinishFinalAnswer), true
+	}
+	finishVerbatimBlocksAfterFailure := func() (agentruntime.Result, bool) {
+		if len(e.verbatimBlocksThisTurn) == 0 {
+			return agentruntime.Result{}, false
+		}
+		// The block has already crossed the streaming boundary. Finish the
+		// replay pair with the same amount-free marker used by the ordinary
+		// card-only path; the deferred composer will persist exactly the blocks
+		// that were streamed without exposing their figures to model history.
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: verbatimBillingHistoryCompletion,
+		})
+		content := e.finalizeHostTerminalResponse(llmCurrentUserMsg, "")
+		emitTerminalText(content)
+		return agentruntime.Final(content, agentruntime.FinishDeterministicReply), true
 	}
 	runtime := agentruntime.MustNew(maxReActRounds, e.recordAgentRuntimeEvent)
 	runtimeResult, runtimeErr := runtime.Run(ctx, func(ctx context.Context, runtimeRound *agentruntime.Round) (agentruntime.Result, error) {
@@ -1436,6 +1449,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			if result, ok := finishCommittedWrite(); ok {
 				return result, nil
 			}
+			if result, ok := finishDirectAnswerToolRetryDraft(); ok {
+				return result, nil
+			}
 			// If a prior round's SearchKnowledge already
 			// gathered evidence this turn, write the final answer from it
 			// (disciplined cited synthesis) instead of discarding the turn for
@@ -1444,12 +1460,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// never fabricate" guard). Round 0 has no tool evidence and therefore
 			// takes the refusal path.
 			if synth, ok := e.synthesizeOnBudgetExceeded(ctx, llmCurrentUserMsg); ok {
-				var passed bool
-				synth, passed = e.gateTerminalKnowledgeAnswer(ctx, llmCurrentUserMsg, synth, true)
-				if passed {
-					synth = e.acceptBudgetSynthesis(llmCurrentUserMsg, synth)
-				}
-				synth = e.finalizeResponseWithoutGrounding(llmCurrentUserMsg, synth)
+				synth = e.finalizeRecoveryResponse(llmCurrentUserMsg, synth)
 				e.messages = append(e.messages, openai.ChatCompletionMessage{
 					Role:    openai.ChatMessageRoleAssistant,
 					Content: synth,
@@ -1504,24 +1515,26 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			Messages: e.buildMessagesForLLM(toolWindow),
 			Tools:    toolWindow,
 		}
+		retryingDirectAnswer := e.directAnswerToolRetryPending
+		if retryingDirectAnswer {
+			req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, directAnswerToolRetryInstruction)
+			e.directAnswerToolRetryPending = false
+		}
 		if recoverTruncatedOutput {
 			req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, truncatedOutputRecoveryInstruction)
 			recoverTruncatedOutput = false
-		}
-		// Keep the correction boundary on every round in the one allowed repair
-		// attempt. The Agent may call a read tool before writing its replacement;
-		// dropping the instruction after that tool call would leave the final
-		// narration unconstrained even though no second correction is available.
-		if e.evidenceCorrectionCountThisTurn > 0 {
-			req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, evidenceCorrectionInstruction)
 		}
 		if decision, ok := e.allowRateLimited(governance.ClassLLM, "main_react_chat"); !ok {
 			if result, committed := finishCommittedWrite(); committed {
 				return result, nil
 			}
+			if retryingDirectAnswer {
+				if result, available := finishDirectAnswerToolRetryDraft(); available {
+					return result, nil
+				}
+			}
 			e.markTurnCompletion(observability.CompletionClassSafetyBlock, observability.CompletionReasonRateLimit)
-			content := rateLimitMessage(decision.Reason)
-			content = e.finalizeHostTerminalResponse(llmCurrentUserMsg, content)
+			content := e.finalizeHostTerminalResponse(llmCurrentUserMsg, rateLimitMessage(decision.Reason))
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:    openai.ChatMessageRoleAssistant,
 				Content: content,
@@ -1552,6 +1565,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			if result, ok := finishCommittedWrite(); ok {
 				return result, nil
 			}
+			if retryingDirectAnswer {
+				if result, available := finishDirectAnswerToolRetryDraft(); available {
+					return result, nil
+				}
+			}
 			// A per-call LLM error would otherwise discard the turn. If a prior round
 			// already gathered groundable
 			// evidence AND the outer ctx is still live, deliver a cited answer from it
@@ -1562,12 +1580,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// the original error still propagates (TestChat_LLMError stays green).
 			if ctx.Err() == nil {
 				if synth, ok := e.synthesizeOnBudgetExceeded(ctx, llmCurrentUserMsg); ok {
-					var passed bool
-					synth, passed = e.gateTerminalKnowledgeAnswer(ctx, llmCurrentUserMsg, synth, true)
-					if passed {
-						synth = e.acceptBudgetSynthesis(llmCurrentUserMsg, synth)
-					}
-					synth = e.finalizeResponseWithoutGrounding(llmCurrentUserMsg, synth)
+					synth = e.finalizeRecoveryResponse(llmCurrentUserMsg, synth)
 					e.messages = append(e.messages, openai.ChatCompletionMessage{
 						Role:    openai.ChatMessageRoleAssistant,
 						Content: synth,
@@ -1601,6 +1614,11 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			if result, ok := finishCommittedWrite(); ok {
 				return result, nil
 			}
+			if retryingDirectAnswer {
+				if result, available := finishDirectAnswerToolRetryDraft(); available {
+					return result, nil
+				}
+			}
 			truncatedOutputRecoveries++
 			if truncatedOutputRecoveries <= maxTruncatedOutputRecoveriesPerTurn {
 				recoverTruncatedOutput = true
@@ -1615,80 +1633,32 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			emitTerminalText(content)
 			return agentruntime.Final(content, agentruntime.FinishOutputTruncated), nil
 		}
+		runtimeRound.ModelStep(len(resp.ToolCalls), len(resp.ToolCalls) == 0 && strings.TrimSpace(resp.Content) != "")
+
 		// No tool calls → final text reply
 		if len(resp.ToolCalls) == 0 {
 			rawContent := resp.Content
+			// A first-round direct answer is the only point where a missed tool can
+			// still be corrected without adding a router or a post-answer judge. Give
+			// the same Agent one retry, then accept its next decision whether that is
+			// RAG, a live read, or a direct answer. A depleted token budget keeps the
+			// already-paid draft rather than turning a quality retry into a refusal.
+			if round == 0 && e.knowledgeRetriever != nil && strings.TrimSpace(rawContent) != "" &&
+				!e.tokenBudgetExceeded() && maxReActRounds > 1 {
+				directAnswerToolRetryDraft = rawContent
+				e.directAnswerToolRetryPending = true
+				return agentruntime.Continue(), nil
+			}
+			if retryingDirectAnswer && strings.TrimSpace(rawContent) == "" {
+				if result, available := finishDirectAnswerToolRetryDraft(); available {
+					return result, nil
+				}
+			}
+			if retryingDirectAnswer {
+				e.directAnswerToolRetryOutcomeThisTurn = observability.DirectAnswerRetryOutcomeDirectAgain
+			}
+			directAnswerToolRetryDraft = ""
 			draft := rawContent
-			runtimeRound.ModelStep(0, strings.TrimSpace(rawContent) != "")
-			if e.shouldAssessKnowledgeEvidence(draft, true) {
-				verdict, failure := e.assessKnowledgeEvidence(ctx, llmCurrentUserMsg, draft)
-				if failure != "" {
-					e.recordEvidenceGatewayHostOutcome(evidenceDecisionUnavailable, failure)
-					draft, _ = committedWriteFallback(evidenceGatewayUnavailableRefusal(failure))
-				} else {
-					e.recordEvidenceGatewayVerdict(verdict)
-					switch verdict.Decision {
-					case evidenceDecisionRetrieve, evidenceDecisionAbstain:
-						if committedDraft, ok := committedWriteFallback(""); ok {
-							draft = committedDraft
-							break
-						}
-						// The final checker is allowed to run after the Agent's
-						// generation budget is spent, but a retrieve verdict must not
-						// start another paid round beyond that budget.
-						if e.tokenBudgetExceeded() {
-							e.recordEvidenceGatewayHostOutcome(evidenceDecisionAbstain, evidenceOutcomeCorrectionExhausted)
-							draft = evidenceGatewayRefusal(verdict.Reason)
-							break
-						}
-						if e.evidenceCorrectionCountThisTurn == 0 {
-							e.evidenceCorrectionCountThisTurn = 1
-							// A missing stable platform fact gets one server-owned
-							// SearchKnowledge call. For live facts, or when the Agent
-							// already searched, the ephemeral instruction lets the
-							// ordinary tool window choose ReadChunk, a different query,
-							// or the appropriate live read capability.
-							if verdict.Decision == evidenceDecisionRetrieve && verdict.Reason == evidenceReasonKnowledgeMissing && !e.searchKnowledgeRanThisTurn {
-								tc := gatewaySearchToolCall(e.userTurn, e.evidenceCorrectionCountThisTurn, security.RedactEvidenceText(llmCurrentUserMsg))
-								toolResult := e.executeTool(ctx, tc, onStep)
-								e.messages = append(e.messages,
-									openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{tc}},
-									openai.ChatCompletionMessage{Role: openai.ChatMessageRoleTool, ToolCallID: tc.ID, Content: agentToolObservation(tc.Function.Name, toolResult)},
-								)
-								runtimeRound.Observation(tc.Function.Name)
-							} else if verdict.Decision == evidenceDecisionRetrieve && verdict.Reason == evidenceReasonEvidenceInsufficient && e.readChunkCallsThisTurn == 0 {
-								// A search snippet can identify the right document while ending
-								// before the exact limitation or procedure. Read the strongest
-								// available bodies once before asking the model to correct its
-								// answer; another paraphrased search usually returns the same
-								// truncated prefix and cannot close that evidence gap.
-								if ids := e.gatewayReadCandidateIDs(2); len(ids) > 0 {
-									tc := gatewayReadToolCall(e.userTurn, e.evidenceCorrectionCountThisTurn, ids)
-									toolResult := e.executeTool(ctx, tc, onStep)
-									e.messages = append(e.messages,
-										openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{tc}},
-										openai.ChatCompletionMessage{Role: openai.ChatMessageRoleTool, ToolCallID: tc.ID, Content: agentToolObservation(tc.Function.Name, toolResult)},
-									)
-									runtimeRound.Observation(tc.Function.Name)
-								}
-							}
-							return agentruntime.Continue(), nil
-						}
-						// One correction is the hard limit. A second unsupported
-						// draft is replaced by a deterministic boundary instead of
-						// entering another search/rewrite loop.
-						e.recordEvidenceGatewayHostOutcome(evidenceDecisionAbstain, evidenceOutcomeCorrectionExhausted)
-						draft = evidenceGatewayRefusal(verdict.Reason)
-					}
-				}
-			} else if e.evidenceGatewayClient != nil {
-				if reason := e.evidenceGatewaySkipReason(draft, true); reason != "" {
-					e.recordEvidenceGatewayHostOutcome(evidenceDecisionSkipped, reason)
-				}
-			}
-			if security.ContainsToolProtocolMarkup(draft) {
-				draft, _ = committedWriteFallback(draft)
-			}
 			content := e.finalizeResponse(ctx, userMsg, draft)
 			e.commitDisplayedResourceSelectionIfVisible(content)
 			// Replay buffered streaming deltas when the LLM content was returned
@@ -1739,7 +1709,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		}
 
 		// Has tool calls → execute each and feed results back.
-		runtimeRound.ModelStep(len(resp.ToolCalls), false)
+		if retryingDirectAnswer {
+			e.directAnswerToolRetryOutcomeThisTurn = observability.DirectAnswerRetryOutcomeToolSelected
+		}
+		directAnswerToolRetryDraft = ""
 		return e.runToolCallsRound(ctx, llmCurrentUserMsg, resp, toolWindow, runtimeRound, onStep, opts.OnTextDelta)
 	})
 	// Runtime owns the loop's terminal reason; retain it verbatim for the final
@@ -1750,6 +1723,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		return runtimeResult.Reply, nil
 	}
 	if !errors.Is(runtimeErr, agentruntime.ErrRoundLimit) {
+		if result, ok := finishVerbatimBlocksAfterFailure(); ok {
+			e.runtimeFinishReasonThisTurn = result.Reason
+			return result.Reply, nil
+		}
 		return "", runtimeErr
 	}
 
@@ -1768,15 +1745,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// top of this loop. synthesizeOnBudgetExceeded returns ("",false) on an empty
 	// ledger, so a no-evidence thrash (plain reads only, or a corpus-gap query the
 	// relevance floor emptied) keeps the canned message byte-identical and never
-	// fabricates. Final text is always buffered through the response gateway, so
-	// opts.OnTextDelta(synth) is the sole emission for this recovery as well.
+	// fabricates. Final text is always buffered through the delivery boundary, so
+	// emitTerminalText(synth) is the sole emission for this recovery as well.
 	if synth, ok := e.synthesizeOnBudgetExceeded(ctx, llmCurrentUserMsg); ok {
-		var passed bool
-		synth, passed = e.gateTerminalKnowledgeAnswer(ctx, llmCurrentUserMsg, synth, true)
-		if passed {
-			synth = e.acceptBudgetSynthesis(llmCurrentUserMsg, synth)
-		}
-		synth = e.finalizeResponseWithoutGrounding(llmCurrentUserMsg, synth)
+		synth = e.finalizeRecoveryResponse(llmCurrentUserMsg, synth)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
 			Content: synth,
@@ -1818,8 +1790,6 @@ func (e *Engine) runToolCallsRound(ctx context.Context, userMsg string, resp *ll
 	for idx, tc := range resp.ToolCalls {
 		toolResult := e.executeModelTool(ctx, tc, toolWindow, onStep)
 		runtimeRound.Observation(tc.Function.Name)
-		authorizedNonEvidenceTool := toolListContainsFunction(toolWindow, tc.Function.Name) &&
-			!evidenceGatewayAllowsTool(tc.Function.Name)
 
 		// Verbatim user block — deliver as-is, keep the turn alive. The model's
 		// history gets an amount-free note in place of the text, so it cannot
@@ -1843,9 +1813,6 @@ func (e *Engine) runToolCallsRound(ctx context.Context, userMsg string, resp *ll
 
 		// Deterministic final reply — return directly without LLM narration
 		if finalMsg, ok := isFinalReply(toolResult); ok {
-			if authorizedNonEvidenceTool {
-				e.recordEvidenceGatewayHostOutcome(evidenceDecisionSkipped, evidenceOutcomeNonEvidenceTool)
-			}
 			finalMsg = e.finalizeHostTerminalResponse(userMsg, finalMsg)
 			historyFinalMsg := finalMsg
 			if tc.Function.Name == tools.CustomerSupportHandoffName {
@@ -1886,9 +1853,6 @@ func (e *Engine) runToolCallsRound(ctx context.Context, userMsg string, resp *ll
 		// Only this normal-result path can be supplied to a later Agent round.
 		// Keep every normal result on the common AgentTool control-plane contract.
 		toolResult = agentToolObservation(tc.Function.Name, toolResult)
-		if authorizedNonEvidenceTool {
-			e.recordAgentToolEvidence(tc.Function.Name, toolResult)
-		}
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:       openai.ChatMessageRoleTool,
 			Content:    toolResult,
@@ -2104,6 +2068,57 @@ func isWeakEvidence(items []knowledge.RetrievalHit, hybridMode string, rerankerS
 //   - qwen3_rrf without reranker scores: fallback scores use the RRF scale.
 func appliedFloor(items []knowledge.RetrievalHit, hybridMode string, rerankerScored bool) (float64, bool) {
 	return knowledge.AppliedEvidenceFloor(items, hybridMode, rerankerScored)
+}
+
+// strongKnowledgeBodyEligibleIDs returns only ledger items whose individual
+// score crossed a calibrated relevance floor. A strong top hit does not make
+// every lower-ranked item strong, and an unknown/RRF-fallback score scale is not
+// guessed. Those entries keep their bounded snippet and remain explicitly
+// readable through ReadChunk.
+func strongKnowledgeBodyEligibleIDs(
+	hits []knowledge.RetrievalHit,
+	ledger knowledge.EvidenceLedger,
+	hybridMode string,
+	rerankerScored bool,
+) []string {
+	floor, judged := appliedFloor(hits, hybridMode, rerankerScored)
+	if !judged || len(ledger.Items) == 0 {
+		return nil
+	}
+	inLedger := make(map[string]struct{}, len(ledger.Items))
+	for _, item := range ledger.Items {
+		if id := strings.TrimSpace(item.ChunkID); id != "" {
+			inLedger[id] = struct{}{}
+		}
+	}
+	seen := make(map[string]struct{}, len(inLedger))
+	ids := make([]string, 0, len(inLedger))
+	for _, hit := range hits {
+		id := strings.TrimSpace(hit.Chunk.ChunkID)
+		if !hit.Kept || id == "" || hit.Score < floor {
+			continue
+		}
+		if _, ok := inLedger[id]; !ok {
+			continue
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func eligibleKnowledgeIDsInLedgerOrder(ledger knowledge.EvidenceLedger, eligible map[string]struct{}) []string {
+	ids := make([]string, 0, len(eligible))
+	for _, item := range ledger.Items {
+		id := strings.TrimSpace(item.ChunkID)
+		if _, ok := eligible[id]; ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // isRankingAmbiguous reports whether the top two hits are close enough on the
@@ -2512,6 +2527,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	floorDroppedCandidates := false
 	nonFlooredCandidates := false
 	belowFloorCandidateGroups := [][]belowFloorKnowledgeCandidate{}
+	strongBodyEligible := map[string]struct{}{}
 	for _, plannedQuery := range plan.SearchQueries {
 		if e.searchKnowledgeQueriesThisTurn >= maxRetrievalQueriesPerTurn {
 			droppedQueries = len(plan.SearchQueries) - executedQueries
@@ -2545,6 +2561,9 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 			nonFlooredCandidates = true
 		}
 		ledger := knowledge.BuildSubstantiveEvidenceLedger(resolvedQuestion, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
+		for _, id := range strongKnowledgeBodyEligibleIDs(rawHits, ledger, retrieved.HybridMode, retrieved.RerankerMode != "") {
+			strongBodyEligible[id] = struct{}{}
+		}
 		combined = knowledge.MergeEvidenceLedgers(combined, ledger, maxKnowledgePlanQueries*knowledge.DefaultEvidenceLedgerMaxItems)
 		e.recordSearchKnowledgeCapabilities(retrieved.SearchID, ledger)
 		e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
@@ -2555,6 +2574,19 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 			FloorDroppedAll: floorDroppedAll,
 		}, hits)
 		e.emitSearchKnowledgeRetrievalTrace(resolvedQuestion, plannedQuery, retrieved, rawHits, floorDroppedAll, activityID)
+	}
+	resultMeta := map[string]any{}
+	if eligibleIDs := eligibleKnowledgeIDsInLedgerOrder(combined, strongBodyEligible); len(eligibleIDs) > 0 {
+		expanded := e.autoMaterializeKnowledgeChunks(ctx, &combined, eligibleIDs)
+		if len(expanded.ReadIDs) > 0 {
+			resultMeta["auto_expanded_chunk_ids"] = expanded.ReadIDs
+		}
+		if len(expanded.TruncatedIDs) > 0 {
+			resultMeta["auto_expansion_truncated_ids"] = expanded.TruncatedIDs
+		}
+		if expanded.Unavailable {
+			resultMeta["auto_expansion_unavailable"] = true
+		}
 	}
 	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, combined, searchKnowledgeLedgerTurnMaxItems)
 	message := "搜索完成"
@@ -2575,30 +2607,27 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		},
 	})
 	if successfulQueries == 0 && unavailableQueries > 0 {
-		return searchKnowledgeResultJSON(combined, "", map[string]any{
-			"knowledge_unavailable": true,
-			"error":                 "知识库服务暂时不可用，请稍后重试。",
-		})
+		resultMeta["knowledge_unavailable"] = true
+		resultMeta["error"] = "知识库服务暂时不可用，请稍后重试。"
+		return searchKnowledgeResultJSON(combined, "", resultMeta)
 	}
 	if unavailableQueries > 0 {
-		return searchKnowledgeResultJSON(combined, "", map[string]any{
-			"knowledge_unavailable": true,
-			"partial":               true,
-			"unavailable_queries":   unavailableQueries,
-			"error":                 "知识库部分检索暂时不可用，当前证据可能不完整。",
-		})
+		resultMeta["knowledge_unavailable"] = true
+		resultMeta["partial"] = true
+		resultMeta["unavailable_queries"] = unavailableQueries
+		resultMeta["error"] = "知识库部分检索暂时不可用，当前证据可能不完整。"
+		return searchKnowledgeResultJSON(combined, "", resultMeta)
 	}
 	if len(combined.Items) == 0 && floorDroppedCandidates && !nonFlooredCandidates {
 		belowFloorCandidates := roundRobinBelowFloorKnowledgeCandidates(belowFloorCandidateGroups)
 		e.recordBelowFloorKnowledgeCapabilities(belowFloorCandidates)
-		return searchKnowledgeResultJSON(combined, "", map[string]any{
-			"floor_dropped_all":      true,
-			"below_floor_candidates": belowFloorCandidates,
-			"note": "候选内容均低于相关性门槛，尚未形成可引用证据。可先用 ReadChunk 读取待核验候选全文，或改写后重新检索；" +
-				"读取前不得引用；读取后仍按低置信证据使用，必要时说明不确定性，不得当成高置信证据。",
-		})
+		resultMeta["floor_dropped_all"] = true
+		resultMeta["below_floor_candidates"] = belowFloorCandidates
+		resultMeta["note"] = "候选内容均低于相关性门槛，尚未形成可引用证据。可先用 ReadChunk 读取待核验候选全文，或改写后重新检索；" +
+			"读取前不得引用；读取后仍按低置信证据使用，必要时说明不确定性，不得当成高置信证据。"
+		return searchKnowledgeResultJSON(combined, "", resultMeta)
 	}
-	return searchKnowledgeResultJSON(combined, "", nil)
+	return searchKnowledgeResultJSON(combined, "", resultMeta)
 }
 
 const maxBelowFloorKnowledgeCandidates = 3
@@ -2707,13 +2736,12 @@ func (e *Engine) recordSearchKnowledgeCapabilities(searchID string, ledger knowl
 	for _, item := range ledger.Items {
 		chunkID := strings.TrimSpace(item.ChunkID)
 		if chunkID != "" {
-			// A later strong retrieval upgrades the same chunk. Keeping the old
-			// below-floor mark would make the verifier distrust evidence that the
-			// current search explicitly accepted.
-			delete(e.belowFloorKnowledgeIDsThisTurn, chunkID)
 			// A new search supersedes a prior capability for the same chunk. The
 			// previous search_id is deliberately not retained as a fallback.
 			e.searchKnowledgeCapabilitiesThisTurn[chunkID] = searchID
+			// A later calibrated strong result supersedes an earlier weak-candidate
+			// view of the same chunk in this turn.
+			delete(e.belowFloorKnowledgeIDsThisTurn, chunkID)
 		}
 	}
 }

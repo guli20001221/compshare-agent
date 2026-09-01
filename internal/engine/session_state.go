@@ -166,20 +166,9 @@ func (s PersistedInstanceOpsAgentSession) IsZero() bool {
 // real-time state query.
 // The JSON key remains verified_knowledge for stored-session compatibility.
 type VerifiedEvidenceTurn struct {
-	Question                string                              `json:"question,omitempty"`
-	Evidence                knowledge.EvidenceLedger            `json:"evidence"`
-	EvidenceMetadataVersion int                                 `json:"evidence_metadata_version,omitempty"`
-	EvidenceMetadata        map[string]VerifiedEvidenceMetadata `json:"evidence_metadata,omitempty"`
-	VerifiedAtUnix          int64                               `json:"verified_at_unix,omitempty"`
-}
-
-// VerifiedEvidenceMetadata persists verifier-only scope fields without adding
-// them to the Agent-visible SearchKnowledge JSON contract.
-type VerifiedEvidenceMetadata struct {
-	ProductArea  string `json:"product_area,omitempty"`
-	SourceOrigin string `json:"source_origin,omitempty"`
-	Confidence   string `json:"confidence,omitempty"`
-	BelowFloor   bool   `json:"below_floor,omitempty"`
+	Question       string                   `json:"question,omitempty"`
+	Evidence       knowledge.EvidenceLedger `json:"evidence"`
+	VerifiedAtUnix int64                    `json:"verified_at_unix,omitempty"`
 }
 
 const (

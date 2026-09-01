@@ -25,11 +25,6 @@ type TraceSnapshot struct {
 	PromptSectionIDs                 []string
 	EvidenceUpdateSource             string
 	GroundingOutcome                 string
-	EvidenceRequired                 bool
-	EvidenceHad                      bool
-	EvidenceDecision                 string
-	EvidenceReason                   string
-	EvidenceCorrectionCount          int
 	PromptMessagesRawPeak            int
 	PromptMessagesAssembledPeak      int
 	PromptMessagesCapApplied         bool
@@ -57,11 +52,6 @@ func (e *Engine) TraceSnapshot(now time.Time) TraceSnapshot {
 		PromptSectionIDs:                 append([]string(nil), e.promptSectionIDsThisTurn...),
 		EvidenceUpdateSource:             normalizedEvidenceUpdateSource(e.verifiedEvidenceUpdateThisTurn),
 		GroundingOutcome:                 normalizedGroundingOutcome(e.groundingOutcomeThisTurn),
-		EvidenceRequired:                 e.evidenceRequiredThisTurn,
-		EvidenceHad:                      e.evidenceHadThisTurn || len(e.knowledgeLedgerForVerification(e.lastUserMsg).Items) > 0,
-		EvidenceDecision:                 e.evidenceDecisionThisTurn,
-		EvidenceReason:                   e.evidenceReasonThisTurn,
-		EvidenceCorrectionCount:          e.evidenceCorrectionCountThisTurn,
 		PromptMessagesRawPeak:            e.PromptMessagesRawPeak(),
 		PromptMessagesAssembledPeak:      e.PromptMessagesAssembledPeak(),
 		PromptMessagesCapApplied:         e.PromptMessagesCapApplied(),

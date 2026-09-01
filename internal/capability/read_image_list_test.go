@@ -26,8 +26,10 @@ func TestImageListRequestHasNoRequiredFields(t *testing.T) {
 func TestImageListDescriptionUsesTheLiveCatalogForNamedModelDeployment(t *testing.T) {
 	description := NewReadCapability(imageListReadSpec()).Tool.Function.Description
 	for _, want := range []string{
+		"用于浏览、推荐和创建前选型",
 		"部署或运行具名模型/应用时先查社区镜像",
 		"有精确候选就据此回答",
+		"目录不能替代登录、默认配置、使用步骤或故障文档",
 		"源码、权重或 adapter 问题",
 	} {
 		require.Contains(t, description, want)
@@ -139,6 +141,8 @@ func TestImageListHandle_PlatformEmpty(t *testing.T) {
 
 	require.Equal(t, platform.ReadStatusEmpty, result.Status)
 	assert.Nil(t, result.Envelope)
+	assert.Contains(t, result.Reply, "只说明当前目录查询没有结果")
+	assert.Contains(t, result.Reply, "不代表知识库中没有")
 }
 
 // TestImageListHandle_SharedEmpty: shared images carry no envelope, so the shared
@@ -148,7 +152,8 @@ func TestImageListHandle_SharedEmpty(t *testing.T) {
 		ImageListRequest{Source: platform.ImageSourceShared})
 
 	require.Equal(t, platform.ReadStatusEmpty, result.Status)
-	assert.Contains(t, result.Reply, "未获取到共享给你的镜像")
+	assert.Contains(t, result.Reply, "只说明当前目录查询没有结果")
+	assert.Contains(t, result.Reply, "不代表知识库中没有")
 }
 
 // --- platform render parity -----------------------------------------------------
@@ -165,7 +170,8 @@ func TestImageListRender_PlatformFilterAndCleanDisplay(t *testing.T) {
 	assert.NotContains(t, filtered, "PyTorch")
 
 	noMatch := renderImageListReply(raw, "ImageSet", fieldOrder, "Debian 12", platform.ListModeFiltered)
-	assert.Contains(t, noMatch, "未找到匹配的镜像")
+	assert.Contains(t, noMatch, "当前筛选未命中")
+	assert.Contains(t, noMatch, "不代表知识库中没有")
 
 	byID := renderImageListReply(raw, "ImageSet", fieldOrder, "img-2", platform.ListModeFiltered)
 	assert.Contains(t, byID, "PyTorch 2.1", "a create workflow's returned image id must support a follow-up lookup")
@@ -213,6 +219,16 @@ func TestImageListRender_CommunityShowsGroupsAndVersions(t *testing.T) {
 	assert.Less(t, strings.Index(reply, "LTX-2.3"), strings.Index(reply, "LiveTalking"))
 }
 
+func TestImageListHandle_CommunityFilteredEmptyKeepsItsScope(t *testing.T) {
+	result := runImageList(t, &fakeReadExec{result: map[string]any{"CompshareImageGroup": []any{}}},
+		ImageListRequest{Source: platform.ImageSourceCommunity, Query: "dify", Mode: platform.ListModeFiltered})
+
+	require.Equal(t, platform.ReadStatusEmpty, result.Status)
+	assert.Contains(t, result.Reply, "当前目录查询没有结果")
+	assert.Contains(t, result.Reply, "不代表知识库中没有")
+	assert.NotContains(t, result.Reply, "没有使用说明")
+}
+
 // --- shared render parity -------------------------------------------------------
 
 func TestImageListRender_Shared(t *testing.T) {
@@ -233,11 +249,13 @@ func TestImageListRender_Shared(t *testing.T) {
 
 	noMatch, noMatchEmpty := renderSharedImageListReply(raw, "llama", platform.ListModeFiltered)
 	assert.True(t, noMatchEmpty, "a no-match shared list is a structured Empty read")
-	assert.Contains(t, noMatch, "未找到匹配的共享镜像")
+	assert.Contains(t, noMatch, "当前筛选未命中")
+	assert.Contains(t, noMatch, "不代表知识库中没有")
 
 	emptyReply, empty := renderSharedImageListReply(map[string]any{}, "", platform.ListModeAll)
 	assert.True(t, empty)
-	assert.Contains(t, emptyReply, "未获取到共享给你的镜像")
+	assert.Contains(t, emptyReply, "只说明当前目录查询没有结果")
+	assert.Contains(t, emptyReply, "不代表知识库中没有")
 }
 
 // --- envelope parity ------------------------------------------------------------

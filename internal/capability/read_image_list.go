@@ -24,9 +24,16 @@ const (
 	communityImageAction = "DescribeCommunityImages"
 	sharedImageAction    = "DescribeCompShareSharingImages"
 
-	noImageListReply        = "未获取到镜像列表。"
-	noImageListNoMatchReply = "未找到匹配的镜像。"
-	noCommunityReply        = "未获取到社区镜像数据。"
+	noImageListReply = "本次实时镜像目录查询未返回数据；这只说明当前目录查询没有结果，" +
+		"不代表知识库中没有相关镜像的登录、配置或使用说明。"
+	noImageListNoMatchReply = "本次实时镜像目录没有匹配项；这只说明当前筛选未命中，" +
+		"不代表知识库中没有相关镜像的登录、配置或使用说明。"
+	noCommunityReply = "本次实时社区镜像目录查询未返回数据；这只说明当前目录查询没有结果，" +
+		"不代表知识库中没有相关镜像的登录、配置或使用说明。"
+	noSharedReply = "本次实时共享镜像目录查询未返回数据；这只说明当前目录查询没有结果，" +
+		"不代表知识库中没有相关镜像的登录、配置或使用说明。"
+	noSharedNoMatchReply = "本次实时共享镜像目录没有匹配项；这只说明当前筛选未命中，" +
+		"不代表知识库中没有相关镜像的登录、配置或使用说明。"
 
 	imageListDisplayCap      = imageModelBrowseDisplayCap
 	communityImageGroupLimit = 10 // upper bound on community renderer output lines
@@ -67,7 +74,7 @@ type ImageListResponse struct {
 func imageListReadSpec() ReadCapabilitySpec[ImageListRequest, ImageListResponse] {
 	return ReadCapabilitySpec[ImageListRequest, ImageListResponse]{
 		Label:       imageListCapabilityLabel,
-		Description: "查询平台、自制、社区或共享镜像的实时目录，用于浏览、推荐和创建前选型。部署或运行具名模型/应用时先查社区镜像；有精确候选就据此回答，没有则如实说明。源码、权重或 adapter 问题再使用模型仓库或知识检索。",
+		Description: "查询平台、自制、社区或共享镜像的实时目录，用于浏览、推荐和创建前选型。部署或运行具名模型/应用时先查社区镜像；有精确候选就据此回答，没有则如实说明。目录不能替代登录、默认配置、使用步骤或故障文档，这些仍查知识库。源码、权重或 adapter 问题查模型仓库或知识库。",
 		Params: objectParam(map[string]schemaNode{
 			"source": enumParam(platform.ImageSourceValues()...),
 			"query": stringParam().described(
@@ -892,7 +899,7 @@ func communityVersionLabel(ver map[string]any) string {
 func renderSharedImageListReply(raw map[string]any, searchQuery string, mode platform.ListMode) (string, bool) {
 	items := mapSliceAt(raw, "ImageSet")
 	if len(items) == 0 {
-		return "未获取到共享给你的镜像。", true
+		return noSharedReply, true
 	}
 	query := imageFilterQuery(searchQuery, mode)
 	filtered := make([]map[string]any, 0, len(items))
@@ -907,7 +914,7 @@ func renderSharedImageListReply(raw map[string]any, searchQuery string, mode pla
 		filtered = append(filtered, entry)
 	}
 	if query != "" && len(filtered) == 0 {
-		return "未找到匹配的共享镜像。", true
+		return noSharedNoMatchReply, true
 	}
 	lines := []string{}
 	for _, entry := range filtered {
@@ -921,7 +928,7 @@ func renderSharedImageListReply(raw map[string]any, searchQuery string, mode pla
 		}
 	}
 	if len(lines) == 0 {
-		return "未获取到共享给你的镜像。", true
+		return noSharedReply, true
 	}
 	prefix := "共享给你的镜像"
 	if total := strings.TrimSpace(safeString(raw, "TotalCount")); total != "" && total != "0" {

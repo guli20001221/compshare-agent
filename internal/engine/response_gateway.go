@@ -10,7 +10,7 @@ import (
 
 const malformedToolProtocolReply = "本次操作没有进入安全确认流程，请重新提交；系统尚未执行任何修改。"
 
-// finalizeResponse is the single final-text gateway for the central Agent.
+// finalizeResponse is the single final-text boundary for the central Agent.
 // It does not infer intent from words in the answer. Instead it selects the
 // applicable contract from evidence that actually crossed a tool boundary.
 func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) string {
@@ -21,7 +21,7 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 
 	// SearchKnowledge validates only the Agent-authored draft. Ordinary read
 	// facts already reached the Agent as tool evidence, and no second read block
-	// is composed afterwards by this gateway.
+	// is composed afterwards by this boundary.
 	if e.searchKnowledgeRanThisTurn {
 		content = e.finalizeAgentLoopKnowledgeAnswer(ctx, userMsg, content)
 	} else {
@@ -30,25 +30,16 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 	return e.finishResponseDelivery(userMsg, draft, content)
 }
 
-// finalizeResponseWithoutGrounding applies the common delivery boundary to a
-// terminal recovery whose citation/grounding state was already accepted by
-// acceptBudgetSynthesis. Running finalizeResponse here would validate and
-// mutate that state twice; skipping this boundary would leak private markers or
-// operational tokens and could drop server-owned sensitive read results.
-func (e *Engine) finalizeResponseWithoutGrounding(userMsg, draft string) string {
+// finalizeRecoveryResponse applies the ordinary model-text and delivery
+// boundary to an exceptional synthesis whose citation bookkeeping already ran
+// inside synthesizeOnBudgetExceeded. It performs no semantic review and starts
+// no second Agent; it only keeps private markers, credentials, sensitive
+// replies and signed-URL handling consistent with the normal final exit.
+func (e *Engine) finalizeRecoveryResponse(userMsg, draft string) string {
 	content, ok := e.prepareResponseDraft(draft)
 	if !ok {
 		return content
 	}
-	return e.finishResponseDelivery(userMsg, draft, content)
-}
-
-// finalizeHostTerminalResponse composes server-owned terminal results without
-// treating private adapter markers as model-authored text. These exits do not
-// need citation grounding, but they still must deliver any sensitive read result
-// collected earlier in the turn and apply the ordinary credential boundary.
-func (e *Engine) finalizeHostTerminalResponse(userMsg, draft string) string {
-	content := security.RedactOperationalTokensInText(draft)
 	return e.finishResponseDelivery(userMsg, draft, content)
 }
 
@@ -69,6 +60,14 @@ func (e *Engine) prepareResponseDraft(draft string) (string, bool) {
 	content := e.guardMonitorNoDataFinalReply(draft)
 	content = security.RedactOperationalTokensInText(content)
 	return content, true
+}
+
+// finalizeHostTerminalResponse applies the same delivery boundary to text the
+// server owns (for example a committed-write recovery). It deliberately skips
+// knowledge grounding because this text was not authored by the model.
+func (e *Engine) finalizeHostTerminalResponse(userMsg, draft string) string {
+	content := security.RedactOperationalTokensInText(draft)
+	return e.finishResponseDelivery(userMsg, draft, content)
 }
 
 func (e *Engine) finishResponseDelivery(userMsg, originalDraft, content string) string {

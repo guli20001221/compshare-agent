@@ -6,6 +6,7 @@ import (
 
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
+	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,14 +21,30 @@ func TestSynthesizeOnBudgetExceeded_DeliversFromEvidenceOverBudget(t *testing.T)
 	eng.maxTokensPerTurn = 50000
 	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{keptVLLMHit()}
 
-	candidate, ok := eng.synthesizeOnBudgetExceeded(context.Background(), "vllm 显存不足怎么办")
+	got, ok := eng.synthesizeOnBudgetExceeded(context.Background(), "vllm 显存不足怎么办")
 	require.True(t, ok, "evidence in hand + over budget must synthesize a grounded answer, not refuse")
-	assert.Contains(t, candidate, "[1]", "the unaccepted candidate keeps its proof marker for final validation")
-	assert.Empty(t, eng.sessionState.VerifiedEvidence, "a candidate is not durable before the final gateway passes")
-	got := eng.acceptBudgetSynthesis("vllm 显存不足怎么办", candidate)
 	assert.Contains(t, got, "max-model-len")
 	assert.NotContains(t, got, "[1]", "the [n] marker is stripped for display")
-	assert.NotEmpty(t, eng.sessionState.VerifiedEvidence)
+}
+
+func TestChat_TokenBudgetRecoveryAppliesDeliveryBoundary(t *testing.T) {
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{
+			ToolCalls: []openai.ToolCall{toolCall("sk", "SearchKnowledge", `{"query":"vllm 显存不足"}`)},
+			Usage:     llm.TokenUsage{TotalTokens: 60000},
+		},
+		plannerEcho("vllm 显存不足"),
+		vllmGroundedRepairResponse(),
+	}}
+	eng := NewWithDeps(model, &mockExecutor{}, nil)
+	eng.maxTokensPerTurn = 50000
+	eng.SetKnowledgeRetriever(vllmRetriever())
+
+	reply, err := eng.Chat(context.Background(), "vllm 显存不足怎么办", noopStep)
+	require.NoError(t, err)
+	assert.Contains(t, reply, "max-model-len")
+	assert.NotContains(t, reply, recoveryModelToken,
+		"token-budget recovery must cross the ordinary response redaction boundary")
 }
 
 func TestSynthesizeOnBudgetExceeded_NoEvidenceReturnsFalse(t *testing.T) {
@@ -35,32 +52,6 @@ func TestSynthesizeOnBudgetExceeded_NoEvidenceReturnsFalse(t *testing.T) {
 	eng.maxTokensPerTurn = 50000
 	_, ok := eng.synthesizeOnBudgetExceeded(context.Background(), "q")
 	assert.False(t, ok, "with no evidence in hand the budget path must refuse, never fabricate")
-}
-
-func TestTerminalEvidenceGatewayStillRunsAfterTokenCap(t *testing.T) {
-	gateway := &mockLLM{responses: []llm.ChatResponse{{Content: `{"decision":"retrieve","reason":"evidence_insufficient"}`}}}
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.SetEvidenceGatewayClient(gateway)
-	eng.maxTokensPerTurn = 50000
-	eng.turnTokensConsumed = 60000
-	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{keptVLLMHit()}
-
-	got, passed := eng.gateTerminalKnowledgeAnswer(context.Background(), "vllm 显存不足怎么办", "把 max-model-len 调大。", true)
-	assert.False(t, passed)
-	assert.Contains(t, got, "无法可靠确认")
-	assert.Len(t, gateway.calls, 1, "verification remains available after the Agent generation cap")
-	assert.Zero(t, eng.evidenceCorrectionCountThisTurn, "terminal recovery cannot start another correction round")
-}
-
-func TestTerminalEvidenceGatewayNeverPublishesToolProtocolMarkup(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.SetEvidenceGatewayClient(&mockLLM{})
-
-	got, passed := eng.gateTerminalKnowledgeAnswer(context.Background(), "重置密码",
-		`<｜DSML｜invoke name="RequestResetPassword">{"Password":"Secret123!"}`, true)
-	assert.False(t, passed)
-	assert.Equal(t, malformedToolProtocolReply, got)
-	assert.NotContains(t, got, "Secret123")
 }
 
 // The main ReAct exit refuses any non-normal finish_reason rather than persist

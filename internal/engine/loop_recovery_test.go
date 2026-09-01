@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	openai "github.com/sashabaranov/go-openai"
@@ -74,8 +75,8 @@ func keptVLLMHit() knowledge.RetrievalHit {
 
 // vllmGroundedRepairResponse is the single-model budget/ceiling recovery reply:
 // plain text with a positional [1] citation that resolves to the gathered ledger
-// item (ext-vllm-oom-001). It also includes a model-authored operational token
-// so these end-to-end exits prove they still cross the common delivery boundary.
+// item (ext-vllm-oom-001). It also carries a model-authored operational token so
+// every caller proves that recovery still crosses the common delivery boundary.
 const recoveryModelToken = "recovery-model-token-abcdefghijklmnopqrst"
 
 func vllmGroundedRepairResponse() llm.ChatResponse {
@@ -117,8 +118,6 @@ func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
 
 	mock := &mockLLM{responses: responses}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	gateway := &mockLLM{responses: []llm.ChatResponse{{Content: `{"decision":"pass","reason":"supported"}`}}}
-	eng.SetEvidenceGatewayClient(gateway)
 	prepareKnowledgeRecoveryLane(t, eng)
 	eng.SetKnowledgeRetriever(vllmRetriever())
 	eng.messages = []openai.ChatCompletionMessage{
@@ -130,15 +129,14 @@ func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
 	assert.NotContains(t, reply, "轮次超限", "evidence was in hand — must recover, not refuse")
 	assert.Contains(t, reply, "max-model-len", "the grounded answer must flow through")
 	assert.NotContains(t, reply, "[1]", "the positional cite marker is stripped for display")
-	assert.NotContains(t, reply, recoveryModelToken, "terminal recovery must cross the ordinary response redaction boundary")
+	assert.NotContains(t, reply, recoveryModelToken, "round-ceiling recovery must cross the ordinary response redaction boundary")
 	assert.True(t, eng.ReactCeilingHitThisTurn(),
 		"trace attribution preserved: the loop DID hit the ceiling even though the user got an answer")
 	require.Len(t, eng.searchKnowledgeHitsThisTurn, 1, "the gathered hit is what recovery grounds on")
-	require.Len(t, gateway.calls, 1, "round-ceiling synthesis must pass through the final evidence gateway")
-	assert.Equal(t, evidenceDecisionPass, eng.evidenceDecisionThisTurn)
 }
 
 func TestChat_RoundCeiling_DoesNotGuessFromInstanceKeywords(t *testing.T) {
+	const sensitiveReply = "Jupyter Token：server-owned-token"
 	responses := make([]llm.ChatResponse, maxReActRounds)
 	for i := range responses {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
@@ -174,12 +172,17 @@ func TestChat_RoundCeiling_DoesNotGuessFromInstanceKeywords(t *testing.T) {
 		"DescribeCompShareInstance": describe,
 	}}
 	eng := NewWithDeps(&mockLLM{responses: responses}, exec, nil)
+	limiter := &scriptedRateLimiter{}
+	limiter.before = func(governance.Request) {
+		eng.sensitiveRepliesThisTurn = []string{sensitiveReply}
+	}
+	eng.rateLimiter = limiter
 	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
 	require.NoError(t, eng.registry.SyncFromDescribe(describe, "test"))
 
 	reply, err := eng.Chat(context.Background(), "claude-write-test 这台状态怎么样", noopStep)
 	require.NoError(t, err)
-	assert.Equal(t, reactCeilingRefusal, reply)
+	assert.Equal(t, sensitiveReply+"\n\n"+reactCeilingRefusal, reply)
 }
 
 func TestChat_RoundCeiling_DoesNotClassifyPunctuationFollowup(t *testing.T) {

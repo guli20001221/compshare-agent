@@ -11,10 +11,10 @@ import (
 	"github.com/compshare-agent/internal/observability"
 )
 
-// ReadChunk is the second half of agentic retrieval: SearchKnowledge FINDS chunks
-// and shows a bounded snippet of each (DefaultEvidenceSnippetMaxRunes = 400 runes,
-// about 22% of the mean 1802-rune chunk), ReadChunk returns one chunk's FULL body
-// by id. Without it the agent must answer from an excerpt that routinely stops
+// ReadChunk is the explicit second half of agentic retrieval: SearchKnowledge
+// shows a bounded snippet for ordinary/weak entries and may enrich the strongest
+// accepted entries; ReadChunk returns any remaining chunk's FULL body by id.
+// Without it the agent may have only an excerpt that routinely stops
 // before the parameters, thresholds or step list the question was actually about,
 // and a truncated excerpt is indistinguishable from a corpus that never covered
 // the detail — the agent then denies or guesses instead of reading on.
@@ -35,6 +35,12 @@ const (
 	// A-RAG's read_chunk has no cap at all and leans on a global token budget we
 	// do not have.
 	maxReadChunkRunesPerCall = 6000
+
+	// A SearchKnowledge call may enrich only caller-approved strong hits. The
+	// budget is owned by the whole turn, not one search call, so repeated
+	// searches cannot keep adding full bodies to the model context.
+	maxAutoReadChunkIDsPerTurn   = 2
+	maxAutoReadChunkRunesPerTurn = 8000
 )
 
 const (
@@ -69,6 +75,175 @@ type readChunkItem struct {
 	SourceType string `json:"source_type,omitempty"`
 	Content    string `json:"content,omitempty"`
 	Truncated  bool   `json:"truncated,omitempty"`
+}
+
+type autoReadChunkResult struct {
+	ReadIDs      []string
+	TruncatedIDs []string
+	Unavailable  bool
+}
+
+// autoMaterializeKnowledgeChunks enriches a ledger after the central Agent has
+// already chosen SearchKnowledge. eligibleIDs is deliberately supplied by the
+// caller: score calibration and ranking stay in the search implementation,
+// while this helper only enforces the body-read capability and context budget.
+//
+// Remote reads remain bound to the search_id recorded for each model-visible
+// chunk. Local tests/offline evaluation use the in-process Chunk capability.
+// Any failed or missing body leaves the original ledger snippet untouched.
+func (e *Engine) autoMaterializeKnowledgeChunks(
+	ctx context.Context,
+	ledger *knowledge.EvidenceLedger,
+	eligibleIDs []string,
+) autoReadChunkResult {
+	result := autoReadChunkResult{ReadIDs: []string{}}
+	if e == nil || ledger == nil || len(eligibleIDs) == 0 {
+		return result
+	}
+
+	if e.automaticKnowledgeBodyIDsThisTurn == nil {
+		e.automaticKnowledgeBodyIDsThisTurn = map[string]struct{}{}
+	}
+	remainingIDs := maxAutoReadChunkIDsPerTurn - len(e.automaticKnowledgeBodyIDsThisTurn)
+	runesLeft := maxAutoReadChunkRunesPerTurn - e.automaticKnowledgeBodyRunesThisTurn
+	if remainingIDs <= 0 || runesLeft <= 0 {
+		return result
+	}
+
+	ledgerIndexes := make(map[string]int, len(ledger.Items))
+	for i, item := range ledger.Items {
+		if id := strings.TrimSpace(item.ChunkID); id != "" {
+			ledgerIndexes[id] = i
+		}
+	}
+
+	ids := make([]string, 0, remainingIDs)
+	seen := make(map[string]struct{}, len(eligibleIDs))
+	for _, rawID := range eligibleIDs {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			continue
+		}
+		if _, ok := ledgerIndexes[id]; !ok {
+			// Local readers do not have a search_id capability, so ledger
+			// membership is their equivalent authorization boundary.
+			continue
+		}
+		if _, duplicate := seen[id]; duplicate {
+			continue
+		}
+		seen[id] = struct{}{}
+		if _, alreadyRead := e.readChunkIDsThisTurn[id]; alreadyRead {
+			continue
+		}
+		if _, attempted := e.automaticKnowledgeBodyIDsThisTurn[id]; attempted {
+			continue
+		}
+		ids = append(ids, id)
+		// Count attempts, not only successful bodies. Repeated searches must not
+		// turn a degraded reader into an unbounded remote retry loop.
+		e.automaticKnowledgeBodyIDsThisTurn[id] = struct{}{}
+		if len(ids) == remainingIDs {
+			break
+		}
+	}
+	if len(ids) == 0 {
+		return result
+	}
+
+	remoteReader, remote := e.knowledgeRetriever.(searchBoundChunkReader)
+	localReader, local := e.knowledgeRetriever.(chunkReader)
+	if !remote && !local {
+		result.Unavailable = true
+		return result
+	}
+
+	chunksByID := make(map[string]knowledge.KBChunk, len(ids))
+	if remote {
+		groups := make([]remoteReadGroup, 0, len(ids))
+		groupIndex := map[string]int{}
+		for _, id := range ids {
+			searchID := strings.TrimSpace(e.searchKnowledgeCapabilitiesThisTurn[id])
+			if searchID == "" {
+				result.Unavailable = true
+				continue
+			}
+			index, ok := groupIndex[searchID]
+			if !ok {
+				index = len(groups)
+				groupIndex[searchID] = index
+				groups = append(groups, remoteReadGroup{searchID: searchID})
+			}
+			groups[index].ids = append(groups[index].ids, id)
+		}
+		if ctx == nil {
+			ctx = e.currentCtx
+			if ctx == nil {
+				ctx = context.Background()
+			}
+		}
+		for _, group := range groups {
+			chunks, err := remoteReader.ReadChunks(ctx, group.searchID, group.ids)
+			if err != nil {
+				result.Unavailable = true
+				continue
+			}
+			requested := make(map[string]struct{}, len(group.ids))
+			for _, id := range group.ids {
+				requested[id] = struct{}{}
+			}
+			for _, chunk := range chunks {
+				id := strings.TrimSpace(chunk.ChunkID)
+				if _, ok := requested[id]; ok {
+					chunksByID[id] = chunk
+				}
+			}
+		}
+	} else {
+		for _, id := range ids {
+			if chunk, ok := localReader.Chunk(id); ok {
+				chunksByID[id] = chunk
+			}
+		}
+	}
+
+	for _, id := range ids {
+		chunk, ok := chunksByID[id]
+		if !ok {
+			result.Unavailable = true
+			continue
+		}
+		content := strings.TrimSpace(chunk.Content)
+		if content == "" {
+			result.Unavailable = true
+			continue
+		}
+		contentRunes := utf8.RuneCountInString(content)
+		truncated := chunk.ContentTruncated || contentRunes > runesLeft
+		if contentRunes > runesLeft {
+			// truncateRunes appends an ellipsis and is therefore n+1 runes. This
+			// boundary is a hard aggregate budget; Truncated already carries the
+			// disclosure, so retain exactly runesLeft runes here.
+			content = string([]rune(content)[:runesLeft])
+			contentRunes = utf8.RuneCountInString(content)
+		}
+		if contentRunes == 0 {
+			break
+		}
+
+		ledger.Items[ledgerIndexes[id]].Snippet = content
+		e.markChunkRead(id)
+		e.automaticKnowledgeBodyRunesThisTurn += contentRunes
+		runesLeft -= contentRunes
+		result.ReadIDs = append(result.ReadIDs, id)
+		if truncated {
+			result.TruncatedIDs = append(result.TruncatedIDs, id)
+		}
+		if runesLeft <= 0 {
+			break
+		}
+	}
+	return result
 }
 
 // executeReadChunk runs the ReadChunk tool. It is read-only by construction:

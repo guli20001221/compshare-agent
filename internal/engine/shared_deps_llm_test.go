@@ -35,14 +35,4 @@ func TestNewSharedDepsBuildsConfiguredLLMClient(t *testing.T) {
 	if _, ok := deps.LLMClient.(*llm.Client); !ok {
 		t.Fatalf("SharedDeps.LLMClient = %T, want *llm.Client", deps.LLMClient)
 	}
-	if deps.EvidenceGatewayClient == nil {
-		t.Fatal("SharedDeps.EvidenceGatewayClient is nil")
-	}
-	if deps.EvidenceGatewayClient != deps.LLMClient {
-		t.Fatal("evidence gateway and main Agent must share the configured stateless client")
-	}
-	eng := NewSession(deps, SessionOptions{})
-	if eng.evidenceGatewayClient != deps.EvidenceGatewayClient {
-		t.Fatal("NewSession did not inherit the production evidence gateway client")
-	}
 }

@@ -34,16 +34,6 @@ type EvidenceItem struct {
 	// of the agent-visible SearchKnowledge tool result — keeping it out of the
 	// JSON keeps this internal to validation.
 	ProductArea string `json:"-"`
-	// SourceOrigin and Confidence stay host-internal like ProductArea. They let
-	// final-answer validation distinguish first-party platform evidence from a
-	// third-party source, and a strong corpus statement from a deliberately weak
-	// one, without expanding the model-visible SearchKnowledge contract.
-	SourceOrigin string `json:"-"`
-	Confidence   string `json:"-"`
-	// BelowFloor remains host-internal. A ReadChunk can deliberately promote a
-	// weak search candidate for inspection, but that provenance must survive a
-	// later follow-up rather than silently becoming ordinary evidence.
-	BelowFloor  bool   `json:"-"`
 	SourceType  string `json:"source_type,omitempty"`
 	ScoreBucket string `json:"score_bucket,omitempty"`
 	Summary     string `json:"summary"`
@@ -94,14 +84,12 @@ func BuildEvidenceLedger(query string, hits []RetrievalHit, maxItems int) Eviden
 			summary = "Matched platform knowledge entry: " + title
 		}
 		ledger.Items = append(ledger.Items, EvidenceItem{
-			ChunkID:      chunkID,
-			Title:        title,
-			ProductArea:  strings.TrimSpace(hit.Chunk.ProductArea),
-			SourceOrigin: strings.TrimSpace(hit.Chunk.SourceOrigin),
-			Confidence:   strings.TrimSpace(hit.Chunk.Confidence),
-			SourceType:   clipRunes(compactWhitespace(hit.Chunk.SourceType), 40),
-			ScoreBucket:  evidenceScoreBucket(hit.Score),
-			Summary:      clipRunes(summary, 160),
+			ChunkID:     chunkID,
+			Title:       title,
+			ProductArea: strings.TrimSpace(hit.Chunk.ProductArea),
+			SourceType:  clipRunes(compactWhitespace(hit.Chunk.SourceType), 40),
+			ScoreBucket: evidenceScoreBucket(hit.Score),
+			Summary:     clipRunes(summary, 160),
 		})
 		if len(ledger.Items) >= maxItems {
 			break
