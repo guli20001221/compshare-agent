@@ -1,6 +1,11 @@
 package workflow
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/compshare-agent/internal/deployment"
+)
 
 const resizeInstanceMissingSpecMessage = "变配请求必须至少指定 Cpu、Gpu、Memory 之一"
 
@@ -17,11 +22,130 @@ func ResizeInstanceDef() *Definition {
 			stepQueryForResize(),
 			stepQuerySupportZones(),
 			stepQueryResizeAvailableSpecs(),
+			stepCheckResizeCapacity(),
 			stepQueryResizePrice(),
 			stepConfirmResize(),
 			stepResizeInstance(),
 		},
 	}
+}
+
+func stepCheckResizeCapacity() Step {
+	return Step{
+		Name: "检查目标规格库存",
+		Type: StepToolCall,
+		Tool: "CheckCompShareResourceCapacity",
+		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
+			return resizeCapacityArgs(wfCtx)
+		},
+		CheckResult: func(wfCtx *Context, result map[string]any) CheckOutcome {
+			cpu, gpu, memory, err := resolvedResizeTarget(wfCtx)
+			if err != nil {
+				return CheckFailed(err.Error())
+			}
+			targetCPU, cpuOK := capacityInt(cpu)
+			targetGPU, gpuOK := capacityInt(gpu)
+			targetMemoryMB, memoryOK := capacityInt(memory)
+			if !cpuOK || !gpuOK || !memoryOK || targetCPU <= 0 || targetGPU <= 0 || targetMemoryMB <= 0 || targetMemoryMB%1024 != 0 {
+				return CheckFailed("未解析出完整的目标变配规格，无法确认实时容量。")
+			}
+
+			specs := parseCapacitySpecs(result)
+			if !capacityHasSignal(specs) {
+				return CheckFailed("容量检查未返回可用规格，无法确认目标配置当前是否可变配。")
+			}
+			for _, spec := range specs {
+				if spec.GPU != targetGPU || spec.CPU != targetCPU || spec.MemGB != targetMemoryMB/1024 {
+					continue
+				}
+				if !spec.Enough {
+					return CheckFailedBecause(ReasonCapacitySoldOut,
+						fmt.Sprintf("%d GPU / %dC / %dGB 的目标配置当前库存不足。", targetGPU, targetCPU, targetMemoryMB/1024))
+				}
+				return CheckPassed()
+			}
+			return CheckFailed("容量检查未返回目标变配规格，无法确认该配置当前是否可变配。")
+		},
+	}
+}
+
+func resizeCapacityArgs(wfCtx *Context) (map[string]any, error) {
+	queried := wfCtx.Result("查询实例")
+	host := firstUHost(queried)
+	if host == nil {
+		return nil, fmt.Errorf("未找到该实例。")
+	}
+
+	uhostID := strings.TrimSpace(stringFieldAny(host["UHostId"]))
+	gpuType := strings.TrimSpace(stringFieldAny(host["GpuType"]))
+	machineType := strings.TrimSpace(stringFieldAny(host["MachineType"]))
+	cpuPlatform := strings.TrimSpace(stringFieldAny(host["CpuPlatform"]))
+	imageID := strings.TrimSpace(stringFieldAny(host["CompShareImageId"]))
+	chargeType := strings.TrimSpace(stringFieldAny(host["ChargeType"]))
+	if uhostID == "" || gpuType == "" || machineType == "" || cpuPlatform == "" || imageID == "" || chargeType == "" {
+		return nil, fmt.Errorf("实例详情缺少容量检查所需的机型、镜像或计费信息，无法确认目标配置当前是否可变配。")
+	}
+	if paramBool(host, "IsSpot", false) {
+		chargeType = deployment.ChargeTypeSpot
+	}
+
+	disks, err := resizeCapacityDisks(host)
+	if err != nil {
+		return nil, err
+	}
+	region, zone, err := extractRequiredInstanceLocation(queried, wfCtx.Result("查询支持区"))
+	if err != nil {
+		return nil, err
+	}
+	observedPlacement, ok := supportZonePlacementForZone(wfCtx.Result("查询支持区"), zone)
+	if !ok || observedPlacement.zoneID == 0 {
+		return nil, fmt.Errorf("实时可用区目录未返回实例所在区的内部编号，无法确认目标配置当前是否可变配。")
+	}
+	placement := deployment.ZonePlacement{
+		Zone:    zone,
+		Region:  region,
+		ZoneID:  observedPlacement.zoneID,
+		AzGroup: observedPlacement.azGroup,
+		IsPod:   isPodInstanceResult(queried) || isContainerInstanceResult(queried),
+	}
+
+	args := deployment.BuildCapacityArgs(deployment.DeploymentDraft{
+		Zone:               zone,
+		GPUType:            gpuType,
+		CompShareImageID:   imageID,
+		ChargeType:         chargeType,
+		Disks:              disks,
+		MinimalCPUPlatform: cpuPlatform,
+	})
+	args["UHostId"] = uhostID
+	args["MachineType"] = machineType
+	return deployment.ApplyCapacityPlacementArgs(args, placement), nil
+}
+
+func resizeCapacityDisks(host map[string]any) ([]any, error) {
+	rawDisks, ok := host["DiskSet"].([]any)
+	if !ok || len(rawDisks) == 0 {
+		return nil, fmt.Errorf("实例详情未返回磁盘配置，无法确认目标配置当前是否可变配。")
+	}
+	disks := make([]any, 0, len(rawDisks))
+	for _, raw := range rawDisks {
+		disk, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("实例磁盘配置格式不完整，无法确认目标配置当前是否可变配。")
+		}
+		diskType := strings.TrimSpace(stringFieldAny(disk["DiskType"]))
+		size, sizeOK := parseUint32Any(disk["Size"])
+		if diskType == "" || !sizeOK || size == 0 {
+			return nil, fmt.Errorf("实例磁盘配置缺少类型或容量，无法确认目标配置当前是否可变配。")
+		}
+		isBoot := paramBool(disk, "IsBoot", false) || strings.EqualFold(strings.TrimSpace(stringFieldAny(disk["Type"])), "Boot")
+		disks = append(disks, map[string]any{
+			"IsBoot": isBoot,
+			"Type":   diskType,
+			"Size":   size,
+		})
+	}
+	return disks, nil
 }
 
 func stepQueryForResize() Step {

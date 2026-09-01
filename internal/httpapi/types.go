@@ -2,12 +2,11 @@ package httpapi
 
 import "time"
 
-// Response is the UCloud-standard envelope returned for all non-SSE gateway
-// responses. RetCode is 0 on success and a non-zero integer (see APIError) on
-// failure. Action echoes the request's Action when known. Action-specific
-// fields are flattened onto the same JSON object alongside these envelope
-// fields — there is no nested Data wrapper. See dispatch.go's
-// flattenEnvelope for how the merging happens.
+// Response is the UCloud-standard success envelope returned for non-SSE
+// gateway responses. RetCode is 0 and Action echoes the request's Action when
+// known. Error envelopes are written by writeError and additionally carry the
+// stable string Code; Action-specific success fields are flattened onto this
+// same JSON object with no nested Data wrapper. See dispatch.go.
 type Response struct {
 	Action    string `json:"Action,omitempty"`
 	RetCode   int    `json:"RetCode"`

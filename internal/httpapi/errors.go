@@ -9,10 +9,10 @@ import (
 
 // APIError represents a structured HTTP API error.
 //
-// Code is the legacy string identifier (still used by SSE error frames and by
-// the persisted `messages.error_code` column). RetCode is the integer code
-// emitted in the UCloud-standard JSON envelope ({"RetCode": <int>, ...}).
-// Status is the HTTP status returned to the client.
+// Code is the stable string identifier emitted by stream errors, HTTP error
+// envelopes, and the persisted `messages.error_code` column. RetCode is the
+// numeric compatibility code in the UCloud-style HTTP envelope. Status is the
+// HTTP status returned to the client.
 type APIError struct {
 	Code    string
 	RetCode int
@@ -53,9 +53,10 @@ func (e *APIError) WithMessage(format string, args ...any) *APIError {
 	return &cp
 }
 
-// RetCode integers are allocated from the platform-assigned range 226601–227000.
-// 226601–226611 are taken by upstream services; new codes start at 226612.
-// Keep these contiguous and update the range comment when the next code is claimed.
+// RetCode values are legacy numeric compatibility values. The upstream API now
+// also uses numbers in this interval, so new clients must branch on Code and no
+// new numeric values should be allocated here until the platform assigns this
+// service a disjoint range. Existing numbers remain unchanged for old clients.
 var (
 	ErrInvalidParam     = &APIError{Code: "InvalidParam", RetCode: 226612, Status: http.StatusBadRequest, Message: "参数缺失或非法"}
 	ErrUnauthorized     = &APIError{Code: "Unauthorized", RetCode: 226613, Status: http.StatusUnauthorized, Message: "未登录或 token 失效"}

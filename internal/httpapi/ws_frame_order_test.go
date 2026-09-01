@@ -168,6 +168,8 @@ func TestWSLegacy_ConfirmationFramePrecedesTokenFrame(t *testing.T) {
 		switch f["event"] {
 		case "confirmation":
 			confirmationID, _ = f["ConfirmationId"].(string)
+			assert.Equal(t, "启动实例", f["Label"],
+				"the real plain-confirm sender must project the workflow's server-owned label")
 		case "done", "error":
 			t.Fatalf("turn ended before emitting a confirmation frame: %v (%v)", eventNames(frames), f)
 		}

@@ -155,8 +155,13 @@ func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {
 		// The production shape includes the SSH diagnosis tool. Keep the budget
 		// attached to the exact window sent by the deployed configuration rather
 		// than a cheaper no-SSH approximation.
-		require.LessOrEqual(t, len(toolJSON), 35000, "model-visible tool window grew past its reviewed byte budget")
-		require.LessOrEqual(t, len(system)+len(toolJSON), 40000,
+		// 35000 -> 36000 (2026-09-01): one reviewed workflow was added for the
+		// upstream SwitchChargeType operation. It exposes only the target instance
+		// and the four upstream billing modes; pricing remains outside the tool's
+		// contract. Keep the schema explicit instead of recovering bytes by deleting
+		// unrelated tool guidance or merging tools without production selection data.
+		require.LessOrEqual(t, len(toolJSON), 36000, "model-visible tool window grew past its reviewed byte budget")
+		require.LessOrEqual(t, len(system)+len(toolJSON), 41000,
 			"static prompt plus tool schemas grew past its reviewed byte budget")
 	}
 }

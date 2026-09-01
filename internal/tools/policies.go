@@ -204,6 +204,13 @@ func policyForAction(action string) ToolExecutionPolicy {
 	if action == "DescribeCompShareJupyterToken" {
 		policy.RedactInResult = append(policy.RedactInResult, "JupyterToken")
 	}
+	if action == "GetCompShareInvoiceIssued" {
+		policy.RedactInResult = append(policy.RedactInResult,
+			"InvoiceTitle", "InvoiceNo", "InvoiceCode", "ExpressNo", "ExpressAddress",
+			"ExpressAddressID", "ShipBillNos", "Contract", "Verity", "Remark",
+			"ReceiveIds", "ReceiveEmail", "DownloadUrl",
+		)
+	}
 	if action == "GetCompShareInstanceMonitor" {
 		policy.HistoryMonitorGuard = true
 		policy.MaxTargetsPerCall = 20
@@ -241,6 +248,8 @@ func internalOnlyAllowedParams(action string) []string {
 		return []string{"UHostId", "WithoutGpuSpec", "Zone", "Region"}
 	case "StopCompShareInstance":
 		return []string{"UHostId", "Zone", "Region"}
+	case "SwitchChargeType":
+		return []string{"UHostId", "DestChargeType", "Zone", "Region"}
 	case "UpdateCompShareInstancePorts":
 		return []string{"UHostId", "HttpPorts", "TcpPorts", "UdpPorts", "Zone", "Region"}
 	case "DescribeCompShareJupyterToken":
@@ -282,6 +291,7 @@ func actionAllowsBackendZoneID(action string) bool {
 		"ResizeCFS",
 		"StartCompShareInstance",
 		"StopCompShareInstance",
+		"SwitchChargeType",
 		"CreateCompShareCustomImage",
 		"GetCompShareImageCreateProgress",
 		"DescribeCompShareCustomImageSyncDetail",
@@ -314,7 +324,8 @@ func actionAllowsBackendAzGroup(action string) bool {
 		"GetCompShareCFSPrice",
 		"CreateCFS",
 		"CreateCompShareCustomImage",
-		"GetCompShareImageCreateProgress":
+		"GetCompShareImageCreateProgress",
+		"SwitchChargeType":
 		return true
 	default:
 		return false
@@ -421,6 +432,7 @@ var readExpensiveDefaultActions = map[string]bool{
 	"DescribeAvailableCompShareInstanceTypes": true,
 	"DescribeCompShareGpuInventory":           true,
 	"CheckCompShareResourceCapacity":          true,
+	"GetCompShareInvoiceIssued":               true,
 }
 
 func registryAllowedParams() map[string][]string {

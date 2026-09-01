@@ -604,9 +604,12 @@ func TestNeedsRefreshAndInvalidationWhitelist(t *testing.T) {
 		"CancelStopSchedulerWorkflow",
 		// Resize rewrites GPU/GpuType/CPU/Memory; Reinstall rewrites
 		// OsType/ImageName/ImageType. Both are InstanceSnapshot fields, so both must force
-		// a re-Describe instead of serving the spec from before the change.
+		// a re-Describe instead of serving the spec from before the change;
+		// switching billing rewrites ChargeType.
 		"ResizeInstanceWorkflow",
 		"ReinstallInstanceWorkflow",
+		"SwitchChargeType",
+		"SwitchChargeTypeWorkflow",
 	}
 	for _, action := range invalidateActions {
 		t.Run(action, func(t *testing.T) {

@@ -7,8 +7,8 @@ import (
 )
 
 // UnavailableCapabilitySpec declares a capability the platform does not currently
-// support in real time — e.g. account balance, total bill, spending ledger or
-// invoice status. It is exposed to the model as a read tool (same surface as a
+// support in real time — e.g. account balance, total bill or spending ledger.
+// It is exposed to the model as a read tool (same surface as a
 // real read capability) so a finance question reaches a deterministic, non-
 // fabricated answer instead of the model inventing numbers. Invoking it never
 // calls a real upstream API and never depends on keyword routing or an online
@@ -53,14 +53,15 @@ func NewUnavailableCapability(spec UnavailableCapabilitySpec) RegisteredRead {
 const accountFinanceStatusCapability = "account_finance_status"
 
 // accountFinanceUnavailableSpec is the account-level financial data capability:
-// balance / bill / ledger / invoice real-time queries are not supported, and the
+// balance / bill / ledger real-time queries are not supported, and the
 // answer redirects to the supported per-instance price / cost / refund reads.
 func accountFinanceUnavailableSpec() UnavailableCapabilitySpec {
 	return UnavailableCapabilitySpec{
 		Name:        accountFinanceStatusCapability,
-		Description: "查询账号余额、账号总账单、消费流水或发票状态——这类账号级实时财务数据当前不支持查询，调用会返回不可用说明与可替代能力。",
-		Reply:       "当前不支持直接查询账号余额、账号总账单、消费流水、发票状态、余额提现等账号级财务数据。你可以在控制台费用中心查看这些信息，或联系人工客服确认。\n\n我可以继续帮你查询实例价格、实例费用诊断、资源退费估算等已支持内容。",
+		Description: "当前不支持实时查询账号余额、总账单和消费流水；调用后返回可用替代能力。",
+		Reply:       "当前不支持直接查询账号余额、账号总账单、消费流水、余额提现等账号级财务数据。你可以在控制台费用中心查看这些信息，或联系人工客服确认。\n\n我可以继续帮你查询发票开具状态、实例价格、实例费用诊断、资源退费估算等已支持内容。",
 		Alternatives: []string{
+			"发票开具状态（invoice_status）",
 			"实例价格查询（pricing_query）",
 			"实例费用诊断（billing 诊断）",
 			"资源退费估算（refund_estimate）",

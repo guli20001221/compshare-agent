@@ -46,6 +46,7 @@ var goldenWindowReadOnly = []string{
 	"ReadCapability_image_list",
 	"ReadCapability_image_tag_catalog",
 	"ReadCapability_instance_access",
+	"ReadCapability_invoice_status",
 	"ReadCapability_model_repository_browse",
 	"ReadCapability_monitor_history",
 	"ReadCapability_monitor_query",
@@ -72,6 +73,7 @@ var goldenWindowMutating = []string{
 	"RequestCancelStopScheduler",
 	"RequestResizeInstance",
 	"RequestResizeDisk",
+	"RequestSwitchChargeType",
 	"RequestReinstallInstance",
 	"RequestCreateDisk",
 	"RequestCreateCustomImage",
@@ -88,6 +90,7 @@ var goldenWindowMutating = []string{
 	"ReadCapability_image_list",
 	"ReadCapability_image_tag_catalog",
 	"ReadCapability_instance_access",
+	"ReadCapability_invoice_status",
 	"ReadCapability_model_repository_browse",
 	"ReadCapability_monitor_history",
 	"ReadCapability_monitor_query",
@@ -115,6 +118,6 @@ func TestCentralAgentToolWindowGolden(t *testing.T) {
 // makes an accidental duplicate visible as a count mismatch rather than as a
 // slice diff buried in 37 lines.
 func TestCentralAgentToolWindowGoldenCounts(t *testing.T) {
-	require.Len(t, centralAgentToolNames(false, false), 22)
-	require.Len(t, centralAgentToolNames(true, false), 39)
+	require.Len(t, centralAgentToolNames(false, false), 23)
+	require.Len(t, centralAgentToolNames(true, false), 41)
 }

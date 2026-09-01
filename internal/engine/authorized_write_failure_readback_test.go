@@ -93,6 +93,16 @@ func TestAuthorizedWriteFailureReadbackCoversEveryCompoundMutation(t *testing.T)
 			}},
 			contains: []string{"当前为 200GB", "可能只完成了部分扩容", "请勿重复提交"},
 		},
+		{
+			name:   "charge type switch committed despite error",
+			action: "SwitchChargeTypeWorkflow", step: "切换计费方式",
+			params:     map[string]any{"UHostId": "uhost-1", "DestChargeType": "Month"},
+			readAction: "DescribeCompShareInstance",
+			readback: map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-1", "ChargeType": "Month",
+			}}},
+			contains: []string{"接口返回失败", "主记录已显示为包月", "完整计费结果仍不确定", "可能只完成了一部分", "请勿重复提交"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -112,6 +122,10 @@ func TestAuthorizedWriteFailureReadbackCoversEveryCompoundMutation(t *testing.T)
 			require.True(t, ok)
 			for _, want := range tt.contains {
 				assert.Contains(t, reply, want)
+			}
+			if tt.action == "SwitchChargeTypeWorkflow" {
+				assert.NotContains(t, reply, "已切换为",
+					"the instance row cannot prove that the later related-storage billing steps completed")
 			}
 			assert.Equal(t, []string{tt.readAction}, executor.calls)
 		})

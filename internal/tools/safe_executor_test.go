@@ -72,6 +72,7 @@ func TestDefaultPoliciesClassifyReadExpensiveActionsExplicitly(t *testing.T) {
 		{"DescribeAvailableCompShareInstanceTypes", ActionClassReadExpensiveDefault},
 		{"DescribeCompShareGpuInventory", ActionClassReadExpensiveDefault},
 		{"CheckCompShareResourceCapacity", ActionClassReadExpensiveDefault},
+		{"GetCompShareInvoiceIssued", ActionClassReadExpensiveDefault},
 		{"DiagnoseBilling", ActionClassReadExpensiveDefault},
 	}
 	for _, tc := range cases {
@@ -609,6 +610,26 @@ func TestSafeExecutorUsesPolicyForDisplayAndRedaction(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, "[REDACTED]", result.LLMResult["JupyterToken"])
 		assert.Equal(t, "[REDACTED]", result.TraceResult["JupyterToken"])
+	})
+
+	t.Run("invoice contact fields are explicitly redacted", func(t *testing.T) {
+		inner := &spyExecutor{result: map[string]any{
+			"InvoiceSet": []any{map[string]any{
+				"InvoiceID": float64(42), "InvoiceState": "Finished", "ReceiveEmail": "private@example.com",
+			}},
+		}}
+		safe := NewSafeToolExecutor(inner)
+
+		result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
+			Action: "GetCompShareInvoiceIssued",
+			Origin: OriginDiagnosisInternal,
+		})
+
+		require.NoError(t, err)
+		rows := result.TraceResult["InvoiceSet"].([]any)
+		row := rows[0].(map[string]any)
+		assert.Equal(t, "[REDACTED]", row["ReceiveEmail"])
+		assert.Equal(t, "Finished", row["InvoiceState"])
 	})
 }
 

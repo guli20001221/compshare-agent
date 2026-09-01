@@ -356,7 +356,8 @@ func TestUnmatchedStockZoneIsCorrectedFromSameTurnLiveCatalog(t *testing.T) {
 // TestAccountFinanceUnavailableReturnsStructuredUnavailable: the model-visible
 // account-finance tool returns a structured Unavailable observation (status +
 // reason + alternatives) without ever calling an upstream API, so a balance /
-// invoice question gets a deterministic non-fabricated answer.
+// account-ledger question gets a deterministic non-fabricated answer. Invoice
+// status is a separate live typed read.
 func TestAccountFinanceUnavailableReturnsStructuredUnavailable(t *testing.T) {
 	executor := &mockExecutor{}
 	eng := NewWithDeps(&mockLLM{}, executor, nil)
