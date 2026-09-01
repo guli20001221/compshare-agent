@@ -72,6 +72,22 @@ func TestCFSListHandle_AnswersWithoutPolicyBoilerplate(t *testing.T) {
 	assert.NotContains(t, result.Reply, "不由 agent 暴露")
 }
 
+func TestCFSListHandle_EmptyCFSRefListsAll(t *testing.T) {
+	exec := &mapReadExec{results: map[string]map[string]any{
+		"DescribeCFS": {"CFSSet": []any{map[string]any{"CfsId": "cfs-test", "Name": "shared-train"}}},
+	}}
+	reg := NewReadCapability(cfsListReadSpec())
+	for _, id := range []string{"", "  "} {
+		result := reg.Run(context.Background(), CFSListRequest{CFS: &platform.CFSRef{ID: id}}, ReadRuntime{Executor: exec})
+
+		require.Equal(t, platform.ReadStatusHandled, result.Status)
+		assert.Contains(t, result.Reply, "shared-train")
+	}
+	require.Len(t, exec.calls, 2)
+	assert.Empty(t, exec.calls[0].args)
+	assert.Empty(t, exec.calls[1].args)
+}
+
 func TestCFSListHandle_UpstreamError(t *testing.T) {
 	reg := NewReadCapability(cfsListReadSpec())
 	result := reg.Run(context.Background(), CFSListRequest{}, ReadRuntime{Executor: errReadExec{err: errors.New("boom")}})
