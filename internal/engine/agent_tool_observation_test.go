@@ -161,6 +161,17 @@ func TestAgentToolObservationKeepsLegacySourceStatusOnlyInMeta(t *testing.T) {
 	require.False(t, present, "data must not carry a second status vocabulary")
 }
 
+func TestAgentToolObservationKeepsScopedEmptyCatalogGuidance(t *testing.T) {
+	raw := `{"status":"empty","guidance":"当前目录筛选未命中；不代表知识库中没有使用说明。","can_assert_absence":true}`
+	result, ok := tools.ParseAgentToolResult(agentToolObservation("ReadCapability_image_list", raw))
+	require.True(t, ok)
+	require.Equal(t, tools.AgentToolStatusSuccess, result.Status)
+	data, ok := result.Data.(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "当前目录筛选未命中；不代表知识库中没有使用说明。", data["guidance"])
+	require.Equal(t, true, data["can_assert_absence"])
+}
+
 func TestAgentOnlyReceivesP2ContractForNormalToolRound(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("read-instance", "ReadCapability_resource_info", `{}`)}},
