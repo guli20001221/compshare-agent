@@ -50,12 +50,13 @@ func ReadDefinitions() []ReadDefinition {
 		readDefinition(intent.IntentInstanceAccess, NewReadCapability(instanceAccessReadSpec())),
 		readDefinition(intent.IntentPricingQuery, NewReadCapability(pricingReadSpec())),
 		readDefinition(intent.IntentRefundEstimate, NewReadCapability(refundReadSpec())),
+		readDefinition(intent.IntentInvoiceStatus, NewReadCapability(invoiceStatusReadSpec())),
 		readDefinition(intent.IntentCFSInfo, NewReadCapability(cfsListReadSpec())),
 		readDefinition(intent.IntentCFSInfo, NewReadCapability(cfsCreatePriceReadSpec())),
 		readDefinition(intent.IntentCFSInfo, NewReadCapability(cfsUpgradePriceReadSpec())),
 		readDefinition(intent.IntentCFSInfo, NewReadCapability(cfsRefundEstimateReadSpec())),
-		// Unavailable capability: account-level real-time financial data is not
-		// queryable; the tool is model-visible so a balance/invoice question gets a
+		// Unavailable capability: the remaining account-level real-time financial
+		// data is not queryable; the tool is model-visible so a balance/bill question gets a
 		// deterministic non-fabricated answer plus supported alternatives.
 		readDefinition(intent.Intent(accountFinanceStatusCapability), NewUnavailableCapability(accountFinanceUnavailableSpec())),
 	}

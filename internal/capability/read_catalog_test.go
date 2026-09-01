@@ -37,7 +37,7 @@ func TestReadDefinitionsUseCapabilitySpecificSchemas(t *testing.T) {
 		intent.IntentGPUSpecsQuery, intent.IntentStockAvailability, intent.IntentImageList,
 		intent.IntentImageTagCatalog, intent.IntentModelRepositoryBrowse, intent.IntentNetAcceleratorStatus,
 		intent.IntentZoneCatalog,
-		intent.IntentPricingQuery, intent.IntentRefundEstimate, intent.IntentCFSInfo,
+		intent.IntentPricingQuery, intent.IntentRefundEstimate, intent.IntentInvoiceStatus, intent.IntentCFSInfo,
 	}
 	for _, want := range expectedReadIntents {
 		require.Greater(t, coveredIntents[want], 0, "read capability catalog is missing intent %s", want)

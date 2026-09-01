@@ -87,6 +87,7 @@ type stepEvent struct {
 type confirmationEvent struct {
 	ConfirmationID string                `json:"ConfirmationId"`
 	Action         string                `json:"Action"`
+	Label          string                `json:"Label,omitempty"`
 	Summary        map[string]any        `json:"Summary,omitempty"`
 	TimeoutSeconds int                   `json:"TimeoutSeconds"`
 	Form           *workflow.ConfirmForm `json:"Form,omitempty"`
@@ -531,6 +532,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			if err := writeVisibleEvent(sw, traceRecorder, "confirmation", confirmationEvent{
 				ConfirmationID: confirmID,
 				Action:         action,
+				Label:          stepActionLabel(action),
 				Summary:        sanitizeConfirmArgs(args),
 				TimeoutSeconds: confirmTimeoutSeconds,
 			}); err != nil {
@@ -703,6 +705,7 @@ func (h *Handlers) confirmEditsFuncFor(streamCtx context.Context, sw streamWrite
 		if err := writeVisibleEvent(sw, prep.traceRecorder, "confirmation", confirmationEvent{
 			ConfirmationID: confirmID,
 			Action:         action,
+			Label:          stepActionLabel(action),
 			Summary:        sanitizeConfirmArgs(args),
 			TimeoutSeconds: confirmTimeoutSeconds,
 			Form:           form,

@@ -92,18 +92,19 @@ func TestConfirmEditsFuncFor_ClientFeatureGate(t *testing.T) {
 	assert.NotNil(t, h.confirmEditsFuncFor(context.Background(), sw, "s", testOwner, prepIn))
 }
 
-// TestConfirmationEvent_LegacyWireShapeUnchanged pins the no-Form frame bytes:
-// adding the feature must not add a key to frames legacy clients receive.
-func TestConfirmationEvent_LegacyWireShapeUnchanged(t *testing.T) {
+// An action unknown to the server has no label. Omitempty preserves the old
+// frame exactly so older servers/clients can continue to degrade to Action.
+func TestConfirmationEvent_UnknownActionKeepsLegacyWireShape(t *testing.T) {
 	raw, err := json.Marshal(confirmationEvent{
 		ConfirmationID: "c-1",
-		Action:         "CreateInstanceWorkflow",
+		Action:         "BrandNewWorkflow",
+		Label:          stepActionLabel("BrandNewWorkflow"),
 		Summary:        map[string]any{"GpuType": "4090"},
 		TimeoutSeconds: 60,
 	})
 	require.NoError(t, err)
 	assert.Equal(t,
-		`{"ConfirmationId":"c-1","Action":"CreateInstanceWorkflow","Summary":{"GpuType":"4090"},"TimeoutSeconds":60}`,
+		`{"ConfirmationId":"c-1","Action":"BrandNewWorkflow","Summary":{"GpuType":"4090"},"TimeoutSeconds":60}`,
 		string(raw))
 
 	withForm, err := json.Marshal(confirmationEvent{
@@ -112,6 +113,23 @@ func TestConfirmationEvent_LegacyWireShapeUnchanged(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Contains(t, string(withForm), `"Form":{"Version":1`)
+}
+
+func TestConfirmEditsFuncFor_EmitsServerOwnedLabel(t *testing.T) {
+	sw := &recordingSink{}
+	h := &Handlers{confirmBroker: NewConfirmBroker()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	confirm := h.confirmEditsFuncFor(ctx, sw, "s", testOwner, &chatPrep{confirmFormOptIn: true})
+	require.NotNil(t, confirm)
+	confirm("CreateInstanceWorkflow", nil, testGPUForm())
+
+	require.Len(t, sw.events, 1)
+	assert.Equal(t, "confirmation", sw.events[0].Event)
+	event, ok := sw.events[0].Data.(confirmationEvent)
+	require.True(t, ok)
+	assert.Equal(t, "创建实例", event.Label)
 }
 
 func TestGetMeta_AdvertisesInteractionFeatures(t *testing.T) {

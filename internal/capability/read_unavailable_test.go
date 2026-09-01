@@ -53,3 +53,10 @@ func TestUnavailableCapability_InReadCatalog(t *testing.T) {
 	}
 	require.True(t, found, "account_finance_status must appear in the model-visible read catalog")
 }
+
+func TestAccountFinanceUnavailableDoesNotClaimInvoiceStatusIsUnsupported(t *testing.T) {
+	spec := accountFinanceUnavailableSpec()
+	assert.NotContains(t, spec.Description, "发票状态——这类")
+	assert.NotContains(t, spec.Reply, "不支持直接查询账号余额、账号总账单、消费流水、发票状态")
+	assert.Contains(t, spec.Alternatives, "发票开具状态（invoice_status）")
+}

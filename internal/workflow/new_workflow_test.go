@@ -12,16 +12,27 @@ import (
 func stoppedInstanceResult() map[string]any {
 	return map[string]any{"UHostSet": []any{
 		map[string]any{
-			"UHostId":    "uhost-test",
-			"Name":       "test-gpu",
-			"State":      "Stopped",
-			"Region":     "cn-sh2",
-			"Zone":       "cn-sh2-02",
-			"GpuType":    "4090",
-			"GPU":        float64(1),
-			"CPU":        float64(16),
-			"Memory":     float64(65536),
-			"ChargeType": "Dynamic",
+			"UHostId":          "uhost-test",
+			"Name":             "test-gpu",
+			"State":            "Stopped",
+			"Region":           "cn-sh2",
+			"Zone":             "cn-sh2-02",
+			"GpuType":          "4090",
+			"MachineType":      "G",
+			"CpuPlatform":      "Auto",
+			"CompShareImageId": "img-001",
+			"GPU":              float64(1),
+			"CPU":              float64(16),
+			"Memory":           float64(65536),
+			"ChargeType":       "Dynamic",
+			"IsSpot":           false,
+			"DiskSet": []any{
+				map[string]any{
+					"Type":     "Boot",
+					"DiskType": "CLOUD_SSD",
+					"Size":     float64(100),
+				},
+			},
 		},
 	}}
 }
@@ -29,19 +40,22 @@ func stoppedInstanceResult() map[string]any {
 func podStoppedInstanceResult() map[string]any {
 	return map[string]any{"UHostSet": []any{
 		map[string]any{
-			"UHostId":      "cpod-test",
-			"Name":         "pod-gpu",
-			"State":        "Stopped",
-			"Region":       "cn-pod",
-			"Zone":         "cn-pod-01",
-			"ZoneId":       float64(9001),
-			"RegionId":     float64(3001),
-			"InstanceType": "Container",
-			"GpuType":      "4090",
-			"GPU":          float64(1),
-			"CPU":          float64(10),
-			"Memory":       float64(65536),
-			"ChargeType":   "Dynamic",
+			"UHostId":          "cpod-test",
+			"Name":             "pod-gpu",
+			"State":            "Stopped",
+			"Region":           "cn-pod",
+			"Zone":             "cn-pod-01",
+			"ZoneId":           float64(9001),
+			"RegionId":         float64(3001),
+			"InstanceType":     "Container",
+			"GpuType":          "4090",
+			"MachineType":      "G",
+			"CpuPlatform":      "Auto",
+			"CompShareImageId": "img-pod",
+			"GPU":              float64(1),
+			"CPU":              float64(10),
+			"Memory":           float64(65536),
+			"ChargeType":       "Dynamic",
 			"DiskSet": []any{
 				map[string]any{
 					"DiskId":   "cvolume-boot",
@@ -100,6 +114,25 @@ func resizeInstanceTypesResult(gpuType, zone string, gpuCount float64, specs ...
 			}},
 		},
 	}}
+}
+
+func resizeSupportZonesResult(zone, region string, zoneID, regionID float64, isPod bool) map[string]any {
+	return map[string]any{"ZoneInfo": []any{map[string]any{
+		"Zone":     zone,
+		"Region":   region,
+		"ZoneId":   zoneID,
+		"RegionId": regionID,
+		"IsPod":    isPod,
+	}}}
+}
+
+func resizeCapacityResult(gpu, cpu, memoryGB float64, enough bool) map[string]any {
+	return map[string]any{"Specs": []any{map[string]any{
+		"Gpu":            gpu,
+		"Cpu":            cpu,
+		"Mem":            memoryGB,
+		"ResourceEnough": enough,
+	}}}
 }
 
 // --- CreateDisk tests ---
@@ -771,10 +804,12 @@ func TestResize_EmptyParams_BlockedBeforeConfirm(t *testing.T) {
 
 func TestResize_IncludesPriceInConfirm(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": stoppedInstanceResult(),
+		"DescribeCompShareInstance":    stoppedInstanceResult(),
+		"DescribeCompShareSupportZone": resizeSupportZonesResult("cn-sh2-02", "cn-sh2", 2002, 1002, false),
 		"DescribeAvailableCompShareInstanceTypes": resizeInstanceTypesResult("4090", "cn-sh2-02", 2,
 			specCandidate{CPU: 16, MemoryMB: 65536},
 		),
+		"CheckCompShareResourceCapacity":   resizeCapacityResult(2, 16, 64, true),
 		"GetCompShareInstanceUpgradePrice": {"Price": float64(1.5), "OriginalPrice": float64(2.0)},
 		"ResizeCompShareInstance":          {"RetCode": 0},
 	}}
@@ -806,10 +841,12 @@ func TestResize_IncludesPriceInConfirm(t *testing.T) {
 
 func TestResize_MissingPriceBlockedBeforeConfirm(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": stoppedInstanceResult(),
+		"DescribeCompShareInstance":    stoppedInstanceResult(),
+		"DescribeCompShareSupportZone": resizeSupportZonesResult("cn-sh2-02", "cn-sh2", 2002, 1002, false),
 		"DescribeAvailableCompShareInstanceTypes": resizeInstanceTypesResult("4090", "cn-sh2-02", 2,
 			specCandidate{CPU: 16, MemoryMB: 65536},
 		),
+		"CheckCompShareResourceCapacity":   resizeCapacityResult(2, 16, 64, true),
 		"GetCompShareInstanceUpgradePrice": {"RetCode": 0},
 		"ResizeCompShareInstance":          {"RetCode": 0},
 	}}
@@ -920,22 +957,31 @@ func TestResize_CarriesInternalPlacement(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": map[string]any{"UHostSet": []any{
 			map[string]any{
-				"UHostId":  "uhost-test",
-				"Name":     "test-gpu",
-				"State":    "Stopped",
-				"Region":   "cn-sh2",
-				"Zone":     "cn-sh2-02",
-				"GpuType":  "4090",
-				"GPU":      float64(1),
-				"CPU":      float64(16),
-				"Memory":   float64(65536),
-				"ZoneId":   float64(9001),
-				"RegionId": float64(3001),
+				"UHostId":          "uhost-test",
+				"Name":             "test-gpu",
+				"State":            "Stopped",
+				"Region":           "cn-sh2",
+				"Zone":             "cn-sh2-02",
+				"GpuType":          "4090",
+				"MachineType":      "G",
+				"CpuPlatform":      "Auto",
+				"CompShareImageId": "img-001",
+				"GPU":              float64(1),
+				"CPU":              float64(16),
+				"Memory":           float64(65536),
+				"ChargeType":       "Dynamic",
+				"ZoneId":           float64(9001),
+				"RegionId":         float64(3001),
+				"DiskSet": []any{map[string]any{
+					"Type": "Boot", "DiskType": "CLOUD_SSD", "Size": float64(100),
+				}},
 			},
 		}},
+		"DescribeCompShareSupportZone": resizeSupportZonesResult("cn-sh2-02", "cn-sh2", 9001, 3001, false),
 		"DescribeAvailableCompShareInstanceTypes": resizeInstanceTypesResult("4090", "cn-sh2-02", 2,
 			specCandidate{CPU: 16, MemoryMB: 65536},
 		),
+		"CheckCompShareResourceCapacity":   resizeCapacityResult(2, 16, 64, true),
 		"GetCompShareInstanceUpgradePrice": {"Price": float64(1.5)},
 		"ResizeCompShareInstance":          {"RetCode": 0},
 	}}
@@ -975,10 +1021,12 @@ func TestResize_CarriesInternalPlacement(t *testing.T) {
 
 func TestResize_PassesParamsToAPI(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": stoppedInstanceResult(),
+		"DescribeCompShareInstance":    stoppedInstanceResult(),
+		"DescribeCompShareSupportZone": resizeSupportZonesResult("cn-sh2-02", "cn-sh2", 2002, 1002, false),
 		"DescribeAvailableCompShareInstanceTypes": resizeInstanceTypesResult("4090", "cn-sh2-02", 2,
 			specCandidate{CPU: 32, MemoryMB: 131072},
 		),
+		"CheckCompShareResourceCapacity":   resizeCapacityResult(2, 32, 128, true),
 		"GetCompShareInstanceUpgradePrice": {"Price": float64(0)},
 		"ResizeCompShareInstance":          {"RetCode": 0},
 	}}

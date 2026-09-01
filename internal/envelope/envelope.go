@@ -13,6 +13,7 @@ const (
 	KindImageList         Kind = "image_list"
 	KindZoneCatalog       Kind = "zone_catalog"
 	KindInstanceAccess    Kind = "instance_access"
+	KindInvoiceStatus     Kind = "invoice_status"
 	// KindContextualDirectReply wraps a deterministic, tool-derived plain-text
 	// handler result so the answering model can combine it with understanding-
 	// only conversation context without treating user text as factual evidence.
@@ -27,6 +28,7 @@ const (
 	SubjectGPUModel SubjectType = "gpu_model"
 	SubjectImage    SubjectType = "image"
 	SubjectZone     SubjectType = "zone"
+	SubjectInvoice  SubjectType = "invoice"
 )
 
 type FactSource string

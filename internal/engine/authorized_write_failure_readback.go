@@ -28,6 +28,7 @@ func (e *Engine) authorizedWriteFailureReply(ctx context.Context, action string,
 		"CreateCFSWorkflow":         "创建 CFS",
 		"ResizeCFSWorkflow":         "扩容 CFS",
 		"ReinstallInstanceWorkflow": "重装系统",
+		"SwitchChargeTypeWorkflow":  "切换计费方式",
 	}[action]
 	if wantStep == "" || result.Failure.Step != wantStep {
 		return "", false
@@ -51,9 +52,29 @@ func (e *Engine) authorizedWriteFailureReply(ctx context.Context, action string,
 		return e.resizeCFSFailureReply(ctx, params), true
 	case "ReinstallInstanceWorkflow":
 		return e.reinstallFailureReply(ctx, params, result)
+	case "SwitchChargeTypeWorkflow":
+		return e.switchChargeTypeFailureReply(ctx, params), true
 	default:
 		return "", false
 	}
+}
+
+func (e *Engine) switchChargeTypeFailureReply(ctx context.Context, params map[string]any) string {
+	id := strings.TrimSpace(fmt.Sprint(params["UHostId"]))
+	target := strings.TrimSpace(fmt.Sprint(params["DestChargeType"]))
+	snap, _, ok := e.freshInstance(ctx, id)
+	if !ok {
+		return fmt.Sprintf("实例 %s 的计费方式切换请求返回失败，随后未能读取当前计费方式，本次结果不确定。请勿重复提交。", id)
+	}
+	observed := strings.TrimSpace(snap.ChargeType)
+	if observed != "" && strings.EqualFold(observed, target) {
+		return fmt.Sprintf("计费方式切换接口返回失败；实时回读仅能确认实例 %s 的主记录已显示为%s，关联存储和完整计费结果仍不确定，可能只完成了一部分。请以平台账单为准，请勿重复提交。", id, workflow.ChargeTypeLabel(observed))
+	}
+	if observed == "" {
+		return fmt.Sprintf("计费方式切换接口返回失败；实时回读未返回实例 %s 的计费方式，无法确认本次结果。请勿重复提交。", id)
+	}
+	return fmt.Sprintf("计费方式切换接口返回失败；实时回读显示实例 %s 当前仍为%s，尚未确认切换为%s。该接口包含多步结算和计费修改，本次结果可能不完整，请勿重复提交。",
+		id, workflow.ChargeTypeLabel(observed), workflow.ChargeTypeLabel(target))
 }
 
 func (e *Engine) freshInstance(ctx context.Context, id string) (entity.InstanceSnapshot, map[string]any, bool) {

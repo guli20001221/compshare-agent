@@ -23,6 +23,7 @@ var workflowRegistrations = []registration{
 	{"CancelStopSchedulerWorkflow", "取消定时关机", "取消定时关机", CancelStopSchedulerDef},
 	{"ResizeInstanceWorkflow", "调整配置", "变配", ResizeInstanceDef},
 	{"ResizeDiskWorkflow", "扩容数据盘", "扩已有盘", ResizeDiskDef},
+	{"SwitchChargeTypeWorkflow", "切换计费方式", "切换计费方式", SwitchChargeTypeDef},
 	{"ReinstallInstanceWorkflow", "重装系统", "重装系统", ReinstallInstanceDef},
 	{"CreateDiskWorkflow", "创建数据盘", "创建数据盘", CreateDiskDef},
 	{"CreateCustomImageWorkflow", "创建自制镜像", "创建自制镜像", CreateCustomImageDef},

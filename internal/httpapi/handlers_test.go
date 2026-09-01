@@ -266,7 +266,23 @@ func TestDispatchGetSessionRequiresSessionID(t *testing.T) {
 	rec := performGateway(h, `{"Action":"GetCSAgentSession","top_organization_id":1,"organization_id":2}`)
 
 	require.Equal(t, http.StatusBadRequest, rec.Code)
+	assert.Contains(t, rec.Body.String(), `"Code":"InvalidParam"`)
 	assert.Contains(t, rec.Body.String(), `"RetCode":226612`)
+}
+
+func TestWriteErrorFlattensStableCodeIntoTopLevelEnvelope(t *testing.T) {
+	h := newTestHandlers()
+	rec := performGateway(h, `{"Action":"UnknownAction","request_uuid":"req-code","top_organization_id":1,"organization_id":2}`)
+
+	require.Equal(t, http.StatusBadRequest, rec.Code)
+	var body map[string]any
+	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &body))
+	assert.Equal(t, "InvalidParam", body["Code"])
+	assert.EqualValues(t, ErrInvalidParam.RetCode, body["RetCode"])
+	assert.Equal(t, "UnknownAction", body["Action"])
+	assert.Equal(t, "req-code", body["RequestId"])
+	_, nested := body["Data"]
+	assert.False(t, nested, "the stable error code belongs to the existing flat envelope")
 }
 
 func TestDispatchGetSessionMissingSessionDoesNotCreateReplacement(t *testing.T) {

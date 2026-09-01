@@ -4104,6 +4104,9 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		if action == "CloneCustomImageWorkflow" {
 			return finalReplyPrefix + cloneCustomImageWorkflowReply(result)
 		}
+		if reply, ok := switchChargeTypeWorkflowReply(action, finalParams, result); ok {
+			return finalReplyPrefix + reply
+		}
 		if reply, ok := scheduledShutdownWorkflowReply(action, finalParams, result); ok {
 			return finalReplyPrefix + reply
 		}
@@ -4199,6 +4202,32 @@ func deterministicWorkflowReply(action string, args map[string]any) (string, boo
 	}
 }
 
+func switchChargeTypeWorkflowReply(action string, params map[string]any, result *workflow.Result) (string, bool) {
+	if action != "SwitchChargeTypeWorkflow" {
+		return "", false
+	}
+	id := strings.TrimSpace(fmt.Sprint(params["UHostId"]))
+	target := strings.TrimSpace(fmt.Sprint(params["DestChargeType"]))
+	targetLabel := workflow.ChargeTypeLabel(target)
+	if result == nil || result.Data == nil {
+		return fmt.Sprintf("已提交实例 %s 切换为%s的请求，但未能回读当前计费方式。请稍后查看平台账单，请勿重复提交。", id, targetLabel), true
+	}
+	verified, _ := result.Data["Verified"].(bool)
+	if verified {
+		return fmt.Sprintf("✅ 已将实例 %s 的计费方式切换为%s，并已通过实时回读确认。", id, targetLabel), true
+	}
+	readbackAvailable, _ := result.Data["ReadbackAvailable"].(bool)
+	if !readbackAvailable {
+		return fmt.Sprintf("已提交实例 %s 切换为%s的请求，但未能回读当前计费方式。请稍后查看平台账单，请勿重复提交。", id, targetLabel), true
+	}
+	observed := strings.TrimSpace(fmt.Sprint(result.Data["ObservedChargeType"]))
+	if observed == "" || observed == "<nil>" {
+		return fmt.Sprintf("已提交实例 %s 切换为%s的请求，但实时回读没有返回计费方式。请稍后查看平台账单，请勿重复提交。", id, targetLabel), true
+	}
+	return fmt.Sprintf("已提交实例 %s 切换为%s的请求；实时回读仍显示为%s，尚未确认切换完成。请稍后查看平台账单，请勿重复提交。",
+		id, targetLabel, workflow.ChargeTypeLabel(observed)), true
+}
+
 // committedWriteFallbackReply is the sentence the user gets when a write has
 // landed and the model is not available to narrate it. It must be composable
 // with no model call and no further upstream call — the situations that reach
@@ -4219,6 +4248,9 @@ func committedWriteFallbackReply(action string, params map[string]any, result *w
 	}
 	if action == "CloneCustomImageWorkflow" {
 		return cloneCustomImageWorkflowReply(result)
+	}
+	if reply, ok := switchChargeTypeWorkflowReply(action, params, result); ok {
+		return reply
 	}
 	if reply, ok := deterministicWorkflowReply(action, params); ok {
 		return reply

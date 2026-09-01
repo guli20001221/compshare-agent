@@ -472,9 +472,11 @@ func invalidatesRegistry(action string) bool {
 		// Resize rewrites GPU/GpuType/CPU/Memory and Reinstall rewrites
 		// OsType/ImageName/ImageType — all InstanceSnapshot fields. Both were absent here
 		// while being registered workflows, so a resize or reinstall left the
-		// cache serving the pre-change spec.
+		// cache serving the pre-change spec. Switching billing rewrites ChargeType.
 		"ResizeInstanceWorkflow",
-		"ReinstallInstanceWorkflow":
+		"ReinstallInstanceWorkflow",
+		"SwitchChargeType",
+		"SwitchChargeTypeWorkflow":
 		return true
 	default:
 		return false

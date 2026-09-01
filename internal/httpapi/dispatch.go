@@ -63,7 +63,7 @@ func (h *Handlers) writeResult(c *gin.Context, base BaseRequest, data any, err e
 
 // writeError converts err to an APIError and responds with the appropriate HTTP status.
 // sql.ErrNoRows is canonicalized to ErrNotFound. Error responses carry only
-// the envelope fields (Action / RetCode / Message / RequestId), no data payload.
+// the envelope fields (Action / Code / RetCode / Message / RequestId), no data payload.
 // action may be empty when the request failed to parse before Action was known.
 func (h *Handlers) writeError(c *gin.Context, action, requestID string, err error) {
 	if errors.Is(err, sql.ErrNoRows) {
@@ -72,6 +72,7 @@ func (h *Handlers) writeError(c *gin.Context, action, requestID string, err erro
 	apiErr := AsAPIError(err)
 	logInternalCause("action="+action, requestID, apiErr)
 	body := gin.H{
+		"Code":      apiErr.Code,
 		"RetCode":   apiErr.RetCode,
 		"Message":   apiErr.Message,
 		"RequestId": requestID,
@@ -82,8 +83,9 @@ func (h *Handlers) writeError(c *gin.Context, action, requestID string, err erro
 	c.JSON(apiErr.Status, body)
 }
 
-// flattenEnvelope marshals data and merges its top-level JSON fields with the
-// UCloud-standard envelope (Action / RetCode / Message / RequestId). Envelope
+// flattenEnvelope marshals successful data and merges its top-level JSON fields
+// with the UCloud-standard success envelope (Action / RetCode / Message /
+// RequestId). Stable Code is error-only and is added by writeError. Envelope
 // keys win on collision. Action is omitted when empty.
 // Returns an error only if data fails to marshal/unmarshal.
 func flattenEnvelope(action, requestID string, retCode int, message string, data any) (map[string]any, error) {

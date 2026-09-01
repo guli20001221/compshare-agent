@@ -17,6 +17,7 @@ const (
 	IntentModelRepositoryBrowse Intent = "model_repository_browse"
 	IntentNetAcceleratorStatus  Intent = "network_accelerator_status"
 	IntentRefundEstimate        Intent = "refund_estimate"
+	IntentInvoiceStatus         Intent = "invoice_status"
 	IntentCFSInfo               Intent = "cfs_info"
 	IntentPricingQuery          Intent = "pricing_query"
 )

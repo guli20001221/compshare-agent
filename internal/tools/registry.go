@@ -740,6 +740,28 @@ var Registry = []openai.Tool{
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
+			Name:        "SwitchChargeTypeWorkflow",
+			Description: "将运行中的非抢占式、带 GPU 的按量后付费实例切换为预付费。仅用于用户要求实际切换计费方式；不用于计费咨询、创建实例或切回按量后付费。上游支持包时、包日、包月和包年，切换价格不由本接口返回。",
+			Parameters: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"UHostId": map[string]any{
+						"type":        "string",
+						"description": "要切换计费方式的实例 ID。",
+					},
+					"DestChargeType": map[string]any{
+						"type":        "string",
+						"enum":        []string{"Dynamic", "Day", "Month", "Year"},
+						"description": "目标预付费计费方式：Dynamic=包时，Day=包日，Month=包月，Year=包年。",
+					},
+				},
+				"required": []string{"UHostId", "DestChargeType"},
+			},
+		},
+	},
+	{
+		Type: openai.ToolTypeFunction,
+		Function: &openai.FunctionDefinition{
 			Name:        "UpdateInstancePortsWorkflow",
 			Description: "修改 Pod 平台端口配置的候选请求。用于用户明确要求添加或移除 HTTP/TCP 平台入口；工作流会读取并保留当前完整端口集合、展示精确前后差异、确认后复核并发变更，再执行一次全量替换。虚机不使用。UDP 端口不在此操作中修改，因为上游结果不提供可验证的公网 UDP 转发，不能用它承诺 WebRTC 等公网 UDP 可达。",
 			Parameters: map[string]any{
