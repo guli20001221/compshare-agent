@@ -2576,8 +2576,10 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		e.emitSearchKnowledgeRetrievalTrace(resolvedQuestion, plannedQuery, retrieved, rawHits, floorDroppedAll, activityID)
 	}
 	resultMeta := map[string]any{}
+	var autoExpandedIDs []string
 	if eligibleIDs := eligibleKnowledgeIDsInLedgerOrder(combined, strongBodyEligible); len(eligibleIDs) > 0 {
 		expanded := e.autoMaterializeKnowledgeChunks(ctx, &combined, eligibleIDs)
+		autoExpandedIDs = expanded.ReadIDs
 		if len(expanded.ReadIDs) > 0 {
 			resultMeta["auto_expanded_chunk_ids"] = expanded.ReadIDs
 		}
@@ -2589,6 +2591,7 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		}
 	}
 	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, combined, searchKnowledgeLedgerTurnMaxItems)
+	overwriteEvidenceSnippets(&e.searchKnowledgeLedgerThisTurn, combined, autoExpandedIDs)
 	message := "搜索完成"
 	if successfulQueries == 0 && unavailableQueries > 0 {
 		message = "知识库服务暂时不可用"

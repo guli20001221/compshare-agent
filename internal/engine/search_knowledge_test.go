@@ -48,6 +48,48 @@ func TestExecuteSearchKnowledgeAutoExpandsOnlyIndividuallyStrongHits(t *testing.
 	assert.NotContains(t, eng.searchKnowledgeLedgerThisTurn.Items[1].Snippet, weakTail)
 }
 
+func TestExecuteSearchKnowledgeLaterAutoExpansionUpgradesTurnLedger(t *testing.T) {
+	tail := "第二次检索展开后的唯一正文尾串"
+	targetBody := strings.Repeat("目标正文前文。", 100) + tail
+	fillerBody := strings.Repeat("首个强命中。", 100)
+	retriever := &chunkStoreRetriever{
+		scriptedKnowledgeRetriever: scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
+			{
+				Enabled: true, HybridMode: knowledge.RetrievalModeQwen3RRF, RerankerMode: "qwen3-reranker-8b",
+				HitItems: []knowledge.RetrievalHit{
+					{Kept: true, Score: 0.92, Chunk: knowledge.KBChunk{ChunkID: "filler", Content: fillerBody}},
+					{Kept: true, Score: 0.31, Chunk: knowledge.KBChunk{ChunkID: "target", Content: targetBody}},
+				},
+			},
+			{
+				Enabled: true, HybridMode: knowledge.RetrievalModeQwen3RRF, RerankerMode: "qwen3-reranker-8b",
+				HitItems: []knowledge.RetrievalHit{
+					{Kept: true, Score: 0.93, Chunk: knowledge.KBChunk{ChunkID: "target", Content: targetBody}},
+				},
+			},
+		}},
+		chunks: map[string]knowledge.KBChunk{
+			"filler": {ChunkID: "filler", Content: fillerBody},
+			"target": {ChunkID: "target", Content: targetBody},
+		},
+	}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+
+	first := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "首次检索"}, noopStep)
+	assert.NotContains(t, first, tail)
+	second := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "再次检索目标"}, noopStep)
+	assert.Contains(t, second, tail, "the second tool observation contains the auto-expanded body")
+
+	var targetSnippet string
+	for _, item := range eng.searchKnowledgeLedgerThisTurn.Items {
+		if item.ChunkID == "target" {
+			targetSnippet = item.Snippet
+		}
+	}
+	assert.Contains(t, targetSnippet, tail, "recovery synthesis must see the same expanded body as the Agent")
+}
+
 func TestExecuteSearchKnowledgeAutoExpansionFailureKeepsSearchSnippet(t *testing.T) {
 	tail := "远程正文末尾-本次不可用"
 	body := strings.Repeat("远程搜索节选。", 100) + tail
