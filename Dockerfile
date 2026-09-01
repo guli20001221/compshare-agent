@@ -70,12 +70,14 @@ WORKDIR $APP_HOME
 COPY --from=go-builder /out/compshare-agent ./compshare-agent
 COPY deploy/conf/config.local.yaml ./deploy/conf/config.local.yaml
 COPY deploy/conf/config.prod.yaml ./deploy/conf/config.prod.yaml
+COPY deploy/assets ./deploy/assets
 COPY deploy/migrations ./deploy/migrations
 COPY deploy/ssh_ops_harness ./deploy/ssh_ops_harness
 
 # Fail the image build if the mixed Go/Python/Claude runtime is incomplete.
 # The Python suites are offline guardrail/protocol tests.
 RUN test -x ./compshare-agent \
+	&& test -f ./deploy/assets/customer-support-wecom.jpg \
     && test -f ./deploy/ssh_ops_harness/harness.py \
     && /opt/miniforge3/envs/py313/bin/python -c \
          'import claude_agent_sdk, paramiko' \

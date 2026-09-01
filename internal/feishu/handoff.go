@@ -61,7 +61,11 @@ func consumeCustomerSupportMarker(answer string) (string, bool) {
 }
 
 func customerSupportReply() string {
-	return "这个问题需要优云智算客服协助处理。请说明具体诉求，并附上必要的截图和发生时间；请勿在群内发送验证码、密码或证件信息。"
+	return "这个问题需要优云智算人工客服协助处理。请扫描下方二维码添加客服，并说明具体诉求、附上必要截图和发生时间。请勿在群内发送验证码、密码或证件信息。"
+}
+
+func customerSupportImageFallbackReply() string {
+	return "这个问题需要优云智算人工客服协助处理，但客服二维码暂时发送失败，请稍后重试。请勿在群内发送验证码、密码或证件信息。"
 }
 
 func consoleHandoffReply(consoleURL, clientURL string) string {

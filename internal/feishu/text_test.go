@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -46,6 +47,26 @@ func TestMarkdownPostContentPreservesMarkdown(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(raw), &content))
 	require.Equal(t, "md", content.ZhCN.Content[0][0].Tag)
 	require.Equal(t, markdown, content.ZhCN.Content[0][0].Text)
+}
+
+func TestCustomerSupportPostContentIncludesNativeImage(t *testing.T) {
+	raw, err := customerSupportPostContent("请扫码添加客服。", "img_support")
+	require.NoError(t, err)
+
+	var content struct {
+		ZhCN struct {
+			Content [][]struct {
+				Tag      string `json:"tag"`
+				Text     string `json:"text"`
+				ImageKey string `json:"image_key"`
+			} `json:"content"`
+		} `json:"zh_cn"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(raw), &content))
+	require.Equal(t, "md", content.ZhCN.Content[0][0].Tag)
+	require.Equal(t, "请扫码添加客服。", content.ZhCN.Content[0][0].Text)
+	require.Equal(t, "img", content.ZhCN.Content[1][0].Tag)
+	require.Equal(t, "img_support", content.ZhCN.Content[1][0].ImageKey)
 }
 
 func TestInputFromPostCollectsTopicTextAndImages(t *testing.T) {
@@ -147,6 +168,36 @@ func TestDownloadImageBytesUsesDelegatedUserAccessToken(t *testing.T) {
 	got, err := service.downloadImageBytes(context.Background(), "om_test", "img_test", larkcore.WithUserAccessToken("user-token"))
 	require.NoError(t, err)
 	require.Equal(t, pngBytes, got)
+}
+
+func TestUploadMessageImageUsesMessageImageType(t *testing.T) {
+	pngBytes, err := base64.StdEncoding.DecodeString(
+		"iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M8AAQUBAScY42YAAAAASUVORK5CYII=",
+	)
+	require.NoError(t, err)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		require.Equal(t, http.MethodPost, request.Method)
+		require.Equal(t, "/open-apis/im/v1/images", request.URL.Path)
+		require.Equal(t, "Bearer user-token", request.Header.Get("Authorization"))
+		require.NoError(t, request.ParseMultipartForm(1<<20))
+		require.Equal(t, larkim.CreateImageImageTypeMessage, request.FormValue("image_type"))
+		file, _, fileErr := request.FormFile("image")
+		require.NoError(t, fileErr)
+		defer file.Close()
+		got, readErr := io.ReadAll(file)
+		require.NoError(t, readErr)
+		require.Equal(t, pngBytes, got)
+		writer.Header().Set("Content-Type", "application/json")
+		_, _ = writer.Write([]byte(`{"code":0,"msg":"success","data":{"image_key":"img_support"}}`))
+	}))
+	defer server.Close()
+
+	service := &Service{
+		api: lark.NewClient("cli_test", "app-secret", lark.WithOpenBaseUrl(server.URL), lark.WithEnableTokenCache(false)),
+	}
+	imageKey, err := service.uploadMessageImage(context.Background(), pngBytes, larkcore.WithUserAccessToken("user-token"))
+	require.NoError(t, err)
+	require.Equal(t, "img_support", imageKey)
 }
 
 type assertionError struct{}

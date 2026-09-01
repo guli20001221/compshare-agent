@@ -24,6 +24,8 @@ agent:
     auto_reply_new_topics: true
     # 关闭全消息模式：其他成员评论和嵌套评论只有显式 @机器人 时才会进入话题会话。
     auto_reply_all_messages: false
+    # Agent 选择转人工后，由飞书适配器上传并回复此企微客服二维码。
+    customer_support_qr_path: "deploy/assets/customer-support-wecom.jpg"
     max_concurrent: 4
     max_reply_runes: 3500
     max_image_bytes: 5242880

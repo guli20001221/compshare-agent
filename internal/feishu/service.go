@@ -76,13 +76,14 @@ type topicOwner struct {
 var errExternalGroupImageResourceUnsupported = errors.New("Feishu does not support downloading message images in external groups")
 
 type Service struct {
-	cfg       config.FeishuConfig
-	agent     *AgentClient
-	api       *lark.Client
-	botOpenID string
-	botUserID string
-	allowed   map[string]struct{}
-	queue     chan job
+	cfg               config.FeishuConfig
+	agent             *AgentClient
+	api               *lark.Client
+	botOpenID         string
+	botUserID         string
+	allowed           map[string]struct{}
+	queue             chan job
+	customerSupportQR []byte
 	// externalImageUserToken is optional. The default tenant-token path remains
 	// the only path for internal groups; this is used only after Feishu rejects
 	// an external-group image resource request.
@@ -111,6 +112,10 @@ func NewService(ctx context.Context, cfg config.FeishuConfig, options ...Service
 	if err := ValidateConfig(cfg); err != nil {
 		return nil, err
 	}
+	customerSupportQR, err := loadCustomerSupportQR(cfg.CustomerSupportQRPath)
+	if err != nil {
+		return nil, err
+	}
 	agent, err := NewAgentClient(cfg)
 	if err != nil {
 		return nil, err
@@ -130,8 +135,9 @@ func NewService(ctx context.Context, cfg config.FeishuConfig, options ...Service
 	}
 	service := &Service{
 		cfg: cfg, agent: agent, api: api, botOpenID: bot.OpenID, botUserID: bot.UserID, allowed: allowed,
-		queue:    make(chan job, maxConcurrent*16),
-		sessions: make(map[string]string), topicOwners: make(map[string]topicOwner), seen: make(map[string]time.Time),
+		queue:             make(chan job, maxConcurrent*16),
+		customerSupportQR: customerSupportQR,
+		sessions:          make(map[string]string), topicOwners: make(map[string]topicOwner), seen: make(map[string]time.Time),
 	}
 	for _, option := range options {
 		if option != nil {
@@ -194,7 +200,7 @@ func (s *Service) Run(ctx context.Context) error {
 		s.cfg.AppSecret,
 		larkws.WithEventHandler(eventHandler),
 	)
-	log.Printf("Feishu topic bot connected: allowlist=%d, workers=%d, auto_reply_new_topics=%t, auto_reply_all_messages=%t, console_handoff=%t, client_handoff=%t", len(s.allowed), workers, s.cfg.AutoReplyNewTopics, s.cfg.AutoReplyAllMessages, consoleHandoffEnabled(s.cfg), strings.TrimSpace(s.cfg.ClientDownloadURL) != "")
+	log.Printf("Feishu topic bot connected: allowlist=%d, workers=%d, auto_reply_new_topics=%t, auto_reply_all_messages=%t, console_handoff=%t, client_handoff=%t, customer_support_qr=%t", len(s.allowed), workers, s.cfg.AutoReplyNewTopics, s.cfg.AutoReplyAllMessages, consoleHandoffEnabled(s.cfg), strings.TrimSpace(s.cfg.ClientDownloadURL) != "", len(s.customerSupportQR) != 0)
 	started := make(chan error, 1)
 	go func() {
 		started <- client.Start(ctx)
@@ -364,8 +370,12 @@ func (s *Service) handleJob(ctx context.Context, item job) {
 				log.Printf("Feishu customer-support handoff requested by knowledge-only Agent message=%s", item.messageID)
 				// Support wins if a malformed completion contains both markers: these
 				// categories must not be misrepresented as instance diagnosis.
-				answer = customerSupportReply()
-			} else if needsConsoleHandoff {
+				if replyErr := s.replyCustomerSupport(ctx, item.messageID); replyErr != nil {
+					log.Printf("warning: Feishu customer-support reply failed message=%s: %v", item.messageID, replyErr)
+				}
+				return
+			}
+			if needsConsoleHandoff {
 				log.Printf("Feishu console handoff requested by knowledge-only Agent message=%s", item.messageID)
 				if consoleHandoffEnabled(s.cfg) {
 					answer = appendConsoleHandoff(answer, s.cfg.ConsoleAssistantURL, s.cfg.ClientDownloadURL)
@@ -503,24 +513,31 @@ func (s *Service) reply(ctx context.Context, messageID, answer string) error {
 		if err != nil {
 			return err
 		}
-		idempotencyID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(messageID+":"+itoa(i))).String()
-		req := larkim.NewReplyMessageReqBuilder().
-			MessageId(messageID).
-			Body(larkim.NewReplyMessageReqBodyBuilder().
-				Content(content).
-				MsgType("post").
-				ReplyInThread(true).
-				Uuid(idempotencyID).
-				Build()).
-			Build()
-		resp, err := s.api.Im.V1.Message.Reply(ctx, req)
-		if err != nil {
+		if err := s.replyPost(ctx, messageID, content, itoa(i)); err != nil {
 			return err
 		}
-		if !resp.Success() {
-			return fmt.Errorf("Feishu API code=%d message=%s request_id=%s",
-				resp.Code, resp.Msg, resp.RequestId())
-		}
+	}
+	return nil
+}
+
+func (s *Service) replyPost(ctx context.Context, messageID, content, idempotencySuffix string) error {
+	idempotencyID := uuid.NewSHA1(uuid.NameSpaceOID, []byte(messageID+":"+idempotencySuffix)).String()
+	req := larkim.NewReplyMessageReqBuilder().
+		MessageId(messageID).
+		Body(larkim.NewReplyMessageReqBodyBuilder().
+			Content(content).
+			MsgType("post").
+			ReplyInThread(true).
+			Uuid(idempotencyID).
+			Build()).
+		Build()
+	resp, err := s.api.Im.V1.Message.Reply(ctx, req)
+	if err != nil {
+		return err
+	}
+	if !resp.Success() {
+		return fmt.Errorf("Feishu API code=%d message=%s request_id=%s",
+			resp.Code, resp.Msg, resp.RequestId())
 	}
 	return nil
 }

@@ -89,9 +89,14 @@ type FeishuConfig struct {
 	// client, its own Agent may use the user's local CLI and SSH session; the
 	// Feishu adapter never forwards a conversation or credential to it.
 	ClientDownloadURL string `yaml:"client_download_url"`
-	MaxConcurrent     int    `yaml:"max_concurrent"`
-	MaxReplyRunes     int    `yaml:"max_reply_runes"`
-	MaxImageBytes     int    `yaml:"max_image_bytes"`
+	// CustomerSupportQRPath is an optional local image bundled with the
+	// adapter. When the central Agent selects HandoffToCustomerSupport, Feishu
+	// uploads this image and renders it in the original topic. Empty preserves
+	// the text-only fallback for deployments that do not configure an asset.
+	CustomerSupportQRPath string `yaml:"customer_support_qr_path"`
+	MaxConcurrent         int    `yaml:"max_concurrent"`
+	MaxReplyRunes         int    `yaml:"max_reply_runes"`
+	MaxImageBytes         int    `yaml:"max_image_bytes"`
 	// ExternalImageOAuth lets the Feishu adapter use a consenting internal
 	// group member's user_access_token to read an image uploaded in an external
 	// group. It is intentionally off unless configured explicitly.

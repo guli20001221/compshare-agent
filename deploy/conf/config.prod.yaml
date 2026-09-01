@@ -16,6 +16,9 @@ agent:
     # Optional second handoff route. It is only a download/login link; the
     # desktop client owns any later CLI/SSH access under the user's own account.
     client_download_url: "https://www.compshare.cn/client"
+    # Runtime image path. The same asset uses a repository-relative path in the
+    # shared baseline for local runs.
+    customer_support_qr_path: "/opt/compshare-agent/deploy/assets/customer-support-wecom.jpg"
   retrieval:
     mcp_url: "http://compshare-kb.prj-ucompshare-prod.svc.c5.uae/mcp"
   mysql:

@@ -46,10 +46,18 @@ func TestCustomerSupportMarkerRendersConciseSupportReply(t *testing.T) {
 	reply := customerSupportReply()
 	require.NotContains(t, reply, agentprotocol.FeishuCustomerSupportMarker)
 	require.NotContains(t, reply, agentprotocol.FeishuConsoleHandoffMarker)
-	require.Contains(t, reply, "需要优云智算客服协助处理")
+	require.Contains(t, reply, "需要优云智算人工客服协助处理")
+	require.Contains(t, reply, "扫描下方二维码")
 	require.NotContains(t, reply, "账号、认证、页面加载")
 	require.NotContains(t, reply, "控制台智能助手")
 	require.NotContains(t, reply, "桌面客户端")
+}
+
+func TestCustomerSupportImageFallbackIsConcise(t *testing.T) {
+	reply := customerSupportImageFallbackReply()
+	require.Contains(t, reply, "二维码暂时发送失败")
+	require.Contains(t, reply, "请勿在群内发送")
+	require.NotContains(t, reply, agentprotocol.FeishuCustomerSupportMarker)
 }
 
 func TestCustomerSupportMarkerWinsOverConsoleHandoff(t *testing.T) {
