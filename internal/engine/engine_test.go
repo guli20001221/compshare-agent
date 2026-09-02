@@ -1266,6 +1266,7 @@ func TestDiagnoseBillingAnswersTheRestOfTheTurnAndHidesFiguresFromTheModel(t *te
 	require.Contains(t, verbatimBlockObservation, "不代表已回答一般计费规则或历史实际扣款")
 	require.Contains(t, verbatimBlockObservation, "未覆盖的规则问题继续检索知识")
 	require.Contains(t, verbatimBlockObservation, "不要复述、重算或推断金额")
+	require.Contains(t, verbatimBlockObservation, "仅从这条模型观察中省略，不是接口未返回")
 	require.NotContains(t, verbatimBlockObservation, "不要复述或补充通用费用说明")
 }
 
