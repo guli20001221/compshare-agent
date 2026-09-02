@@ -1061,7 +1061,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "ReinstallInstanceWorkflow",
-			Description: "重装实例。Pod 复用系统盘/CFS、替换镜像和默认端口；UHost 容器替换容器文件系统；普通虚机替换系统盘。具体影响见确认卡。仅咨询镜像时不用。",
+			Description: "替换整台实例的操作系统或容器镜像，不是重装实例内的软件包、运行环境或应用。仅在用户要求替换实例系统/镜像时使用；安装包名称、版本和 wheel 文件不属于目标镜像。Pod 复用系统盘/CFS、替换镜像和默认端口；UHost 容器替换容器文件系统；普通虚机替换系统盘。具体影响见确认卡。仅咨询或索取命令时不用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

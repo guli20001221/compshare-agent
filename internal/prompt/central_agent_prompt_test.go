@@ -20,6 +20,9 @@ func TestCentralAgentPromptHasOneRuntimeContract(t *testing.T) {
 	}
 	for _, required := range []string{
 		"本轮唯一的业务判断者",
+		"先确定用户要改变的对象与层级",
+		"当前镜像描述环境，不自动代表用户要替换镜像",
+		"用户只要命令或步骤时直接给出适用说明，不发起写工作流",
 		"工作流负责补齐、确认、复查和执行",
 		"Request* 成功前不得声称已发起操作",
 		"next_step=correct_tool_call 时用户无需补充",
