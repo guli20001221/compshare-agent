@@ -66,27 +66,29 @@ func TestInstanceOpsAgentSessionMalformedOrFutureStartsFresh(t *testing.T) {
 	}
 }
 
-func TestInstanceOpsAgentSessionV2CursorStartsFreshUnderCurrentContract(t *testing.T) {
+func TestInstanceOpsAgentSessionPriorContractStartsFresh(t *testing.T) {
 	const oldSessionID = "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5"
 	const anchor = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	e := &Engine{sessionState: SessionState{PersistedInstanceOpsAgent: PersistedInstanceOpsAgentSession{
-		InstanceID:         "uhost-a",
-		SessionID:          oldSessionID,
-		WorkdirID:          oldSessionID,
-		Contract:           "sshops-agent-v2",
-		Model:              "gpt-5.6-terra",
-		ConversationAnchor: anchor,
-		UpdatedAt:          time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano),
-	}}}
+	for _, contract := range []string{"sshops-agent-v2", "sshops-agent-v3", "sshops-agent-v4"} {
+		e := &Engine{sessionState: SessionState{PersistedInstanceOpsAgent: PersistedInstanceOpsAgentSession{
+			InstanceID:         "uhost-a",
+			SessionID:          oldSessionID,
+			WorkdirID:          oldSessionID,
+			Contract:           contract,
+			Model:              "gpt-5.6-terra",
+			ConversationAnchor: anchor,
+			UpdatedAt:          time.Now().UTC().Add(-time.Minute).Format(time.RFC3339Nano),
+		}}}
 
-	got := e.instanceOpsAgentSessionForRun("uhost-a")
-	require.False(t, got.Resume, "a transcript created under the v2 prompt/tool contract must not be resumed")
-	require.NotEqual(t, oldSessionID, got.SessionID)
-	require.NoError(t, uuid.Validate(got.SessionID))
-	require.Equal(t, got.SessionID, got.WorkdirID)
-	require.Equal(t, instanceOpsAgentSessionContract, got.Contract)
-	require.Empty(t, got.Model)
-	require.Empty(t, got.ConversationAnchor)
+		got := e.instanceOpsAgentSessionForRun("uhost-a")
+		require.False(t, got.Resume, "a transcript created under %s must not be resumed", contract)
+		require.NotEqual(t, oldSessionID, got.SessionID)
+		require.NoError(t, uuid.Validate(got.SessionID))
+		require.Equal(t, got.SessionID, got.WorkdirID)
+		require.Equal(t, instanceOpsAgentSessionContract, got.Contract)
+		require.Empty(t, got.Model)
+		require.Empty(t, got.ConversationAnchor)
+	}
 }
 
 func TestObserveInstanceOpsAgentSessionPersistsOnlyValidatedCursor(t *testing.T) {
