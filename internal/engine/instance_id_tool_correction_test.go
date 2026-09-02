@@ -120,24 +120,6 @@ func TestChatCorrectsATruncatedReadTargetBeforeAnyUpstreamCall(t *testing.T) {
 	require.Equal(t, "instance_id_literal_truncated", firstResult.Meta.SourceStatus)
 }
 
-func TestChatCorrectsATruncatedInstanceOpsTargetBeforeEnteringTheInstance(t *testing.T) {
-	const (
-		fullID  = "uhost-1u8jtt7sral1"
-		shortID = "uhost-1u8jtt7sral"
-	)
-	model := &instanceIDCorrectionModel{action: "DiagnoseInstanceInternals", shortID: shortID}
-	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
-	eng := NewWithDeps(model, &mockExecutor{}, nil)
-	eng.SetInstanceOps(runner)
-
-	reply, err := eng.Chat(context.Background(), "进去排查 "+fullID, noopStep)
-	require.NoError(t, err)
-	require.Equal(t, "排查完成", reply)
-	require.Equal(t, fullID, model.correctedID)
-	require.Equal(t, 1, runner.calls, "the truncated call must not consume the one runner attempt")
-	require.Equal(t, fullID, runner.lastReq.InstanceID)
-}
-
 func TestInstanceIDCompletionDoesNotTurnAnotherMentionIntoTheTarget(t *testing.T) {
 	const (
 		mentioned = "uhost-current-123"

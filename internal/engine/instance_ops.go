@@ -56,7 +56,9 @@ type InstanceOpsRunner interface {
 	Run(ctx context.Context, req InstanceOpsRequest, onProgress func(InstanceOpsProgress)) (InstanceOpsVerdict, error)
 }
 
-// InstanceOpsRequest is the resolved, deployment-authorized request handed to the runner.
+// InstanceOpsRequest is the Agent-selected, deployment-authorized request handed
+// to the runner. The runner must resolve this exact ID under the caller's STS
+// identity and bind credentials, audit and execution to that one instance.
 // TurnID is the server-side audit and retry-dedup identity.
 type InstanceOpsRequest struct {
 	TurnID     string

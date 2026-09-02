@@ -82,7 +82,7 @@ func TestExpireStaleSelectedInstanceDowngradesUnstampedLegacyRow(t *testing.T) {
 // An old user selection without its timestamp cannot prove that it came through
 // the current server-owned selection path. Same-conversation continuity applies
 // only to stamped user_selected state.
-func TestUnstampedUserSelectionCannotAuthorizeInstanceOps(t *testing.T) {
+func TestUnstampedUserSelectionCannotSupplyWorkflowBinding(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{
 		SchemaVersion:          SessionStateSchemaCurrent,
@@ -101,8 +101,6 @@ func TestUnstampedUserSelectionCannotAuthorizeInstanceOps(t *testing.T) {
 
 	binding := eng.bindInstanceTarget(view)
 	require.False(t, binding.bound(), "an unstamped legacy pick is never automatic authority")
-	require.False(t, eng.instanceOpsTargetAuthorized("uhost-legacy-user"),
-		"conversation continuity must not turn an incomplete legacy row into authority")
 }
 
 // A passive read must not replace the user's current target, even when it observes

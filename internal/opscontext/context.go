@@ -35,7 +35,7 @@ const (
 	// AgentSessionContract is the prompt/tool/context contract bound to an opaque
 	// Claude SDK continuation cursor. All transport layers compare this value;
 	// incompatible prompt, tool or authorization changes start a fresh transcript.
-	AgentSessionContract = "sshops-agent-v5"
+	AgentSessionContract = "sshops-agent-v6"
 
 	StatusKnown       = "known"
 	StatusUnknown     = "unknown"

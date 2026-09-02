@@ -46,7 +46,7 @@ func TestASecondTypedIDOutranksTheFirstOneItAlreadyBound(t *testing.T) {
 
 			state, _, _ := eng.SessionStateSnapshot()
 			require.Equal(t, first, state.SelectedInstanceID, "the premise: the first id is now carried context")
-			require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
+			require.Equal(t, SelectedInstanceSourceObserved, state.SelectedInstanceSource)
 
 			rehydrate(t, eng)
 			_, err = eng.ChatWithOptions(context.Background(), tc.second, noopStep, ChatOptions{})
@@ -136,65 +136,6 @@ func TestAWriteWorkflowCannotUseTheCarriedTargetWhenTheUserNamesAnother(t *testi
 			require.False(t, resolved.action.ReadyForConfirmation,
 				"the model must not turn a current reference to B into a confirmation card for carried A")
 			require.NotEmpty(t, resolved.action.Conflicts)
-		})
-	}
-}
-
-// A proposed target only helps the binder when the current message contains that
-// exact ID. An ID invented by the model still cannot authorize entry.
-func TestAModelInventedIDIsStillRefusedWhenTheBinderSeesProposals(t *testing.T) {
-	const typed, invented = "cpod-aaaa1111aaaa", "cpod-9999invented9"
-	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "不应到达", Ran: 1}}
-	model := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
-			`{"UHostId":"cpod-aaaa1111aaaa","Task":"排查 ComfyUI","Mode":"repair"}`)}},
-		{ToolCalls: []openai.ToolCall{toolCall("d2", "DiagnoseInstanceInternals",
-			`{"UHostId":"cpod-9999invented9","Task":"排查这台","Mode":"repair"}`)}},
-		{Content: "请确认要排查哪台实例。"},
-	}}
-	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
-	eng.SetInstanceOps(runner)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-
-	_, err := eng.ChatWithOptions(context.Background(), "排查 cpod-aaaa1111aaaa 上的 ComfyUI", noopStep, ChatOptions{})
-	require.NoError(t, err)
-
-	rehydrate(t, eng)
-	_, err = eng.ChatWithOptions(context.Background(), "再看看 cpod-aaaa1111aaaa 的显存", noopStep, ChatOptions{})
-	require.NoError(t, err)
-	require.Equal(t, typed, runner.lastReq.InstanceID, "and must not be the instance entered")
-
-	state, _, _ := eng.SessionStateSnapshot()
-	require.Equal(t, typed, state.SelectedInstanceID, "nor become the selection")
-	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
-	require.NotEqual(t, invented, state.SelectedInstanceID)
-}
-
-// When the model repeats carried A after the user types B, the ID-shaped-token
-// signal must suppress A even though the proposal signal cannot see B.
-func TestACarriedTargetTheUserDidNotNameThisTurnDoesNotAuthorizeEntry(t *testing.T) {
-	const carried = "cpod-aaaa1111aaaa"
-	for _, second := range []string{"cpod-bbbb2222bbbb", "uhost-bbbb2222bbbb"} {
-		t.Run(second, func(t *testing.T) {
-			runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
-			model := &mockLLM{responses: []llm.ChatResponse{
-				{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
-					`{"UHostId":"cpod-aaaa1111aaaa","Task":"排查 ComfyUI","Mode":"repair"}`)}},
-				{ToolCalls: []openai.ToolCall{toolCall("d2", "DiagnoseInstanceInternals",
-					`{"UHostId":"cpod-aaaa1111aaaa","Task":"排查这台","Mode":"repair"}`)}},
-				{Content: "请确认要排查哪台实例。"},
-			}}
-			eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
-			eng.SetInstanceOps(runner)
-			eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-
-			_, err := eng.ChatWithOptions(context.Background(), "排查 "+carried+" 上的 ComfyUI", noopStep, ChatOptions{})
-			require.NoError(t, err)
-
-			rehydrate(t, eng)
-			_, err = eng.ChatWithOptions(context.Background(), "现在排查 "+second+" 上的 ComfyUI", noopStep, ChatOptions{})
-			require.NoError(t, err)
-			require.Equal(t, 1, runner.calls, "and must not be entered")
 		})
 	}
 }

@@ -105,7 +105,6 @@ func TestReinstallProposalDescribesWholeInstanceNotGuestPackages(t *testing.T) {
 	}
 	require.Contains(t, description, "替换整台实例的操作系统或容器镜像")
 	require.Contains(t, description, "不是重装实例内的软件包、运行环境或应用")
-	require.Contains(t, description, "仅咨询或索取命令时不用")
 }
 
 func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {

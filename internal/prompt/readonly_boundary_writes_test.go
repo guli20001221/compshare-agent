@@ -46,8 +46,11 @@ func TestInstanceRepairLaneIsNamedWhenMutatingToolsAreOn(t *testing.T) {
 		!strings.Contains(both, "不得用公共模型/镜像目录或知识库替代实例内观察") {
 		t.Fatal("guest-state reads must route to the instance lane instead of a public catalog or a hand-written command")
 	}
-	if !strings.Contains(both, "同一会话") || !strings.Contains(both, "不因时间间隔失效") {
-		t.Fatal("a long pause must not revoke the conversation's user-selected SSH target")
+	if !strings.Contains(both, "根据完整对话确定目标实例 ID") || !strings.Contains(both, "核查账号归属") {
+		t.Fatal("the Agent selects the semantic target; the server checks tenant ownership")
+	}
+	if strings.Contains(both, "user_selected") {
+		t.Fatal("SSH must not advertise the removed lexical selection gate")
 	}
 	if !strings.Contains(both, "高危操作") {
 		t.Fatal("the destructive refusals must stay named, or the agent plans around commands the harness rejects")

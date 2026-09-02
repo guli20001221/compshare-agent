@@ -28,7 +28,7 @@ func TestRefreshSystemPrompt_InjectsSelectedInstance(t *testing.T) {
 	assert.Contains(t, modelInput, "my-gpu-box uhost-abc123",
 		"unknown-age legacy identity must remain available for understanding")
 	assert.Contains(t, modelInput, "不代表用户已经确认写操作")
-	assert.Contains(t, modelInput, "实际执行用对应工具；平台写入用 Request*")
+	assert.Contains(t, modelInput, "平台操作使用 Request*")
 }
 
 func TestRefreshSystemPrompt_SkipsWhenNotHydrated(t *testing.T) {

@@ -34,11 +34,11 @@ func TestInstanceOpsDescriptionUsesOneTaskScopedRepairContract(t *testing.T) {
 	if !strings.Contains(*desc, "下载") || !strings.Contains(*desc, "不只给手工命令") {
 		t.Fatalf("description does not route explicit guest-local operations into the lane: %q", *desc)
 	}
-	if !strings.Contains(*desc, "不从列表自选") {
-		t.Fatalf("description omits the target-selection boundary: %q", *desc)
+	if !strings.Contains(*desc, "根据完整对话确定目标实例 ID") || !strings.Contains(*desc, "账号归属") {
+		t.Fatalf("description must separate Agent selection from server tenant checking: %q", *desc)
 	}
-	if !strings.Contains(*desc, "会话最后一次") || !strings.Contains(*desc, "不因时间失效") {
-		t.Fatalf("description omits long-pause target continuity: %q", *desc)
+	if strings.Contains(*desc, "user_selected") {
+		t.Fatalf("description restores the removed lexical selection gate: %q", *desc)
 	}
 	// Still has to name the hard limits, or the model plans around commands it can never run.
 	if !strings.Contains(*desc, "会被拒绝") {

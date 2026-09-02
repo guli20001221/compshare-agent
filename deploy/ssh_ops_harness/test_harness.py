@@ -77,7 +77,7 @@ check("legacy-handshake-null-session-and-empty-root-keeps-one-shot-mode",
       harness.normalize_agent_session(None, "", _AGENT_SESSION_MODEL) is None)
 check("rolling-deploy-immediately-previous-agent-contract-degrades-to-one-shot",
       harness.normalize_agent_session({
-          "session_id": _AGENT_SESSION_ID, "contract": "sshops-agent-v4",
+          "session_id": _AGENT_SESSION_ID, "contract": "sshops-agent-v5",
           "model": _AGENT_SESSION_MODEL, "resume": True,
       }, os.path.abspath("agent-session-root"), _AGENT_SESSION_MODEL) is None)
 check("conversation-anchor-normalizes-canonical-lowercase-digest",
@@ -133,41 +133,9 @@ for bad in ['{"user":"u","port":22,"password":"x"}',     # missing host
 harness.set_conn(conn)
 check("cred-not-in-environ", "Pl4inPwd77x" not in "".join(os.environ.values()))
 check("secrets-has-pw-and-b64", harness._secrets()[0] == "Pl4inPwd77x" and len(harness._secrets()) == 2)
-_prompt_flat = " ".join(harness.SYSTEM_PROMPT.split())
-check("prompt-does-not-infer-events-from-absence-or-time-order",
-      "Absence, timestamps or parent PID do not prove history" in _prompt_flat and
-      "name no restart, rebuild, crash, eviction or actor" in _prompt_flat)
-check("prompt-stops-discovery-after-repair-path-is-proven",
-      "never repeat a completed read unless state/time changed" in _prompt_flat and
-      "Vary one input or conclude" in _prompt_flat and
-      "avoid history, backups and unrelated trees" in _prompt_flat)
-check("prompt-prefers-direct-environment-interpreter",
-      "invoke it directly" in _prompt_flat and
-      "instead of sourcing an activation script" in _prompt_flat)
-check("prompt-verifies-platform-manual-runtime-and-ownership-scope",
-      "unknown platform-managed contract or manual/agent ownership boundary" in _prompt_flat and
-      "search platform knowledge" in _prompt_flat and
-      "resource/runtime/ownership before applying" in _prompt_flat and
-      "never invent a launcher across host/guest/manager scopes" in _prompt_flat)
-check("prompt-does-not-call-reproduction-a-repair",
-      "reproduction, compatibility probe, or fault injection is not a repair" in _prompt_flat and
-      "corrected the user's original fault" in _prompt_flat and
-      "post-change" in _prompt_flat and
-      "success criterion remains untested" in _prompt_flat and
-      "one confirmed failure path is removed" in _prompt_flat)
-check("prompt-does-not-call-a-failed-probe-no-repair-needed",
-      "positive observation proves the original user success criterion" in _prompt_flat and
-      "inspection-only run or absence of a state change does not justify" in _prompt_flat and
-      "failed or inconclusive diagnostic/reproduction/repair" in _prompt_flat and
-      "is `未修复`, not `无需修复`" in _prompt_flat)
-check("prompt-has-an-inspection-success-outcome",
-      "For inspection, answer `已核实` only after observing the requested facts without mutation" in _prompt_flat and
-      "`已核实` only for an inspection-only request" in _prompt_flat and
-      "no guest mutation ran" in _prompt_flat)
-check("prompt-requires-runtime-reload-after-on-disk-change",
-      "do not affect a running process until reload/restart" in _prompt_flat and
-      "file checks are not runtime verification" in _prompt_flat and
-      "original criterion are rechecked" in _prompt_flat)
+# The native Claude Code preset owns general diagnosis. Adapter prose is intentionally
+# limited; SDK option/argv tests below verify that it appends rather than replaces.
+check("native-prompt-append-is-bounded", len(harness.SYSTEM_PROMPT_APPEND) < 1000)
 check("platform-auth-comparison-does-not-call-hidden-url-credentials-unauthenticated",
       "baseline without the caller-provided Authorization header" in
           harness.endpoint_probe.tool_description(
@@ -569,7 +537,7 @@ _generic_scope_prompt = harness.render_prompt("inspect the reported symptom", {
     "conversation_history": [{"role": "user", "content": "the requested endpoint is unavailable"}],
 })
 check("scope-contract-has-no-incident-specific-runtime-patch",
-      all(term not in (harness.SYSTEM_PROMPT + harness.TOOL_DESC + _generic_scope_prompt).lower()
+      all(term not in (harness.SYSTEM_PROMPT_APPEND + harness.TOOL_DESC + _generic_scope_prompt).lower()
           for term in ("filebrowser", "comfyui", "8188", "main.py", "/start.d/")))
 check("context-carries-labelled-screenshot-error-as-reference",
       "截图 OCR" in _rendered_context_prompt and
@@ -1240,8 +1208,9 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
               set((_real_opts.hooks or {}).keys()) == {"Stop"} and
               len(_stop_hooks) == 1 and _stop_hooks[0].matcher is None and
               _stop_hooks[0].hooks == [harness._repair_closure_stop_hook])
-        check("real-build-options-use-one-system-prompt",
-              _real_opts.system_prompt == harness.SYSTEM_PROMPT)
+        check("real-build-options-retain-the-native-claude-code-preset",
+              _real_opts.system_prompt == {"type": "preset", "preset": "claude_code",
+                                            "append": harness.SYSTEM_PROMPT_APPEND})
         _continuation_opts = harness.build_options(
             object(), "test-model", 5, {"job_id": _JOB_ID, "state": "running"})
         check("pending-job-options-keep-the-stable-reviewed-surface",
@@ -1328,6 +1297,13 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
                     return a[len(flag) + 1:]
             return None
 
+        check("argv-appends-without-replacing-the-native-system-prompt",
+              _flag_value("--append-system-prompt") == harness.SYSTEM_PROMPT_APPEND and
+              "--system-prompt" not in _argv and "--system-prompt-file" not in _argv)
+        _empty_prompt_argv = _T(prompt="sdk-default-probe", options=_dc.replace(
+            _real_opts, mcp_servers={}, system_prompt=None))._build_command()
+        check("omitting-sdk-system-prompt-is-not-the-native-preset",
+              _flag_value("--system-prompt", _empty_prompt_argv) == "")
         # `--tools ""` is the empty base set. An ABSENT --tools means the CLI's default set exists,
         # which is Bash/Read/Write on the CONTROL-PLANE host — the spike's #1 safety bug.
         check("argv-tools-flag-is-present-and-empty", "--tools" in _argv and _flag_value("--tools") == "")

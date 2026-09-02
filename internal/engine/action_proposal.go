@@ -135,7 +135,7 @@ func (v agentContextEvidenceVerifier) AdjudicateTarget(candidate actionresolver.
 		// a cold registry could not pre-bind) is SourceUserExplicit, and a bound target
 		// is SourceVerifiedContext — only a bare guess among many is caught.
 		if field.TargetKind == "instance" && candidate.Source == actionresolver.SourceAgentInference &&
-			!v.binding.bound() && v.inferredInstanceIsAmbiguous() {
+			(!v.binding.bound() || v.binding.id != value) && v.inferredInstanceIsAmbiguous() {
 			return actionresolver.TargetConflict
 		}
 		return actionresolver.TargetAccept
@@ -587,12 +587,12 @@ func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal
 		if isString && uniqueUserAuthoredLiteral([]rune(view.CurrentQuestion), []rune(value)) {
 			candidate.UserAuthored = true
 		}
-		// A deterministic binding OWNS the instance target: the server bound the
-		// user's verifiable reference to this exact id, overriding whatever id the
-		// model proposed (a "第2台" that the model answered with the 第1台's id is
-		// re-pointed at the 第2台's). This is what makes a mis-selected but existing
-		// id fail authorization rather than sail through.
-		if field.Target && isString && binding.bound() && field.TargetKind == "instance" {
+		// A current explicit reference owns the platform target (for example 第2台).
+		// Carried context can verify the same ID, but cannot replace a different
+		// model-proposed target; that target keeps its inference provenance and
+		// proceeds through its own existence check and confirmation.
+		if field.Target && isString && binding.bound() && field.TargetKind == "instance" &&
+			(binding.explicit || binding.id == value) {
 			candidate.Value = binding.id
 			candidate.Source = actionresolver.SourceVerifiedContext
 			candidate.Evidence = &actionresolver.SourceEvidence{ContextField: "selection_binding"}

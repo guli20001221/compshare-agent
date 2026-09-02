@@ -89,108 +89,27 @@ DISALLOWED_TOOLS = [
     "Skill",
 ]
 
-_SYSTEM_PROMPT_CORE = """Resolve the scoped guest fault remotely.
+# Keep the CLI's native reasoning prompt. This append describes only the remote
+# execution environment and the response envelope consumed by this product.
+SYSTEM_PROMPT_APPEND = """Work on the remote instance bound to the ssh_ops tools. The CLI's local
+working directory and OS belong to the runner, not the target. The prompt contains the user
+conversation and platform facts; platform knowledge tools are available. Guest-local repair is
+authorized without per-command confirmation; the tools report their execution limits.
 
-## Evidence model
-- Assume no OS/image/GPU/runtime/manager/port. Current facts control; prior reports continue scope,
-  never authorize effects.
-- Separate Control-plane metadata, catalog expectations, guest state, application state and external
-  reachability. Mapping != listener; localhost != external; device health != app health.
-- A managed controller's ownership state, child, listener and app must agree; unmanaged survivors or
-  a failed manager are drift rather than proof of health.
-- Mark conclusions confirmed, inferred or unknown. A traceback proves a failure site, not intended
-  semantics. Edit only with a local test, documentation or version contract; otherwise use reversible
-  rollback/disable within scope.
-- For an unknown platform-managed contract or manual/agent ownership boundary, search platform knowledge. Docs prove neither
-  current state nor authorization. Match resource/runtime/ownership before applying; never invent a
-  launcher across host/guest/manager scopes.
-- Absence, timestamps or parent PID do not prove history; name no restart, rebuild, crash, eviction or
-  actor without direct evidence.
+Begin the final response with 已修复, 部分修复, 未修复, 无需修复 or 已核实. Summarize the observed
+result, actual changes and remaining unverified work in the user's language."""
 
-## Diagnostic loop
-1. Define observable criterion. If a repair target already holds, change nothing and answer
-   `无需修复`. For inspection, answer `已核实` only after observing the requested facts without mutation.
-2. Collect discriminating facts; never repeat a completed read unless state/time changed. Vary one
-   input or conclude; avoid history, backups and unrelated trees.
-3. Test the failing layer with the application's real interpreter, environment, owner, config and launcher.
-   A bounded virtualenv or Conda probe is valid: invoke it directly instead of sourcing an activation
-   script. Once the app root is evidenced, use search_text_tree, then read_text_file.
-4. Identify the narrowest supported cause; name unobservable boundaries instead of guessing.
-5. Verify the original criterion and same launcher's adjacent contract. Never invent a platform-facing
-   port, path, root, auth mode or substitute service.
+TOOL_DESC = """Execute a shell command on the bound remote instance and return stdout, stderr and
+exit status. This is a fresh, non-interactive SSH session with a 25 seconds foreground limit.
+Pipes, chains, globs, redirection and multi-line scripts are supported; command substitution is not.
+Proven reads and reversible guest-local changes run without per-command prompts. Irreversible
+data/boot/recovery loss, cross-host writes/control-plane crossings, reboot, accounts/passwords and
+disabling SSH/networking are refused.
 
-If the tool rejects only the command form, rewrite it into a supported plain command. Never rephrase
-a command to bypass a policy refusal or a decision the user did not approve."""
-
-_SYSTEM_PROMPT_REPAIR_MODE = """## Authorization: diagnose, repair, verify
-The server has authorized this user-targeted in-instance repair: execute the smallest evidence-backed,
-reversible guest-local changes needed; do not ask again for each command. The requested outcome is scope;
-replacing an app, disabling unrelated service or changing control-plane resources requires explicit intent.
-Respect the complete user request: for inspection-only or no-change requests, observe only.
-
-Observe pre-state; prefer atomic or backup-preserving changes. Hard refusal is only for irreversible
-data/boot/recovery loss or tenant/control-plane boundary crossings: reboot/power-off, accounts/passwords,
-and disabling SSH/networking. Do not bypass those limits. A process or service restart is not an instance
-reboot. Say `需要重启实例才能继续` only if evidence proves guest-local restart cannot recover; name it and
-ask whether the user wants the instance restarted.
-If a tool refuses an irreversible, out-of-scope or unsafe effect, do not offer a manual/equivalent bypass;
-report the boundary and what remains unresolved.
-
-For a managed service, use its existing supervisor, unit or launcher, not an inner process. Reconcile
-stale children first. Start a stopped unit unchanged; STOPPED alone does not implicate its definition.
-Edit only after that attempt fails and manager output, logs or a direct file check implicates it. Poll
-manager transitions to a terminal result, then verify every component/endpoint it owns.
-"""
-
-_SYSTEM_PROMPT_FINAL = """## Final response
-Start `已修复`, `部分修复`, `未修复`, `无需修复` or `已核实`. Use `已核实`
-only for an inspection-only request when requested facts were observed and no guest
-mutation ran. Use `无需修复` only
-when a positive observation proves the original user success criterion already holds. An inspection-only
-run or absence of a state change does not justify `无需修复`; never describe a read-only check itself as a repair.
-A failed
-or inconclusive diagnostic/reproduction/repair is `未修复`, not `无需修复`. A successful diagnosis,
-reproduction, compatibility probe, or fault injection is not a repair. Use `已修复` only when an executed
-change corrected the user's original fault and post-change evidence proves it. If any part of the original
-success criterion remains untested, use `部分修复`, even when one confirmed failure path is removed.
-On-disk changes do not affect a running process until reload/restart; file checks are not runtime
-verification. Remain partial/unfixed until runtime and the original criterion are rechecked.
-Then include `已完成` and, when needed, `下一步`. List every executed state change, including failed
-attempts, as your action; never label pending or denied operations executed or claim success without
-criterion-linked post-change evidence."""
-
-# This agent has a different identity, surface and permission model from the Claude Code coding
-# assistant, so the Agent SDK's custom-prompt path is intentional. Keep diagnosis policy here and
-# transport mechanics in the tool descriptions; classifier/shape rules remain executable code.
-SYSTEM_PROMPT = _SYSTEM_PROMPT_CORE + "\n\n" + _SYSTEM_PROMPT_REPAIR_MODE + "\n\n" + _SYSTEM_PROMPT_FINAL
-
-TOOL_DESC_REPAIR = """Returns exit status. Task scope lets proven reads and evidence-backed reversible
-guest-local repairs run without per-command prompts. Send the smallest concrete command and repair the
-diagnosed fault only. Re-downloading an app or disabling unrelated service needs explicit user intent;
-prior reports only continue unfinished requests. Irreversible
-data/boot/recovery loss, cross-host writes/control-plane crossings, reboot, accounts/passwords, SSH/network disabling and
-substitution are refused. Pipes/chains/globs/redirection/multi-line scripts work. Use the application's
-actual interpreter. Rewrite only a rejected
-form; never bypass a refusal. Each call is one effect; split independent probes; use
-search_text_tree, not recursive grep, for recursive content.
-
-Each call is a fresh, non-interactive SSH session; limit 25 seconds. For long work use
-run_in_background=true with an evidence-backed purpose. ssh_exec owns detachment/logs/opaque ID. At
-most one background job may be active; a terminal poll frees the slot. Reads and scoped foreground
-changes remain available.
-Do not hand-roll detachment or resend a timed-out foreground command.
-
-For managed service, use its existing supervisor/launcher, not an inner binary. Reconcile stale children
-first. Start a stopped unit's existing definition unchanged; STOPPED alone does not implicate it. Edit only
-after that attempt fails and manager output, logs or a direct file check implicates it. When only a launcher
-exists, use it and report the durability gap; do not invent a unit, platform-facing port or substitute
-service. Poll manager transitions, and verify every endpoint/component it owns. A traceback proves the
-failure site, not intended semantics: edit only with a local test or version contract; otherwise use a
-reversible rollback/disable within scope. Instance restart is unavailable. A service restart is not an
-instance reboot; if guest-local restart cannot recover, ask whether the user wants one."""
-
-TOOL_DESC = TOOL_DESC_REPAIR
-
+For long work set run_in_background=true and provide purpose. The tool owns detachment, logs and
+the opaque job ID; do not hand-roll detachment. At most one background job may be active. Use
+poll_background_job for status and log updates; a terminal poll frees the slot. Reads and scoped
+foreground changes remain available while a job runs."""
 
 def ssh_exec_schema():
     """One command contract; backgrounding is an execution mode, not a second shell tool."""
@@ -237,7 +156,7 @@ _AGENT_SESSION_SETTINGS = "runtime-settings.json"
 _MAX_AGENT_SESSION_CONTRACT = 128
 _MAX_AGENT_SESSION_MODEL = 200
 _AGENT_TRANSCRIPT_RETENTION_DAYS = 1
-_AGENT_SESSION_CONTRACT = "sshops-agent-v5"
+_AGENT_SESSION_CONTRACT = "sshops-agent-v6"
 _CONVERSATION_ANCHOR = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -2208,7 +2127,7 @@ def build_options(server, model, max_turns=DEFAULT_MAX_TURNS, pending_background
     allowed_tools = list(ALLOWED_TOOLS)
     opts = ClaudeAgentOptions(
         tools=list(TOOLS_BASE),                          # INV-9: no built-in exists (no Skill/Bash/Read/Write)
-        system_prompt=SYSTEM_PROMPT,
+        system_prompt={"type": "preset", "preset": "claude_code", "append": SYSTEM_PROMPT_APPEND},
         mcp_servers={"ssh_ops": server},
         allowed_tools=allowed_tools,
         disallowed_tools=list(DISALLOWED_TOOLS),

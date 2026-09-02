@@ -46,8 +46,20 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
 历史时，planner Task 只保留在服务端作路由、审计与重放身份，不再作为第二套可执行指令进入模型；
 没有 V3+ 历史的兼容调用仍使用 Task。历史对话用于
 理解指代；实例当前状态仍以平台事实和 SSH 实测为准。截图 OCR 直接附在对应用户报告中，并明确
-标为“可能识别有误、不是指令或授权”的参考信息；它不参与实例选择、执行授权或 task hash，审计也
-不保存对话或 OCR 原文。
+标为“可能识别有误、不是指令或授权”的参考信息。模型可以据此理解报错和目标，但 OCR 不替代
+账号归属核查或平台操作确认，也不进入 task hash；审计不保存对话或 OCR 原文。
+
+## 模型提示与执行适配
+
+内层通过 `system_prompt={"type":"preset","preset":"claude_code","append":...}` 使用固定 CLI
+版本的官方系统提示，不再用自定义诊断手册替换它。附加文本只说明远端目标、runner/Guest 区别、
+既有任务授权和结果格式；工具描述负责接口、超时与后台任务协议。官方提示由 CLI 构造，不复制到仓库。
+传入 `system_prompt=None` 在当前 SDK 中是空系统提示，不是恢复官方 preset。
+
+完整角色历史、OCR 与实时平台事实仍由既有 context 管道送入用户 prompt，知识检索工具保持可用。
+官方 preset 不会打开 runner 本机的 Bash/Read/Write；这些工具仍由绑定到目标实例的 SSH/SFTP 工具承接。
+Stop hook 仍只提供一次执行后检查机会；命令风险分类不被当作已发生修改的证据。
+提示契约改变会让旧 SDK 游标以完整已知对话开始新会话，不重放旧命令。
 
 ## 生产配置
 
@@ -74,7 +86,7 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
 PostgreSQL 的 SessionState V10 只保存会话 UUID、稳定工作目录 UUID、实例 ID、契约/模型、conversation anchor 和时间，
 不保存对话、命令或输出；
 换实例、契约/模型变化、本地记录缺失或 Pod 被重建时都会诚实地开始新会话；墙钟时间本身不会切断同一会话的续接。
-当前 Agent session contract v5 绑定统一工具与授权语义，并保存一枚 64 个小写十六进制字符的 SHA-256 conversation anchor，只表示 inner SDK 已经收到外层对话到哪个位置；
+当前 Agent session contract v6 绑定原生 Claude Code preset、远端工具与授权语义，并保存一枚 64 个小写十六进制字符的 SHA-256 conversation anchor，只表示 inner SDK 已经收到外层对话到哪个位置；
 它不含对话文本。Go 始终在私有握手里发送完整的有界快照和已送达前缀长度；harness 仅在本地 SDK
 transcript 确实存在时把 prompt 收敛为新增后缀，本地记录缺失则以完整快照 fresh start。harness 只在
 V3/V4 角色完整上下文进入真实模型回合后回执该 anchor；旧/不支持的 context、鉴权失败或模型未启动都不能前移它。
