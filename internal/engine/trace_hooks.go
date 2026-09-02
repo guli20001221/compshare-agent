@@ -14,7 +14,6 @@ type TraceSnapshot struct {
 	RoundCeilingHit                  bool
 	ActionProposalDisposition        string
 	SessionState                     SessionState
-	ContextVersion                   int
 	SessionStateHydrated             bool
 	ResolutionSource                 string
 	SelectedInstanceIDAtStart        string
@@ -35,14 +34,13 @@ func (e *Engine) TraceSnapshot(now time.Time) TraceSnapshot {
 	if e == nil {
 		return TraceSnapshot{}
 	}
-	state, version, hydrated := e.SessionStateSnapshot()
+	state, _, hydrated := e.SessionStateSnapshot()
 	return TraceSnapshot{
 		Registry:                         e.RegistryTraceState(now),
 		ReactRounds:                      e.ReactRoundsThisTurn(),
 		RoundCeilingHit:                  e.ReactCeilingHitThisTurn(),
 		ActionProposalDisposition:        e.ActionProposalDispositionThisTurn(),
 		SessionState:                     state,
-		ContextVersion:                   version,
 		SessionStateHydrated:             hydrated,
 		ResolutionSource:                 e.InstanceResolutionSource(),
 		SelectedInstanceIDAtStart:        e.SelectedInstanceIDAtTurnStart(),

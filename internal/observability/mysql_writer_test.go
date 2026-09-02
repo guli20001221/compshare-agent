@@ -15,8 +15,7 @@ import (
 )
 
 // TestRowFromTrace_Basic asserts the 12-column projection for a populated
-// TraceRecord. Encodes WHY: cited_chunk_ids comes from RetrievalTrace (not
-// RendererTrace; cf. plan §7.5 + memory feedback_plan_field_ref_must_include_container_struct),
+// TraceRecord. Encodes WHY: cited_chunk_ids comes from RetrievalTrace,
 // duration_ms comes from OutcomeTrace.TotalLatencyMS, tool_count is the
 // len of ToolCalls. Field-routing drift = lost data once in prod.
 func TestRowFromTrace_PopulatesAllColumnsFromCanonicalSources(t *testing.T) {
@@ -380,7 +379,6 @@ func TestMySQLWriter_EnqueueRedactsQueryDerivedPIIBeforePersist(t *testing.T) {
 		Retrieval: RetrievalTrace{
 			QueryRaw:        "请按 spt-record-2026-05 帮我看一下实例启动失败",
 			QueryNormalized: "spt-record 实例 启动失败",
-			QueryExpansions: []string{"实例启动失败", "查 spt-record 的处理结论"},
 		},
 	}); err != nil {
 		t.Fatalf("Enqueue: %v", err)

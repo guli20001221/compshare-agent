@@ -39,52 +39,13 @@ func TestWriterAppendWritesOneJSONLinePerRecord(t *testing.T) {
 	if first.Timestamp != now.Format(time.RFC3339) {
 		t.Fatalf("timestamp = %q, want %q", first.Timestamp, now.Format(time.RFC3339))
 	}
-	for _, emptyBlock := range []string{`"intent_router":`, `"rate_limit":`, `"retrieval":`, `"renderer":`, `"freshness":`, `"outcome":`} {
+	for _, emptyBlock := range []string{`"intent_router":`, `"rate_limit":`, `"retrieval":`, `"outcome":`} {
 		if strings.Contains(lines[0], emptyBlock) {
 			t.Fatalf("minimal trace line should omit empty optional block %s: %s", emptyBlock, lines[0])
 		}
 	}
 	if first.RateLimit.Checked || first.RateLimit.Allowed || first.RateLimit.Class != "" || first.RateLimit.RetryAfterMS != 0 {
 		t.Fatalf("default rate limit trace = %#v, want zero values", first.RateLimit)
-	}
-}
-
-func TestTraceRecordDiagnosisClaimsMarshalAndRedact(t *testing.T) {
-	now := time.Date(2026, 6, 4, 12, 0, 0, 0, time.UTC)
-	writer, err := NewWriter(WriterOptions{Dir: t.TempDir(), Now: func() time.Time { return now }})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-	err = writer.Append(TraceRecord{
-		TurnID:    "turn-1",
-		TurnIndex: 1,
-		Diagnosis: DiagnosisTrace{Claims: []DiagnosisClaimTrace{{
-			Claim:    "Instance uhost-secret has Jupyter evidence.",
-			Status:   "supported",
-			ChunkIDs: []string{"runbook-port-001"},
-			Reason:   "Observed IP 10.1.2.3 in diagnosis output.",
-		}}},
-	})
-	if err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-	lines := readLines(t, filepath.Join(writer.Dir(), "agent-trace-2026-06-04.jsonl"))
-	if len(lines) != 1 {
-		t.Fatalf("trace lines = %d, want 1", len(lines))
-	}
-	text := lines[0]
-	for _, want := range []string{
-		`"diagnosis":`,
-		`"claims":`,
-		`"status":"supported"`,
-		`"chunk_ids":["runbook-port-001"]`,
-	} {
-		if !strings.Contains(text, want) {
-			t.Fatalf("diagnosis trace missing %s: %s", want, text)
-		}
-	}
-	if strings.Contains(text, "uhost-secret") || strings.Contains(text, "10.1.2.3") {
-		t.Fatalf("diagnosis trace leaked raw identifier: %s", text)
 	}
 }
 
@@ -102,7 +63,7 @@ func TestSparseTraceRecordMissingOptionalBlocksStillReadable(t *testing.T) {
 	}
 }
 
-func TestSchemaVersionIsV017(t *testing.T) {
+func TestSchemaVersionIsV018(t *testing.T) {
 	// v0.10 distinguishes unobserved tool latency from a measured 0ms duration
 	// and preserves an absent native provider finish reason as "unspecified";
 	// v0.11 adds bounded instance-selection provenance; v0.12 removes retired
@@ -111,9 +72,11 @@ func TestSchemaVersionIsV017(t *testing.T) {
 	// v0.14 adds per-attempt prompt-cache and tool-window observations; v0.15
 	// adds bounded guided-confirmation metadata and the approved create contract;
 	// v0.16 records the content-free outcome of the bounded direct-answer retry;
-	// v0.17 distinguishes current-turn from prior-turn validated citations.
-	if SchemaVersion != "trace.v0.17" {
-		t.Fatalf("SchemaVersion = %q, want trace.v0.17", SchemaVersion)
+	// v0.17 distinguishes current-turn from prior-turn validated citations;
+	// v0.18 models model attempts, tool calls, and retrieval activities as the
+	// typed child operations and removes redundant turn-level aggregates.
+	if SchemaVersion != "trace.v0.18" {
+		t.Fatalf("SchemaVersion = %q, want trace.v0.18", SchemaVersion)
 	}
 }
 
@@ -168,7 +131,6 @@ func TestRetrievalTraceV03FieldsMarshal(t *testing.T) {
 		KBVersion:       "kb.stage2b.w0.2026-05-14",
 		QueryRaw:        "实例一直卡初始化怎么办",
 		QueryNormalized: "实例 初始化失败",
-		QueryExpansions: []string{"实例启动失败", "卡初始化"},
 		Hits:            2,
 		HitItems: []RetrievalHit{
 			{ChunkID: "w0-init_failure-error-code-a1b2c3d4", Score: 0.78, Kept: true},
@@ -180,10 +142,9 @@ func TestRetrievalTraceV03FieldsMarshal(t *testing.T) {
 		HybridFallbackReason: "embedding_timeout",
 		EmbeddingLatencyMS:   int64Ptr(4987),
 		Activities: []RetrievalActivity{{
-			ID:        "search_1",
-			Query:     "实例一直卡初始化怎么办",
-			Hits:      2,
-			LatencyMS: 123,
+			ID:    "search_1",
+			Query: "实例一直卡初始化怎么办",
+			Hits:  2,
 		}},
 		References: []RetrievalReference{{
 			RefID:      "1",
@@ -212,7 +173,6 @@ func TestRetrievalTraceV03FieldsMarshal(t *testing.T) {
 		`"kb_version":"kb.stage2b.w0.2026-05-14"`,
 		`"query_raw":"实例一直卡初始化怎么办"`,
 		`"query_normalized":"实例 初始化失败"`,
-		`"query_expansions":["实例启动失败","卡初始化"]`,
 		`"hits":2`,
 		`"hit_items":[{"chunk_id":"w0-init_failure-error-code-a1b2c3d4","score":0.78,"kept":true},{"chunk_id":"w0-billing_rule-arrears-aabbccdd","score":0.41,"kept":false}]`,
 		`"refused_reason":"weak_evidence"`,
@@ -220,7 +180,7 @@ func TestRetrievalTraceV03FieldsMarshal(t *testing.T) {
 		`"hybrid_mode":"bm25_fallback"`,
 		`"hybrid_fallback_reason":"embedding_timeout"`,
 		`"embedding_latency_ms":4987`,
-		`"activities":[{"id":"search_1","query":"实例一直卡初始化怎么办","hits":2,"latency_ms":123}]`,
+		`"activities":[{"id":"search_1","query":"实例一直卡初始化怎么办","hits":2}]`,
 		`"references":[{"ref_id":"1","chunk_id":"w0-init_failure-error-code-a1b2c3d4","title":"初始化失败排查","source_area":"init_failure","score":0.78,"rank":1,"activity_ids":["search_1"]}]`,
 		`"cited_refs":[{"ref_id":"1","chunk_id":"w0-init_failure-error-code-a1b2c3d4"}]`,
 	} {
@@ -376,7 +336,6 @@ func TestRetrievalTraceNewFieldsMarkBlockObserved(t *testing.T) {
 	}{
 		{name: "query raw", trace: RetrievalTrace{QueryRaw: "怎么收费"}},
 		{name: "query normalized", trace: RetrievalTrace{QueryNormalized: "计费 规则"}},
-		{name: "query expansions", trace: RetrievalTrace{QueryExpansions: []string{"扣费规则"}}},
 		{name: "hit items", trace: RetrievalTrace{HitItems: []RetrievalHit{{ChunkID: "w0-billing_rule-aabbccdd", Score: 0.67, Kept: true}}}},
 		{name: "activities", trace: RetrievalTrace{Activities: []RetrievalActivity{{ID: "search_1", Query: "扣费规则", Hits: 1}}}},
 		{name: "references", trace: RetrievalTrace{References: []RetrievalReference{{RefID: "1", ChunkID: "w0-billing_rule-aabbccdd", Title: "计费规则"}}}},
@@ -412,9 +371,6 @@ func TestRetrievalTraceNewFieldsMarkBlockObserved(t *testing.T) {
 
 func TestRetrievalTraceDefaultsKeepSlicesIterable(t *testing.T) {
 	record := TraceRecord{}.withDefaults(time.Date(2026, 5, 14, 0, 0, 0, 0, time.UTC))
-	if record.Retrieval.QueryExpansions == nil {
-		t.Fatalf("QueryExpansions default = nil, want empty slice")
-	}
 	if record.Retrieval.HitItems == nil {
 		t.Fatalf("HitItems default = nil, want empty slice")
 	}
@@ -427,8 +383,7 @@ func TestRetrievalTraceDefaultsKeepSlicesIterable(t *testing.T) {
 	if record.Retrieval.CitedRefs == nil {
 		t.Fatalf("CitedRefs default = nil, want empty slice")
 	}
-	if len(record.Retrieval.QueryExpansions) != 0 || len(record.Retrieval.HitItems) != 0 ||
-		len(record.Retrieval.Activities) != 0 || len(record.Retrieval.References) != 0 ||
+	if len(record.Retrieval.HitItems) != 0 || len(record.Retrieval.Activities) != 0 || len(record.Retrieval.References) != 0 ||
 		len(record.Retrieval.CitedRefs) != 0 {
 		t.Fatalf("retrieval defaults should be empty: %#v", record.Retrieval)
 	}
@@ -465,11 +420,10 @@ func TestWriterMirrorsRankingErrorCandidates(t *testing.T) {
 func TestRetrievalTraceHashingStableUnderNilVsEmpty(t *testing.T) {
 	nilSlices := RetrievalTrace{}
 	emptySlices := RetrievalTrace{
-		QueryExpansions: []string{},
-		HitItems:        []RetrievalHit{},
-		Activities:      []RetrievalActivity{},
-		References:      []RetrievalReference{},
-		CitedRefs:       []RetrievalCitedRef{},
+		HitItems:   []RetrievalHit{},
+		Activities: []RetrievalActivity{},
+		References: []RetrievalReference{},
+		CitedRefs:  []RetrievalCitedRef{},
 	}
 
 	leftHash, err := HashTracePayload(nilSlices)
@@ -489,16 +443,12 @@ func TestRedactQueryDerivedFieldsRedactsInternalMarkers(t *testing.T) {
 	trace := RetrievalTrace{
 		QueryRaw:        "请按 spt-record-2026-05 帮我看一下实例启动失败",
 		QueryNormalized: "spt-record 实例 启动失败",
-		QueryExpansions: []string{"实例启动失败", "查 spt-record 的处理结论"},
 	}
 
 	RedactQueryDerivedFields(&trace)
 
 	if trace.QueryRaw != "[REDACTED]" || trace.QueryNormalized != "[REDACTED]" {
 		t.Fatalf("query fields not redacted: %#v", trace)
-	}
-	if got := strings.Join(trace.QueryExpansions, "|"); got != "实例启动失败|[REDACTED]" {
-		t.Fatalf("query expansions = %q", got)
 	}
 }
 
@@ -524,12 +474,7 @@ func TestOutcomeTraceOmitsUnavailableCounters(t *testing.T) {
 	if !strings.Contains(line, `"outcome":{"total_latency_ms":123}`) {
 		t.Fatalf("outcome latency missing from trace line: %s", line)
 	}
-	for _, unavailable := range []string{
-		`"total_tokens":`,
-		`"attempted_hallucinated_count":`,
-		`"escaped_hallucinated_count":`,
-		`"kb_conflict_count":`,
-	} {
+	for _, unavailable := range []string{`"total_tokens":`} {
 		if strings.Contains(line, unavailable) {
 			t.Fatalf("trace line should omit unavailable outcome field %s: %s", unavailable, line)
 		}
@@ -667,7 +612,6 @@ func TestWriterAppendDoesNotLeakSecretsInTraceLine(t *testing.T) {
 		UserMsgHash: "sha256:user-message",
 		ToolCalls: []ToolCallTrace{{
 			ID:         "call-1",
-			TurnIndex:  1,
 			Action:     "ResetCompShareInstancePassword",
 			Source:     ToolSourceMainReAct,
 			ArgsHash:   argsHash,

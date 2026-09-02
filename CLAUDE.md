@@ -215,13 +215,20 @@ prefix. Tool/confirmation activity uses separate step frames.
 ## Observability
 
 `internal/httpapi/trace_recorder.go` writes one content-free trace per completed
-turn through `internal/observability`. Trace may contain model/provider IDs,
-finish reasons, token counts, per-attempt provider outcomes and latency, first
-successfully delivered event time, tool actions/error codes/latencies, generic
-result truncation sizes, prompt section IDs, request-size peaks,
-selected-instance provenance and workflow outcomes. It must not become a second
-conversation database: no raw prompt, reply, tool payload, credential or
-canonical transcript.
+turn through `internal/observability`. That record is the root run. Model
+attempts, tool calls and retrieval activities are typed child operations;
+confirmations and authorizations are terminal events. Keep one representation
+of each observed fact: provider/model/finish reason belong to the model attempt,
+and tool status/latency belong to the tool call rather than turn-level derived
+copies.
+
+Runtime Trace records execution facts: timings, closed-set status/error values,
+token counts, result truncation sizes, prompt section IDs, request-size peaks,
+selected-instance provenance and deterministic workflow outcomes. Correctness,
+faithfulness, completeness and hallucination scores belong to an external eval
+joined by trace ID; do not add an online judge or grader fields to the runtime
+record. Trace must not become a second conversation database: no raw prompt,
+reply, tool payload, credential or canonical transcript.
 
 When adding a tool failure, use the existing closed error-code/error-class
 contracts rather than parsing error messages. Preserve three-state metrics where

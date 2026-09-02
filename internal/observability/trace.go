@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
@@ -16,7 +15,7 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-const SchemaVersion = "trace.v0.17"
+const SchemaVersion = "trace.v0.18"
 
 const (
 	ToolSourceMainReAct          = "main_react"
@@ -45,11 +44,6 @@ const DefaultTraceFilePerm os.FileMode = 0o600
 
 const DefaultTraceRetentionDays = 30
 
-var (
-	diagnosisTraceUHostIDRE = regexp.MustCompile(`\buhost-[A-Za-z0-9]+\b`)
-	diagnosisTraceIPv4RE    = regexp.MustCompile(`\b(\d{1,3})\.(\d{1,3})\.\d{1,3}\.\d{1,3}\b`)
-)
-
 type WriterOptions struct {
 	Dir string
 	Now func() time.Time
@@ -70,6 +64,11 @@ type FileWriter struct {
 	now func() time.Time
 }
 
+// TraceRecord is the root record for one completed Agent turn. ModelAttempts,
+// ToolCalls and Retrieval.Activities are its typed child operations;
+// confirmations and authorizations are terminal events. Runtime trace stores
+// observed execution facts only. Quality scores belong to an external eval
+// keyed by TraceID, not to this schema.
 type TraceRecord struct {
 	SchemaVersion string `json:"schema_version"`
 	TraceID       string `json:"trace_id"`
@@ -83,11 +82,8 @@ type TraceRecord struct {
 	EngineHardBlock     EngineHardBlockTrace `json:"engine_hard_block"`
 	EntityRegistry      EntityRegistryTrace  `json:"entity_registry"`
 	ToolCalls           []ToolCallTrace      `json:"tool_calls"`
-	Renderer            RendererTrace        `json:"renderer"`
-	Freshness           FreshnessTrace       `json:"freshness"`
 	RateLimit           RateLimitTrace       `json:"rate_limit"`
 	Retrieval           RetrievalTrace       `json:"retrieval"`
-	Diagnosis           DiagnosisTrace       `json:"diagnosis"`
 	State               StateTrace           `json:"state"`
 	Completion          TurnCompletionTrace  `json:"completion"`
 	Outcome             OutcomeTrace         `json:"outcome"`
@@ -114,11 +110,8 @@ type traceRecordJSON struct {
 	EngineHardBlock     *EngineHardBlockTrace `json:"engine_hard_block,omitempty"`
 	EntityRegistry      *EntityRegistryTrace  `json:"entity_registry,omitempty"`
 	ToolCalls           []ToolCallTrace       `json:"tool_calls,omitempty"`
-	Renderer            *RendererTrace        `json:"renderer,omitempty"`
-	Freshness           *FreshnessTrace       `json:"freshness,omitempty"`
 	RateLimit           *RateLimitTrace       `json:"rate_limit,omitempty"`
 	Retrieval           *RetrievalTrace       `json:"retrieval,omitempty"`
-	Diagnosis           *DiagnosisTrace       `json:"diagnosis,omitempty"`
 	State               *StateTrace           `json:"state,omitempty"`
 	Completion          *TurnCompletionTrace  `json:"completion,omitempty"`
 	Outcome             *OutcomeTrace         `json:"outcome,omitempty"`
@@ -145,20 +138,11 @@ func (r TraceRecord) MarshalJSON() ([]byte, error) {
 	if len(r.ToolCalls) > 0 {
 		out.ToolCalls = r.ToolCalls
 	}
-	if traceRendererObserved(r.Renderer) {
-		out.Renderer = &r.Renderer
-	}
-	if traceFreshnessObserved(r.Freshness) {
-		out.Freshness = &r.Freshness
-	}
 	if traceRateLimitObserved(r.RateLimit) {
 		out.RateLimit = &r.RateLimit
 	}
 	if traceRetrievalObserved(r.Retrieval) {
 		out.Retrieval = &r.Retrieval
-	}
-	if traceDiagnosisObserved(r.Diagnosis) {
-		out.Diagnosis = &r.Diagnosis
 	}
 	if traceStateObserved(r.State) {
 		out.State = &r.State
@@ -235,7 +219,6 @@ type EntityRegistryTrace struct {
 
 type ToolCallTrace struct {
 	ID                   string `json:"id"`
-	TurnIndex            int    `json:"turn_index"`
 	Action               string `json:"action"`
 	SelectedFunctionName string `json:"selected_function_name,omitempty"`
 	Source               string `json:"source"`
@@ -344,31 +327,6 @@ type AuthorizationTrace struct {
 	// failed), false when the card was declined / never resolved. The confirmation
 	// card IS the SelectionProof, so this records whether that human gate was passed.
 	ExecutionAuthorized bool `json:"execution_authorized"`
-}
-
-type RendererTrace struct {
-	Enabled             bool     `json:"enabled"`
-	Status              string   `json:"status"`
-	EnvelopeKind        string   `json:"envelope_kind"`
-	InputEnvelopeHashes []string `json:"input_envelope_hashes"`
-	FallbackUsed        bool     `json:"fallback_used"`
-	FallbackReason      string   `json:"fallback_reason"`
-	Model               string   `json:"model"`
-	LatencyMS           int64    `json:"latency_ms"`
-	AttributionMode     string   `json:"attribution_mode"`
-	InputToolCallIDs    []string `json:"input_tool_call_ids"`
-	InputToolArgHashes  []string `json:"input_tool_args_hashes"`
-}
-
-type FreshnessTrace struct {
-	MonitorCallInCurrentTurn bool `json:"monitor_call_in_current_turn"`
-}
-
-func MergeFreshnessTrace(current, next FreshnessTrace) FreshnessTrace {
-	if next.MonitorCallInCurrentTurn {
-		current.MonitorCallInCurrentTurn = true
-	}
-	return current
 }
 
 // MergeRetrievalTrace folds repeated searches into one turn record without letting
@@ -492,7 +450,7 @@ type RetrievalTrace struct {
 	// TurnAggregate marks the final de-duplicated evidence snapshot for the
 	// entire turn. It is emitted for both grounded answers and grounding
 	// failures so a multi-search failure does not retain only its last call.
-	TurnAggregate bool   `json:"turn_aggregate,omitempty"`
+	TurnAggregate bool   `json:"-"`
 	KBVersion     string `json:"kb_version"`
 	// AnswerQuestion is the standalone conversational question the answer must
 	// resolve. QueryRaw/Activities are retrieval strings and may be narrower
@@ -501,7 +459,6 @@ type RetrievalTrace struct {
 	AnswerQuestion  string               `json:"answer_question,omitempty"`
 	QueryRaw        string               `json:"query_raw,omitempty"`
 	QueryNormalized string               `json:"query_normalized,omitempty"`
-	QueryExpansions []string             `json:"query_expansions,omitempty"`
 	Hits            int                  `json:"hits"`
 	HitItems        []RetrievalHit       `json:"hit_items,omitempty"`
 	Activities      []RetrievalActivity  `json:"activities,omitempty"`
@@ -587,9 +544,6 @@ type RetrievalActivity struct {
 	ID              string `json:"id"`
 	Query           string `json:"query"`
 	Hits            int    `json:"hits"`
-	LatencyMS       int64  `json:"latency_ms,omitempty"`
-	Fallback        string `json:"fallback,omitempty"`
-	Error           string `json:"error,omitempty"`
 	FloorDroppedAll bool   `json:"floor_dropped_all,omitempty"`
 }
 
@@ -628,44 +582,12 @@ type RetrievalHit struct {
 	FusionScore float64 `json:"fusion_score,omitempty"`
 }
 
-type DiagnosisTrace struct {
-	Claims []DiagnosisClaimTrace `json:"claims,omitempty"`
-}
-
-type DiagnosisClaimTrace struct {
-	Claim    string   `json:"claim"`
-	Status   string   `json:"status"`
-	ChunkIDs []string `json:"chunk_ids,omitempty"`
-	Reason   string   `json:"reason,omitempty"`
-}
-
 func RedactQueryDerivedFields(trace *RetrievalTrace) {
 	if trace == nil {
 		return
 	}
 	trace.QueryRaw = policy.RedactQueryDerivedValue(trace.QueryRaw)
 	trace.QueryNormalized = policy.RedactQueryDerivedValue(trace.QueryNormalized)
-	for i, expansion := range trace.QueryExpansions {
-		trace.QueryExpansions[i] = policy.RedactQueryDerivedValue(expansion)
-	}
-}
-
-func RedactDiagnosisDerivedFields(trace *DiagnosisTrace) {
-	if trace == nil {
-		return
-	}
-	for i := range trace.Claims {
-		trace.Claims[i].Claim = redactDiagnosisTraceText(trace.Claims[i].Claim)
-		trace.Claims[i].Reason = redactDiagnosisTraceText(trace.Claims[i].Reason)
-	}
-}
-
-func redactDiagnosisTraceText(text string) string {
-	text = policy.RedactQueryDerivedValue(text)
-	text = security.RedactOperationalTokensInText(text)
-	text = diagnosisTraceUHostIDRE.ReplaceAllString(text, "<UHOST_ID>")
-	text = diagnosisTraceIPv4RE.ReplaceAllString(text, "$1.$2.x.x")
-	return text
 }
 
 // prepareForPersist is the sink-independent defaulting and redaction boundary.
@@ -673,7 +595,6 @@ func redactDiagnosisTraceText(text string) string {
 func prepareForPersist(record TraceRecord, now time.Time) TraceRecord {
 	record = record.withDefaults(now)
 	RedactQueryDerivedFields(&record.Retrieval)
-	RedactDiagnosisDerivedFields(&record.Diagnosis)
 	return record
 }
 
@@ -723,19 +644,10 @@ type OutcomeTrace struct {
 	// FirstVisibleEventMS is measured at the transport write boundary for the
 	// first successfully written token, step, confirmation, or terminal error.
 	// It is not the assistant-row TTFT and remains nil when none was delivered.
-	FirstVisibleEventMS        *int64 `json:"first_visible_event_ms,omitempty"`
-	TotalTokens                int    `json:"total_tokens,omitempty"`
-	PromptTokens               int    `json:"prompt_tokens,omitempty"`
-	CompletionTokens           int    `json:"completion_tokens,omitempty"`
-	AttemptedHallucinatedCount int    `json:"attempted_hallucinated_count,omitempty"`
-	// EscapedHallucinatedCount counts turns where the cited-contract
-	// retry was skipped or failed. Note: turns aborted by the per-turn
-	// token budget (refused_reason="token_budget") also bump this
-	// counter — they couldn't AFFORD the coercion retry, not because
-	// the model hallucinated. Hallucination dashboards joining on this
-	// field must filter out refused_reason="token_budget" rows.
-	EscapedHallucinatedCount int `json:"escaped_hallucinated_count,omitempty"`
-	KBConflictCount          int `json:"kb_conflict_count,omitempty"`
+	FirstVisibleEventMS *int64 `json:"first_visible_event_ms,omitempty"`
+	TotalTokens         int    `json:"total_tokens,omitempty"`
+	PromptTokens        int    `json:"prompt_tokens,omitempty"`
+	CompletionTokens    int    `json:"completion_tokens,omitempty"`
 }
 
 // NewWriter constructs a FileWriter. Return type is the concrete *FileWriter
@@ -888,20 +800,6 @@ func traceEntityRegistryObserved(trace EntityRegistryTrace) bool {
 		(trace.SyncEvent != "" && trace.SyncEvent != "unavailable")
 }
 
-func traceRendererObserved(trace RendererTrace) bool {
-	return trace.Enabled ||
-		trace.Status != "" ||
-		trace.EnvelopeKind != "" ||
-		len(trace.InputEnvelopeHashes) > 0 ||
-		trace.FallbackUsed ||
-		trace.FallbackReason != "" ||
-		trace.Model != "" ||
-		trace.LatencyMS != 0 ||
-		trace.AttributionMode != "" ||
-		len(trace.InputToolCallIDs) > 0 ||
-		len(trace.InputToolArgHashes) > 0
-}
-
 func traceRateLimitObserved(trace RateLimitTrace) bool {
 	return trace.Checked ||
 		trace.Allowed ||
@@ -912,10 +810,6 @@ func traceRateLimitObserved(trace RateLimitTrace) bool {
 		trace.RetryAfterMS != 0
 }
 
-func traceFreshnessObserved(trace FreshnessTrace) bool {
-	return trace.MonitorCallInCurrentTurn
-}
-
 func traceRetrievalObserved(trace RetrievalTrace) bool {
 	return trace.Enabled ||
 		trace.Unavailable ||
@@ -923,7 +817,6 @@ func traceRetrievalObserved(trace RetrievalTrace) bool {
 		trace.KBVersion != "" ||
 		trace.QueryRaw != "" ||
 		trace.QueryNormalized != "" ||
-		len(trace.QueryExpansions) > 0 ||
 		trace.Hits != 0 ||
 		len(trace.HitItems) > 0 ||
 		len(trace.Activities) > 0 ||
@@ -946,17 +839,10 @@ func traceRetrievalObserved(trace RetrievalTrace) bool {
 		len(trace.CitedChunkIDs) > 0
 }
 
-func traceDiagnosisObserved(trace DiagnosisTrace) bool {
-	return len(trace.Claims) > 0
-}
-
 func traceOutcomeObserved(trace OutcomeTrace) bool {
 	return trace.TotalLatencyMS != 0 ||
 		trace.FirstVisibleEventMS != nil ||
 		trace.TotalTokens != 0 ||
-		trace.AttemptedHallucinatedCount != 0 ||
-		trace.EscapedHallucinatedCount != 0 ||
-		trace.KBConflictCount != 0 ||
 		trace.TerminatedBy != "" ||
 		trace.AbortCause != "" ||
 		trace.ErrorClass != "" ||
@@ -985,18 +871,6 @@ func (r TraceRecord) withDefaults(now time.Time) TraceRecord {
 	if r.ToolCalls == nil {
 		r.ToolCalls = []ToolCallTrace{}
 	}
-	if r.Renderer.InputToolCallIDs == nil {
-		r.Renderer.InputToolCallIDs = []string{}
-	}
-	if r.Renderer.InputToolArgHashes == nil {
-		r.Renderer.InputToolArgHashes = []string{}
-	}
-	if r.Renderer.InputEnvelopeHashes == nil {
-		r.Renderer.InputEnvelopeHashes = []string{}
-	}
-	if r.Retrieval.QueryExpansions == nil {
-		r.Retrieval.QueryExpansions = []string{}
-	}
 	if r.Retrieval.HitItems == nil {
 		r.Retrieval.HitItems = []RetrievalHit{}
 	}
@@ -1008,14 +882,6 @@ func (r TraceRecord) withDefaults(now time.Time) TraceRecord {
 	}
 	if r.Retrieval.CitedRefs == nil {
 		r.Retrieval.CitedRefs = []RetrievalCitedRef{}
-	}
-	if r.Diagnosis.Claims == nil {
-		r.Diagnosis.Claims = []DiagnosisClaimTrace{}
-	}
-	for i := range r.Diagnosis.Claims {
-		if r.Diagnosis.Claims[i].ChunkIDs == nil {
-			r.Diagnosis.Claims[i].ChunkIDs = []string{}
-		}
 	}
 	if r.EntityRegistry.SyncEvent == "" {
 		r.EntityRegistry.SyncEvent = "unavailable"
