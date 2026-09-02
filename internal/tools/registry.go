@@ -49,11 +49,11 @@ var Registry = []openai.Tool{
 				"properties": map[string]any{
 					"query": map[string]any{
 						"type":        "string",
-						"description": "脱离对话上文也能独立理解的检索问题。",
+						"description": "检索单一目标；问题用问句，补查用已见章节/术语原文，不拼预期结论。",
 					},
 					"context_hint": map[string]any{
 						"type":        "string",
-						"description": "可选，缩小检索范围的产品/工具领域提示，如 vllm / sglang / gpu。",
+						"description": "可选已知产品/工具名；无关省略，不重复 query。",
 					},
 				},
 				"required": []string{"query"},

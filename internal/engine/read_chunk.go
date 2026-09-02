@@ -24,9 +24,9 @@ import (
 // while a read is one chunk the agent asked for.
 const (
 	// maxReadChunkCallsPerTurn bounds how many times the agent may read this turn.
-	// It is separate from the SearchKnowledge call budget because a body fetch has
-	// its own context cost and must not withdraw search from the tool window.
-	maxReadChunkCallsPerTurn = 2
+	// Keep its ceiling aligned with search so later searches still have room for
+	// explicit body reads. The counters and per-read context bound stay separate.
+	maxReadChunkCallsPerTurn = maxSearchKnowledgeCallsPerTurn
 	maxReadChunkIDsPerCall   = 3
 	// maxReadChunkRunesPerCall fits three maximum-sized corpus chunks while
 	// retaining a bound for readers that return larger bodies.

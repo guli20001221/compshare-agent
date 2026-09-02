@@ -9,6 +9,7 @@ import (
 
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
+	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -180,20 +181,73 @@ func TestReadChunk_IDCapReportsDropped(t *testing.T) {
 	assert.Equal(t, float64(1), out["dropped_ids"])
 }
 
-// The call budget withdraws the tool after maxReadChunkCallsPerTurn; the next call
-// returns read_limit_reached instead of another body.
-func TestReadChunk_CallBudgetExhausts(t *testing.T) {
-	eng, _ := newChunkStoreEngine(t,
-		knowledge.KBChunk{ChunkID: "a", Content: "aa"},
-		knowledge.KBChunk{ChunkID: "b", Content: "bb"},
-		knowledge.KBChunk{ChunkID: "c", Content: "cc"},
-	)
-	for i := 0; i < maxReadChunkCallsPerTurn; i++ {
-		id := string(rune('a' + i))
-		_ = eng.executeReadChunk(map[string]any{"chunk_ids": []any{id}}, noopStep)
+// A later search can still lead to a full-body read after the old two-call
+// ceiling, but the aligned four-call ceiling still withdraws and rejects reads.
+func TestReadChunk_LateSearchRemainsReadableUntilCallBudgetExhausts(t *testing.T) {
+	tail := "末尾说明：目标章节正文已经完整交付。"
+	target := knowledge.KBChunk{ChunkID: "target", Title: "目标章节", Content: strings.Repeat("章节前文。", 120) + tail}
+	chunks := map[string]knowledge.KBChunk{
+		"a":      {ChunkID: "a", Content: "第一段说明。"},
+		"b":      {ChunkID: "b", Content: "第二段说明。"},
+		"d":      {ChunkID: "d", Content: "第四段说明。"},
+		"target": target,
 	}
-	out := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"c"}}, noopStep))
+	// Unjudged RRF results remain snippets, leaving full-body reads explicit.
+	retriever := &remoteChunkStoreRetriever{
+		scriptedKnowledgeRetriever: scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
+			{Enabled: true, SearchID: "initial-search", HybridMode: knowledge.RetrievalModeQwen3RRF,
+				HitItems: []knowledge.RetrievalHit{
+					{Kept: true, Score: 0.031, Chunk: chunks["a"]},
+					{Kept: true, Score: 0.030, Chunk: chunks["b"]},
+					{Kept: true, Score: 0.029, Chunk: chunks["d"]},
+				}},
+			{Enabled: true, SearchID: "late-search", HybridMode: knowledge.RetrievalModeQwen3RRF,
+				HitItems: []knowledge.RetrievalHit{{Kept: true, Score: 0.031, Chunk: target}}},
+		}},
+		chunks: chunks,
+	}
+	mock := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("search-initial", "SearchKnowledge", `{"query":"文档说明"}`)}},
+		{Content: `{"answer_question":"目标章节有什么说明？","search_queries":["文档说明"]}`},
+		{ToolCalls: []openai.ToolCall{
+			toolCall("read-a", "ReadChunk", `{"chunk_ids":["a"]}`),
+			toolCall("read-b", "ReadChunk", `{"chunk_ids":["b"]}`),
+		}},
+		{ToolCalls: []openai.ToolCall{toolCall("search-late", "SearchKnowledge", `{"query":"目标章节"}`)}},
+		{ToolCalls: []openai.ToolCall{
+			toolCall("read-target", "ReadChunk", `{"chunk_ids":["target"]}`),
+			toolCall("read-d", "ReadChunk", `{"chunk_ids":["d"]}`),
+		}},
+		{Content: "目标章节正文已经完整交付[[target]]。"},
+	}}
+	eng := NewWithDeps(mock, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+
+	_, err := eng.ChatWithOptions(context.Background(), "目标章节有什么说明？", noopStep, ChatOptions{KnowledgeOnly: true})
+	require.NoError(t, err)
+	require.Len(t, mock.calls, 6, "five main-loop rounds plus the first-search planner")
+	require.Len(t, retriever.calls, 2)
+	assert.Contains(t, toolNames(mock.calls[3].Tools), "ReadChunk", "two reads must not withdraw the tool before the later search")
+	assert.Contains(t, toolNames(mock.calls[4].Tools), "ReadChunk", "the later search's result must still be readable")
+	assert.NotContains(t, renderTestMessages(mock.calls[4].Messages), tail, "the target is not yet visible beyond its search snippet")
+	require.Len(t, retriever.reads, 4)
+	assert.Equal(t, remoteChunkRead{searchID: "late-search", chunkIDs: []string{"target"}}, retriever.reads[2])
+	var delivered map[string]any
+	for _, message := range mock.calls[5].Messages {
+		if message.Role == openai.ChatMessageRoleTool && message.ToolCallID == "read-target" {
+			delivered = readChunkResult(t, message.Content)
+		}
+	}
+	require.NotNil(t, delivered, "the main Agent must receive the actual ReadChunk observation")
+	data := delivered["data"].(map[string]any)
+	item := data["chunks"].([]any)[0].(map[string]any)
+	assert.Equal(t, readChunkStatusRead, item["status"])
+	assert.Equal(t, target.Content, item["content"])
+	assert.Equal(t, 4, eng.readChunkCallsThisTurn)
+	assert.NotContains(t, toolNames(mock.calls[5].Tools), "ReadChunk", "the fourth read still exhausts the tool window")
+	out := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"target"}}, noopStep))
 	assert.Equal(t, true, out["read_limit_reached"])
+	assert.Len(t, retriever.reads, 4, "a fifth call must not reach the reader")
 }
 
 // A read is recorded as evidence the agent may cite: after ReadChunk, the turn

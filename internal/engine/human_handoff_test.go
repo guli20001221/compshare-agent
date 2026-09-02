@@ -107,6 +107,7 @@ func TestCustomerSupportDisplayProjectionDoesNotEnterColdModelHistory(t *testing
 	require.Len(t, coldModel.calls, 1)
 	history := strings.Join(messageContents(coldModel.calls[0].Messages), "\n")
 	require.Contains(t, history, agentprotocol.CustomerSupportHistoryCompletion)
+	require.Contains(t, history, "本次未返回备用入口或工单地址")
 	require.NotContains(t, history, "qrcode.png")
 	require.NotContains(t, history, agentprotocol.FeishuCustomerSupportMarker)
 }
