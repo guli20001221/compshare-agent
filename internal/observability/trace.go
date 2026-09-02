@@ -16,7 +16,7 @@ import (
 	"github.com/compshare-agent/internal/security"
 )
 
-const SchemaVersion = "trace.v0.16"
+const SchemaVersion = "trace.v0.17"
 
 const (
 	ToolSourceMainReAct          = "main_react"
@@ -684,7 +684,14 @@ type OutcomeTrace struct {
 	ResponseContract     string   `json:"response_contract,omitempty"`
 	PromptSectionIDs     []string `json:"prompt_section_ids,omitempty"`
 	EvidenceUpdateSource string   `json:"memory_update_source,omitempty"`
-	GroundingOutcome     string   `json:"grounding_outcome,omitempty"`
+	// GroundingOutcome is the backward-compatible grounding/recovery outcome;
+	// it is neither a strict citation-validation result nor a semantic-faithfulness score.
+	GroundingOutcome string `json:"grounding_outcome,omitempty"`
+	// GroundingCitationScope records where the validated citation IDs came from:
+	// current_only, prior_only, or mixed. It is deliberately about citation
+	// provenance, not semantic support, and is absent when citation validation
+	// did not pass.
+	GroundingCitationScope string `json:"grounding_citation_scope,omitempty"`
 	// PromptMessages* are content-free context-assembly telemetry. They show
 	// whether the final request had to shed prior messages, without storing the
 	// prompt or transcript itself. Prompt token usage remains in PromptTokens.
@@ -961,6 +968,7 @@ func traceOutcomeObserved(trace OutcomeTrace) bool {
 		len(trace.PromptSectionIDs) > 0 ||
 		trace.EvidenceUpdateSource != "" ||
 		trace.GroundingOutcome != "" ||
+		trace.GroundingCitationScope != "" ||
 		trace.PromptMessagesRawPeak != 0 ||
 		trace.PromptMessagesAssembledPeak != 0 ||
 		trace.PromptMessagesCapApplied ||

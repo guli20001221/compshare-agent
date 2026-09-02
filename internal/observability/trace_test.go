@@ -102,7 +102,7 @@ func TestSparseTraceRecordMissingOptionalBlocksStillReadable(t *testing.T) {
 	}
 }
 
-func TestSchemaVersionIsV016(t *testing.T) {
+func TestSchemaVersionIsV017(t *testing.T) {
 	// v0.10 distinguishes unobserved tool latency from a measured 0ms duration
 	// and preserves an absent native provider finish reason as "unspecified";
 	// v0.11 adds bounded instance-selection provenance; v0.12 removes retired
@@ -110,9 +110,35 @@ func TestSchemaVersionIsV016(t *testing.T) {
 	// v0.13 adds content-free error, truncation, attempt, and first-visible timing;
 	// v0.14 adds per-attempt prompt-cache and tool-window observations; v0.15
 	// adds bounded guided-confirmation metadata and the approved create contract;
-	// v0.16 records the content-free outcome of the bounded direct-answer retry.
-	if SchemaVersion != "trace.v0.16" {
-		t.Fatalf("SchemaVersion = %q, want trace.v0.16", SchemaVersion)
+	// v0.16 records the content-free outcome of the bounded direct-answer retry;
+	// v0.17 distinguishes current-turn from prior-turn validated citations.
+	if SchemaVersion != "trace.v0.17" {
+		t.Fatalf("SchemaVersion = %q, want trace.v0.17", SchemaVersion)
+	}
+}
+
+func TestGroundingCitationScopeSerializesOnlyWhenObserved(t *testing.T) {
+	empty, err := json.Marshal(TraceRecord{SchemaVersion: SchemaVersion})
+	if err != nil {
+		t.Fatalf("marshal empty trace: %v", err)
+	}
+	if strings.Contains(string(empty), "grounding_citation_scope") {
+		t.Fatalf("empty citation scope must be omitted: %s", empty)
+	}
+
+	record := TraceRecord{
+		SchemaVersion: SchemaVersion,
+		Outcome: OutcomeTrace{
+			GroundingOutcome:       "supported",
+			GroundingCitationScope: "mixed",
+		},
+	}
+	data, err := json.Marshal(record)
+	if err != nil {
+		t.Fatalf("marshal observed trace: %v", err)
+	}
+	if !strings.Contains(string(data), `"grounding_citation_scope":"mixed"`) {
+		t.Fatalf("observed citation scope missing: %s", data)
 	}
 }
 
