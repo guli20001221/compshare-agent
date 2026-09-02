@@ -42,8 +42,7 @@ func TestInstanceRepairLaneIsNamedWhenMutatingToolsAreOn(t *testing.T) {
 	if !strings.Contains(both, "下载") || !strings.Contains(both, "不要只给手工命令") {
 		t.Fatal("the lane must cover explicit guest-local operations instead of handing shell commands back to the user")
 	}
-	if !strings.Contains(both, "文件、目录、日志、进程") || !strings.Contains(both, "Mode=inspect") ||
-		!strings.Contains(both, "运行时会拒绝写入") ||
+	if !strings.Contains(both, "文件、目录、日志、进程") ||
 		!strings.Contains(both, "不得用公共模型/镜像目录或知识库替代实例内观察") {
 		t.Fatal("guest-state reads must route to the instance lane instead of a public catalog or a hand-written command")
 	}
@@ -62,5 +61,19 @@ func TestInstanceRepairLaneIsNamedWhenMutatingToolsAreOn(t *testing.T) {
 	noLane := BuildSystemWithOptions("ctx", BuildOptions{MutatingToolsEnabled: true})
 	if strings.Contains(noLane, "DiagnoseInstanceInternals") {
 		t.Fatal("lane not authorized but the prompt still promises in-instance repair")
+	}
+}
+
+func TestInstanceRepairLanePreservesUserLimitsWithoutSelectingAMode(t *testing.T) {
+	system := BuildSystemWithOptions("ctx", BuildOptions{MutatingToolsEnabled: true, InstanceOpsEnabled: true})
+	if !strings.Contains(system, "自主执行与目标直接相关的可恢复修复并验证") ||
+		!strings.Contains(system, "遵守完整用户请求") ||
+		!strings.Contains(system, "明确只检查、不修改时仅观察") {
+		t.Fatal("one instance lane must carry autonomous repair and the user's inspection-only constraint")
+	}
+	for _, obsolete := range []string{"Mode=", "repair_scope_authorized", "inspection_scope", "运行时会拒绝写入"} {
+		if strings.Contains(system, obsolete) {
+			t.Fatalf("assembled system prompt still advertises an obsolete instance authorization gate: %q", obsolete)
+		}
 	}
 }

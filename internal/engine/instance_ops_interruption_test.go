@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The lane may execute confirmed repairs. A run killed mid-flight leaves the user in front of a box
+// The lane may execute authorized repairs. A run killed mid-flight leaves the user in front of a box
 // that may have been changed, and before this the next thing they saw was an ordinary answer to
 // whatever they asked next. These pin what the notice says — and, more carefully, what it must
 // never say.
@@ -21,7 +21,7 @@ func settled(cmd, tier, disposition string) instanceOpsSettledStep {
 	return instanceOpsSettledStep{Command: cmd, Tier: tier, Disposition: disposition}
 }
 
-func TestInterruptionNoticeNamesConfirmedCommandsThatMayModify(t *testing.T) {
+func TestInterruptionNoticeNamesExecutedCommandsThatMayModify(t *testing.T) {
 	msg := renderInstanceOpsInterruptionNotice(instanceOpsInterruption{
 		InstanceID: "uhost-abc",
 		Steps: []instanceOpsSettledStep{
@@ -33,11 +33,13 @@ func TestInterruptionNoticeNamesConfirmedCommandsThatMayModify(t *testing.T) {
 	})
 
 	require.Contains(t, msg, "uhost-abc")
-	require.Contains(t, msg, "已确认执行 2 条命令")
-	require.Contains(t, msg, "其中 1 条经确认执行，可能影响实例状态")
+	require.Contains(t, msg, "已执行 2 条命令")
+	require.Contains(t, msg, "其中 1 条可能修改实例状态")
 	require.Contains(t, msg, "拒绝 1 条")
-	require.Contains(t, msg, "已确认执行（可能影响实例状态）：`rm -rf /root/.cache/pip`")
+	require.Contains(t, msg, "已执行（可能影响实例状态）：`rm -rf /root/.cache/pip`")
 	require.Contains(t, msg, "已执行：`df -h /`")
+	require.NotContains(t, msg, "已确认执行", "settled activity does not imply a per-command user confirmation")
+	require.NotContains(t, msg, "经确认执行")
 	// The refused one carries WHY, from the same mapping the live stream uses — a card that expired
 	// must not be reported to the user as a decision they made.
 	require.Contains(t, msg, "systemctl restart vllm")
@@ -87,8 +89,8 @@ func TestInterruptionNoticeReportsTrueTotalsWhenTheListIsTruncated(t *testing.T)
 
 	// The COUNTS are over every settled step, not over the listing — a cap on how much is printed
 	// must not become a cap on what the user is told the run did.
-	require.Contains(t, msg, "已确认执行 27 条命令")
-	require.Contains(t, msg, "其中 1 条经确认执行，可能影响实例状态")
+	require.Contains(t, msg, "已执行 27 条命令")
+	require.Contains(t, msg, "其中 1 条可能修改实例状态")
 	require.Contains(t, msg, "另有 7 条未在此列出")
 	require.Equal(t, maxInterruptionNoticeCommands+1, strings.Count(msg, "\n· "),
 		"listed lines are bounded (plus the ellipsis line)")
@@ -111,7 +113,7 @@ func TestInterruptionNoticeWithNothingSettledStillSaysTheBoxWasEntered(t *testin
 }
 
 // A non-read-only tier is not proof that the command changed the instance.
-func TestInterruptionNoticeSaysAConfirmedCommandMayModifyNotThatItDid(t *testing.T) {
+func TestInterruptionNoticeSaysAnExecutedCommandMayModifyNotThatItDid(t *testing.T) {
 	msg := renderInstanceOpsInterruptionNotice(instanceOpsInterruption{
 		InstanceID: "uhost-x",
 		Steps: []instanceOpsSettledStep{
@@ -131,7 +133,7 @@ func TestInterruptionNoticeTreatsAnUnknownTierAsUnknown(t *testing.T) {
 		InstanceID: "uhost-x",
 		Steps:      []instanceOpsSettledStep{settled("systemctl restart vllm", "", "ran")},
 	})
-	require.Contains(t, msg, "已确认执行 1 条命令")
+	require.Contains(t, msg, "已执行 1 条命令")
 	require.NotContains(t, msg, "可能修改了实例", "an unknown tier must not be counted into the write tally")
 	require.NotContains(t, msg, "可能影响实例状态", "an unknown tier must not be labelled as state-changing")
 	require.Contains(t, msg, "可能不完整")
@@ -160,7 +162,7 @@ func TestInstanceOpsInterruptionSummaryIsReadOnlyAndUsesCurrentTurn(t *testing.T
 	state := e.sessionState
 	summary := e.InstanceOpsInterruptionSummary()
 	require.Contains(t, summary, "本轮对实例 uhost-x")
-	require.Contains(t, summary, "已确认执行 1 条命令")
+	require.Contains(t, summary, "已执行 1 条命令")
 	require.Contains(t, summary, "不会重新启动")
 	require.Equal(t, summary, e.InstanceOpsInterruptionSummary())
 	require.Same(t, pending, e.pendingInstanceOpsInterruption, "reading a persistence summary must not consume the next-turn notice")
@@ -273,7 +275,7 @@ func TestAKilledRunStashesWhatItSawForTheNextTurn(t *testing.T) {
 	var next []StepEvent
 	eng.emitPendingInstanceOpsInterruption(captureSteps(&next))
 	require.Len(t, next, 1)
-	require.Contains(t, next[0].Message, "其中 1 条经确认执行，可能影响实例状态")
+	require.Contains(t, next[0].Message, "其中 1 条可能修改实例状态")
 }
 
 // A run that never entered the box leaves nothing behind. Every preflight failure (no SSH target,

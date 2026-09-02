@@ -1,9 +1,11 @@
 package engine
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/prompt"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -58,5 +60,22 @@ func TestDisabledLaneDoesNotExposeTheTool(t *testing.T) {
 func TestReadOnlyDeploymentDoesNotExposeTheInstanceRepairLane(t *testing.T) {
 	if findInstanceOpsTool(centralAgentToolWindow(false, true)) != nil {
 		t.Fatal("runner is wired but mutating_tools=false; the autonomous repair lane must stay hidden")
+	}
+}
+
+func TestInstanceOpsAssembledPromptAndToolWindowDoNotRestoreTheModeSelector(t *testing.T) {
+	system := prompt.BuildSystemWithOptions("", prompt.BuildOptions{
+		MutatingToolsEnabled: true, InstanceOpsEnabled: true,
+	})
+	window, err := json.Marshal(centralAgentToolWindow(true, true))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, surface := range []string{system, string(window)} {
+		for _, obsolete := range []string{"Mode=", `"Mode"`, "repair_scope_authorized", "inspection_scope", "运行时会拒绝写入"} {
+			if strings.Contains(surface, obsolete) {
+				t.Fatalf("active model input still contains the removed mode selector: %q", obsolete)
+			}
+		}
 	}
 }

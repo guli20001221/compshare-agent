@@ -276,10 +276,10 @@ func renderInstanceOpsInterruptionSummary(notice instanceOpsInterruption, turn s
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s对实例 %s 的实例内排查没有正常结束。", turn, notice.InstanceID)
 	if ran > 0 {
-		fmt.Fprintf(&b, "中断前已确认执行 %d 条命令", ran)
+		fmt.Fprintf(&b, "中断前已执行 %d 条命令", ran)
 		if mayModify > 0 {
 			// Count every settled step, not only the bounded list rendered below.
-			fmt.Fprintf(&b, "（其中 %d 条经确认执行，可能影响实例状态）", mayModify)
+			fmt.Fprintf(&b, "（其中 %d 条可能修改实例状态）", mayModify)
 		}
 	} else {
 		fmt.Fprint(&b, "中断前没有命令执行成功")
@@ -340,7 +340,7 @@ func interruptionStepLine(step instanceOpsSettledStep) string {
 	switch step.Disposition {
 	case "ran":
 		if instanceOpsTierMayWrite(step.Tier) {
-			return fmt.Sprintf("已确认执行（可能影响实例状态）：`%s`", cmd)
+			return fmt.Sprintf("已执行（可能影响实例状态）：`%s`", cmd)
 		}
 		return fmt.Sprintf("已执行：`%s`", cmd)
 	case "refused":
