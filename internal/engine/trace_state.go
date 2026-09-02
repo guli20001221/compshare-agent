@@ -15,6 +15,10 @@ const (
 	groundingRepaired    = "repaired"
 	groundingUnsupported = "unsupported"
 	groundingUnavailable = "unavailable"
+
+	groundingCitationScopeCurrentOnly = "current_only"
+	groundingCitationScopePriorOnly   = "prior_only"
+	groundingCitationScopeMixed       = "mixed"
 )
 
 func contextSourceIDs(view AgentContext) []string {
@@ -60,5 +64,14 @@ func normalizedGroundingOutcome(outcome string) string {
 		return outcome
 	default:
 		return groundingUnavailable
+	}
+}
+
+func normalizedGroundingCitationScope(scope string) string {
+	switch scope {
+	case groundingCitationScopeCurrentOnly, groundingCitationScopePriorOnly, groundingCitationScopeMixed:
+		return scope
+	default:
+		return ""
 	}
 }

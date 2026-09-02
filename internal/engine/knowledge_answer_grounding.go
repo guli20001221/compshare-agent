@@ -36,8 +36,9 @@ func (e *Engine) resolvedKnowledgeQuestion(fallback string) string {
 // decider and the runtime validates citation markers only.
 //
 // Policy — fail-open, NO hard stop:
-//   - An answer carrying >=1 citation that resolves to a real per-turn ledger
-//     chunk is accepted (markers stripped for display).
+//   - An answer carrying >=1 citation that resolves to the current+prior
+//     verification ledger, and no unknown citation, is accepted (markers
+//     stripped for display).
 //   - Otherwise the original answer SHIPS with all citation markers (including
 //     fabricated ones) stripped. Citation typography never gets to rewrite a
 //     semantically correct answer.
@@ -74,18 +75,72 @@ func (e *Engine) acceptGroundedKnowledgeAnswer(resolved, answer string, report k
 	e.emitSearchKnowledgeCitationTrace(report)
 	e.retractKnowledgeHardBlock()
 	display := knowledge.StripCiteMarkers(answer)
-	if len(e.platformReadEvidenceThisTurn) == 0 && len(report.CitedChunkIDs) > 0 {
+	current := e.currentTurnEvidenceLedger(resolved)
+	e.groundingCitationScopeThisTurn = groundingCitationScope(current, report.CitedChunkIDs)
+	if len(e.platformReadEvidenceThisTurn) == 0 {
 		// What is stored is what THIS turn retrieved, not the merged ledger the
-		// verifier judged against. Storing the merge would copy prior chunks into
-		// the new entry with a fresh VerifiedAtUnix, so a chunk fetched once would
-		// be re-stamped by every later grounded answer and never leave the
-		// verifiedEvidenceMaxTurns window. An answer grounded purely on prior
-		// evidence therefore stores nothing new — which is the intended outcome:
-		// that evidence already has an entry, and it should age out on its own.
-		e.rememberVerifiedEvidence(resolved, e.currentTurnEvidenceLedger(resolved))
+		// verifier judged against, and only the current items the answer actually
+		// cited. Storing every current candidate would promote unrelated search
+		// results; storing the merge would re-stamp prior chunks indefinitely.
+		// A prior-only answer therefore stores nothing new, while a mixed answer
+		// remembers only its cited current-turn portion.
+		e.rememberVerifiedEvidence(resolved, citedEvidence(current, report.CitedChunkIDs))
 	}
 	e.groundingOutcomeThisTurn = outcome
 	return display
+}
+
+func groundingCitationScope(current knowledge.EvidenceLedger, citedChunkIDs []string) string {
+	if len(citedChunkIDs) == 0 {
+		return ""
+	}
+	currentIDs := make(map[string]struct{}, len(current.Items))
+	for _, item := range current.Items {
+		if id := strings.TrimSpace(item.ChunkID); id != "" {
+			currentIDs[id] = struct{}{}
+		}
+	}
+	hasCurrent := false
+	hasPrior := false
+	for _, rawID := range citedChunkIDs {
+		id := strings.TrimSpace(rawID)
+		if id == "" {
+			continue
+		}
+		if _, ok := currentIDs[id]; ok {
+			hasCurrent = true
+		} else {
+			hasPrior = true
+		}
+	}
+	switch {
+	case hasCurrent && hasPrior:
+		return groundingCitationScopeMixed
+	case hasCurrent:
+		return groundingCitationScopeCurrentOnly
+	case hasPrior:
+		return groundingCitationScopePriorOnly
+	default:
+		return ""
+	}
+}
+
+func citedEvidence(ledger knowledge.EvidenceLedger, citedChunkIDs []string) knowledge.EvidenceLedger {
+	wanted := make(map[string]struct{}, len(citedChunkIDs))
+	for _, rawID := range citedChunkIDs {
+		if id := strings.TrimSpace(rawID); id != "" {
+			wanted[id] = struct{}{}
+		}
+	}
+	out := knowledge.EvidenceLedger{Query: ledger.Query, Items: []knowledge.EvidenceItem{}}
+	for _, item := range ledger.Items {
+		id := strings.TrimSpace(item.ChunkID)
+		if _, ok := wanted[id]; !ok {
+			continue
+		}
+		out.Items = append(out.Items, item)
+	}
+	return out
 }
 
 // recordAnswerEvidenceEcho stamps the turn with the chunk this answer reproduced

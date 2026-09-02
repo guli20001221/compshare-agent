@@ -73,6 +73,45 @@ func TestBudgetRecoveryStillDeliversFromThisTurnsEvidence(t *testing.T) {
 	got, ok := eng.synthesizeOnBudgetExceeded(context.Background(), "vllm 显存不足怎么办")
 	require.True(t, ok, "evidence in hand + over budget must still synthesize rather than refuse")
 	assert.Contains(t, got, "max-model-len")
+	assert.Equal(t, groundingCitationScopeCurrentOnly, eng.groundingCitationScopeThisTurn)
+}
+
+func TestBudgetRecoveryStoresOnlyTheCitedCurrentItem(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{
+		Content: `{"answer":"采用第四项[[current-4]]。"}`,
+	}}}, &mockExecutor{}, nil)
+	eng.maxTokensPerTurn = 50000
+	eng.searchKnowledgeLedgerThisTurn = groundingTestLedger(
+		"第四项", "current-1", "current-2", "current-3", "current-4",
+	)
+
+	got, ok := eng.synthesizeOnBudgetExceeded(context.Background(), "第四项")
+	require.True(t, ok)
+	assert.Equal(t, "采用第四项。", got)
+	assert.Equal(t, groundingRepaired, eng.groundingOutcomeThisTurn)
+	assert.Equal(t, groundingCitationScopeCurrentOnly, eng.groundingCitationScopeThisTurn)
+	require.Len(t, eng.sessionState.VerifiedEvidence, 1)
+	require.Len(t, eng.sessionState.VerifiedEvidence[0].Evidence.Items, 1)
+	assert.Equal(t, "current-4", eng.sessionState.VerifiedEvidence[0].Evidence.Items[0].ChunkID)
+}
+
+func TestBudgetRecoveryInvalidCitationSetHasNoScopeOrVerifiedEvidence(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{
+		Content: `{"answer":"采用第四项[[current-4]]，另见[[fake-id]]。"}`,
+	}}}, &mockExecutor{}, nil)
+	eng.maxTokensPerTurn = 50000
+	eng.searchKnowledgeLedgerThisTurn = groundingTestLedger(
+		"第四项", "current-1", "current-2", "current-3", "current-4",
+	)
+
+	got, ok := eng.synthesizeOnBudgetExceeded(context.Background(), "第四项")
+	require.True(t, ok, "citation validation remains fail-open for the user-visible answer")
+	assert.Equal(t, "采用第四项，另见。", got)
+	assert.Equal(t, groundingRepaired, eng.groundingOutcomeThisTurn,
+		"the existing outcome remains backward-compatible")
+	assert.Empty(t, eng.groundingCitationScopeThisTurn,
+		"a partially invalid citation set must not claim provenance")
+	assert.Empty(t, eng.sessionState.VerifiedEvidence)
 }
 
 // A grounded answer stores THIS turn's evidence. Storing the merged ledger the

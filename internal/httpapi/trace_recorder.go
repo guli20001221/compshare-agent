@@ -149,6 +149,7 @@ func (r *chatTraceRecorder) SetEngineSnapshot(snapshot engine.TraceSnapshot) {
 	r.record.Outcome.PromptSectionIDs = append([]string(nil), snapshot.PromptSectionIDs...)
 	r.record.Outcome.EvidenceUpdateSource = snapshot.EvidenceUpdateSource
 	r.record.Outcome.GroundingOutcome = snapshot.GroundingOutcome
+	r.record.Outcome.GroundingCitationScope = snapshot.GroundingCitationScope
 	r.record.Outcome.PromptMessagesRawPeak = snapshot.PromptMessagesRawPeak
 	r.record.Outcome.PromptMessagesAssembledPeak = snapshot.PromptMessagesAssembledPeak
 	r.record.Outcome.PromptMessagesCapApplied = snapshot.PromptMessagesCapApplied

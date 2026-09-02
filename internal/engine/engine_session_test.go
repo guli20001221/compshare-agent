@@ -361,6 +361,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"promptSectionIDsThisTurn":            true,
 		"verifiedEvidenceUpdateThisTurn":      true,
 		"groundingOutcomeThisTurn":            true,
+		"groundingCitationScopeThisTurn":      true,
 		"promptMessagesRawPeakThisTurn":       true,
 		"promptMessagesAssembledPeakThisTurn": true,
 		"promptMessagesCapAppliedThisTurn":    true,
@@ -431,12 +432,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 101, len(perSessionFields); want != got {
+	if want, got := 102, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 107, typ.NumField(); want != got {
+	if want, got := 108, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update this test's whitelists to match.", want, got)
 	}

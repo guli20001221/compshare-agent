@@ -95,8 +95,11 @@ func (e *Engine) synthesizeOnBudgetExceeded(ctx context.Context, userMsg string)
 	e.recordAnswerEvidenceEcho(answer)
 	if report := knowledge.ValidateGroundedCitations(answer, ledger); report.HasCitation {
 		e.emitSearchKnowledgeCitationTrace(report)
-		if len(e.platformReadEvidenceThisTurn) == 0 && len(report.CitedChunkIDs) > 0 {
-			e.rememberVerifiedEvidence(resolved, ledger)
+		if report.Grounded() {
+			e.groundingCitationScopeThisTurn = groundingCitationScope(ledger, report.CitedChunkIDs)
+			if len(e.platformReadEvidenceThisTurn) == 0 {
+				e.rememberVerifiedEvidence(resolved, citedEvidence(ledger, report.CitedChunkIDs))
+			}
 		}
 	}
 	e.retractKnowledgeHardBlock()

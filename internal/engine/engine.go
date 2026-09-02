@@ -415,6 +415,7 @@ type Engine struct {
 	promptSectionIDsThisTurn       []string
 	verifiedEvidenceUpdateThisTurn string
 	groundingOutcomeThisTurn       string
+	groundingCitationScopeThisTurn string
 	// Per-turn instance-binding observability. Captured at turn
 	// entry / refreshSystemPrompt, read post-turn by the trace recorder. Per-turn
 	// by design (reset every turn) — a shared value would attribute one tenant's
@@ -1277,6 +1278,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.promptSectionIDsThisTurn = nil
 	e.verifiedEvidenceUpdateThisTurn = evidenceUpdateNone
 	e.groundingOutcomeThisTurn = "unavailable"
+	e.groundingCitationScopeThisTurn = ""
 	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
 	e.answerEchoedChunkIDThisTurn = ""
@@ -2818,7 +2820,7 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(answerQuestion, query string,
 }
 
 func (e *Engine) emitSearchKnowledgeTurnTrace(citedChunkIDs []string) {
-	if len(e.searchKnowledgeHitsThisTurn) == 0 {
+	if len(e.searchKnowledgeHitsThisTurn) == 0 && len(citedChunkIDs) == 0 && e.answerEchoedChunkIDThisTurn == "" {
 		return
 	}
 	query := strings.TrimSpace(e.searchKnowledgeLedgerThisTurn.Query)

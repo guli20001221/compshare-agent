@@ -61,6 +61,18 @@ func syntheticGroundedEngine(t *testing.T) (*Engine, *mockLLM) {
 	return eng, mock
 }
 
+func groundingTestLedger(query string, chunkIDs ...string) knowledge.EvidenceLedger {
+	items := make([]knowledge.EvidenceItem, 0, len(chunkIDs))
+	for _, chunkID := range chunkIDs {
+		items = append(items, knowledge.EvidenceItem{
+			ChunkID: chunkID,
+			Title:   "evidence " + chunkID,
+			Snippet: "content " + chunkID,
+		})
+	}
+	return knowledge.EvidenceLedger{Query: query, Items: items}
+}
+
 // A validly-cited answer is accepted deterministically: markers stripped, no second
 // model, and the pure-RAG answer is remembered.
 func TestKnowledgeGrounding_ValidCitationAccepted(t *testing.T) {
@@ -70,6 +82,7 @@ func TestKnowledgeGrounding_ValidCitationAccepted(t *testing.T) {
 	require.Empty(t, mock.calls, "a validly-cited answer is accepted without any retry or verifier call")
 	require.NotEmpty(t, eng.sessionState.VerifiedEvidence, "a cited pure-RAG answer is remembered")
 	require.Equal(t, groundingSupported, eng.groundingOutcomeThisTurn)
+	require.Equal(t, groundingCitationScopeCurrentOnly, eng.groundingCitationScopeThisTurn)
 }
 
 // Positional [n] citations resolve the same way.
@@ -89,6 +102,7 @@ func TestKnowledgeGrounding_UncitedAnswerShipsWithoutRewrite(t *testing.T) {
 	require.Empty(t, mock.calls, "citation formatting must never rewrite user-facing prose")
 	require.Empty(t, eng.sessionState.VerifiedEvidence)
 	require.Equal(t, groundingUnavailable, eng.groundingOutcomeThisTurn)
+	require.Empty(t, eng.groundingCitationScopeThisTurn)
 }
 
 // THE core fail-open contract: an answer that is correct and evidence-backed but
@@ -104,6 +118,72 @@ func TestKnowledgeGrounding_WrongChunkIdShipsNotDestroyed(t *testing.T) {
 	assert.NotContains(t, got, "知识库未覆盖", "a correct answer is never replaced by a canned refusal")
 	require.Empty(t, mock.calls, "invalid citation syntax is stripped without regenerating the answer")
 	require.Equal(t, groundingUnavailable, eng.groundingOutcomeThisTurn)
+	require.Empty(t, eng.groundingCitationScopeThisTurn,
+		"failed citation validation must not claim a citation scope")
+}
+
+func TestKnowledgeGrounding_PriorOnlyScopeDoesNotRestampUncitedCurrentEvidence(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.knowledgeQAAgentLoopThisTurn = true
+	eng.searchKnowledgeRanThisTurn = true
+	eng.searchKnowledgeLedgerThisTurn = groundingTestLedger("怎么安装驱动", "current-driver", "current-cuda")
+	eng.sessionState.VerifiedEvidence = []VerifiedEvidenceTurn{{
+		Question: "4090 价格",
+		Evidence: groundingTestLedger("4090 价格", "prior-price"),
+	}}
+	var traces []observability.RetrievalTrace
+	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) { traces = append(traces, trace) })
+
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "怎么安装驱动", "沿用之前的资料[[prior-price]]。")
+	assert.Equal(t, "沿用之前的资料。", got)
+	require.Equal(t, groundingSupported, eng.groundingOutcomeThisTurn,
+		"the existing outcome remains backward-compatible")
+	require.Equal(t, groundingCitationScopePriorOnly, eng.groundingCitationScopeThisTurn)
+	require.Len(t, eng.sessionState.VerifiedEvidence, 1,
+		"a prior-only answer must not create a fresh evidence record")
+	require.Equal(t, "prior-price", eng.sessionState.VerifiedEvidence[0].Evidence.Items[0].ChunkID)
+	require.NotEmpty(t, traces, "a prior-only citation must remain visible in the retrieval audit")
+	require.Equal(t, []string{"prior-price"}, traces[len(traces)-1].CitedChunkIDs)
+}
+
+func TestKnowledgeGrounding_MixedScopeStoresOnlyCitedCurrentSubset(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.knowledgeQAAgentLoopThisTurn = true
+	eng.searchKnowledgeRanThisTurn = true
+	eng.searchKnowledgeLedgerThisTurn = groundingTestLedger(
+		"混合问题", "current-1", "current-2", "current-3", "current-4", "current-5",
+	)
+	eng.sessionState.VerifiedEvidence = []VerifiedEvidenceTurn{{
+		Question: "先前问题",
+		Evidence: groundingTestLedger("先前问题", "prior-a"),
+	}}
+
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "混合问题", "综合结论[[prior-a]][[current-4]]。")
+	assert.Equal(t, "综合结论。", got)
+	require.Equal(t, groundingSupported, eng.groundingOutcomeThisTurn)
+	require.Equal(t, groundingCitationScopeMixed, eng.groundingCitationScopeThisTurn)
+	require.Len(t, eng.sessionState.VerifiedEvidence, 2)
+	stored := eng.sessionState.VerifiedEvidence[1].Evidence.Items
+	require.Len(t, stored, 1, "only cited current-turn evidence is renewed")
+	require.Equal(t, "current-4", stored[0].ChunkID)
+}
+
+func TestKnowledgeGrounding_CurrentOnlyCitationPastPersistCapIsRemembered(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.knowledgeQAAgentLoopThisTurn = true
+	eng.searchKnowledgeRanThisTurn = true
+	eng.searchKnowledgeLedgerThisTurn = groundingTestLedger(
+		"第九项", "item-1", "item-2", "item-3", "item-4", "item-5", "item-6", "item-7", "item-8", "item-9",
+	)
+
+	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "第九项", "采用第九项[9]。")
+	assert.Equal(t, "采用第九项。", got)
+	require.Equal(t, groundingCitationScopeCurrentOnly, eng.groundingCitationScopeThisTurn)
+	require.Len(t, eng.sessionState.VerifiedEvidence, 1)
+	stored := eng.sessionState.VerifiedEvidence[0].Evidence.Items
+	require.Len(t, stored, 1)
+	require.Equal(t, "item-9", stored[0].ChunkID,
+		"filtering must happen before the three-item persistence cap")
 }
 
 func TestKnowledgeGrounding_MixedKnownAndUnknownCitationsAreNotRecordedAsGrounded(t *testing.T) {
@@ -118,6 +198,8 @@ func TestKnowledgeGrounding_MixedKnownAndUnknownCitationsAreNotRecordedAsGrounde
 	require.Empty(t, eng.sessionState.VerifiedEvidence,
 		"a partly fabricated citation set may ship fail-open but must never become verified memory")
 	require.Equal(t, groundingUnavailable, eng.groundingOutcomeThisTurn)
+	require.Empty(t, eng.groundingCitationScopeThisTurn,
+		"failed citation validation must not claim a citation scope")
 }
 
 // A fully uncited answer ships fail-open without a second model call.
@@ -128,6 +210,12 @@ func TestKnowledgeGrounding_UncitedFailOpenShips(t *testing.T) {
 	assert.NotContains(t, got, "知识库未覆盖")
 	require.Empty(t, mock.calls)
 	require.Empty(t, eng.sessionState.VerifiedEvidence, "an uncited answer is shipped but not remembered as verified")
+	require.Empty(t, eng.groundingCitationScopeThisTurn)
+}
+
+func TestGroundingCitationScopePrefersCurrentCopyOfRepeatedChunk(t *testing.T) {
+	current := groundingTestLedger("q", "shared")
+	require.Equal(t, groundingCitationScopeCurrentOnly, groundingCitationScope(current, []string{"shared"}))
 }
 
 // Under typography-only grounding the semantic verifier is deliberately gone: a
