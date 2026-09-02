@@ -2429,7 +2429,7 @@ func isVerbatimReply(result string) (string, bool) {
 
 // verbatimBlockObservation tells the model that the user has already received
 // the authoritative detail while withholding figures that must not be derived.
-const verbatimBlockObservation = "费用工具结果已按上游结构化数据逐字呈现给用户，本观察不含金额。" +
+const verbatimBlockObservation = "费用卡已向用户完整展示上游返回的明细。具体金额仅从这条模型观察中省略，不是接口未返回；不要否定已展示的卡片。" +
 	"本工具范围是当前配置报价及接口明确返回的停机保留项，不代表已回答一般计费规则或历史实际扣款。" +
 	"不要复述、重算或推断金额；未覆盖的规则问题继续检索知识，其他问题用适用工具处理。全部问题已回答时直接结束本回合、不要再输出文字。"
 
