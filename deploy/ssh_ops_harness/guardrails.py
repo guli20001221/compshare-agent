@@ -111,6 +111,10 @@ _DESTRUCTIVE_PROGRAM_WORD_SRC = {
     r"\bshutdown\b", r"\breboot\b", r"\bhalt\b", r"\bpoweroff\b",
     r"\buserdel\b", r"\bgroupdel\b", r"\bchpasswd\b", r"\busermod\b",
 }
+# Recovery-channel units, not applications whose names merely contain "ssh" or "network".
+_ACCESS_UNIT = (r"(?:sshd?(?:@[\w:.-]+)?|network(?:ing)?|NetworkManager|systemd-networkd)"
+                r"(?:\.(?:service|socket|target))?")
+_ACCESS_UNIT_WORD = rf"(?<![\w@.-]){_ACCESS_UNIT}(?![\w@./-])"
 _DESTRUCTIVE_SRC = [
     *sorted(_DESTRUCTIVE_PROGRAM_WORD_SRC),
     # ---- deletion -------------------------------------------------------------------------
@@ -181,8 +185,8 @@ _DESTRUCTIVE_SRC = [
     r"\biptables\b\s+-F", r"\bufw\b\s+disable",
     # Restarting or reloading SSH/network can destroy the recovery channel when config is broken.
     # Starting an already-down service remains confirmable.
-    r"\bsystemctl\b[^\n]*\b(stop|kill|restart|reload|try-restart|force-reload|disable|mask)\b[^\n]*\b\S*(ssh|network)\S*\b",
-    r"\bservice\b\s+\S*(ssh|network)\S*\s+(stop|restart|reload|force-reload)\b",
+    rf"\bsystemctl\b[^\n]*\b(stop|kill|restart|reload|try-restart|force-reload|disable|mask)\b[^\n]*{_ACCESS_UNIT_WORD}",
+    rf"\bservice\b\s+['\"]?{_ACCESS_UNIT}['\"]?\s+(stop|restart|reload|force-reload)\b",
     # process kill of init / critical daemons
     r"\bkill\b\s+(-\w+\s+)*-?1(\s|$)",
     r"\b(pkill|killall)\b[^\n]*\b(sshd|systemd|init|dockerd|containerd)\b",
