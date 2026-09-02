@@ -3,6 +3,7 @@ package capability
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 
 	"github.com/compshare-agent/internal/platform"
 )
@@ -24,7 +25,7 @@ const (
 //  3. the consistency-test expectation — the test walks the rendered schema
 //     against the Go request struct
 //
-// Enum members and integer bounds are declared here once so schema generation,
+// Enum members, integer bounds and array limits are declared here once so schema generation,
 // validation and tests cannot diverge.
 type schemaNode struct {
 	kind        nodeKind
@@ -32,6 +33,7 @@ type schemaNode struct {
 	enum        []string              // string enum members (kind==nodeString); nil = free string
 	minimum     *int                  // integer lower bound (kind==nodeInteger); nil = unbounded
 	maximum     *int                  // integer upper bound (kind==nodeInteger); nil = unbounded
+	maxItems    *int                  // array length upper bound (kind==nodeArray); nil = unbounded
 	props       map[string]schemaNode // object properties (kind==nodeObject)
 	req         []string              // object required keys (kind==nodeObject)
 	items       *schemaNode           // array element (kind==nodeArray)
@@ -64,6 +66,12 @@ func boundedIntegerParam(minimum, maximum int) schemaNode {
 func arrayParam(items schemaNode) schemaNode {
 	it := items
 	return schemaNode{kind: nodeArray, items: &it}
+}
+
+func boundedArrayParam(items schemaNode, maxItems int) schemaNode {
+	n := arrayParam(items)
+	n.maxItems = &maxItems
+	return n
 }
 
 // objectParam declares an object with strict (additionalProperties:false)
@@ -135,7 +143,11 @@ func (n schemaNode) jsonSchema() map[string]any {
 		if n.items != nil {
 			items = n.items.jsonSchema()
 		}
-		return withDescription(map[string]any{"type": "array", "items": items})
+		out := map[string]any{"type": "array", "items": items}
+		if n.maxItems != nil {
+			out["maxItems"] = *n.maxItems
+		}
+		return withDescription(out)
 	case nodeObject:
 		props := map[string]any{}
 		for name, child := range n.props {
@@ -151,7 +163,7 @@ func (n schemaNode) jsonSchema() map[string]any {
 }
 
 // validate enforces exactly the constraints the schema advertises but the JSON
-// decoder does not: string enum membership and integer minimums, recursively
+// decoder does not: string enum membership, integer bounds and array limits, recursively
 // through objects and arrays. It deliberately does NOT enforce required-field
 // presence — an absent required field is a needs_input clarification
 // (MissingFields), a different control-flow outcome than an out-of-contract
@@ -183,12 +195,18 @@ func (n schemaNode) validate(value any, path string) error {
 		}
 		return nil
 	case nodeArray:
-		items, ok := value.([]any)
-		if !ok || n.items == nil {
+		items := reflect.ValueOf(value)
+		if !items.IsValid() || (items.Kind() != reflect.Slice && items.Kind() != reflect.Array) {
 			return nil
 		}
-		for i, el := range items {
-			if err := n.items.validate(el, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+		if n.maxItems != nil && items.Len() > *n.maxItems {
+			return fmt.Errorf("%s: 数量 %d 超过允许上限 %d", path, items.Len(), *n.maxItems)
+		}
+		if n.items == nil {
+			return nil
+		}
+		for i := 0; i < items.Len(); i++ {
+			if err := n.items.validate(items.Index(i).Interface(), fmt.Sprintf("%s[%d]", path, i)); err != nil {
 				return err
 			}
 		}

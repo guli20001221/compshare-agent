@@ -78,12 +78,14 @@ func imageListReadSpec() ReadCapabilitySpec[ImageListRequest, ImageListResponse]
 		Params: objectParam(map[string]schemaNode{
 			"source": enumParam(platform.ImageSourceValues()...),
 			"query": stringParam().described(
-				"用户原话中的目录查询词；复制最短且有意义的用途、约束或用户明确点名的镜像，可取用户表达中的子串，不要先猜候选镜像名。无查询条件时留空。",
+				"只取用户原话的最短有效子串（用途、约束或明确镜像名）；勿猜候选名。无筛选条件留空。",
 			),
-			"semantic_queries": arrayParam(stringParam()).described(
-				"最多 3 个补充查询词。根据用户用途提炼技术、项目类别或运行时名称；不能替代 query，结果会合并。部署具名模型/应用时先查 community，未命中或用户要求基础环境时再查 platform。",
+			"semantic_queries": boundedArrayParam(stringParam(), 3).described(
+				"补充查询词。根据用户用途提炼技术、项目类别或运行时名称；不能替代 query，结果会合并。部署具名模型/应用时先查 community，未命中或用户要求基础环境时再查 platform。",
 			),
-			"mode": enumParam(platform.ListModeValues()...),
+			"mode": enumParam(platform.ListModeValues()...).described(
+				"all: query/semantic_queries 留空；filtered 或省略: 按词筛选。",
+			),
 		}),
 		Handle: imageListHandle,
 		Render: imageListRender,

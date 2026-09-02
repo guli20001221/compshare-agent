@@ -66,10 +66,6 @@ func TestImageListSemanticExpansionKeepsTheGroundedBaseline(t *testing.T) {
 		Source: platform.ImageSourceCustom, Query: "AI绘画",
 		SemanticQueries: []string{"ComfyUI"}, Mode: platform.ListModeFiltered,
 	}, "找一个AI绘画镜像"), "the custom catalog does not expand")
-	require.Error(t, ValidateCurrentTurnGrounding(ImageListRequest{
-		Source: platform.ImageSourceCommunity, Query: "AI绘画",
-		SemanticQueries: []string{"a", "b", "c", "d"}, Mode: platform.ListModeFiltered,
-	}, "找一个AI绘画镜像"), "the expansion fan-out is bounded")
 }
 
 func TestImageListQueryMayReuseARecentUserPhraseButNotAssistantProse(t *testing.T) {

@@ -38,6 +38,9 @@ func ValidateCurrentTurnGrounding(request platform.ReadRequest, currentUserText 
 	switch req := request.(type) {
 	case ImageListRequest:
 		query := strings.TrimSpace(req.Query)
+		if req.Mode == platform.ListModeAll && (query != "" || len(req.SemanticQueries) > 0) {
+			return fmt.Errorf("mode: mode=all 时 query 和 semantic_queries 必须为空；有筛选条件请使用 filtered 或省略 mode")
+		}
 		if query != "" {
 			grounded := platform.ContainsLiteralSpan(currentUserText, query)
 			for _, prior := range priorUserTexts {
@@ -46,9 +49,6 @@ func ValidateCurrentTurnGrounding(request platform.ReadRequest, currentUserText 
 			if !grounded {
 				return fmt.Errorf("query: %q 不是本轮或近期用户原文的字面子串", query)
 			}
-		}
-		if len(req.SemanticQueries) > 3 {
-			return fmt.Errorf("semantic_queries: 最多提供 3 个语义扩展查询词")
 		}
 		if len(req.SemanticQueries) > 0 {
 			// Community and platform both expand; custom and shared do not.
@@ -69,9 +69,6 @@ func ValidateCurrentTurnGrounding(request platform.ReadRequest, currentUserText 
 			}
 			if query == "" {
 				return fmt.Errorf("semantic_queries: 必须同时保留来自用户原话的 query，语义扩展不能替代原话查询")
-			}
-			if req.Mode == platform.ListModeAll {
-				return fmt.Errorf("semantic_queries: mode=all 时不要提供筛选查询")
 			}
 			for _, expansion := range req.SemanticQueries {
 				if strings.TrimSpace(expansion) == "" {

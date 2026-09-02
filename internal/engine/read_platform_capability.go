@@ -51,7 +51,7 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 		agentResult := modelOwnedReadArgumentError(
 			action,
 			"read_argument_validation",
-			"工具参数未通过该能力的参数契约。请依据工具 schema 和用户已明确表达的条件修正参数后，重发同一次调用；不要向用户重复提问。",
+			"工具参数校验失败："+err.Error()+"。请依据工具 schema 和用户已明确表达的条件修正参数后，重发同一次调用；不要向用户重复提问。",
 		)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: err.Error(), ErrorCode: agentResult.Error.Code})
 		return tools.MarshalAgentToolResult(agentResult)
@@ -65,13 +65,13 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 			})
 			return tools.MarshalAgentToolResult(agentResult)
 		}
-		// Grounding rejects an invented optional filter before any read runs. It
-		// is also wholly model-owned: the user already gave the question, so the
-		// next step is to remove the invention or use an expressed condition.
+		// These are local argument checks, including literal grounding, limits
+		// and incompatible fields, not upstream errors. Preserve the actual
+		// reason so the model can repair its own call before any read runs.
 		agentResult := modelOwnedReadArgumentError(
 			action,
 			"read_argument_grounding",
-			"工具参数包含用户本轮或近期对话未明确表达的筛选条件或资源 ID。请按用户原文修正后重发同一次调用；不要向用户重复提问。",
+			"工具参数校验失败："+err.Error()+"。请依据工具 schema 和用户已明确表达的条件修正参数后，重发同一次调用；不要向用户重复提问。",
 		)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: err.Error(), ErrorCode: agentResult.Error.Code})
 		return tools.MarshalAgentToolResult(agentResult)
