@@ -37,7 +37,7 @@ def dispatch(command, **kw):
 
 def dispatch_scoped(command):
     harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw",
-                      "repair_scope_authorized": True})
+                      "allow_writes": True})
     del harness.AUDIT[:]
     with confirm_stub.approving() as io_obj:
         res = harness.run_command(command)
@@ -48,7 +48,7 @@ WRITE = "systemctl restart ollama"
 READ = "nvidia-smi"
 DESTRUCTIVE = "rm -rf /workspace"
 
-# --- current protocol: one task card, zero per-command cards -------------------------------------
+# --- current private transport: no per-command wire ---------------------------------------------
 res, entry, io_obj = dispatch_scoped(WRITE)
 check("task-scope-write-runs", res["executed"] is True and entry["disposition"] == "ran_mutating")
 check("task-scope-write-emits-no-confirm-wire", io_obj.requests == [])
@@ -58,6 +58,19 @@ check("task-scope-second-write-runs-without-another-card",
 res, entry, io_obj = dispatch_scoped(DESTRUCTIVE)
 check("task-scope-does-not-authorize-destructive",
       res["executed"] is False and entry["disposition"] == "refused_destructive" and io_obj.requests == [])
+
+# A server using the previous handshake still owns the decision. The new harness ignores its
+# obsolete scope bit and sends an exact-command wire request; that server's callback approves a
+# repair and refuses a missing/inspection callback without opening a UI confirmation.
+for _old_scope in (True, False):
+    harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw",
+                      "repair_scope_authorized": _old_scope})
+    del harness.AUDIT[:]
+    with confirm_stub.approving(decide=lambda _cmd, approved=_old_scope: approved) as io_obj:
+        res = harness.run_command(WRITE)
+    check(f"old-server-new-harness-preserves-callback-decision::{_old_scope}",
+          res["executed"] is _old_scope and len(io_obj.requests) == 1 and
+          io_obj.requests[0]["command"] == WRITE)
 
 # --- legacy server: approved -> runs, and request carried the LITERAL command -------------------
 # If the string on the card could differ from the string that executes, the approval would describe

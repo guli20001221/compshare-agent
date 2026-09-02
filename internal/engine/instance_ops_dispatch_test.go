@@ -110,24 +110,27 @@ func TestInstanceOps_DoesNotUseTheWorkflowConfirmationCallback(t *testing.T) {
 	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
 }
 
-func TestInstanceOps_InspectModeRemovesRuntimeRepairAuthority(t *testing.T) {
+func TestInstanceOps_InspectionConstraintStaysInTheCompleteUserRequest(t *testing.T) {
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "已核实"}}
 	eng := newInstanceOpsEngine(runner, alwaysConfirm)
+	eng.lastUserMsg = "只检查 uhost-1 的目录，不要修改任何文件或服务"
+	eng.turnContextViewThisTurn.CurrentQuestion = eng.lastUserMsg
 	args := instanceOpsArgs()
-	args["Mode"] = "inspect"
-	args["Task"] = "只读检查目录，不要修改"
+	args["Task"] = "检查目录"
 
 	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", args, noopStep)
 
 	require.True(t, strings.HasPrefix(out, finalReplyPrefix))
 	require.Equal(t, 1, runner.calls)
-	require.False(t, runner.lastReq.RepairScopeAuthorized,
-		"inspection must reach SSH without granting any guest mutation")
+	require.Equal(t, []opscontext.ConversationMessage{{
+		Role: opscontext.ConversationRoleUser, Content: eng.lastUserMsg,
+	}}, runner.lastReq.Context.ConversationHistory,
+		"the full user constraint must reach the inner agent independently of the shorter Task")
 }
 
-func TestInstanceOps_MissingOrUnknownModeFailsClosed(t *testing.T) {
-	for _, mode := range []any{nil, "unexpected"} {
-		runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "不应运行"}}
+func TestInstanceOps_StaleModeArgumentsDoNotCreateASeparateRuntime(t *testing.T) {
+	for _, mode := range []any{nil, "inspect", "repair", "unexpected"} {
+		runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成"}}
 		eng := newInstanceOpsEngine(runner, alwaysConfirm)
 		args := instanceOpsArgs()
 		if mode == nil {
@@ -139,21 +142,9 @@ func TestInstanceOps_MissingOrUnknownModeFailsClosed(t *testing.T) {
 		var steps []StepEvent
 		out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", args, captureSteps(&steps))
 
-		require.Zero(t, runner.calls)
-		require.False(t, eng.instanceOpsRanThisTurn, "a malformed model call must not consume the runner-attempt slot")
-		require.Len(t, steps, 1)
-		require.Equal(t, instanceOpsModeRefusalForUser, steps[0].Message)
-		require.NotContains(t, steps[0].Message, "inspect")
-		require.NotContains(t, steps[0].Message, "repair")
-
-		result, ok := tools.ParseAgentToolResult(out)
-		require.True(t, ok, out)
-		require.Equal(t, tools.AgentToolStatusNeedsInput, result.Status)
-		require.Equal(t, tools.AgentToolCodeInvalidArguments, result.Error.Code)
-		require.Equal(t, tools.AgentToolNextCorrectToolCall, result.NextStep)
-		require.Equal(t, "invalid_mode", result.Meta.SourceStatus)
-		require.Contains(t, result.Error.Message, "inspect")
-		require.Contains(t, result.Error.Message, "repair")
+		require.Equal(t, 1, runner.calls)
+		require.True(t, eng.instanceOpsRanThisTurn)
+		require.True(t, strings.HasPrefix(out, finalReplyPrefix))
 	}
 }
 
@@ -184,7 +175,6 @@ func TestInstanceOps_DeploymentGrantCoversMultipleRepairsAndPersistsAgentCursor(
 	require.True(t, strings.HasPrefix(out, finalReplyPrefix))
 	require.Equal(t, 0, confirmCalls, "the lane must not create entry or command-level UI cards")
 	require.Equal(t, 1, runner.calls)
-	require.True(t, runner.lastReq.RepairScopeAuthorized)
 	state, _, hydrated := eng.SessionStateSnapshot()
 	require.True(t, hydrated)
 	require.Equal(t, sessionID, state.PersistedInstanceOpsAgent.SessionID)
@@ -305,8 +295,6 @@ func TestInstanceOps_VerdictSurvivesAsTerminalReply(t *testing.T) {
 	require.Equal(t, 1, runner.calls)
 	require.Len(t, model.calls, 1, "finalReplyPrefix terminates the turn — no synthesis round after the verdict")
 	require.NotEmpty(t, runner.lastReq.TurnID, "the turn identity must reach the runner as the audit dedup key")
-	require.True(t, runner.lastReq.RepairScopeAuthorized,
-		"the deployment grant plus target proof authorizes in-scope guest repair without UI cards")
 	require.NotEmpty(t, runner.lastReq.Context.ConversationHistory)
 	current := runner.lastReq.Context.ConversationHistory[len(runner.lastReq.Context.ConversationHistory)-1]
 	require.Equal(t, opscontext.ConversationRoleUser, current.Role)

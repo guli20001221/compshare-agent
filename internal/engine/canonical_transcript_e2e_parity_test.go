@@ -48,11 +48,11 @@ func paritySystemMessage() openai.ChatCompletionMessage {
 // assembleNextTurn drives the engine one more turn and returns exactly what
 // would go to the provider.
 func assembleNextTurn(e *Engine, question string) []openai.ChatCompletionMessage {
+	e.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(e, question, "turn-parity", fixedBuildAt)
+	e.turnContextViewReady = true
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role: openai.ChatMessageRoleUser, Content: question,
 	})
-	e.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(e, question, "turn-parity", fixedBuildAt)
-	e.turnContextViewReady = true
 	return e.buildMessagesForLLM(centralAgentToolWindow(false, false))
 }
 
@@ -332,7 +332,7 @@ func TestHistoryUsesPersistenceAlignedEndpointText(t *testing.T) {
 		{Role: openai.ChatMessageRoleAssistant, Content: answer},
 	}}
 
-	on := eng.recentCompleteConversationPairs()
+	on := eng.recentConversationPairs()
 	require.Equal(t, []ConversationPair{{
 		User: security.RedactUserConversationText(question), Assistant: security.RedactAssistantConversationText(answer),
 	}}, on, "history uses the same endpoint forms that cold rehydration reads")

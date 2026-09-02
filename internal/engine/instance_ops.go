@@ -65,12 +65,6 @@ type InstanceOpsRequest struct {
 	// Context is the versioned, redacted reference data for the inner agent.
 	// It is independent from Task so observations cannot change the dedup hash.
 	Context opscontext.Context
-	// RepairScopeAuthorized is set only after the engine proves that autonomous writes are enabled
-	// and InstanceID is a current explicit or conversation-bound user_selected target. It authorizes
-	// guest-local, non-destructive repair steps that remain inside InstanceID + Task;
-	// the harness still hard-refuses irreversible/form/control-plane effects. Keeping the bit in the
-	// typed request makes a future direct caller fail closed instead of silently inheriting autonomy.
-	RepairScopeAuthorized bool
 }
 
 // Progress kinds emitted by a runner. Connected and command become live StepEvents; background_job

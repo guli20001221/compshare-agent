@@ -5046,7 +5046,7 @@ func messagesFromAgentContext(messages []openai.ChatCompletionMessage, view Agen
 		out = append(out, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleSystem, Content: card})
 	}
 	for _, pair := range view.RecentConversation {
-		if pair.User == "" || pair.Assistant == "" {
+		if pair.User == "" {
 			continue
 		}
 		// A usable transcript opens with the exact user question and closes with
@@ -5057,10 +5057,10 @@ func messagesFromAgentContext(messages []openai.ChatCompletionMessage, view Agen
 			out = append(out, pair.Transcript...)
 			continue
 		}
-		out = append(out,
-			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: pair.User},
-			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: pair.Assistant},
-		)
+		out = append(out, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: pair.User})
+		if pair.Assistant != "" {
+			out = append(out, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: pair.Assistant})
+		}
 	}
 	// Shared with the persisted canonical transcript so the stored record and
 	// the model's view can never disagree about the turn boundary.

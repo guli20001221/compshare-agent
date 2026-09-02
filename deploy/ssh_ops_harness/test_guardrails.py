@@ -39,6 +39,10 @@ CLASSIFY_CASES = [
     ("lsblk -f", "read_only"),                        # r2 FP: -f = --fs, not follow
     ("hostname", "read_only"),
     ("pstree -aps 63", "read_only"),
+    ("/root/miniconda3/bin/python3.10 --version", "read_only"),
+    ("/usr/bin/python3.10 -V", "read_only"),
+    ("/root/miniconda3/bin/python3.10 --version /tmp/change.py", "mutating"),
+    ("/root/miniconda3/bin/python3.10 --version > /tmp/version.txt", "mutating"),
     ("env -u CUDA_VISIBLE_DEVICES /root/miniconda3/bin/python3.10 -c 'import torch; print(torch.cuda.is_available()); print(torch.cuda.device_count())'", "read_only"),
     ("CUDA_VISIBLE_DEVICES=-1 /root/miniconda3/bin/python3.10 -c 'import torch; print(torch.cuda.is_available()); print(torch.cuda.device_count())'", "read_only"),
     ("CUDA_VISIBLE_DEVICES=0 touch /tmp/x", "mutating"),
@@ -302,6 +306,12 @@ CLASSIFY_CASES = [
     ("du -sh /root/* | sort -h | tail", "read_only"),       # glob under /root piped to safe filters
     ("cat /proc/net/tcp", "read_only"),                     # ss/netstat fallback: socket table
     ("cat /proc/net/tcp6", "read_only"),
+    ("cat /etc/resolv.conf", "read_only"),
+    ("cat /proc/net/dev", "read_only"),
+    ("cat /proc/net/route", "read_only"),
+    ("cat /etc/resolv.conf /proc/net/dev /proc/net/route", "read_only"),
+    ("cat /etc/resolv.conf > /tmp/resolver-copy", "mutating"),
+    ("cat /proc/net/route /root/.ssh/id_rsa", "mutating"),
     ("awk 'NR>1 && $4==\"0A\" {print}' /proc/net/tcp /proc/net/tcp6", "read_only"),
     ("cat /proc/net/tcp | awk '$4==\"0A\" {print}'", "read_only"),
     ("tr '\\0' ' ' < /proc/63/cmdline", "read_only"),
@@ -335,7 +345,7 @@ CLASSIFY_CASES = [
     ("du /var/lib/mysql", "mutating"),                      # /var not opened for du
     ("ls -la /root/models", "read_only"),                   # customer app metadata, never file content
     ("cat /root/.bashrc", "mutating"),                      # content read of /root stays refused
-    ("cat /proc/net/dev", "mutating"),                      # allowlist is EXACT — only tcp/udp added
+    ("cat /proc/net/unix", "mutating"),                     # network reads remain exact-path scoped
 
     # === F6: balanced quotes with no expansion are inert argv data ================================
     # Single quotes never expand. Double quotes are also safe after the raw substitution/variable

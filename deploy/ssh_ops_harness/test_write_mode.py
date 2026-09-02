@@ -1,9 +1,9 @@
-"""Offline gate for task-scoped repair and explicit inspection (no network / no SSH / no SDK).
+"""Offline gate for task-scoped repair and transport authorization (no network / no SSH / no SDK).
 
 Run:  python test_write_mode.py   ->  exits non-zero on ANY failure.
 
-The deployment remains repair-capable by default, while an explicit inspect tool call removes runtime
-write authority. Three repair-mode properties have to hold:
+The product has one repair-capable tool surface, bounded by the user's complete request.
+Three repair properties have to hold:
 
   1. commands positively proven read-only execute immediately;
   2. every other reversible guest-local effect runs under the one task-scope authorization;
@@ -50,7 +50,7 @@ def dispatch(command):
     run autonomously and which remain hard-refused.
     """
     harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw",
-                      "repair_scope_authorized": True})
+                      "allow_writes": True})
     del harness.AUDIT[:]
     with confirm_stub.approving():
         res = harness.run_command(command)
@@ -179,16 +179,12 @@ check("tool-desc-contract-stays-general",
           for token in ("filebrowser", "main.py", "/start.d/", "8188", "python -c")))
 check("tool-desc-contract-stays-focused", len(_WRITE_DESC) < 2000)
 
-_INSPECT_PROMPT = harness.system_prompt_for_scope(False)
-_INSPECT_DESC = flat(harness.tool_desc_for_scope(False))
-check("inspection-prompt-removes-repair-authorization",
-      "Authorization: inspect only" in _INSPECT_PROMPT and
-      "server has authorized this user-targeted in-instance repair" not in _INSPECT_PROMPT.lower())
-check("inspection-prompt-keeps-shared-evidence-and-outcome-contract",
-      _INSPECT_PROMPT.startswith(harness._SYSTEM_PROMPT_CORE) and
-      "## Final response" in _INSPECT_PROMPT and "已核实" in _INSPECT_PROMPT)
-check("inspection-tool-description-forbids-mutation-and-backgrounding",
-      "observation-only" in _INSPECT_DESC and "do not request background" in _INSPECT_DESC)
+check("single-prompt-preserves-user-inspection-constraints",
+      "Respect the complete user request" in _WRITE_PROMPT and
+      "for inspection-only or no-change requests, observe only" in _WRITE_PROMPT)
+check("single-prompt-has-no-mode-selector",
+      not hasattr(harness, "system_prompt_for_scope") and
+      not hasattr(harness, "tool_desc_for_scope"))
 
 # --- the description must not forbid what the executor allows ------------------------------------
 # The description must match executable policy: supported chaining, pipes and redirection cannot be
@@ -376,11 +372,11 @@ check("prompt-rule-verdict-starts-with-status",
       "no guest\nmutation ran" in _wp and
       "never describe a read-only check itself as a repair" in _wp)
 check("prompt-rule-verdict-stays-compact",
-      "Then include `已完成` and, only when needed, `下一步`" in _wp and
+      "Then include `已完成` and, when needed, `下一步`" in _wp and
       "结论 / 证据 / 确证vs推测" not in _wp)
 check("prompt-rule-own-failed-commands",
-      "attempts that ran but failed" in _wp and "label it as your action" in _wp and
-      "pending or denied operation as executed" in _wp)
+      "including failed\nattempts, as your action" in _wp and
+      "never label pending or denied operations executed" in _wp)
 # The verdict shape must NOT be delegated to a skill the model never opens.
 check("prompt-does-not-delegate-verdict-to-skill",
       "in the form `instance-repair` specifies" not in _wp)
@@ -390,12 +386,13 @@ check("prompt-within-verified-length-band", len(_wp) < 6000)
 # The four rules the deleted instance-repair skill carried now have to live where the model actually
 # reads them, or deleting it lost something. Each is asserted against the live prompt/description
 # rather than against a file, which is the whole point of the move.
-check("repair-rule-executed-section-survives", "In `已完成`" in _wp)
+check("repair-rule-executed-section-survives",
+      "`已完成`" in _wp and "List every executed state change" in _wp)
 check("repair-rule-long-job-lifecycle-survives",
       "run_in_background=true" in _td and "timed-out foreground command" in _td and
       "terminal poll frees the slot" in _td)
 check("repair-rule-own-failed-attempts-survives",
-      "attempts that ran but failed" in _wp and "label it as your action" in _wp)
+      "including failed\nattempts, as your action" in _wp)
 
 # The working root is the real boundary, and it outlived the skills. The CLI discovers content by
 # walking UP from cwd, so anything left on disk near it is reachable by the operations agent. Nothing

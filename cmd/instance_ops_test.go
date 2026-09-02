@@ -129,10 +129,9 @@ func TestInstanceOpsRunner_TaskScopeAuthorizationApprovesLegacyConfirm(t *testin
 	r := newInstanceOpsRunner(diag, noopDescriber{}, &fakeLimiter{allow: true})
 
 	_, err := r.Run(userCtx(), engine.InstanceOpsRequest{
-		TurnID:                "turn-scope-auth",
-		InstanceID:            "uhost-x",
-		Task:                  "修复服务",
-		RepairScopeAuthorized: true,
+		TurnID:     "turn-scope-auth",
+		InstanceID: "uhost-x",
+		Task:       "修复服务",
 	}, func(engine.InstanceOpsProgress) {})
 
 	require.NoError(t, err)
@@ -140,24 +139,23 @@ func TestInstanceOpsRunner_TaskScopeAuthorizationApprovesLegacyConfirm(t *testin
 	decision := diag.lastConfirm(sshops.ConfirmRequest{Command: "systemctl restart demo"})
 	require.True(t, decision.Approved)
 	require.Empty(t, decision.TerminalReason)
-	require.True(t, diag.lastContext.RepairScopeAuthorized,
-		"the trusted request bit must reach the private harness context")
 }
 
-// A direct caller cannot smuggle authorization through Context: only the engine request bit is
-// trusted. Keeping the confirmer nil makes Service's existing write-mode precondition fail closed.
-func TestInstanceOpsRunner_MissingTaskScopeAuthorizationDoesNotConstructLegacyConfirmer(t *testing.T) {
-	diag := &fakeDiagnoser{output: "不应执行"}
+func TestInstanceOpsRunner_InspectionRequestKeepsTheSamePrivateTransport(t *testing.T) {
+	diag := &fakeDiagnoser{output: "已核实"}
 	r := newInstanceOpsRunner(diag, noopDescriber{}, &fakeLimiter{allow: true})
+	modelContext := opscontext.Context{ConversationHistory: []opscontext.ConversationMessage{{
+		Role: opscontext.ConversationRoleUser, Content: "只检查 uhost-x 的服务，不要修改",
+	}}}
 
 	_, err := r.Run(userCtx(), engine.InstanceOpsRequest{
-		TurnID: "turn-no-auth", InstanceID: "uhost-x", Task: "修复服务",
-		Context: opscontext.Context{RepairScopeAuthorized: true},
+		TurnID: "turn-inspect", InstanceID: "uhost-x", Task: "检查服务",
+		Context: modelContext,
 	}, func(engine.InstanceOpsProgress) {})
 
 	require.NoError(t, err)
-	require.Nil(t, diag.lastConfirm)
-	require.False(t, diag.lastContext.RepairScopeAuthorized)
+	require.NotNil(t, diag.lastConfirm)
+	require.Equal(t, modelContext, diag.lastContext)
 }
 
 // The activity stream: one synthesized "connected" (exactly once, before the first command) then one

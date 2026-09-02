@@ -2,6 +2,8 @@
 
 平台 API 看不到实例内部。生产开启写能力且服务器能证明用户明确选中了目标实例后，助手通过受控工具观察平台入口和实例内部，
 再动手修复并验证，不弹入口卡或逐命令确认。同一会话里最后一次由用户明确选定的目标不因时间间隔失效；OCR、账号唯一实例、被动读取和模型自行选择不能替代用户的目标选择。
+外层工具只接收目标和 Task，不再由模型选择 inspect/repair。完整用户请求中的“只检查、不修改”
+约束直接交给同一内层 Agent 遵守，不使用关键词分类或另一个权限模式。
 实例内策略优先“观察变更前状态 → 精确作用域 → 保留回滚 → 事后验证”；普通服务
 disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in 都可在该范围内执行。只有不可恢复的数据/启动/登录通道损失，或越过租户、控制面
 边界的动作才硬拒绝；重启关机、改账号密码、关 SSH/网络也在这条边界内。审计 fail-closed：
@@ -36,6 +38,8 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
 
 平台入口 URL 及 SSH 地址只在 Go→harness 的 stdin 私有握手里存在；它们不进入 task、prompt、
 模型输出或审计。平台元数据、Guest listener、应用响应和 runner 视角的外部探测仍是四层不同证据。
+部署授权和用户目标校验通过后，服务器回调在私有握手中提供 `allow_writes`；它不属于模型工具
+参数。缺少回调的底层调用拒绝写入。混部时旧 harness 的逐命令协议由服务器内部应答，不等待用户确认。
 当前未回答的 user 消息与最近的完整 user/assistant 对话会在角色化、脱敏和整轮预算后组成一条
 连续历史送给内层 Agent，因而
 “按上面的来”可以承接助手上一轮已经确认的参数，而不是依赖关键词或 planner 改写。V3+ 有完整
@@ -70,7 +74,7 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
 PostgreSQL 的 SessionState V10 只保存会话 UUID、稳定工作目录 UUID、实例 ID、契约/模型、conversation anchor 和时间，
 不保存对话、命令或输出；
 换实例、契约/模型变化、本地记录缺失或 Pod 被重建时都会诚实地开始新会话；墙钟时间本身不会切断同一会话的续接。
-当前 Agent session contract v3 另保存一枚 64 个小写十六进制字符的 SHA-256 conversation anchor，只表示 inner SDK 已经收到外层对话到哪个位置；
+当前 Agent session contract v5 绑定统一工具与授权语义，并保存一枚 64 个小写十六进制字符的 SHA-256 conversation anchor，只表示 inner SDK 已经收到外层对话到哪个位置；
 它不含对话文本。Go 始终在私有握手里发送完整的有界快照和已送达前缀长度；harness 仅在本地 SDK
 transcript 确实存在时把 prompt 收敛为新增后缀，本地记录缺失则以完整快照 fresh start。harness 只在
 V3/V4 角色完整上下文进入真实模型回合后回执该 anchor；旧/不支持的 context、鉴权失败或模型未启动都不能前移它。
@@ -113,7 +117,8 @@ SDK 在 `initialize` 等待 60 秒后超时；harness 会在同一个已选 npm 
    ORDER BY started_at DESC LIMIT 5;
    ```
 
-   正常是 `phase=read_write`、`disposition=ok`。表里只有 who / which instance / 何时 / 结果 /
+   正常是 `phase=read_write`、`disposition=ok`。`phase` 记录服务器提供的能力，不证明实际执行过写入；
+   “只检查”请求也使用这条通道，实际变更应依据命令审计和最终证据判断。表里只有 who / which instance / 何时 / 结果 /
    字节数和聚合指标，**没有任何存放凭据或原始命令的列**。
 
    **`finished_at IS NOT NULL` 这个条件不是可选的**：`Begin` 写入的 `started` 行记的是本次

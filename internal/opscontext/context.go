@@ -33,11 +33,9 @@ const (
 	SchemaVersionPortsMerged = 1
 
 	// AgentSessionContract is the prompt/tool/context contract bound to an opaque
-	// Claude SDK continuation cursor. Version 4 includes the v5 platform-fact
-	// vocabulary; a v3 transcript must start fresh rather than interpret the new
-	// runtime and monitor-provenance facts under the old contract. All transport
-	// layers compare this one value.
-	AgentSessionContract = "sshops-agent-v4"
+	// Claude SDK continuation cursor. All transport layers compare this value;
+	// incompatible prompt, tool or authorization changes start a fresh transcript.
+	AgentSessionContract = "sshops-agent-v5"
 
 	StatusKnown       = "known"
 	StatusUnknown     = "unknown"
@@ -117,11 +115,6 @@ type Context struct {
 	// and uses it solely to refuse a second untrackable background launch. Reads and separately
 	// approved foreground repairs remain available.
 	BackgroundJobSlotBusy bool `json:"-"`
-	// RepairScopeAuthorized records the server-side entry authorization for this one lane run. It is
-	// never model input and never persisted by this package. The harness uses it only to distinguish
-	// the current task-scoped repair contract from an older caller that still requires one approval
-	// round-trip per guest mutation. Destructive/form/control-plane gates remain independent.
-	RepairScopeAuthorized bool `json:"-"`
 	// AgentSession is an opaque SDK continuation cursor owned by the current product session and
 	// target instance. It contains no transcript, command, output or credential. The harness may
 	// resume it only under the same contract/model and stable control-plane working directory.

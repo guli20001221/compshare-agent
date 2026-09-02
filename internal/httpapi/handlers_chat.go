@@ -495,6 +495,9 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		TurnID:       base.RequestUUID,
 		ImageContext: prep.ocrText,
 		OnTextDelta: func(s string) {
+			if streamCtx.Err() != nil {
+				return
+			}
 			if firstToken.IsZero() {
 				firstToken = time.Now()
 			}
@@ -535,14 +538,6 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	// detached from streamCtx, bounded, best-effort, and still fail-closed when
 	// prepareChat could not parse/recognize the stored envelope.
 	defer h.persistSessionStateBestEffort(base.Owner, sessionID, agent, prep)
-	if chatErr == nil && !tokenEmitted && reply != "" {
-		if firstToken.IsZero() {
-			firstToken = time.Now()
-		}
-		tokenEmitted = true
-		_ = writeVisibleEvent(sw, traceRecorder, "token", tokenEvent{Text: reply})
-	}
-
 	latencyMs := int(time.Since(start).Milliseconds())
 	ttftMs := latencyMs
 	if !firstToken.IsZero() {
@@ -551,9 +546,20 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 
 	// Client disconnected.
 	if errors.Is(chatErr, context.Canceled) || errors.Is(streamCtx.Err(), context.Canceled) {
-		finishTrace(chatErr)
+		terminalErr := chatErr
+		if errors.Is(streamCtx.Err(), context.Canceled) {
+			// A tool may have converted its runner error into a deterministic
+			// reply. The transport still ended by cancellation, even when the
+			// engine returned nil; trace and message persistence must agree.
+			terminalErr = streamCtx.Err()
+		}
+		finishTrace(terminalErr)
+		content := abortedAssistantMessage
+		if summary := agent.InstanceOpsInterruptionSummary(); summary != "" {
+			content += "\n\n" + summary
+		}
 		_ = h.persistAssistant(base.Owner, assistantMsgID,
-			store.AssistantPatch{Content: abortedAssistantMessage, Status: "aborted"})
+			store.AssistantPatch{Content: security.RedactAssistantConversationText(content), Status: "aborted"})
 		return
 	}
 
@@ -574,6 +580,9 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	}
 
 	// Success.
+	if !tokenEmitted && reply != "" {
+		_ = writeVisibleEvent(sw, traceRecorder, "token", tokenEvent{Text: reply})
+	}
 	finishTrace(nil)
 	inputTokens := usage.PromptTokens
 	outputTokens := usage.CompletionTokens

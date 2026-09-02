@@ -123,9 +123,8 @@ func TestLiveOpsTaskScopeCanary(t *testing.T) {
 		supervisor.SessionRoot = root
 	}
 	modelContext := opscontext.Context{
-		SchemaVersion:         opscontext.SchemaVersion,
-		RepairScopeAuthorized: true,
-		ConversationHistory:   []opscontext.ConversationMessage{{Role: opscontext.ConversationRoleUser, Content: task}},
+		SchemaVersion:       opscontext.SchemaVersion,
+		ConversationHistory: []opscontext.ConversationMessage{{Role: opscontext.ConversationRoleUser, Content: task}},
 	}
 	if raw := strings.TrimSpace(os.Getenv("SSHH_CONVERSATION_JSON")); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &modelContext.ConversationHistory); err != nil {
@@ -334,7 +333,6 @@ finally:
 			Status: opscontext.StatusKnown,
 		}},
 		BridgeConversationAnchor: opscontext.ConversationAnchor(history),
-		RepairScopeAuthorized:    true,
 		AgentSession: &opscontext.AgentSession{
 			SessionID: sessionID, WorkdirID: sessionID, Contract: opscontext.AgentSessionContract,
 		},
@@ -430,7 +428,6 @@ func TestLiveCase006AbortResumeCanary(t *testing.T) {
 		SchemaVersion:            opscontext.SchemaVersion,
 		ConversationHistory:      firstHistory,
 		BridgeConversationAnchor: opscontext.ConversationAnchor(firstHistory),
-		RepairScopeAuthorized:    true,
 		AgentSession: &opscontext.AgentSession{
 			SessionID: workdirID, WorkdirID: workdirID, Contract: opscontext.AgentSessionContract,
 		},
@@ -469,7 +466,6 @@ func TestLiveCase006AbortResumeCanary(t *testing.T) {
 		SchemaVersion:            opscontext.SchemaVersion,
 		ConversationHistory:      fullHistory,
 		BridgeConversationAnchor: opscontext.ConversationAnchor(fullHistory),
-		RepairScopeAuthorized:    true,
 		AgentSession: &opscontext.AgentSession{
 			SessionID: firstReceipt.AgentSessionID, WorkdirID: workdirID,
 			Contract: opscontext.AgentSessionContract, Model: supervisor.Model, Resume: true,

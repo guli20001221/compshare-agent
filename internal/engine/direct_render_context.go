@@ -11,8 +11,9 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
-// ConversationPair is a committed, complete exchange. It deliberately excludes
-// the current unanswered user message and every raw tool transcript.
+// ConversationPair is a committed user endpoint with an optional final assistant
+// answer. An interrupted user remains an exchange even without an answer. The
+// current turn is appended after context compilation, outside this history view.
 type ConversationPair struct {
 	User      string
 	Assistant string
@@ -33,8 +34,8 @@ type AgentContext struct {
 	BuiltAtUnix        int64
 }
 
-// maxReplayedHistoryRunes is the canonical history-detail budget. All complete
-// user/assistant exchanges remain in the derived history while their plain text
+// maxReplayedHistoryRunes is the canonical history-detail budget. All user
+// endpoints and their available final answers remain in history while plain text
 // fits this budget; only older tool-call/tool-result detail is compacted first.
 // This keeps the actual conversation continuous without introducing an LLM
 // summary, a second memory store, or a hot/cold-only state.
@@ -67,7 +68,7 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 		BuiltAtUnix:     buildAt.Unix(),
 	}
 	if e != nil {
-		view.RecentConversation = e.recentCompleteConversationPairs()
+		view.RecentConversation = e.recentConversationPairs()
 		if id, name := e.singleRegistryInstance(); id != "" {
 			view.SelectedEntities = append(view.SelectedEntities, SelectedEntityHint{
 				Kind: "instance", ID: id, Name: name, Source: "account_registry_single", Freshness: ContinuityFreshnessFresh,
@@ -101,31 +102,43 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 	return cloneAgentContext(view)
 }
 
-// recentCompleteConversationForTaskSpec projects only complete plain-text
-// user/assistant pairs. The current unanswered user message and raw tool
-// transcripts are excluded. This is understanding-only context; the renderer's
-// factual validator still receives EvidenceEnvelope alone. A rune budget, not a
-// message count, bounds the result.
-func (e *Engine) recentCompleteConversationPairs() []ConversationPair {
+// recentConversationPairs projects the existing canonical history at turn entry,
+// before the new user is appended. User-only interrupted turns are retained; raw
+// tool traffic is not. Only recorded complete exchanges can add tool evidence.
+// The existing rune budget, not a message count, bounds the result.
+func (e *Engine) recentConversationPairs() []ConversationPair {
 	if e == nil || len(e.messages) == 0 {
 		return nil
 	}
-	var pendingUser string
-	pairs := make([]ConversationPair, 0, len(e.messages)/2)
-	for _, message := range e.messages {
+	pairs := e.attachRecordedTranscripts(conversationPairsFromMessages(e.messages))
+	return budgetReplayedPairs(pairs, maxReplayedHistoryRunes)
+}
+
+// conversationPairsFromMessages is the shared role projection for the outer
+// model and the instance-ops bridge. A new user starts a new exchange rather than
+// overwriting an unanswered one. Unpaired assistants and raw tool traffic cannot
+// invent answers for those interrupted requests.
+func conversationPairsFromMessages(messages []openai.ChatCompletionMessage) []ConversationPair {
+	var pairs []ConversationPair
+	pendingPair := -1
+	for _, message := range messages {
 		switch message.Role {
 		case openai.ChatMessageRoleUser:
-			pendingUser = historyConversationText(message.Role, message.Content)
+			pendingPair = -1
+			if content := historyConversationText(message.Role, message.Content); strings.TrimSpace(content) != "" {
+				pairs = append(pairs, ConversationPair{User: content})
+				pendingPair = len(pairs) - 1
+			}
 		case openai.ChatMessageRoleAssistant:
-			if pendingUser == "" || strings.TrimSpace(message.Content) == "" || len(message.ToolCalls) > 0 {
+			if pendingPair < 0 ||
+				strings.TrimSpace(message.Content) == "" || len(message.ToolCalls) > 0 {
 				continue
 			}
-			pairs = append(pairs, ConversationPair{User: pendingUser, Assistant: historyConversationText(message.Role, message.Content)})
-			pendingUser = ""
+			pairs[pendingPair].Assistant = historyConversationText(message.Role, message.Content)
+			pendingPair = -1
 		}
 	}
-	pairs = e.attachRecordedTranscripts(pairs)
-	return budgetReplayedPairs(pairs, maxReplayedHistoryRunes)
+	return pairs
 }
 
 // attachRecordedTranscripts pairs each replayed exchange with the tool work
@@ -167,6 +180,9 @@ func (e *Engine) attachRecordedTranscripts(pairs []ConversationPair) []Conversat
 		unconsumed[key] = append(unconsumed[key], j)
 	}
 	for i := range pairs {
+		if pairs[i].Assistant == "" {
+			continue
+		}
 		key := recordedTurnKey(pairs[i].User, pairs[i].Assistant)
 		queue := unconsumed[key]
 		if len(queue) == 0 {
@@ -191,7 +207,7 @@ func recordedTurnKey(user, assistant string) string {
 
 // budgetReplayedPairs compacts one canonical history view in two tiers:
 //
-//   - retain complete plain user/assistant exchanges whenever they fit;
+//   - retain plain user endpoints and available final answers whenever they fit;
 //   - retain projected tool detail from the newest exchanges with the remaining
 //     budget, and downgrade older exchanges to their original plain pair.
 //
@@ -246,7 +262,7 @@ func budgetReplayedPairs(pairs []ConversationPair, budgetRunes int) []Conversati
 }
 
 // tailReplayedPairs is the only fallback when plain dialogue itself exceeds the
-// budget. It keeps newest complete exchanges, never a cut message or orphaned
+// budget. It keeps newest whole exchanges, never a cut message or orphaned
 // tool result. The newest exchange remains even when it alone exceeds budget.
 func tailReplayedPairs(pairs []ConversationPair, budgetRunes int) []ConversationPair {
 	spent := 0
@@ -271,7 +287,7 @@ func conversationPairPlainRunes(pair ConversationPair) int {
 // with an explicit marker, but the user question and final assistant answer are
 // the continuous conversation and must survive byte-for-byte.
 func transcriptReplaysCompletePair(pair ConversationPair) bool {
-	if len(pair.Transcript) < 2 {
+	if pair.Assistant == "" || len(pair.Transcript) < 2 {
 		return false
 	}
 	first, last := pair.Transcript[0], pair.Transcript[len(pair.Transcript)-1]

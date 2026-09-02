@@ -524,28 +524,26 @@ func TestInventoryToolDescriptionsSetRoutingBoundaries(t *testing.T) {
 	mustContain(t, descriptions["DiagnoseInstanceInternals"], "不从列表自选")
 	mustContain(t, descriptions["DiagnoseInstanceInternals"], "不因时间失效")
 	mustContain(t, descriptions["DiagnoseInstanceInternals"], "不弹实例内或逐命令确认")
-	mustContain(t, descriptions["DiagnoseInstanceInternals"], "Mode=repair")
+	mustContain(t, descriptions["DiagnoseInstanceInternals"], "可自主安装/下载")
 	mustContain(t, descriptions["DiagnoseInstanceInternals"], "不只给手工命令")
 	mustContain(t, descriptions["DiagnoseInstanceInternals"], "文件/目录/日志")
-	mustContain(t, descriptions["DiagnoseInstanceInternals"], "Mode=inspect")
+	mustContain(t, descriptions["DiagnoseInstanceInternals"], "明确只检查、不修改时仅观察")
 	mustContain(t, descriptions["DiagnoseInstanceInternals"], "实测诊断服务到 SSH 入口")
 }
 
-func TestInstanceOpsToolRequiresAnExplicitRuntimeMode(t *testing.T) {
+func TestInstanceOpsToolHasOnlyTargetAndTaskArguments(t *testing.T) {
 	for _, tool := range Registry {
 		if tool.Function == nil || tool.Function.Name != "DiagnoseInstanceInternals" {
 			continue
 		}
 		params, _ := tool.Function.Parameters.(map[string]any)
 		properties, _ := params["properties"].(map[string]any)
-		mode, _ := properties["Mode"].(map[string]any)
-		enum, _ := mode["enum"].([]string)
-		if !slices.Equal(enum, []string{"inspect", "repair"}) {
-			t.Fatalf("Mode enum = %#v", enum)
+		if len(properties) != 2 || properties["UHostId"] == nil || properties["Task"] == nil {
+			t.Fatalf("unexpected instance-operation arguments: %#v", properties)
 		}
 		required, _ := params["required"].([]string)
-		if !slices.Contains(required, "Mode") {
-			t.Fatalf("Mode is not required: %#v", required)
+		if !slices.Equal(required, []string{"UHostId", "Task"}) {
+			t.Fatalf("unexpected required arguments: %#v", required)
 		}
 		return
 	}

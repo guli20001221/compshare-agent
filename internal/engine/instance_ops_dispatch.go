@@ -85,11 +85,6 @@ func instanceOpsNoSSHTargetObservation(action string) string {
 // the model. A bare confirmation or a console-only selection does not identify a
 // target in this conversation.
 const (
-	// A malformed Mode is the model's error, not a request for the user to learn
-	// internal enum values. Keep the activity stream customer-facing and route
-	// the exact correction through the model-only tool result.
-	instanceOpsModeRefusalForUser  = "实例内排查尚未开始，正在更正调用参数。"
-	instanceOpsModeRefusalForModel = "Mode 参数无效。请将 Mode 设置为 inspect（只读检查）或 repair（可恢复修复），然后重新发出同一次工具调用。"
 	// INV-11 counts an authorized runner attempt, including one that failed
 	// before Guest entry. The wording must not claim that entry occurred.
 	instanceOpsRepeatRefusalForUser  = "本回合已发起过一次实例内排查请求，本次重复调用没有执行。"
@@ -117,8 +112,8 @@ const (
 //
 // Ordering:
 //   - nil-runner  → feature disabled, inert refusal, no slot consumed (INV-10)
-//   - param check → UHostId + Task required
 //   - write grant → the deployment must have enabled autonomous mutating tools
+//   - param check → UHostId + Task required
 //   - target proof → the user named/selected this exact instance (never pick a list row)
 //   - INV-11 gate → at most one in-instance run per turn
 //   - Run         → progress→StepEvent live; verdict → finalReplyPrefix (unrewritable)
@@ -143,7 +138,6 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	filtered := e.safeExecutor.FilterArgs(action, args)
 	instanceIDArg, _ := filtered["UHostId"].(string)
 	taskArg, _ := filtered["Task"].(string)
-	modeArg, _ := filtered["Mode"].(string)
 	instanceID := strings.TrimSpace(instanceIDArg)
 	task := strings.TrimSpace(taskArg)
 	if instanceID == "" || task == "" {
@@ -165,24 +159,6 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 			})
 			return tools.MarshalAgentToolResult(agentResult)
 		}
-	}
-	// Mode is a capability boundary, not merely prompt wording. Explicit inspection reaches the
-	// same SSH/read surface while the private repair bit stays false, so every mutation is refused
-	// by the harness at runtime. Missing and unknown values fail closed instead of silently granting
-	// repair authority to a malformed/replayed model call.
-	repairScopeAuthorized := false
-	switch strings.ToLower(strings.TrimSpace(modeArg)) {
-	case "repair":
-		repairScopeAuthorized = true
-	case "inspect":
-	default:
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: instanceOpsModeRefusalForUser})
-		return tools.MarshalAgentToolResult(tools.AgentToolInvalidToolCall(
-			action,
-			tools.AgentToolCodeInvalidArguments,
-			instanceOpsModeRefusalForModel,
-			tools.AgentToolMeta{SourceStatus: "invalid_mode"},
-		))
 	}
 	// Build the local-only portion before any platform call. A planner that copied
 	// a user Authorization value into Task must not move it into audit or activity;
@@ -276,11 +252,10 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	modelContext.BackgroundJobSlotBusy = e.backgroundJobSlotBusyForOtherInstance(instanceID)
 	modelContext.AgentSession = e.instanceOpsAgentSessionForRun(instanceID)
 	verdict, err := e.instanceOps.Run(ctx, InstanceOpsRequest{
-		TurnID:                e.currentTurnID,
-		InstanceID:            instanceID,
-		Task:                  task,
-		Context:               modelContext,
-		RepairScopeAuthorized: repairScopeAuthorized,
+		TurnID:     e.currentTurnID,
+		InstanceID: instanceID,
+		Task:       task,
+		Context:    modelContext,
 	}, onProgress)
 	if err != nil {
 		// A control-plane NotFound result is authoritative for this target: its guest job can no

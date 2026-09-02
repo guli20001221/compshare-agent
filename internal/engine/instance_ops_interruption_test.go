@@ -147,6 +147,31 @@ func TestInterruptionNoticeIsStashedOnlyWhenSomethingSettled(t *testing.T) {
 	require.NotNil(t, e.pendingInstanceOpsInterruption)
 }
 
+func TestInstanceOpsInterruptionSummaryIsReadOnlyAndUsesCurrentTurn(t *testing.T) {
+	var missing *Engine
+	require.Empty(t, missing.InstanceOpsInterruptionSummary())
+	e := &Engine{}
+	require.Empty(t, e.InstanceOpsInterruptionSummary())
+	e.observeInstanceOpsBackgroundJob("uhost-x", "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "running", "安装依赖")
+	e.recordInstanceOpsInterruption("uhost-x", []instanceOpsSettledStep{
+		settled("systemctl start app", "mutating", "ran"),
+	})
+	pending := e.pendingInstanceOpsInterruption
+	state := e.sessionState
+	summary := e.InstanceOpsInterruptionSummary()
+	require.Contains(t, summary, "本轮对实例 uhost-x")
+	require.Contains(t, summary, "已确认执行 1 条命令")
+	require.Contains(t, summary, "不会重新启动")
+	require.Equal(t, summary, e.InstanceOpsInterruptionSummary())
+	require.Same(t, pending, e.pendingInstanceOpsInterruption, "reading a persistence summary must not consume the next-turn notice")
+	require.Equal(t, state, e.sessionState, "rendering must not alter job/session continuation state")
+	var emitted []StepEvent
+	e.emitPendingInstanceOpsInterruption(func(event StepEvent) { emitted = append(emitted, event) })
+	require.Len(t, emitted, 1)
+	require.Contains(t, emitted[0].Message, "上一轮对实例 uhost-x")
+	require.Empty(t, e.InstanceOpsInterruptionSummary())
+}
+
 // TestInterruptionNoticeIsDeliveredOnceAndOnlyOnce: an interrupted run that narrated itself on every
 // subsequent turn would be worse than silence — the user cannot tell a fresh interruption from an
 // old one being replayed.

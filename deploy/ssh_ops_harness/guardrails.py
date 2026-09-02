@@ -524,7 +524,7 @@ _SAFE_READ_PREFIXES = (
 )
 _SAFE_READ_EXACT = {
     "/etc/os-release", "/etc/lsb-release", "/etc/hostname", "/etc/machine-id",
-    "/etc/timezone", "/etc/issue",
+    "/etc/timezone", "/etc/issue", "/etc/resolv.conf",
     "/entrypoint.sh",                                    # F10: container launch script
     # F8: mount/partition config — the core of data-disk "为什么 df 看不到我的盘" diagnosis. A
     # fresh cloud data disk is raw+unmounted, and a WRONG /etc/fstab entry is the classic reason a
@@ -539,6 +539,7 @@ _SAFE_READ_EXACT = {
     # socket tables — the ss/netstat fallback for port-state diagnosis when neither tool is
     # installed (a minimal container). Hex addr/port/state/uid/inode; no user file content, no secret.
     "/proc/net/tcp", "/proc/net/tcp6", "/proc/net/udp", "/proc/net/udp6",
+    "/proc/net/dev", "/proc/net/route",
     "/usr/local/cuda/version.txt", "/usr/local/cuda/version.json",
 }
 # Per-process diagnostic files. `environ` remains excluded and is available only through the
@@ -1893,8 +1894,8 @@ def _py_module_run_is_readonly(argv) -> bool:
 
 
 def _is_readonly_py_invocation(binary: str, seg: str) -> bool:
-    """True for `pythonX -c <provably read-only payload>` and `pythonX -m <read-only
-    module>`. Any other interpreter, extra flags, or an unprovable payload returns False
+    """True for Python version/help flags, `-c <provably read-only payload>` and
+    `-m <read-only module>`. Other flags or an unprovable payload return False
     (so the caller refuses it). Fail closed on any parse error."""
     if not _PYTHON_BINARY.fullmatch(binary):
         return False
@@ -1902,6 +1903,8 @@ def _is_readonly_py_invocation(binary: str, seg: str) -> bool:
         argv = shlex.split(seg)
     except ValueError:
         return False
+    if len(argv) > 1 and all(_VERSION_ONLY.fullmatch(arg) for arg in argv[1:]):
+        return True
     if len(argv) == 3 and argv[1] == "-c":               # exactly `python -c <payload>`
         return _py_payload_is_readonly(argv[2])
     if len(argv) >= 3 and argv[1] == "-m":

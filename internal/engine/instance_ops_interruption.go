@@ -13,8 +13,9 @@ import (
 // An interrupted diagnosis may already have changed the instance. The next turn
 // therefore receives one user-only activity notice containing only steps whose
 // outcome the server observed. It is not model history and never resumes work.
-// The notice is intentionally session-memory-only; process restart and eviction
-// simply lose it rather than guessing from an incomplete audit row.
+// Its steps remain session-memory-only. The response gateway may persist the
+// bounded rendered summary in the interrupted assistant row, without replaying
+// commands or turning the notice into execution state.
 
 // maxInterruptionNoticeCommands bounds the listed commands. A run that settled more than this before
 // dying is already pathological; the count line still reports the true totals.
@@ -234,6 +235,17 @@ func (e *Engine) emitPendingInstanceOpsInterruption(onStep func(StepEvent)) {
 	}
 }
 
+// InstanceOpsInterruptionSummary returns the observed activity for an interrupted
+// current turn. It neither drains the next-turn notice nor changes the durable
+// background-job or Agent SDK cursor. The gateway persists this deterministic
+// summary instead of a partial model reply when the client has disconnected.
+func (e *Engine) InstanceOpsInterruptionSummary() string {
+	if e == nil || e.pendingInstanceOpsInterruption == nil {
+		return ""
+	}
+	return renderInstanceOpsInterruptionSummary(*e.pendingInstanceOpsInterruption, "本轮")
+}
+
 // instanceOpsInterruptionAction is the step frame's Action. It is NOT a tool name — nothing
 // dispatches on it — and it exists so the console can label and style the frame; step_label.go
 // carries its Chinese label.
@@ -242,6 +254,10 @@ const instanceOpsInterruptionAction = "InstanceOpsInterrupted"
 // renderInstanceOpsInterruptionNotice builds the user-facing text. Deterministic: same input, same
 // bytes, no model involved.
 func renderInstanceOpsInterruptionNotice(notice instanceOpsInterruption) string {
+	return renderInstanceOpsInterruptionSummary(notice, "上一轮")
+}
+
+func renderInstanceOpsInterruptionSummary(notice instanceOpsInterruption, turn string) string {
 	ran, mayModify, refused, failed := 0, 0, 0, 0
 	for _, step := range notice.Steps {
 		switch step.Disposition {
@@ -258,7 +274,7 @@ func renderInstanceOpsInterruptionNotice(notice instanceOpsInterruption) string 
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "上一轮对实例 %s 的实例内排查没有正常结束。", notice.InstanceID)
+	fmt.Fprintf(&b, "%s对实例 %s 的实例内排查没有正常结束。", turn, notice.InstanceID)
 	if ran > 0 {
 		fmt.Fprintf(&b, "中断前已确认执行 %d 条命令", ran)
 		if mayModify > 0 {

@@ -46,13 +46,13 @@ func TestRawHistoryBudgetDoesNotNarrowReplayableConversation(t *testing.T) {
 	eng.messages = makePaddedHistory(pairs, padRunes)
 	require.Greater(t, assembledRequestRunes(eng.messages[1:]), maxRawHistoryRunes)
 
-	before := eng.recentCompleteConversationPairs()
+	before := eng.recentConversationPairs()
 	require.NotEmpty(t, before)
 	require.Less(t, len(before), pairs, "premise: the replay budget must be active")
 
 	eng.trimHistory()
 	require.Less(t, len(eng.messages), 1+2*pairs, "premise: raw trimming must occur")
-	assert.Equal(t, before, eng.recentCompleteConversationPairs(),
+	assert.Equal(t, before, eng.recentConversationPairs(),
 		"the source-history budget may not remove an exchange the replay budget kept")
 }
 

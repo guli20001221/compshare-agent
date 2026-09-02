@@ -18,15 +18,13 @@ func findInstanceOpsTool(window []openai.Tool) *string {
 	return nil
 }
 
-// The lane has one target and transport contract with two runtime scopes: observation-only inspect
-// and autonomous recoverable repair. Neither scope creates UI confirmation cards.
-func TestInstanceOpsDescriptionOffersExplicitInspectAndRepairScopes(t *testing.T) {
+func TestInstanceOpsDescriptionUsesOneTaskScopedRepairContract(t *testing.T) {
 	desc := findInstanceOpsTool(centralAgentToolWindow(true, true))
 	if desc == nil {
 		t.Fatal("DiagnoseInstanceInternals missing from the window with the lane on")
 	}
-	if !strings.Contains(*desc, "Mode=inspect") || !strings.Contains(*desc, "Mode=repair") {
-		t.Fatalf("description omits the typed inspection/repair boundary: %q", *desc)
+	if strings.Contains(*desc, "Mode=") || !strings.Contains(*desc, "明确只检查、不修改时仅观察") {
+		t.Fatalf("description must preserve user constraints without a model-selected mode: %q", *desc)
 	}
 	if !strings.Contains(*desc, "不弹实例内或逐命令确认") {
 		t.Fatalf("description does not offer the card-free autonomous repair contract: %q", *desc)
