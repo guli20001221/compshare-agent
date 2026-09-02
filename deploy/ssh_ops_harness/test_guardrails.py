@@ -906,7 +906,21 @@ PROGRAM_WORD_SEARCH_LOOP = (
     "grep -Ein -C 3 'error|exception|traceback|queue|cancel|interrupt|killed|oom|out of memory|"
     "shutdown|disconnect|failed|sqlite|database|crash' \"$f\" | tail -160; done"
 )
+# Exact multi-command native-history probe from a real refusal. Label printing is data, not a
+# shell execution consumer; a diagnostic word in a later grep must not revoke the whole request.
+NATIVE_HISTORY_PRINTF_SEARCH = (
+    "printf '%s\\n' '--- native-01 markers ---'; grep -nE "
+    "'got prompt|Prompt executed|ERROR|Traceback|0%|100%|Killed|shutdown|exit|signal' "
+    "/root/sshops-behavior-history-20260902/logs/comfyui-native-01.log; "
+    "printf '%s\\n' '--- native-02 markers ---'; grep -nE "
+    "'got prompt|Prompt executed|ERROR|Traceback|0%|100%|Killed|shutdown|exit|signal' "
+    "/root/sshops-behavior-history-20260902/logs/comfyui-native-02.log; "
+    "printf '%s\\n' '--- native-03 markers ---'; grep -nE "
+    "'got prompt|Prompt executed|ERROR|Traceback|0%|100%|Killed|shutdown|exit|signal' "
+    "/root/sshops-behavior-history-20260902/logs/comfyui-native-03.log"
+)
 CLASSIFY_CASES += [
+    (NATIVE_HISTORY_PRINTF_SEARCH, "read_only"),
     (PROGRAM_WORD_SEARCH_LOOP, "mutating"),
     (PROGRAM_WORD_SEARCH_LOOP.replace("|shutdown", ""), "mutating"),
     ("grep -E 'shutdown|oom' /root/comfy.log", "read_only"),
@@ -917,7 +931,7 @@ CLASSIFY_CASES += [
     ("grep shutdown --help", "mutating"),
     ("cat /root/shutdown.log", "read_only"),
     ("/usr/bin/grep -E 'shutdown|oom' /root/comfy.log", "read_only"),
-    ("printf '%s' shutdown", "destructive"),
+    ("printf '%s' shutdown", "read_only"),
     ("echo shutdown | cat | grep shutdown | tail -5", "read_only"),
     ("echo shutdown; echo reboot", "read_only"),
     ("echo shutdown\ncat /root/reboot.log", "read_only"),
@@ -966,7 +980,7 @@ CLASSIFY_CASES += [
     ("echo ok # '\nshutdown\n# '", "destructive"),
     ('echo ok # "\nshutdown\n# "', "destructive"),
     (r'echo "escaped\" shutdown"', "destructive"),
-    (r"printf '%s\n' shutdown", "destructive"),
+    (r"printf '%s\n' shutdown", "read_only"),
     ('echo shutdown "${value@P}"', "destructive"),
     ('echo shutdown "$[value]"', "destructive"),
     ("printf -v x '%s%s%s' 'a[$' '(shutdown)' ']'; printf -v 'a[x]' hi", "destructive"),
@@ -976,7 +990,50 @@ CLASSIFY_CASES += [
     ("printf '%n' shutdown", "destructive"),
     ('echo "$(printf shutdown)"', "destructive"),
     ("grep shutdown /root/comfy.log > /tmp/read-result", "destructive"),
-    ("grep shutdown /root/comfy.log && true", "destructive"),
+    ("grep shutdown /root/comfy.log && true", "read_only"),
+    # Common data consumers use the same proof even when their read tier remains conservative.
+    ("printf '%s\\n' '# shutdown markers'; grep -C 3 shutdown /root/comfy.log", "mutating"),
+    ("printf 'shutdown\\n'", "read_only"),
+    ("printf -- '%s\\n' shutdown", "read_only"),
+    ("printf '%s=%08x %.2f\\n' shutdown 1 2", "read_only"),
+    ("printf '%s\\n' shutdown > /tmp/diagnostic.txt", "destructive"),
+    ("printf '%s\\n' shutdown > /etc/ssh/sshd_config", "destructive"),
+    ("printf '%s\\n' shutdown > /dev/nvme0n1", "destructive"),
+    ("printf '%s\\n' shutdown > /dev/vda", "destructive"),
+    ("printf '%s\\n' shutdown 1>&2", "read_only"),
+    ("dmesg -T | grep -Ei 'shutdown|reboot|halt|poweroff' | tail -50", "read_only"),
+    ("journalctl -n 100 --no-pager | grep -Ei 'shutdown|reboot|error'", "read_only"),
+    ("systemctl status shutdown-helper.service --no-pager", "read_only"),
+    ("grep -nE 'shutdown|reboot' /root/comfy.log 2>/dev/null | tail -20", "read_only"),
+    # Interpreter code is not a data-consumer proof. Keep the raw gate even for benign strings;
+    # the existing Python read-tier heuristic is not a binding/receiver execution analysis.
+    ('''python3 -c 'import json; print({"shutdown": True, "reboot": False})' ''', "destructive"),
+    ('''python3 -c 'import torch; print("shutdown diagnostic", torch.cuda.is_available())' ''', "destructive"),
+    ('''/opt/venv/bin/python3.12 -c 'print(open("/root/shutdown.log").read())' ''', "destructive"),
+    ('''python3 -c 'state={"shutdown": False}; print(state)' ''', "destructive"),
+    ('''python3 -c 'import os; print = os.system; print("shutdown -h now")' ''', "destructive"),
+    ('''python3 -c 'import os; len = os.system; len("shutdown -h now")' ''', "destructive"),
+    ('''python3 -c 'import os; import platform; platform = os; platform.system("shutdown -h now")' ''', "destructive"),
+    ('''python3 -c 'import os; import platform; platform.system = os.system; platform.system("shutdown -h now")' ''', "destructive"),
+    ('''python3 -c 'import os; os.system("shutdown -h now")' ''', "destructive"),
+    ('''python3 -c 'import subprocess; subprocess.run(["shutdown", "-h", "now"])' ''', "destructive"),
+    ('''python3 -c 'import os; [print("shutdown") for print in [os.system]]' ''', "destructive"),
+    ('''python3 -c 'import os; platform = os; platform.system("shutdown -h now")' ''', "destructive"),
+    ('''python3 -c 'import os; sysconfig = os; sysconfig.system("shutdown -h now")' ''', "destructive"),
+    ('''python3 -c 'from os import system as f; f("shutdown -h now"); from platform import system as f' ''', "destructive"),
+    ('''python3 -c 'import os; type("Runner", (), {"get": os.system}).get("shutdown -h now")' ''', "destructive"),
+    # Output conversion is deliberately not a shell-variable/format-program parser.
+    ("printf -- '%n' shutdown", "destructive"),
+    ("printf '%5n' shutdown", "destructive"),
+    ("printf '%*n' 1 shutdown", "destructive"),
+    ("printf '%s%n' marker shutdown", "destructive"),
+    ('''printf "$format" shutdown''', "destructive"),
+    ('''printf '%s\\n' shutdown | sh''', "destructive"),
+    ('''printf '%s\\n' shutdown | sudo sh''', "destructive"),
+    ('''printf '%s\\n' shutdown | sort --compress-program=sh''', "destructive"),
+    ('''printf '%s\\n' shutdown | python3 -c 'import os; os.system(input())' ''', "destructive"),
+    # No new heredoc grammar: an unproven interpreter payload retains the original raw gate.
+    ("python3 - <<'PY'\nprint('shutdown')\nPY", "destructive"),
 ]
 for program in (
     "unlink", "shred", "mkfs.ext4", "wipefs", "blkdiscard", "lvremove", "vgremove",

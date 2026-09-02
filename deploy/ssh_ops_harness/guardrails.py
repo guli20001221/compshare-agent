@@ -2575,34 +2575,27 @@ def _normalize_paths(cmd: str) -> str:
 
 
 def _program_words_are_data(cmd: str) -> bool:
-    """Prove only that bare program names are data, NOT that a command is read-only.
+    """Only known data consumers may suppress program-name matches in their arguments.
 
-    Reuse the existing text-filter/output-builtin vocabulary and single-for-loop recognizer.
-    Unknown consumers, wrappers and interpreters keep the original raw-word gate: looking only
-    at argv[0] would miss `printf shutdown | sh` or `sort --compress-program=shutdown`.
-    The latter is deliberately excluded together with all existing option-bearing writers.
-    No blind quote stripping, wrapper guessing or new shell grammar is used as a safety proof.
+    This does not grant read-only status or suppress effect/path rules. Unknown execution
+    consumers anywhere in the command retain the raw scan, including pipes into a shell.
     """
-    # The existing quote masks do not understand escapes. Do not trust their segment boundaries
-    # when any escape is present. Comments also make quotes after # inert in Bash but not in the
-    # masks, so retain the raw gate for every # rather than adding comment syntax to the lexer.
-    # Complex expansion, redirection, grouping and background syntax likewise retain the old
-    # gate; plain $name operands cannot turn these consumers into exec.
-    if ("\\" in cmd or "#" in cmd or _SUBSTITUTION.search(cmd) or "${" in cmd or "$[" in cmd):
+    # Reuse the existing splitter; do not extend its shell grammar. Quoted data escapes such as
+    # printf's '\n' do not affect boundaries. Escaped quotes, comments and unquoted escapes can.
+    if (_SUBSTITUTION.search(cmd) or "${" in cmd or "$[" in cmd
+            or re.search(r"\\['\"]", cmd)):
         return False
     try:
         shlex.split(cmd)
     except ValueError:
         return False
     masked = _mask_quoted(cmd)
-    if re.search(r"[&<>(){}]", masked):
+    # Keep real-file writes behind the raw gate; only reuse the existing null/FD redirections.
+    if re.search(r"[#&<>(){}\\]", _SAFE_REDIR.sub(" ", masked).replace("&&", "")):
         return False
     match = _LITERAL_FOR_LOOP.fullmatch(masked)
     body = cmd
     if match is not None:
-        # Only reuse the already recognized loop's body. A literal/glob value is data here,
-        # unlike the stricter finite literal expansion required for read-only authorization.
-        # Substitution was rejected above; other dynamic values keep the original gate.
         values = cmd[match.start("values"):match.end("values")]
         if re.search(r"[$|]", values):
             return False
@@ -2621,13 +2614,20 @@ def _program_words_are_data(cmd: str) -> bool:
         binary = _basename(program)
         if "/" in program and posixpath.dirname(program) not in _SYSTEM_PROGRAM_DIRS:
             return False
-        # Bash printf can assign variables (-v / %n), and array-subscript arithmetic can turn
-        # previously assembled data into code. Keep its raw gate rather than parse formats or
-        # assignment syntax. Its existing read-only classification is otherwise unchanged.
         if binary == "printf":
-            return False
+            args = tokens[1:]
+            if args and args[0] == "--":
+                args = args[1:]
+            # Only literal output conversions; -v, %n and computed formats can assign shell
+            # variables whose array subscripts execute arithmetic. Never infer their effects.
+            if (not args or args[0].startswith("-") or "$" in args[0]
+                    or re.fullmatch(r"(?:[^%]|%[-+ #0-9.*]*[diouxXfFeEgGaAcbsqQ%])*", args[0]) is None):
+                return False
+            continue
         if not (binary in _OUTPUT_BUILTINS or
-                (binary in _SAFE_FILTERS and binary not in _OUTPUT_FLAG_WRITERS)):
+                (binary in _SAFE_FILTERS and binary not in _OUTPUT_FLAG_WRITERS) or
+                (binary not in {"[", "sort"} and not _PYTHON_BINARY.fullmatch(binary)
+                 and _is_read_only(seg))):
             return False
     return True
 
