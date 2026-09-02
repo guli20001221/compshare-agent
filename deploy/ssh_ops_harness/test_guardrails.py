@@ -898,6 +898,98 @@ CLASSIFY_CASES = [
 ]
 
 
+# A real native-history log scan was refused solely because its regex contained "shutdown".
+# Program words in data must not become irreversible effects, but this dynamic/context grep is
+# still NOT a positively proven read: it remains mutating and uses the established repair scope.
+PROGRAM_WORD_SEARCH_LOOP = (
+    'for f in /root/sshops-behavior-history-20260902/logs/*.log; do echo "--- $f"; '
+    "grep -Ein -C 3 'error|exception|traceback|queue|cancel|interrupt|killed|oom|out of memory|"
+    "shutdown|disconnect|failed|sqlite|database|crash' \"$f\" | tail -160; done"
+)
+CLASSIFY_CASES += [
+    (PROGRAM_WORD_SEARCH_LOOP, "mutating"),
+    (PROGRAM_WORD_SEARCH_LOOP.replace("|shutdown", ""), "mutating"),
+    ("grep -E 'shutdown|oom' /root/comfy.log", "read_only"),
+    ("grep -E 'shutdown|oom' /var/log/syslog", "mutating"),
+    ("grep -E 'shutdown|oom' /etc/shadow", "mutating"),
+    ("grep -C 3 'shutdown|oom' /root/comfy.log", "mutating"),
+    ('grep shutdown "$log"', "mutating"),
+    ("grep shutdown --help", "mutating"),
+    ("cat /root/shutdown.log", "read_only"),
+    ("/usr/bin/grep -E 'shutdown|oom' /root/comfy.log", "read_only"),
+    ("printf '%s' shutdown", "destructive"),
+    ("echo shutdown | cat | grep shutdown | tail -5", "read_only"),
+    ("echo shutdown; echo reboot", "read_only"),
+    ("echo shutdown\ncat /root/reboot.log", "read_only"),
+    ('for x in shutdown reboot; do echo "$x"; done', "read_only"),
+    # Another effect rule is never suppressed just because all program words were data.
+    ("grep 'rm -rf /' /root/comfy.log", "destructive"),
+    ("echo 'dd of=/dev/vda'", "destructive"),
+    ("echo 'init 0'", "destructive"),
+    # Invocation, indirection, wrappers, argv consumers and stdin->code remain refused.
+    ("'shutdown' -h now", "destructive"),
+    ('"/sbin/shutdown" -h now', "destructive"),
+    ("sudo -n shutdown -h now", "destructive"),
+    ("/usr/bin/sudo shutdown -h now", "destructive"),
+    ("sudo -s shutdown", "destructive"),
+    ("nohup shutdown -h now", "destructive"),
+    ("timeout 3 shutdown -h now", "destructive"),
+    ("command shutdown -h now", "destructive"),
+    ("exec shutdown -h now", "destructive"),
+    ("env A=1 shutdown -h now", "destructive"),
+    ("env -S 'shutdown -h now'", "destructive"),
+    ("env --split-string='shutdown -h now'", "destructive"),
+    ("bash -ec 'shutdown -h now'", "destructive"),
+    ("busybox sh -c 'shutdown -h now'", "destructive"),
+    ("printf 'shutdown -h now' | sh", "destructive"),
+    ("echo shutdown | cat | /bin/bash", "destructive"),
+    ('echo shutdown | "$SHELL"', "destructive"),
+    ("eval shutdown", "destructive"),
+    ("python3 -c 'import os; os.system(\"shutdown -h now\")'", "destructive"),
+    ('x=shutdown; "$x" -h now', "destructive"),
+    ('for x in shutdown; do "$x" -h now; done', "destructive"),
+    ("if true; then shutdown -h now; fi", "destructive"),
+    ("echo ok & shutdown -h now", "destructive"),
+    ("case x in x) shutdown;; esac", "destructive"),
+    ("f() { shutdown; }; f", "destructive"),
+    (r"find /root -exec shutdown -h now \;", "destructive"),
+    ("sort --compress-program=shutdown /root/comfy.log", "destructive"),
+    ("echo shutdown | sort --compress-program=sh", "destructive"),
+    ("grep shutdown /root/comfy.log; shutdown --help", "destructive"),
+    ("shutdown --help", "destructive"),
+    # Known helper blind spots deliberately retain the raw gate, even for benign data.
+    ("wrapper --unknown shutdown", "destructive"),
+    ("nohup --unknown=shutdown echo ok", "destructive"),
+    ("sudo grep shutdown /root/comfy.log", "destructive"),
+    ("/root/grep shutdown /root/comfy.log", "destructive"),
+    ("grep 'shutdown /root/comfy.log", "destructive"),
+    ("echo ok # '\nshutdown\n# '", "destructive"),
+    ('echo ok # "\nshutdown\n# "', "destructive"),
+    (r'echo "escaped\" shutdown"', "destructive"),
+    (r"printf '%s\n' shutdown", "destructive"),
+    ('echo shutdown "${value@P}"', "destructive"),
+    ('echo shutdown "$[value]"', "destructive"),
+    ("printf -v x '%s%s%s' 'a[$' '(shutdown)' ']'; printf -v 'a[x]' hi", "destructive"),
+    ('for f in -v; do printf "$f" x \'%s%s%s\' \'a[$\' \'(shutdown)\' \']\'; '
+     'printf "$f" \'a[x]\' hi; done', "destructive"),
+    ("printf -v x shutdown", "destructive"),
+    ("printf '%n' shutdown", "destructive"),
+    ('echo "$(printf shutdown)"', "destructive"),
+    ("grep shutdown /root/comfy.log > /tmp/read-result", "destructive"),
+    ("grep shutdown /root/comfy.log && true", "destructive"),
+]
+for program in (
+    "unlink", "shred", "mkfs.ext4", "wipefs", "blkdiscard", "lvremove", "vgremove",
+    "pvremove", "lvreduce", "vgreduce", "shutdown", "reboot", "halt", "poweroff",
+    "userdel", "groupdel", "chpasswd", "usermod",
+):
+    CLASSIFY_CASES.extend([
+        (f"{program} --help", "destructive"),
+        (f"echo {program}", "read_only"),
+        (f"grep '{program}' /root/comfy.log", "read_only"),
+    ])
+
+
 def run_classify():
     misses = []
     for cmd, want in CLASSIFY_CASES:

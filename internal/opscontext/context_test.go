@@ -13,7 +13,7 @@ func TestContextV5AppendsVersionAndCoverageContracts(t *testing.T) {
 	assert.Equal(t, 5, SchemaVersion)
 	assert.Equal(t, 4, SchemaVersionInstanceKind,
 		"v4 remains named so mixed-deployment consumers can accept it explicitly")
-	assert.Equal(t, "sshops-agent-v6", AgentSessionContract)
+	assert.Equal(t, "sshops-agent-v7", AgentSessionContract)
 	assert.Equal(t, uint32(1<<10), CoverageInstanceKind,
 		"persisted coverage meanings must never be reordered")
 	assert.Equal(t, uint32(1<<11), CoverageInstanceRuntimeType)

@@ -1203,11 +1203,7 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
         check("inv9-real-options-have-only-the-in-process-ssh-ops-mcp",
               isinstance(_real_opts.mcp_servers, dict) and
               set(_real_opts.mcp_servers) == {"ssh_ops"})
-        _stop_hooks = (_real_opts.hooks or {}).get("Stop", [])
-        check("real-build-options-registers-one-official-stop-hook",
-              set((_real_opts.hooks or {}).keys()) == {"Stop"} and
-              len(_stop_hooks) == 1 and _stop_hooks[0].matcher is None and
-              _stop_hooks[0].hooks == [harness._repair_closure_stop_hook])
+        check("real-build-options-do-not-inject-a-second-stop-request", not _real_opts.hooks)
         check("real-build-options-retain-the-native-claude-code-preset",
               _real_opts.system_prompt == {"type": "preset", "preset": "claude_code",
                                             "append": harness.SYSTEM_PROMPT_APPEND})
@@ -1215,7 +1211,7 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
             object(), "test-model", 5, {"job_id": _JOB_ID, "state": "running"})
         check("pending-job-options-keep-the-stable-reviewed-surface",
               list(_continuation_opts.allowed_tools) == harness.ALLOWED_TOOLS and
-              set((_continuation_opts.hooks or {}).keys()) == {"Stop"})
+              not _continuation_opts.hooks)
         _fresh_session_opts = harness.build_options(
             object(), _AGENT_SESSION_MODEL, 5, agent_session={
                 "session_id": _AGENT_SESSION_ID, "workdir": os.path.abspath("session-work"),
@@ -1737,85 +1733,21 @@ check("knowledge-old-supervisor-degrades-locally-without-writing-sideband",
       _mixed_deploy_wire.getvalue() == "")
 
 
-# Claude Code's Stop lifecycle is the only generic point at which the harness can reject a
-# premature "done" without parsing a model answer or hard-coding a product/service. Executed
-# write-risk commands get one evidence-sensitive continuation; their tier does not prove a change.
-# Proven reads and refused commands skip it; the SDK's recursion marker always wins next time.
+# Conservative read classifications remain useful audit metadata, not proof of a mutation.
 _saved_audit = harness.AUDIT
-_closure_read_scripts = [
-    r"""printf '%s\n' '=== DNS (/etc/resolv.conf) ==='; cat /etc/resolv.conf; printf '%s\n' '=== DEFAULT ROUTE ==='; ip route show default; printf '%s\n' '=== INTERFACE RX/TX ==='; ip -s link; printf '%s\n' '=== PYTHON ==='; /root/sshops-continuity-20260902/repair/venv/bin/python3.10 --version""",
-    r"""printf '%s\n' '=== DEFAULT ROUTE (IPv4) ==='; cat /proc/net/route; printf '%s\n' '=== DEFAULT ROUTE (IPv6) ==='; cat /proc/net/ipv6_route; printf '%s\n' '=== INTERFACE RX/TX BYTES ==='; for d in /sys/class/net/*; do n=${d##*/}; printf '%s ' "$n"; printf 'rx_bytes='; cat "$d/statistics/rx_bytes"; printf 'tx_bytes='; cat "$d/statistics/tx_bytes"; done""",
-]
-_closure_read_results = []
 try:
-    harness.AUDIT = []
-    _closure_read_only = _asyncio.run(harness._repair_closure_stop_hook(
-        {"hook_event_name": "Stop", "stop_hook_active": False}, None, {"signal": None}))
-    harness.AUDIT = [
-        {"command": "inspect", "tier": "read_only", "executed": True,
-         "disposition": "ran_read_only"},
-        {"command": "not approved", "tier": "mutating", "executed": False,
-         "disposition": "refused_not_approved"},
-    ]
-    _closure_refused = _asyncio.run(harness._repair_closure_stop_hook(
-        {"hook_event_name": "Stop", "stop_hook_active": False}, None, {"signal": None}))
-    harness.AUDIT.append({"command": "systemctl restart demo # echo-private-command-marker", "tier": "mutating",
-                          "executed": True, "disposition": "ran_mutating"})
-    _closure_after_mutation = _asyncio.run(harness._repair_closure_stop_hook(
-        {"hook_event_name": "Stop", "stop_hook_active": False}, None, {"signal": None}))
-    harness.AUDIT[-1] = {"command": "timed-out-private-command-marker", "tier": "mutating",
-                         "executed": True, "disposition": "exec_timeout"}
-    _closure_after_timed_out_mutation = _asyncio.run(harness._repair_closure_stop_hook(
-        {"hook_event_name": "Stop", "stop_hook_active": False}, None, {"signal": None}))
-    harness.AUDIT[-1] = {"command": "pip install example-package", "tier": "mutating",
-                         "executed": True, "exit_code": 1, "disposition": "ran_mutating"}
-    _closure_after_failed_write = _asyncio.run(harness._repair_closure_stop_hook(
-        {"hook_event_name": "Stop", "stop_hook_active": False}, None, {"signal": None}))
-    for _closure_read_script in _closure_read_scripts:
-        harness.AUDIT[-1] = {"command": _closure_read_script,
-                             "tier": guardrails.classify(_closure_read_script),
-                             "executed": True, "exit_code": 0, "disposition": "ran_mutating"}
-        _closure_conservative_read = _asyncio.run(harness._repair_closure_stop_hook(
-            {"hook_event_name": "Stop", "stop_hook_active": False}, None, {"signal": None}))
-        _closure_read_results.append((_closure_read_script, _closure_conservative_read,
-                                      harness._partial_note("interrupted")))
-    _closure_second_stop = _asyncio.run(harness._repair_closure_stop_hook(
-        {"hook_event_name": "Stop", "stop_hook_active": True}, None, {"signal": None}))
+    for _read_script in (
+        "stat -c '%n %s %y' /tmp/diagnostic.log",
+        "for f in /tmp/*.log; do wc -l \"$f\"; done",
+    ):
+        harness.AUDIT = [{"command": _read_script, "tier": "mutating", "executed": True,
+                          "exit_code": 0, "disposition": "ran_mutating"}]
+        _note = harness._partial_note("interrupted")
+        check(f"partial-read-script-note-does-not-invent-confirmed-change::{_read_script}",
+              "其中可能包含影响实例状态的操作" in _note and
+              _read_script in _note and "已经被改动过" not in _note)
 finally:
     harness.AUDIT = _saved_audit
-
-check("repair-closure-does-not-run-without-a-mutation", _closure_read_only == {})
-check("repair-closure-does-not-run-for-refused-writes", _closure_refused == {})
-check("repair-closure-blocks-the-first-stop-after-a-mutation",
-      _closure_after_mutation.get("decision") == "block" and
-      "original success criterion" in _closure_after_mutation.get("reason", "") and
-      "Do not defer an action" in _closure_after_mutation.get("reason", "") and
-      "echo-private-command-marker" not in _closure_after_mutation.get("reason", ""))
-check("repair-closure-blocks-after-an-executed-mutation-times-out",
-      _closure_after_timed_out_mutation.get("decision") == "block" and
-      "timed-out-private-command-marker" not in
-          _closure_after_timed_out_mutation.get("reason", ""))
-check("repair-closure-still-checks-failed-write-effects",
-      _closure_after_failed_write.get("decision") == "block")
-for _index, (_read_script, _closure, _note) in enumerate(_closure_read_results):
-    check(f"repair-closure-does-not-reclassify-the-read-script::{_index}",
-          guardrails.classify(_read_script) == "mutating")
-    _closure_risk_reason = _closure.get("reason", "")
-    check(f"repair-closure-risk-tier-does-not-prove-a-mutation::{_index}",
-          _closure.get("decision") == "block" and
-          "not as proven mutations" in _closure_risk_reason and
-          "tool commands and results" in _closure_risk_reason and
-          "A guest-local mutation ran" not in _closure_risk_reason)
-    check(f"repair-closure-read-only-task-may-report-facts-without-invented-rollback::{_index}",
-          "If they were read-only, report the requested observations directly" in _closure_risk_reason and
-          "do not invent changes or rollback work" in _closure_risk_reason)
-    check(f"repair-closure-real-or-uncertain-write-effects-still-need-verification::{_index}",
-          "If changes occurred or an attempted write has uncertain effects" in _closure_risk_reason and
-          "verify the affected runtime plus the original criterion" in _closure_risk_reason)
-    check(f"partial-read-script-note-does-not-invent-confirmed-change::{_index}",
-          "其中可能包含影响实例状态的操作" in _note and
-          _read_script in _note and "已经被改动过" not in _note)
-check("repair-closure-allows-the-sdk-recursive-stop", _closure_second_stop == {})
 
 
 def _capture(fn):

@@ -58,7 +58,8 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
 
 完整角色历史、OCR 与实时平台事实仍由既有 context 管道送入用户 prompt，知识检索工具保持可用。
 官方 preset 不会打开 runner 本机的 Bash/Read/Write；这些工具仍由绑定到目标实例的 SSH/SFTP 工具承接。
-Stop hook 仍只提供一次执行后检查机会；命令风险分类不被当作已发生修改的证据。
+不再注入额外 Stop hook 来改写模型最后一轮任务；验证与总结由原生 Agent 完成。
+命令风险分类仍仅作为审计元数据，不被当作已发生修改的证据。
 提示契约改变会让旧 SDK 游标以完整已知对话开始新会话，不重放旧命令。
 
 ## 生产配置
@@ -86,7 +87,7 @@ Stop hook 仍只提供一次执行后检查机会；命令风险分类不被当�
 PostgreSQL 的 SessionState V10 只保存会话 UUID、稳定工作目录 UUID、实例 ID、契约/模型、conversation anchor 和时间，
 不保存对话、命令或输出；
 换实例、契约/模型变化、本地记录缺失或 Pod 被重建时都会诚实地开始新会话；墙钟时间本身不会切断同一会话的续接。
-当前 Agent session contract v6 绑定原生 Claude Code preset、远端工具与授权语义，并保存一枚 64 个小写十六进制字符的 SHA-256 conversation anchor，只表示 inner SDK 已经收到外层对话到哪个位置；
+当前 Agent session contract v7 绑定原生 Claude Code preset、远端工具与无额外 Stop hook 的执行语义，并保存一枚 64 个小写十六进制字符的 SHA-256 conversation anchor，只表示 inner SDK 已经收到外层对话到哪个位置；
 它不含对话文本。Go 始终在私有握手里发送完整的有界快照和已送达前缀长度；harness 仅在本地 SDK
 transcript 确实存在时把 prompt 收敛为新增后缀，本地记录缺失则以完整快照 fresh start。harness 只在
 V3/V4 角色完整上下文进入真实模型回合后回执该 anchor；旧/不支持的 context、鉴权失败或模型未启动都不能前移它。
