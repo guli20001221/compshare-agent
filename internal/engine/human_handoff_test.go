@@ -34,6 +34,7 @@ func TestChatCustomerSupportHandoffIsAnAgentDecision(t *testing.T) {
 	require.Equal(t, StepToolCall, (*steps)[0].Type)
 	require.Equal(t, StepToolResult, (*steps)[1].Type)
 	require.Equal(t, tools.CustomerSupportHandoffName, (*steps)[0].Action)
+	require.Contains(t, (*steps)[1].Message, "未确认接通或受理")
 
 	toolJSON, err := json.Marshal(model.calls[0].Tools)
 	require.NoError(t, err)
@@ -110,6 +111,27 @@ func TestCustomerSupportDisplayProjectionDoesNotEnterColdModelHistory(t *testing
 	require.NotContains(t, history, agentprotocol.FeishuCustomerSupportMarker)
 }
 
+func TestUnavailableSupportEntryReportStaysWithTheCentralAgent(t *testing.T) {
+	const answer = "你反馈这个客服入口已满，我没有已核实的替代入口，暂时无法帮你接通人工。"
+	model := &mockLLM{responses: []llm.ChatResponse{customerSupportToolCall(), {Content: answer}}}
+	eng := NewWithDeps(model, &mockExecutor{}, nil)
+	_, err := eng.Chat(context.Background(), "请帮我联系人工客服", noopStep)
+	require.NoError(t, err)
+	reply, err := eng.Chat(context.Background(), "上面的客服入口显示群人数已满", noopStep)
+	require.NoError(t, err)
+	require.Equal(t, answer, reply)
+	require.NotContains(t, reply, "qrcode.png")
+	require.Len(t, model.calls, 2, "entry availability is interpreted by the central Agent, not a keyword router")
+	history := strings.Join(messageContents(model.calls[1].Messages), "\n")
+	require.Contains(t, history, "群人数已满")
+	require.Contains(t, history, agentprotocol.CustomerSupportHistoryCompletion)
+	require.NotContains(t, history, "qrcode.png")
+	toolJSON, err := json.Marshal(model.calls[1].Tools)
+	require.NoError(t, err)
+	require.Contains(t, string(toolJSON), "满员或失效时不要重复调用")
+	require.Contains(t, string(toolJSON), "不编造工单菜单或接待状态")
+}
+
 func messageContents(messages []openai.ChatCompletionMessage) []string {
 	out := make([]string, 0, len(messages))
 	for _, message := range messages {
@@ -122,4 +144,6 @@ func TestHumanAgentTransferReplyContainsSupportQR(t *testing.T) {
 	require.Contains(t, refusal.HumanAgentTransfer, "ucompshare-picture.cn-wlcb.ufileos.com/QRCode/qrcode.png")
 	require.True(t, strings.HasPrefix(refusal.HumanAgentTransfer, "如需人工客服协助，请扫描"))
 	require.NotContains(t, refusal.HumanAgentTransfer, "已为您转接")
+	require.NotContains(t, refusal.HumanAgentTransfer, "会有专人为您服务")
+	require.Contains(t, refusal.HumanAgentTransfer, "不代表已接通或受理")
 }

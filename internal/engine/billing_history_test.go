@@ -108,8 +108,10 @@ func TestBillingHistoryTellsTheAgentToRefreshRatherThanRefuseARepeatQuestion(t *
 	assembled := nextModelRequest(t, hot)
 	replayed := renderReplayedRegion(t, assembled)
 
-	require.Contains(t, replayed, "用户再次询问时调用 DiagnoseBilling",
+	require.Contains(t, replayed, "用户再次询问当前报价时调用 DiagnoseBilling",
 		"the model sees an actionable fresh-query instruction, not a blanket no-repeat rule")
+	require.Contains(t, replayed, "询问计费规则时检索知识",
+		"a policy follow-up must not be treated as another request for the current quote")
 	require.NotContains(t, replayed, "不要复述、计算或推断金额",
 		"the old rule caused a repeat billing question to fail despite a live billing tool")
 }

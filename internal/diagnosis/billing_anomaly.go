@@ -56,6 +56,13 @@ func stepBillingListInstances() Step {
 				dCtx.Params["_billingTotalCount"] = total
 			}
 			if len(hosts) == 0 {
+				if id, ok := dCtx.Params["UHostId"].(string); ok && strings.TrimSpace(id) != "" {
+					return Verdict{
+						Action:     Conclude,
+						Conclusion: "本次未找到指定实例，未取得其当前报价；不能据此判断账号下没有其他实例或资源，也不能判断历史实际扣款。",
+						Suggestion: "请核对实例 ID；历史实际扣款请查看控制台账单流水。",
+					}
+				}
 				return Verdict{
 					Action:     Conclude,
 					Conclusion: "未找到任何实例。如果您仍在被扣费，可能存在未释放的资源（如云盘），请到控制台检查。",

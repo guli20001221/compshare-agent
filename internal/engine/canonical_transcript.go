@@ -39,7 +39,7 @@ const (
 	// maxTranscriptMessageRunes caps a single message's content. Exceeding it
 	// truncates that message and sets Truncated + OrigRunes, so a reader can
 	// always tell a short result from a shortened one.
-	maxTranscriptMessageRunes = 6000
+	maxTranscriptMessageRunes = 16000
 	// maxTranscriptTotalRunes caps the sum across kept messages. Exceeding it
 	// drops whole oldest rounds and sets DroppedRounds.
 	maxTranscriptTotalRunes = 40000
@@ -539,7 +539,8 @@ func ProjectTranscript(transcript *TranscriptV1) []openai.ChatCompletionMessage 
 	return out
 }
 
-// recordedTurn is one completed exchange plus the tool work that produced it.
+// recordedTurn is one ended turn plus its tool work. An empty Assistant means
+// the request was left unanswered, not that its observed tool work was undone.
 //
 // This is the single place a turn's cross-turn memory lives, and it exists
 // because the two rebuild paths must agree by construction rather than by
@@ -563,7 +564,7 @@ func transcriptFromRow(raw json.RawMessage) *TranscriptV1 {
 }
 
 func (e *Engine) recordTurn(turn recordedTurn) {
-	if strings.TrimSpace(turn.User) == "" || strings.TrimSpace(turn.Assistant) == "" {
+	if strings.TrimSpace(turn.User) == "" {
 		return
 	}
 	e.recentTurns = append(e.recentTurns, turn)
@@ -599,15 +600,15 @@ func budgetRecordedTurns(turns []recordedTurn, budgetRunes int) []recordedTurn {
 	return turns[keepFrom:]
 }
 
-// turnEndpoints returns the user question and final assistant answer of a turn
-// slice, or empty strings when it is not a complete exchange.
+// turnEndpoints returns the user question and final assistant answer. The
+// answer is empty when the turn ended before a final answer was committed.
 func turnEndpoints(turn []openai.ChatCompletionMessage) (string, string) {
 	if len(turn) == 0 || turn[0].Role != openai.ChatMessageRoleUser {
 		return "", ""
 	}
 	last := turn[len(turn)-1]
 	if last.Role != openai.ChatMessageRoleAssistant || len(last.ToolCalls) > 0 {
-		return "", ""
+		return turn[0].Content, ""
 	}
 	return turn[0].Content, last.Content
 }
@@ -645,13 +646,23 @@ func (e *Engine) LastTurnTranscript() (json.RawMessage, TranscriptStats) {
 func (e *Engine) captureTurnTranscript() {
 	e.lastTurnTranscript = nil
 	e.lastTurnTranscriptStats = TranscriptStats{}
+	// Close an unanswered turn in the raw history without inventing an answer.
+	// This empty boundary is never sent to the provider; replay retains its user
+	// and any paired tool results instead. It distinguishes a prior interrupted
+	// request from the current user message while compiling the next turn.
+	if start := currentTurnStart(e.messages); start >= 0 {
+		last := e.messages[len(e.messages)-1]
+		if last.Role != openai.ChatMessageRoleAssistant || len(last.ToolCalls) > 0 {
+			e.messages = append(e.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant})
+		}
+	}
 
 	// Cheap raw-size guard BEFORE any transcript work.
 	//
 	// This runs on the response path — the deferred call returns before the HTTP
 	// layer writes `done` — and the storage limits below do not bound it. They
 	// bound the OUTPUT: content is redacted (regexes over the whole string) and
-	// converted to []rune (a full copy) and only then truncated to 6000. A single
+	// converted to []rune (a full copy) and only then bounded. A single
 	// pathological tool result therefore costs its full size in scan and copy no
 	// matter how little of it is kept, and the user waits for that.
 	//
@@ -700,4 +711,30 @@ func (e *Engine) captureTurnTranscript() {
 		e.lastTurnTranscript = raw
 	}
 	e.lastTurnTranscriptStats = stats
+}
+
+// MarkLastTurnInterrupted reconciles hot history with an aborted/error assistant
+// row after ChatWithOptions returns. A transport can be cancelled even when the
+// engine returned nil error; that candidate answer must not become a completed
+// answer only on the hot path. Existing tool observations stay in the canonical
+// transcript, subject to the same redaction and size limits as successful turns.
+// This method records history only; it never dispatches or retries a tool.
+func (e *Engine) MarkLastTurnInterrupted() {
+	if e == nil {
+		return
+	}
+	start := currentTurnStart(e.messages)
+	if start < 0 {
+		return
+	}
+	user, assistant := turnEndpoints(e.messages[start:])
+	if n := len(e.recentTurns); n > 0 && e.recentTurns[n-1].User == user && e.recentTurns[n-1].Assistant == assistant {
+		e.recentTurns = e.recentTurns[:n-1]
+	}
+	last := e.messages[len(e.messages)-1]
+	if last.Role == openai.ChatMessageRoleAssistant && len(last.ToolCalls) == 0 {
+		e.messages = e.messages[:len(e.messages)-1]
+	}
+	e.messages = append(e.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant})
+	e.captureTurnTranscript()
 }

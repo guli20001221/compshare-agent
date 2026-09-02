@@ -30,7 +30,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        CustomerSupportHandoffName,
-			Description: "转接人工客服。仅当用户明确要求联系人工客服，或现有能力无法完成且确实需要平台人员核验时调用；用户只是提及、询问、引用或拒绝人工客服时不要调用。渠道适配器会生成适合当前入口的转接说明，不要自行输出联系方式。",
+			Description: "提供人工客服入口，不代表接通、排队或建单。用户明确求人工或需平台人员核验时调用；仅讨论、引用或拒绝人工时不用。已报告入口满员或失效时不要重复调用；无已核实替代入口就如实说明，不编造工单菜单或接待状态。联系方式由渠道生成。",
 			Parameters: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{},
@@ -1061,7 +1061,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "ReinstallInstanceWorkflow",
-			Description: "重装实例。Pod 复用系统盘/CFS、替换镜像和默认端口；UHost 容器替换容器文件系统；普通虚机替换系统盘。具体影响见确认卡。仅咨询镜像时不用。",
+			Description: "重装实例操作系统或替换整个运行镜像；仅用户明确要求时使用，不用于重装软件包或依赖、咨询镜像。Pod 复用系统盘/CFS、替换镜像和默认端口；UHost 容器替换容器文件系统；普通虚机替换系统盘。具体影响见确认卡。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1277,7 +1277,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "DiagnoseBilling",
-			Description: "核对已有实例当前配置的上游净报价及关机后仍计费的磁盘。用于查询现有实例当前费用构成；不用于账户余额、账单流水、发票或历史实际扣款。可传 UHostId 查特定实例，不传则检查全部实例。金额由服务端根据结构化上游数据生成，Agent 不应重算；用户再次询问当前费用时重新调用本工具。",
+			Description: "核对现有实例的当前净报价及接口返回的停机保留项。一般计费规则使用 SearchKnowledge，不把运行报价当作关机规则；不用于余额、账单流水、发票或历史扣款。UHostId 指定实例，省略查全部。金额由服务端生成，Agent 不重算；再次询问当前报价时重新调用本工具。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{

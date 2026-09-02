@@ -89,6 +89,60 @@ func TestReadChunk_ReturnsFullBodyBeyondSnippet(t *testing.T) {
 	assert.Contains(t, item["content"].(string), tail, "the full body carries the detail the snippet cut off")
 }
 
+func TestReadChunk_ReturnsThreeMaximumSizedChunksWhole(t *testing.T) {
+	chunks := []knowledge.KBChunk{
+		{ChunkID: "a", Content: strings.Repeat("甲", 4000)},
+		{ChunkID: "b", Content: strings.Repeat("乙", 4000)},
+		{ChunkID: "c", Content: strings.Repeat("丙", 4000)},
+	}
+	eng, _ := newChunkStoreEngine(t, chunks...)
+
+	out := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"a", "b", "c"}}, noopStep))
+	items := out["chunks"].([]any)
+	require.Len(t, items, 3)
+	require.Len(t, eng.searchKnowledgeLedgerThisTurn.Items, 3)
+	for i, chunk := range chunks {
+		item := items[i].(map[string]any)
+		assert.Equal(t, readChunkStatusRead, item["status"])
+		assert.Equal(t, chunk.Content, item["content"])
+		assert.Empty(t, item["truncated"])
+		assert.Contains(t, eng.readChunkIDsThisTurn, chunk.ChunkID)
+		assert.Equal(t, item["content"], eng.searchKnowledgeLedgerThisTurn.Items[i].Snippet)
+	}
+	assert.Equal(t, 1, eng.readChunkCallsThisTurn)
+}
+
+func TestReadChunk_BatchSizeLimitLeavesWholeBodyForNextCall(t *testing.T) {
+	bodyA := strings.Repeat("甲", 8000)
+	bodyB := strings.Repeat("乙", 5000) + "\n未交付的尾部"
+	eng, _ := newChunkStoreEngine(t,
+		knowledge.KBChunk{ChunkID: "a", Content: bodyA},
+		knowledge.KBChunk{ChunkID: "b", Content: bodyB},
+	)
+	eng.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{Items: []knowledge.EvidenceItem{
+		{ChunkID: "b", Snippet: "先前已显示的搜索节选"},
+	}}
+
+	first := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"a", "b"}}, noopStep))
+	items := first["chunks"].([]any)
+	require.Len(t, items, 2)
+	assert.Equal(t, bodyA, items[0].(map[string]any)["content"])
+	assert.Equal(t, readChunkStatusSizeLimit, items[1].(map[string]any)["status"])
+	assert.Empty(t, items[1].(map[string]any)["content"])
+	assert.NotContains(t, eng.readChunkIDsThisTurn, "b")
+	assert.Equal(t, "先前已显示的搜索节选", eng.searchKnowledgeLedgerThisTurn.Items[0].Snippet)
+	require.Len(t, eng.searchKnowledgeHitsThisTurn, 1)
+	assert.Equal(t, "a", eng.searchKnowledgeHitsThisTurn[0].Chunk.ChunkID)
+
+	second := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"b"}}, noopStep))
+	item := second["chunks"].([]any)[0].(map[string]any)
+	assert.Equal(t, readChunkStatusRead, item["status"])
+	assert.Equal(t, bodyB, item["content"])
+	assert.Contains(t, eng.readChunkIDsThisTurn, "b")
+	assert.Equal(t, item["content"], eng.searchKnowledgeLedgerThisTurn.Items[0].Snippet)
+	assert.Equal(t, 2, eng.readChunkCallsThisTurn)
+}
+
 // A second read of the same id in one turn returns already_read, not a duplicate
 // body — the dedup that keeps a multi-round loop from re-pasting the same text.
 func TestReadChunk_DedupsWithinTurn(t *testing.T) {
@@ -147,14 +201,14 @@ func TestReadChunk_CallBudgetExhausts(t *testing.T) {
 // search excerpt.
 func TestReadChunk_RecordsCitableEvidenceWithFullBody(t *testing.T) {
 	tail := "唯一标识串-zzz-END"
-	body := strings.Repeat("正文段落。", 120) + tail
+	body := strings.Repeat("正文段落。\n\n", 120) + tail
 	eng, _ := newChunkStoreEngine(t, knowledge.KBChunk{ChunkID: "c1", Title: "T", Content: body})
 	// Simulate a prior search that put the chunk in the ledger with a short snippet.
 	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{ChunkID: "c1", Title: "T", Content: body}}
 	eng.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger("q", []knowledge.RetrievalHit{hit}, 3, 0)
 	require.NotContains(t, eng.searchKnowledgeLedgerThisTurn.Items[0].Snippet, tail, "precondition: search snippet is truncated before the tail")
 
-	_ = eng.executeReadChunk(map[string]any{"chunk_ids": []any{"c1"}}, noopStep)
+	out := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"c1"}}, noopStep))
 
 	ledger := eng.knowledgeLedgerForVerification("q")
 	var snippet string
@@ -163,6 +217,8 @@ func TestReadChunk_RecordsCitableEvidenceWithFullBody(t *testing.T) {
 			snippet = item.Snippet
 		}
 	}
+	assert.Equal(t, out["chunks"].([]any)[0].(map[string]any)["content"], snippet,
+		"the ledger preserves the exact body delivered, including its formatting")
 	assert.Contains(t, snippet, tail, "the read upgrades the ledger snippet to the full body")
 }
 
@@ -192,13 +248,19 @@ func TestAutoMaterializeKnowledgeChunks_LocalCapsIDsAndRunesWithoutSpendingToolC
 	assert.Equal(t, strings.Repeat("乙", 3000), ledger.Items[1].Snippet)
 	assert.Equal(t, "c-snippet", ledger.Items[2].Snippet)
 	assert.Contains(t, eng.readChunkIDsThisTurn, "a")
-	assert.Contains(t, eng.readChunkIDsThisTurn, "b")
+	assert.NotContains(t, eng.readChunkIDsThisTurn, "b", "a partial automatic body must remain explicitly readable")
 	assert.NotContains(t, eng.readChunkIDsThisTurn, "c")
 	assert.Zero(t, eng.readChunkCallsThisTurn, "automatic enrichment must not consume an explicit ReadChunk call")
 
 	again := eng.autoMaterializeKnowledgeChunks(context.Background(), &ledger, []string{"c"})
 	assert.Empty(t, again.ReadIDs, "the per-turn budget survives repeated SearchKnowledge calls")
 	assert.Equal(t, "c-snippet", ledger.Items[2].Snippet)
+
+	full := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"b"}}, noopStep))
+	item := full["chunks"].([]any)[0].(map[string]any)
+	assert.Equal(t, readChunkStatusRead, item["status"])
+	assert.Equal(t, bodyB, item["content"])
+	assert.Contains(t, eng.readChunkIDsThisTurn, "b")
 }
 
 func TestAutoMaterializeKnowledgeChunks_RemoteFailureKeepsSnippet(t *testing.T) {
@@ -321,11 +383,13 @@ func TestReadChunkRemoteUsesOnlyCurrentTurnSearchCapability(t *testing.T) {
 	result := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"visible", "hidden"}}, noopStep))
 	items := result["chunks"].([]any)
 	require.Len(t, items, 2)
-	assert.Equal(t, readChunkStatusAlreadyRead, items[0].(map[string]any)["status"])
-	assert.Empty(t, items[0].(map[string]any)["content"], "automatic enrichment is not pasted a second time")
+	assert.Equal(t, readChunkStatusSizeLimit, items[0].(map[string]any)["status"])
+	assert.Equal(t, "远程完整正文", items[0].(map[string]any)["content"])
+	assert.Equal(t, true, items[0].(map[string]any)["truncated"])
+	assert.NotContains(t, eng.readChunkIDsThisTurn, "visible", "upstream truncation never becomes a complete read")
 	assert.Equal(t, readChunkStatusSearchNeeded, items[1].(map[string]any)["status"])
 	assert.Equal(t, true, result["search_refresh_required"])
-	require.Len(t, retriever.reads, 1)
+	require.Len(t, retriever.reads, 2, "only the explicit call retries the incomplete automatic read")
 	assert.Equal(t, "current-search-id", retriever.reads[0].searchID)
 	assert.Equal(t, []string{"visible"}, retriever.reads[0].chunkIDs)
 }
@@ -354,9 +418,10 @@ func TestReadChunkRemoteCanReviewBelowFloorCandidateAsLowEvidence(t *testing.T) 
 
 	read := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"weak-workbuddy"}}, noopStep))
 	item := read["chunks"].([]any)[0].(map[string]any)
-	assert.Equal(t, readChunkStatusRead, item["status"])
+	assert.Equal(t, readChunkStatusSizeLimit, item["status"])
 	assert.Equal(t, "读取后的完整配置正文。", item["content"])
 	assert.Equal(t, true, item["truncated"], "remote truncation must remain visible to the model")
+	assert.NotContains(t, eng.readChunkIDsThisTurn, "weak-workbuddy")
 	require.Len(t, retriever.reads, 1)
 	assert.Equal(t, "weak-search-id", retriever.reads[0].searchID)
 
@@ -364,7 +429,10 @@ func TestReadChunkRemoteCanReviewBelowFloorCandidateAsLowEvidence(t *testing.T) 
 	evidence := eng.searchKnowledgeLedgerThisTurn.Items[0]
 	assert.Equal(t, "weak-workbuddy", evidence.ChunkID)
 	assert.Equal(t, "low", evidence.ScoreBucket)
-	assert.Contains(t, evidence.Snippet, "读取后的完整配置正文")
+	assert.Equal(t, item["content"], evidence.Snippet)
+	require.Len(t, eng.searchKnowledgeHitsThisTurn, 1)
+	assert.Equal(t, item["content"], eng.searchKnowledgeHitsThisTurn[0].Chunk.Content)
+	assert.True(t, eng.searchKnowledgeHitsThisTurn[0].Chunk.ContentTruncated)
 }
 
 func TestBelowFloorCandidatesRoundRobinAcrossScoreScalesAndKeepReadCapabilities(t *testing.T) {

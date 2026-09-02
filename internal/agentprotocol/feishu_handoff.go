@@ -30,5 +30,5 @@ const (
 	// CustomerSupportHistoryCompletion is the channel-neutral completion kept in
 	// model history when the user-facing channel rendered a support handoff.
 	// Adapter markers and Web QR markup are display projections, not model facts.
-	CustomerSupportHistoryCompletion = "已提供人工客服转接说明。"
+	CustomerSupportHistoryCompletion = "已提供客服联系入口，未确认接通或受理。"
 )

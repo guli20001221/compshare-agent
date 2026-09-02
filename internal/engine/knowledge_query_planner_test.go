@@ -19,8 +19,8 @@ import (
 // skipping would leave two fifths of the failing population untouched.
 func TestKnowledgeQueryPlannerRunsOnAFirstTurn(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: `{
-		"answer_question":"GPU 实例关机后是否继续计费？",
-		"search_queries":["GPU 云平台实例关机后是否继续计费"]
+		"answer_question":"关机后是否继续计费？",
+		"search_queries":["关机后是否继续计费"]
 	}`}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	eng.turnContextViewReady = true
@@ -29,9 +29,12 @@ func TestKnowledgeQueryPlannerRunsOnAFirstTurn(t *testing.T) {
 	got := eng.planKnowledgeQuery(context.Background(), "关机后还收费吗")
 
 	require.Len(t, mock.calls, 1, "a first turn now pays for the rewrite call")
-	assert.Equal(t, "GPU 实例关机后是否继续计费？", got.AnswerQuestion)
-	assert.Equal(t, []string{"GPU 云平台实例关机后是否继续计费", "关机后还收费吗"}, got.SearchQueries,
-		"the written form leads, the user's own wording is still retrieved")
+	assert.Equal(t, "关机后是否继续计费？", got.AnswerQuestion)
+	assert.Equal(t, []string{"关机后是否继续计费", "关机后还收费吗"}, got.SearchQueries,
+		"the written form leads and the Agent's original query is still retrieved")
+	assert.NotContains(t, mock.calls[0].Messages[0].Content, "GPU 云平台场景")
+	assert.Contains(t, mock.calls[0].Messages[0].Content, "不要预设文档术语")
+	assert.Contains(t, mock.calls[0].Messages[0].Content, "不能单独作为新增事实的依据")
 }
 
 // The cost of running on first turns must never become a cost to availability:

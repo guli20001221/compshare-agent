@@ -495,6 +495,9 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		TurnID:       base.RequestUUID,
 		ImageContext: prep.ocrText,
 		OnTextDelta: func(s string) {
+			if streamCtx.Err() != nil {
+				return
+			}
 			if firstToken.IsZero() {
 				firstToken = time.Now()
 			}
@@ -535,7 +538,10 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	// detached from streamCtx, bounded, best-effort, and still fail-closed when
 	// prepareChat could not parse/recognize the stored envelope.
 	defer h.persistSessionStateBestEffort(base.Owner, sessionID, agent, prep)
-	if chatErr == nil && !tokenEmitted && reply != "" {
+	if chatErr == nil {
+		chatErr = streamCtx.Err()
+	}
+	if chatErr == nil && streamCtx.Err() == nil && !tokenEmitted && reply != "" {
 		if firstToken.IsZero() {
 			firstToken = time.Now()
 		}
@@ -551,9 +557,15 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 
 	// Client disconnected.
 	if errors.Is(chatErr, context.Canceled) || errors.Is(streamCtx.Err(), context.Canceled) {
-		finishTrace(chatErr)
-		_ = h.persistAssistant(base.Owner, assistantMsgID,
+		terminalErr := chatErr
+		if terminalErr == nil {
+			terminalErr = streamCtx.Err()
+		}
+		finishTrace(terminalErr)
+		agent.MarkLastTurnInterrupted()
+		persistErr := h.persistAssistant(base.Owner, assistantMsgID,
 			store.AssistantPatch{Content: abortedAssistantMessage, Status: "aborted"})
+		h.persistTurnTranscript(base.Owner, assistantMsgID, agent, persistErr)
 		return
 	}
 
@@ -563,13 +575,15 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		code := apiErr.Code
 		_ = writeVisibleEvent(sw, traceRecorder, "error", streamErrorEvent{Code: apiErr.Code, Message: apiErr.Message})
 		finishTrace(chatErr)
-		_ = h.persistAssistant(base.Owner, assistantMsgID,
+		agent.MarkLastTurnInterrupted()
+		persistErr := h.persistAssistant(base.Owner, assistantMsgID,
 			store.AssistantPatch{
 				Status:    "error",
 				ErrorCode: &code,
 				LatencyMs: &latencyMs,
 				TTFTMs:    &ttftMs,
 			})
+		h.persistTurnTranscript(base.Owner, assistantMsgID, agent, persistErr)
 		return
 	}
 

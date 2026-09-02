@@ -28,13 +28,9 @@ const (
 	// its own context cost and must not withdraw search from the tool window.
 	maxReadChunkCallsPerTurn = 2
 	maxReadChunkIDsPerCall   = 3
-	// maxReadChunkRunesPerCall bounds the total body text one call returns. The
-	// mean chunk is 1802 runes and the longest in the corpus is 3962, so three
-	// typical chunks (~5.4k) fit whole and the cap only bites on unusually long
-	// ones — it is a backstop against context blow-up, not a routine truncator.
-	// A-RAG's read_chunk has no cap at all and leans on a global token budget we
-	// do not have.
-	maxReadChunkRunesPerCall = 6000
+	// maxReadChunkRunesPerCall fits three maximum-sized corpus chunks while
+	// retaining a bound for readers that return larger bodies.
+	maxReadChunkRunesPerCall = 3 * knowledge.MaxKnowledgeContentRunes
 
 	// A SearchKnowledge call may enrich only caller-approved strong hits. The
 	// budget is owned by the whole turn, not one search call, so repeated
@@ -232,7 +228,9 @@ func (e *Engine) autoMaterializeKnowledgeChunks(
 		}
 
 		ledger.Items[ledgerIndexes[id]].Snippet = content
-		e.markChunkRead(id)
+		if !truncated {
+			e.markChunkRead(id)
+		}
 		e.automaticKnowledgeBodyRunesThisTurn += contentRunes
 		runesLeft -= contentRunes
 		result.ReadIDs = append(result.ReadIDs, id)
@@ -389,25 +387,32 @@ func (e *Engine) materializeReadChunks(
 			items = append(items, readChunkItem{ChunkID: id, Status: readChunkStatusNotFound})
 			continue
 		}
-		if runesLeft <= 0 {
+		content := strings.TrimSpace(chunk.Content)
+		contentRunes := utf8.RuneCountInString(content)
+		if contentRunes > runesLeft {
+			// Defer the whole body so a later call can read it without losing
+			// its tail or mistaking a partial delivery for an already-read ID.
 			items = append(items, readChunkItem{ChunkID: id, Status: readChunkStatusSizeLimit})
 			continue
 		}
-		content := strings.TrimSpace(chunk.Content)
-		truncated := chunk.ContentTruncated || utf8.RuneCountInString(content) > runesLeft
-		if truncated {
-			content = truncateRunes(content, runesLeft)
+		runesLeft -= contentRunes
+		status := readChunkStatusRead
+		if chunk.ContentTruncated {
+			status = readChunkStatusSizeLimit
+		} else {
+			e.markChunkRead(id)
 		}
-		runesLeft -= utf8.RuneCountInString(content)
-		e.markChunkRead(id)
+		// The ledger receives exactly the delivered body and the upstream
+		// completeness flag, never an undisplayed suffix.
+		chunk.Content = content
 		read = append(read, chunk)
 		items = append(items, readChunkItem{
 			ChunkID:    id,
-			Status:     readChunkStatusRead,
+			Status:     status,
 			Title:      strings.TrimSpace(chunk.Title),
 			SourceType: strings.TrimSpace(chunk.SourceType),
 			Content:    content,
-			Truncated:  truncated,
+			Truncated:  chunk.ContentTruncated,
 		})
 	}
 	return items, read
@@ -475,16 +480,21 @@ func (e *Engine) recordReadChunksAsEvidence(chunks []knowledge.KBChunk) {
 		return
 	}
 	hits := make([]knowledge.RetrievalHit, 0, len(chunks))
+	contentByID := make(map[string]string, len(chunks))
 	for _, chunk := range chunks {
 		score := float64(0)
 		if _, belowFloor := e.belowFloorKnowledgeIDsThisTurn[strings.TrimSpace(chunk.ChunkID)]; belowFloor {
 			score = 0.01
 		}
 		hits = append(hits, knowledge.RetrievalHit{Chunk: chunk, Kept: true, Score: score})
+		contentByID[strings.TrimSpace(chunk.ChunkID)] = chunk.Content
 	}
 	e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
 	question := e.searchKnowledgeLedgerThisTurn.Query
-	readLedger := knowledge.BuildSubstantiveEvidenceLedger(question, hits, len(hits), maxReadChunkRunesPerCall)
+	readLedger := knowledge.BuildEvidenceLedger(question, hits, len(hits))
+	for i := range readLedger.Items {
+		readLedger.Items[i].Snippet = contentByID[readLedger.Items[i].ChunkID]
+	}
 	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(
 		e.searchKnowledgeLedgerThisTurn, readLedger, searchKnowledgeLedgerTurnMaxItems)
 	readIDs := make([]string, 0, len(chunks))

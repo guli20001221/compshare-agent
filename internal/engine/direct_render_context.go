@@ -11,8 +11,9 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
-// ConversationPair is a committed, complete exchange. It deliberately excludes
-// the current unanswered user message and every raw tool transcript.
+// ConversationPair is an ended prior turn. Assistant is empty for an interrupted
+// request, whose user text and observed tool work remain useful on continuation.
+// The current unanswered user message is excluded.
 type ConversationPair struct {
 	User      string
 	Assistant string
@@ -101,9 +102,9 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 	return cloneAgentContext(view)
 }
 
-// recentCompleteConversationForTaskSpec projects only complete plain-text
-// user/assistant pairs. The current unanswered user message and raw tool
-// transcripts are excluded. This is understanding-only context; the renderer's
+// recentCompleteConversationPairs projects ended prior turns, including user
+// requests whose turn ended without an answer. The current user message is
+// excluded. This is understanding-only context; the renderer's
 // factual validator still receives EvidenceEnvelope alone. A rune budget, not a
 // message count, bounds the result.
 func (e *Engine) recentCompleteConversationPairs() []ConversationPair {
@@ -115,9 +116,12 @@ func (e *Engine) recentCompleteConversationPairs() []ConversationPair {
 	for _, message := range e.messages {
 		switch message.Role {
 		case openai.ChatMessageRoleUser:
+			if pendingUser != "" {
+				pairs = append(pairs, ConversationPair{User: pendingUser})
+			}
 			pendingUser = historyConversationText(message.Role, message.Content)
 		case openai.ChatMessageRoleAssistant:
-			if pendingUser == "" || strings.TrimSpace(message.Content) == "" || len(message.ToolCalls) > 0 {
+			if pendingUser == "" || len(message.ToolCalls) > 0 {
 				continue
 			}
 			pairs = append(pairs, ConversationPair{User: pendingUser, Assistant: historyConversationText(message.Role, message.Content)})
@@ -267,17 +271,24 @@ func conversationPairPlainRunes(pair ConversationPair) int {
 }
 
 // transcriptReplaysCompletePair reports whether Transcript can replace the
-// plain pair without losing semantic dialogue. Tool results can be abbreviated
+// prior turn without losing semantic dialogue. Tool results can be abbreviated
 // with an explicit marker, but the user question and final assistant answer are
-// the continuous conversation and must survive byte-for-byte.
+// the continuous conversation and must survive byte-for-byte. An interrupted
+// turn has no final answer and can replay its paired observations alone.
 func transcriptReplaysCompletePair(pair ConversationPair) bool {
-	if len(pair.Transcript) < 2 {
+	if len(pair.Transcript) == 0 {
 		return false
 	}
 	first, last := pair.Transcript[0], pair.Transcript[len(pair.Transcript)-1]
-	return first.Role == openai.ChatMessageRoleUser && first.Content == pair.User &&
-		last.Role == openai.ChatMessageRoleAssistant && last.Content == pair.Assistant &&
-		len(last.ToolCalls) == 0
+	if first.Role != openai.ChatMessageRoleUser || first.Content != pair.User {
+		return false
+	}
+	if pair.Assistant == "" {
+		// An interrupted turn can finish at a tool result. Never import a stored
+		// final answer into a row whose transport did not commit an answer.
+		return last.Role != openai.ChatMessageRoleAssistant || len(last.ToolCalls) > 0
+	}
+	return last.Role == openai.ChatMessageRoleAssistant && last.Content == pair.Assistant && len(last.ToolCalls) == 0
 }
 
 // conversationTranscriptDetailRunes is the positive additional cost of
