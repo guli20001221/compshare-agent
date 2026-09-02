@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/compshare-agent/internal/knowledge"
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -153,6 +154,75 @@ func TestBuildTranscriptExcludesEarlierTurns(t *testing.T) {
 	}
 }
 
+// This is a synthetic size-boundary fixture, not a recorded search result. A
+// SearchKnowledge observation can combine three full bodies with six snippets
+// from query fan-out; its envelope costs more than a three-item ReadChunk result.
+func TestCanonicalTranscriptPreservesExpandedSearchEnvelope(t *testing.T) {
+	hits := make([]knowledge.RetrievalHit, 0, 9)
+	fullBodies := make([]string, 0, 3)
+	expandedIDs := make([]string, 0, 3)
+	for i := 0; i < 9; i++ {
+		suffix := string(rune('a' + i))
+		body := strings.Repeat("摘", knowledge.DefaultEvidenceSnippetMaxRunes)
+		if i < 3 {
+			// Quotes and backslashes consume extra JSON runes even when each
+			// source body remains within the corpus's 4000-rune bound.
+			body = strings.Repeat("文", 3495) + strings.Repeat("\"\\", 250) + "END_" + suffix
+			if got := len([]rune(body)); got != knowledge.MaxKnowledgeContentRunes {
+				t.Fatalf("body %d has %d runes, want %d", i, got, knowledge.MaxKnowledgeContentRunes)
+			}
+			fullBodies = append(fullBodies, body)
+			expandedIDs = append(expandedIDs, "v2-synthetic-evidence-"+suffix)
+		}
+		hits = append(hits, knowledge.RetrievalHit{
+			Kept: true, Score: 0.95,
+			Chunk: knowledge.KBChunk{
+				ChunkID: "v2-synthetic-evidence-" + suffix,
+				Title:   strings.Repeat("标题", 39) + suffix, SourceType: "faq", Content: body,
+			},
+		})
+	}
+	ledger := knowledge.BuildSubstantiveEvidenceLedger("读取完整规则", hits, len(hits), 0)
+	for i, body := range fullBodies {
+		ledger.Items[i].Snippet = body
+	}
+	observation := agentToolObservation("SearchKnowledge", searchKnowledgeResultJSON(ledger, "", map[string]any{
+		"auto_expanded_chunk_ids": expandedIDs,
+	}))
+	if size := len([]rune(observation)); size <= 16000 || size > maxTranscriptMessageRunes {
+		t.Fatalf("fixture must exceed the former 16000-rune cap and fit the current cap: got %d", size)
+	}
+	transcript := buildTranscriptV1([]openai.ChatCompletionMessage{
+		userMsg("读取完整规则"),
+		assistantCalls(call("search", "SearchKnowledge", `{"query":"读取完整规则"}`)),
+		toolMsg("search", observation),
+		finalMsg("已读取。"),
+	})
+	raw, err := marshalTranscriptMetadata(transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := ParseTranscriptMetadata(raw)
+	if restored == nil || len(restored.Messages) != 4 {
+		t.Fatalf("expected the complete search turn after persistence: %+v", restored)
+	}
+	if restored.DroppedRounds != 0 || transcriptRunes(restored.Messages) > maxTranscriptTotalRunes || len(raw) > maxTranscriptBytes {
+		t.Fatal("the fixture must fit the unchanged aggregate and byte budgets")
+	}
+	if result := restored.Messages[2]; result.Truncated || result.OrigRunes != 0 {
+		t.Fatalf("expanded search envelope was truncated: %+v", result)
+	}
+	projected := ProjectTranscript(restored)
+	if len(projected) != 4 || projected[2].Content != observation || !json.Valid([]byte(projected[2].Content)) {
+		t.Fatal("the full SearchKnowledge envelope must survive persistence and replay unchanged")
+	}
+	for _, tail := range []string{"END_a", "END_b", "END_c"} {
+		if !strings.Contains(projected[2].Content, tail) {
+			t.Fatalf("replayed observation lost body tail %q", tail)
+		}
+	}
+}
+
 func TestBoundContentMarksTruncationWithOriginalLength(t *testing.T) {
 	long := strings.Repeat("字", maxTranscriptMessageRunes+500)
 	messages := []openai.ChatCompletionMessage{
@@ -176,6 +246,18 @@ func TestBoundContentMarksTruncationWithOriginalLength(t *testing.T) {
 	// to tell a genuinely short result from a shortened one.
 	if transcript.Messages[3].Truncated || transcript.Messages[3].OrigRunes != 0 {
 		t.Fatal("short message must not be marked truncated")
+	}
+	raw, err := marshalTranscriptMetadata(transcript)
+	if err != nil {
+		t.Fatal(err)
+	}
+	restored := ParseTranscriptMetadata(raw)
+	if restored == nil || !restored.Messages[2].Truncated || restored.Messages[2].OrigRunes != len([]rune(long)) {
+		t.Fatal("persistence must retain the oversized result's truncation metadata")
+	}
+	projected := ProjectTranscript(restored)
+	if got, want := projected[2].Content, result.Content+truncationNotice(len([]rune(long))); got != want {
+		t.Fatal("replay must explicitly disclose the shortened result, not present its prefix as complete")
 	}
 }
 

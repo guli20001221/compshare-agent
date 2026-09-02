@@ -31,12 +31,6 @@ const (
 	// maxReadChunkRunesPerCall fits three maximum-sized corpus chunks while
 	// retaining a bound for readers that return larger bodies.
 	maxReadChunkRunesPerCall = 3 * knowledge.MaxKnowledgeContentRunes
-
-	// A SearchKnowledge call may enrich only caller-approved strong hits. The
-	// budget is owned by the whole turn, not one search call, so repeated
-	// searches cannot keep adding full bodies to the model context.
-	maxAutoReadChunkIDsPerTurn   = 2
-	maxAutoReadChunkRunesPerTurn = 8000
 )
 
 const (
@@ -87,6 +81,8 @@ type autoReadChunkResult struct {
 // Remote reads remain bound to the search_id recorded for each model-visible
 // chunk. Local tests/offline evaluation use the in-process Chunk capability.
 // Any failed or missing body leaves the original ledger snippet untouched.
+// Each SearchKnowledge call invokes this once, using the explicit read's size
+// limits; the turn-level attempt set prevents repeated automatic body fetches.
 func (e *Engine) autoMaterializeKnowledgeChunks(
 	ctx context.Context,
 	ledger *knowledge.EvidenceLedger,
@@ -100,11 +96,8 @@ func (e *Engine) autoMaterializeKnowledgeChunks(
 	if e.automaticKnowledgeBodyIDsThisTurn == nil {
 		e.automaticKnowledgeBodyIDsThisTurn = map[string]struct{}{}
 	}
-	remainingIDs := maxAutoReadChunkIDsPerTurn - len(e.automaticKnowledgeBodyIDsThisTurn)
-	runesLeft := maxAutoReadChunkRunesPerTurn - e.automaticKnowledgeBodyRunesThisTurn
-	if remainingIDs <= 0 || runesLeft <= 0 {
-		return result
-	}
+	remainingIDs := maxReadChunkIDsPerCall
+	runesLeft := maxReadChunkRunesPerCall
 
 	ledgerIndexes := make(map[string]int, len(ledger.Items))
 	for i, item := range ledger.Items {
@@ -231,7 +224,6 @@ func (e *Engine) autoMaterializeKnowledgeChunks(
 		if !truncated {
 			e.markChunkRead(id)
 		}
-		e.automaticKnowledgeBodyRunesThisTurn += contentRunes
 		runesLeft -= contentRunes
 		result.ReadIDs = append(result.ReadIDs, id)
 		if truncated {

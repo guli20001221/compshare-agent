@@ -235,12 +235,10 @@ type Engine struct {
 	// Per-session/per-turn for the same reason as the hits above. Reset every turn.
 	readChunkCallsThisTurn int
 	readChunkIDsThisTurn   map[string]struct{}
-	// automaticKnowledgeBody* bounds deterministic full-body enrichment inside
-	// SearchKnowledge. It is separate from the model-visible ReadChunk budget:
-	// the Agent already chose retrieval, and this removes one fragile follow-up
-	// decision for the strongest accepted evidence only.
-	automaticKnowledgeBodyRunesThisTurn int
-	automaticKnowledgeBodyIDsThisTurn   map[string]struct{}
+	// automaticKnowledgeBodyIDsThisTurn deduplicates automatic body-read attempts
+	// across SearchKnowledge calls, including failed attempts. Each search has its
+	// own bounded body batch, separate from the model-visible ReadChunk budget.
+	automaticKnowledgeBodyIDsThisTurn map[string]struct{}
 	// searchKnowledgeCapabilitiesThisTurn maps only model-visible chunk IDs to
 	// the short-lived remote search_id that surfaced them. It is intentionally
 	// engine-local: sharing it through the process-wide retriever would let one
@@ -1277,7 +1275,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.answerEchoedChunkIDThisTurn = ""
 	e.readChunkCallsThisTurn = 0
 	e.readChunkIDsThisTurn = nil
-	e.automaticKnowledgeBodyRunesThisTurn = 0
 	e.automaticKnowledgeBodyIDsThisTurn = nil
 	e.searchKnowledgeCapabilitiesThisTurn = nil
 	e.belowFloorKnowledgeIDsThisTurn = nil

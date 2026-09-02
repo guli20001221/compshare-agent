@@ -205,7 +205,7 @@ func (c *Client) chat(ctx context.Context, req ChatRequest, includeUsage bool, a
 		// a partial prefix to the caller and then append a successful retry behind
 		// it: the engine persists only the retry's response, while the browser
 		// would have displayed two incompatible answers. Buffer deltas per attempt
-		// and publish them only after that attempt reaches EOF successfully.
+		// and publish them only after a terminal choice reason and successful EOF.
 		attemptReq := req
 		var attemptDeltas []string
 		if req.OnTextDelta != nil {
@@ -343,6 +343,12 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage boo
 	for {
 		chunk, err := stream.Recv()
 		if errors.Is(err, io.EOF) {
+			// The SDK maps both a bare HTTP EOF and [DONE] to io.EOF. Only a
+			// terminal choice reason proves that the accumulated answer or tool
+			// plan finished; an interrupted prefix must never become a response.
+			if strings.TrimSpace(stopReason) == "" {
+				return nil, timing, fmt.Errorf("llm stream ended without finish_reason: %w", io.ErrUnexpectedEOF)
+			}
 			break
 		}
 		if err != nil {

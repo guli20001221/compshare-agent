@@ -39,7 +39,7 @@ const (
 	// maxTranscriptMessageRunes caps a single message's content. Exceeding it
 	// truncates that message and sets Truncated + OrigRunes, so a reader can
 	// always tell a short result from a shortened one.
-	maxTranscriptMessageRunes = 16000
+	maxTranscriptMessageRunes = 20000
 	// maxTranscriptTotalRunes caps the sum across kept messages. Exceeding it
 	// drops whole oldest rounds and sets DroppedRounds.
 	maxTranscriptTotalRunes = 40000
