@@ -1477,8 +1477,8 @@ def _confirmation_refusal_text(disposition: str, command: str) -> str:
         "way to make the same change; state that it was not executed.")) + "\n  " + command
 
 
-def _executed_mutations():
-    """Return every mutation that may have changed the guest, including timed-out attempts."""
+def _executed_write_risk_commands():
+    """Return executed write-risk commands, not confirmed changes, including failed attempts."""
     return [entry for entry in AUDIT
             if entry.get("tier") == "mutating" and entry.get("executed") is True]
 
@@ -1490,15 +1490,15 @@ def _successful_reads():
 
 
 def _partial_note(sdk_error: str) -> str:
-    """Append an honest summary of scoped mutations when a run ends early."""
-    ran_mutations = [entry["command"] for entry in _executed_mutations()]
-    if ran_mutations:
-        listed = "\n".join("  - " + c for c in ran_mutations)
+    """Summarize executed commands and their possible effects when a run ends early."""
+    write_risk_commands = [entry["command"] for entry in _executed_write_risk_commands()]
+    if write_risk_commands:
+        listed = "\n".join("  - " + c for c in write_risk_commands)
         return ("\n\n（注：诊断中途结束（%s）。"
                 "中断前在本次授权范围内执行了下列 %d 条命令，"
                 "**其中可能包含影响实例状态的操作**，"
                 "请以命令本身判断当前状态：\n%s）"
-                % (sdk_error, len(ran_mutations), listed))
+                % (sdk_error, len(write_risk_commands), listed))
     ran_reads = _successful_reads()
     if ran_reads:
         return ("\n\n（注：诊断中途结束（%s），"
@@ -2126,15 +2126,14 @@ def prepare_agent_session(value, session_root, selected_model, instance_id=""):
 DEFAULT_MAX_TURNS = 50
 
 
-# An executed guest mutation is not the end of an operations task: production case 078 showed the
-# model editing configuration and then stopping with a user-facing "restart it yourself" instruction,
-# even though the same authorized tool surface could finish and verify the repair. Claude Code's
-# official Stop hook is the narrow lifecycle point for correcting that premature stop. It is not a
-# second planner and does not inspect command text; the audited disposition is the source of truth.
-# The CLI re-enters the hook with stop_hook_active=true after a blocked Stop, which is its documented
-# recursion guard and lets the second Stop through even when the earlier mutation remains in AUDIT.
+# The Stop hook gives executed write-risk commands one evidence-sensitive closure check. Their
+# conservative tier does not prove a state change; the model already has the commands and results.
+# The SDK's stop_hook_active recursion guard lets the next Stop through.
 _REPAIR_CLOSURE_REASON = (
-    "A guest-local mutation ran in this turn. Before stopping, close the authorized repair loop: "
+    "Executed commands were classified as potentially state-changing, not as proven mutations. "
+    "Judge actual effects from the tool commands and results. If they were read-only, report the "
+    "requested observations directly; do not invent changes or rollback work. If changes occurred "
+    "or an attempted write has uncertain effects, close the authorized repair loop: "
     "re-read the user's original success criterion, apply any remaining in-scope reversible action "
     "that is still required, and verify the affected runtime plus the original criterion from every "
     "available relevant vantage. Do not defer an action you can execute with the current tools. If "
@@ -2144,16 +2143,15 @@ _REPAIR_CLOSURE_REASON = (
 
 
 async def _repair_closure_stop_hook(hook_input, _tool_use_id, _context):
-    """Give one model continuation after an executed mutation, then permit the next Stop.
+    """Give one evidence check after executed write-risk commands, then permit the next Stop.
 
     StopHookInput.stop_hook_active is supplied by the pinned Agent SDK/CLI specifically to prevent a
-    Stop hook from recursively blocking forever. Refused writes and read-only observations never
-    trigger this continuation because neither changed the guest and therefore neither creates a
-    repair/verification gap to close.
+    Stop hook from recursively blocking forever. Refused commands and proven reads do not trigger
+    the check. A conservative mutating tier may include pure reads and is not mutation evidence.
     """
     if bool((hook_input or {}).get("stop_hook_active")):
         return {}
-    if not _executed_mutations():
+    if not _executed_write_risk_commands():
         return {}
     return {"decision": "block", "reason": _REPAIR_CLOSURE_REASON}
 
