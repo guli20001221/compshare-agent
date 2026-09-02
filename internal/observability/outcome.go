@@ -44,7 +44,7 @@ const (
 
 // Resolution* are the DETERMINISTIC subset of outcome.resolution the engine fills.
 // The resolved-vs-partial distinction for a delivered answer is LEFT EMPTY for the
-// online judge — it must never be defaulted to "resolved".
+// external eval layer; runtime trace must never guess it as "resolved".
 const (
 	ResolutionBlocked = "blocked"
 	ResolutionRefused = "refused"
@@ -52,8 +52,8 @@ const (
 
 // FinishSignals carries the per-turn terminal facts the trace record cannot
 // observe on its own: the chat error, whether the final reply was empty, and the
-// ReAct-loop round count / ceiling state. Production callers populate it (via the
-// recorders' SetTerminalSignals); a zero value derives to TerminatedByDone for a
+// ReAct-loop round count / ceiling state. Production callers populate it from the
+// single turn-end engine snapshot; a zero value derives to TerminatedByDone for a
 // clean turn, which is the correct default for unit fixtures that do not set it.
 type FinishSignals struct {
 	// ChatErr is the error returned by Engine.Chat (nil on success). Drives the

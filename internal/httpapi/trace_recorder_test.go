@@ -36,7 +36,6 @@ func TestChatTraceRecorderReceivesEngineCompletion(t *testing.T) {
 	got := writer.records[0]
 	assert.Equal(t, observability.CompletionClassAgent, got.Completion.Class)
 	assert.Equal(t, observability.CompletionReasonAgentLoop, got.Completion.Reason)
-	assert.Zero(t, got.Completion.ModelCalls, "the in-process mock does not emit outbound-call telemetry")
 	assert.Equal(t, observability.TerminatedByDone, got.Outcome.TerminatedBy)
 }
 
@@ -56,7 +55,7 @@ func TestChatTraceRecorderMarksChatError(t *testing.T) {
 		"hi",
 		time.Now(),
 	)
-	recorder.SetEngineSnapshot(engine.TraceSnapshot{ResponseContract: "agent"})
+	recorder.SetEngineSnapshot(engine.TraceSnapshot{ResponseContract: "agent"}, false)
 
 	err := recorder.Finish(errors.New("boom"), time.Now())
 	require.NoError(t, err)
@@ -68,7 +67,7 @@ func TestChatTraceRecorderMarksChatError(t *testing.T) {
 	assert.Equal(t, "failure", writer.records[0].Outcome.ResponseContract)
 }
 
-func TestChatTraceRecorderPersistsEngineSnapshotMetadata(t *testing.T) {
+func TestChatTraceRecorderProjectsOneEngineSnapshotIntoTheRootTrace(t *testing.T) {
 	writer := &captureTraceWriter{}
 	recorder := newChatTraceRecorder(
 		writer,
@@ -79,29 +78,65 @@ func TestChatTraceRecorderPersistsEngineSnapshotMetadata(t *testing.T) {
 		time.Now(),
 	)
 	recorder.SetEngineSnapshot(engine.TraceSnapshot{
-		ContextSources:              []string{"recent_pairs", "selected_entities"},
-		ResponseContract:            "agent",
-		PromptSectionIDs:            []string{"identity", "tool_use"},
-		EvidenceUpdateSource:        "none",
-		GroundingOutcome:            "supported",
-		GroundingCitationScope:      "mixed",
-		PromptMessagesRawPeak:       19,
-		PromptMessagesAssembledPeak: 15,
-		PromptMessagesCapApplied:    true,
-	})
+		Registry: observability.EntityRegistryTrace{
+			SnapshotID: "registry-snapshot",
+			AgeSeconds: 12,
+			SyncEvent:  "describe_instances",
+		},
+		ReactRounds:               3,
+		ActionProposalDisposition: "rejected:Zone=invalid_value",
+		SessionState: engine.SessionState{
+			SelectedInstanceID:        "uhost-final",
+			SelectedInstanceSource:    engine.SelectedInstanceSourceObserved,
+			SelectedInstanceFreshness: engine.ContinuityFreshnessFresh,
+		},
+		SessionStateHydrated:             true,
+		ResolutionSource:                 observability.ResolutionSourceSessionState,
+		SelectedInstanceIDAtStart:        "uhost-start",
+		SelectedInstanceSourceAtStart:    engine.SelectedInstanceSourceUser,
+		SelectedInstanceFreshnessAtStart: engine.ContinuityFreshnessStale,
+		ContextSources:                   []string{"recent_pairs", "selected_entities"},
+		ResponseContract:                 "agent",
+		PromptSectionIDs:                 []string{"identity", "tool_use"},
+		EvidenceUpdateSource:             "none",
+		GroundingOutcome:                 "supported",
+		GroundingCitationScope:           "mixed",
+		PromptMessagesRawPeak:            19,
+		PromptMessagesAssembledPeak:      15,
+		PromptMessagesCapApplied:         true,
+	}, true)
 
 	require.NoError(t, recorder.Finish(nil, time.Now()))
 	require.Len(t, writer.records, 1)
-	got := writer.records[0].Outcome
-	assert.Equal(t, []string{"recent_pairs", "selected_entities"}, got.ContextSources)
-	assert.Equal(t, "agent", got.ResponseContract)
-	assert.Equal(t, []string{"identity", "tool_use"}, got.PromptSectionIDs)
-	assert.Equal(t, "none", got.EvidenceUpdateSource)
-	assert.Equal(t, "supported", got.GroundingOutcome)
-	assert.Equal(t, "mixed", got.GroundingCitationScope)
-	assert.Equal(t, 19, got.PromptMessagesRawPeak)
-	assert.Equal(t, 15, got.PromptMessagesAssembledPeak)
-	assert.True(t, got.PromptMessagesCapApplied)
+	got := writer.records[0]
+	assert.Equal(t, observability.EntityRegistryTrace{
+		SnapshotID: "registry-snapshot",
+		AgeSeconds: 12,
+		SyncEvent:  "describe_instances",
+	}, got.EntityRegistry)
+	assert.Equal(t, observability.StateTrace{
+		SessionStateHydrated:                 true,
+		ResolutionSource:                     observability.ResolutionSourceSessionState,
+		SelectedInstanceID:                   "uhost-final",
+		SelectedInstanceIDAtTurnStart:        "uhost-start",
+		SelectedInstanceSource:               engine.SelectedInstanceSourceObserved,
+		SelectedInstanceFreshness:            engine.ContinuityFreshnessFresh,
+		SelectedInstanceSourceAtTurnStart:    engine.SelectedInstanceSourceUser,
+		SelectedInstanceFreshnessAtTurnStart: engine.ContinuityFreshnessStale,
+	}, got.State)
+	assert.Equal(t, observability.TerminatedByEmptyReply, got.Outcome.TerminatedBy)
+	assert.Equal(t, observability.AbortCauseLLMEmptyStream, got.Outcome.AbortCause)
+	assert.Equal(t, 3, got.Outcome.ReactRounds)
+	assert.Equal(t, "rejected:Zone=invalid_value", got.Outcome.ActionProposalDisposition)
+	assert.Equal(t, []string{"recent_pairs", "selected_entities"}, got.Outcome.ContextSources)
+	assert.Equal(t, "agent", got.Outcome.ResponseContract)
+	assert.Equal(t, []string{"identity", "tool_use"}, got.Outcome.PromptSectionIDs)
+	assert.Equal(t, "none", got.Outcome.EvidenceUpdateSource)
+	assert.Equal(t, "supported", got.Outcome.GroundingOutcome)
+	assert.Equal(t, "mixed", got.Outcome.GroundingCitationScope)
+	assert.Equal(t, 19, got.Outcome.PromptMessagesRawPeak)
+	assert.Equal(t, 15, got.Outcome.PromptMessagesAssembledPeak)
+	assert.True(t, got.Outcome.PromptMessagesCapApplied)
 }
 
 func TestChatTraceRecorderPreservesTheModelSelectedFunction(t *testing.T) {

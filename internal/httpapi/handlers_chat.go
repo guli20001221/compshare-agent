@@ -341,7 +341,6 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	turnIndex := sess.MessageCount/2 + 1
 	traceRecorder := newChatTraceRecorder(h.traceWriter, base, sessionID, turnIndex, message, start)
 	if traceRecorder != nil {
-		traceRecorder.SetRegistryTraceSupplier(agent.RegistryTraceState)
 		attachChatTraceObservers(agent, traceRecorder)
 	}
 	userMsgID := uuid.NewString()
@@ -445,25 +444,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		if traceRecorder == nil {
 			return
 		}
-		traceRecorder.SetTerminalSignals(observability.FinishSignals{
-			ReplyEmpty:                strings.TrimSpace(reply) == "",
-			ReactRounds:               agent.ReactRoundsThisTurn(),
-			RoundCeilingHit:           agent.ReactCeilingHitThisTurn(),
-			ActionProposalDisposition: agent.ActionProposalDispositionThisTurn(),
-		})
-		sessState, _, hydrated := agent.SessionStateSnapshot()
-		selectedSourceAtStart, selectedFreshnessAtStart := agent.SelectedInstanceProvenanceAtTurnStart()
-		traceRecorder.SetStateTrace(observability.StateTrace{
-			SessionStateHydrated:                 hydrated,
-			ResolutionSource:                     agent.InstanceResolutionSource(),
-			SelectedInstanceID:                   sessState.SelectedInstanceID,
-			SelectedInstanceIDAtTurnStart:        agent.SelectedInstanceIDAtTurnStart(),
-			SelectedInstanceSource:               sessState.SelectedInstanceSource,
-			SelectedInstanceFreshness:            sessState.SelectedInstanceFreshness,
-			SelectedInstanceSourceAtTurnStart:    selectedSourceAtStart,
-			SelectedInstanceFreshnessAtTurnStart: selectedFreshnessAtStart,
-		})
-		traceRecorder.SetEngineSnapshot(agent.TraceSnapshot(time.Now()))
+		traceRecorder.SetEngineSnapshot(agent.TraceSnapshot(time.Now()), strings.TrimSpace(reply) == "")
 		if traceErr := traceRecorder.Finish(err, time.Now()); traceErr != nil {
 			log.Printf("warning: HTTP trace write failed: %v", traceErr)
 		}

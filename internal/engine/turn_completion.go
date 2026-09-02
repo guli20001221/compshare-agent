@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/compshare-agent/internal/llm"
@@ -20,8 +21,6 @@ func (e *Engine) resetTurnCompletion() {
 		return
 	}
 	e.turnModelCallsThisTurn = 0
-	e.turnModelProviderThisTurn = ""
-	e.turnModelIDsThisTurn = nil
 	e.turnModelAttemptsThisTurn = nil
 	e.turnCompletionClassHint = ""
 	e.turnCompletionReasonHint = ""
@@ -51,20 +50,9 @@ func (e *Engine) emitTurnCompletion() {
 	e.turnCompletionEmittedThisTurn = true
 
 	attempts := append([]observability.ModelAttemptTrace(nil), e.turnModelAttemptsThisTurn...)
-	finishReasons := make([]string, 0, len(attempts))
-	for _, attempt := range attempts {
-		if attempt.FinishReason != "" {
-			finishReasons = append(finishReasons, attempt.FinishReason)
-		}
-	}
 	trace := observability.TurnCompletionTrace{
 		RuntimeFinishReason:      string(e.runtimeFinishReasonThisTurn),
-		ModelCalls:               e.turnModelCallsThisTurn,
-		ModelProvider:            e.turnModelProviderThisTurn,
-		ModelIDs:                 append([]string(nil), e.turnModelIDsThisTurn...),
-		ProviderFinishReasons:    finishReasons,
 		ModelAttempts:            attempts,
-		ToolNames:                centralAgentToolNames(e.mutatingToolsEnabled, e.mutatingToolsEnabled && e.instanceOps != nil),
 		DirectAnswerRetryOutcome: e.directAnswerToolRetryOutcomeThisTurn,
 	}
 
@@ -74,39 +62,13 @@ func (e *Engine) emitTurnCompletion() {
 	}
 }
 
-// recordTurnModel receives only the client-boundary metadata, never a prompt
-// or response. The engine uses one configured client today; retaining unique
-// ids still makes an accidental future fallback visible instead of silently
-// attributing a mixed turn to whichever model happened to run first.
-func (e *Engine) recordTurnModel(call llm.OutboundCall) {
-	if e == nil {
-		return
-	}
-	provider := strings.TrimSpace(call.Provider)
-	if provider != "" {
-		if e.turnModelProviderThisTurn == "" {
-			e.turnModelProviderThisTurn = provider
-		} else if e.turnModelProviderThisTurn != provider {
-			e.turnModelProviderThisTurn = "mixed"
-		}
-	}
-	model := strings.TrimSpace(call.Model)
-	if model == "" {
-		return
-	}
-	for _, existing := range e.turnModelIDsThisTurn {
-		if existing == model {
-			return
-		}
-	}
-	e.turnModelIDsThisTurn = append(e.turnModelIDsThisTurn, model)
-}
-
 func (e *Engine) recordTurnModelAttempt(result llm.OutboundCallResult) {
 	if e == nil {
 		return
 	}
+	id := fmt.Sprintf("model-%d", len(e.turnModelAttemptsThisTurn)+1)
 	e.turnModelAttemptsThisTurn = append(e.turnModelAttemptsThisTurn, observability.ModelAttemptTrace{
+		ID: id, Provider: strings.TrimSpace(result.Call.Provider), Model: strings.TrimSpace(result.Call.Model),
 		AttemptInCall: result.AttemptInCall, LatencyMS: result.LatencyMS, Outcome: result.Outcome,
 		ErrorClass: result.ErrorClass, Retried: result.Retried,
 		FinishReason: result.StopReason, FirstChunkMS: result.ProviderFirstChunkMS,

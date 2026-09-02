@@ -28,8 +28,7 @@ func TestChatEmitsExactlyOneCompletionForAgentChosenHandoff(t *testing.T) {
 	assert.Equal(t, observability.CompletionClassAgent, got.Class)
 	assert.Equal(t, observability.CompletionReasonAgentLoop, got.Reason)
 	assert.Equal(t, "deterministic_reply", got.RuntimeFinishReason)
-	assert.Zero(t, got.ModelCalls, "the in-process mock does not emit outbound-call telemetry")
-	assert.Equal(t, centralAgentToolNames(true, false), got.ToolNames)
+	assert.Empty(t, got.ModelAttempts, "the in-process mock does not emit outbound-call telemetry")
 }
 
 func TestChatCompletionCountsRealOutboundModelRequests(t *testing.T) {
@@ -54,22 +53,22 @@ func TestChatCompletionCountsRealOutboundModelRequests(t *testing.T) {
 	assert.Equal(t, observability.CompletionClassAgent, completions[0].Class)
 	assert.Equal(t, "final_answer", completions[0].RuntimeFinishReason,
 		"the trace must retain the runtime's exact terminal reason, not just a hand-mapped class")
-	assert.Equal(t, 1, completions[0].ModelCalls, "count must come from the real outbound boundary")
-	assert.Equal(t, "openai_compatible", completions[0].ModelProvider)
-	assert.Equal(t, []string{"test-model"}, completions[0].ModelIDs)
-	assert.Equal(t, []string{"stop"}, completions[0].ProviderFinishReasons)
 	require.Len(t, completions[0].ModelAttempts, 1)
-	assert.Equal(t, 1, completions[0].ModelAttempts[0].AttemptInCall)
-	assert.Equal(t, "success", completions[0].ModelAttempts[0].Outcome)
-	require.NotNil(t, completions[0].ModelAttempts[0].FirstChunkMS)
-	require.NotNil(t, completions[0].ModelAttempts[0].PromptTokens)
-	assert.Equal(t, 120, *completions[0].ModelAttempts[0].PromptTokens)
-	require.NotNil(t, completions[0].ModelAttempts[0].CachedPromptTokens)
-	assert.Zero(t, *completions[0].ModelAttempts[0].CachedPromptTokens)
-	assert.Equal(t, len(centralAgentToolNames(true, false)), completions[0].ModelAttempts[0].ToolCount)
-	assert.Positive(t, completions[0].ModelAttempts[0].ToolWindowRunes)
-	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, completions[0].ModelAttempts[0].ToolWindowHash)
-	assert.Equal(t, centralAgentToolNames(true, false), completions[0].ToolNames)
+	attempt := completions[0].ModelAttempts[0]
+	assert.Equal(t, "model-1", attempt.ID)
+	assert.Equal(t, "openai_compatible", attempt.Provider)
+	assert.Equal(t, "test-model", attempt.Model)
+	assert.Equal(t, 1, attempt.AttemptInCall)
+	assert.Equal(t, "success", attempt.Outcome)
+	assert.Equal(t, "stop", attempt.FinishReason)
+	require.NotNil(t, attempt.FirstChunkMS)
+	require.NotNil(t, attempt.PromptTokens)
+	assert.Equal(t, 120, *attempt.PromptTokens)
+	require.NotNil(t, attempt.CachedPromptTokens)
+	assert.Zero(t, *attempt.CachedPromptTokens)
+	assert.Equal(t, len(centralAgentToolNames(true, false)), attempt.ToolCount)
+	assert.Positive(t, attempt.ToolWindowRunes)
+	assert.Regexp(t, `^sha256:[0-9a-f]{64}$`, attempt.ToolWindowHash)
 
 	// A second logical model call in the same Engine/session starts its own
 	// attempt numbering and does not inherit the prior turn's attempt slice.
@@ -77,7 +76,13 @@ func TestChatCompletionCountsRealOutboundModelRequests(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, completions, 2)
 	require.Len(t, completions[1].ModelAttempts, 1)
-	assert.Equal(t, 1, completions[1].ModelAttempts[0].AttemptInCall)
+	secondAttempt := completions[1].ModelAttempts[0]
+	assert.Equal(t, "model-1", secondAttempt.ID)
+	assert.Equal(t, "openai_compatible", secondAttempt.Provider)
+	assert.Equal(t, "test-model", secondAttempt.Model)
+	assert.Equal(t, 1, secondAttempt.AttemptInCall)
+	assert.Equal(t, "success", secondAttempt.Outcome)
+	assert.Equal(t, "stop", secondAttempt.FinishReason)
 }
 
 // A provider may complete a valid streaming response without sending a native
@@ -101,8 +106,13 @@ func TestChatCompletionRecordsUnspecifiedProviderFinishReason(t *testing.T) {
 	_, err := eng.Chat(context.Background(), "介绍一下平台", noopStep)
 	require.NoError(t, err)
 	require.Len(t, completions, 1)
-	assert.Equal(t, 1, completions[0].ModelCalls)
-	assert.Equal(t, []string{"unspecified"}, completions[0].ProviderFinishReasons)
+	require.Len(t, completions[0].ModelAttempts, 1)
+	attempt := completions[0].ModelAttempts[0]
+	assert.Equal(t, "model-1", attempt.ID)
+	assert.Equal(t, "openai_compatible", attempt.Provider)
+	assert.Equal(t, "test-model", attempt.Model)
+	assert.Equal(t, "success", attempt.Outcome)
+	assert.Equal(t, "unspecified", attempt.FinishReason)
 }
 
 func TestChatCompletionMarksTerminalRateLimit(t *testing.T) {
@@ -124,5 +134,5 @@ func TestChatCompletionMarksTerminalRateLimit(t *testing.T) {
 	assert.Equal(t, observability.CompletionReasonRateLimit, completions[0].Reason)
 	assert.Equal(t, "rate_limit", completions[0].RuntimeFinishReason,
 		"the limiter runs inside the runtime driver, so its exact loop exit is retained")
-	assert.Zero(t, completions[0].ModelCalls)
+	assert.Empty(t, completions[0].ModelAttempts)
 }

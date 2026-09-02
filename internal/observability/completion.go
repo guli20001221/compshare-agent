@@ -2,19 +2,13 @@ package observability
 
 // TurnCompletionTrace is the single, final classification emitted when an
 // engine turn exits. It records bounded control-flow facts only: no prompt,
-// reply, tool arguments, identifiers, or model-generated error text.
+// reply, tool arguments, user/resource identifiers, or model-generated error
+// text. Provider and model names are operation metadata, not conversation data.
 type TurnCompletionTrace struct {
-	Class               string   `json:"class"`
-	Reason              string   `json:"reason"`
-	RuntimeFinishReason string   `json:"runtime_finish_reason,omitempty"`
-	ModelCalls          int      `json:"model_calls"`
-	ModelProvider       string   `json:"model_provider,omitempty"`
-	ModelIDs            []string `json:"model_ids,omitempty"`
-	// ProviderFinishReasons is the compatibility aggregate derived from the
-	// non-empty ModelAttempts finish reasons; it has no separate mutable source.
-	ProviderFinishReasons []string            `json:"provider_finish_reasons,omitempty"`
-	ModelAttempts         []ModelAttemptTrace `json:"model_attempts,omitempty"`
-	ToolNames             []string            `json:"tool_names,omitempty"`
+	Class               string              `json:"class"`
+	Reason              string              `json:"reason"`
+	RuntimeFinishReason string              `json:"runtime_finish_reason,omitempty"`
+	ModelAttempts       []ModelAttemptTrace `json:"model_attempts,omitempty"`
 	// DirectAnswerRetryOutcome is present only when the bounded first-answer
 	// retry ran. It records the central Agent's decision without storing text.
 	DirectAnswerRetryOutcome string `json:"direct_answer_retry_outcome,omitempty"`
@@ -25,6 +19,11 @@ type TurnCompletionTrace struct {
 // enclosing engine turn bounds the number of logical calls. FirstChunkMS is
 // nil when no provider chunk was observed, distinct from a real 0ms sample.
 type ModelAttemptTrace struct {
+	// ID is the stable turn-local operation identity. Provider and Model belong
+	// to each actual request rather than duplicated turn-level aggregates.
+	ID       string `json:"id"`
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
 	// AttemptInCall resets for each logical Client.Chat call; it only orders the
 	// provider retries/fallback requests made to obtain that one response.
 	AttemptInCall int    `json:"attempt_in_call"`
@@ -40,7 +39,7 @@ type ModelAttemptTrace struct {
 	// CachedPromptTokens is nil when prompt-token details were absent. A pointer
 	// to zero means a details object was present and decoded to zero cached tokens.
 	CachedPromptTokens *int `json:"cached_prompt_tokens,omitempty"`
-	// ToolCount and ToolWindowRunes are always emitted for a v0.14 attempt,
+	// ToolCount and ToolWindowRunes are always emitted for an attempt,
 	// including explicit zeroes for requests that carried no tools.
 	ToolCount       int    `json:"tool_count"`
 	ToolWindowRunes int    `json:"tool_window_runes"`
@@ -89,11 +88,6 @@ func traceCompletionObserved(trace TurnCompletionTrace) bool {
 	return trace.Class != "" ||
 		trace.Reason != "" ||
 		trace.RuntimeFinishReason != "" ||
-		trace.ModelCalls != 0 ||
-		trace.ModelProvider != "" ||
-		len(trace.ModelIDs) > 0 ||
-		len(trace.ProviderFinishReasons) > 0 ||
 		len(trace.ModelAttempts) > 0 ||
-		len(trace.ToolNames) > 0 ||
 		trace.DirectAnswerRetryOutcome != ""
 }

@@ -20,19 +20,18 @@ type traceEnqueuer interface {
 }
 
 type chatTraceRecorder struct {
-	writer                observability.Writer
-	tenant                observability.TenantContext
-	record                observability.TraceRecord
-	start                 time.Time
-	totalTokens           int
-	promptTokens          int
-	completionTokens      int
-	pendingByID           map[string][]pendingToolCall
-	now                   func() time.Time
-	registryTraceSupplier func(time.Time) observability.EntityRegistryTrace
-	terminalSignals       observability.FinishSignals
-	stateTrace            observability.StateTrace
-	firstVisibleEventAt   time.Time
+	writer              observability.Writer
+	tenant              observability.TenantContext
+	record              observability.TraceRecord
+	start               time.Time
+	totalTokens         int
+	promptTokens        int
+	completionTokens    int
+	pendingByID         map[string][]pendingToolCall
+	now                 func() time.Time
+	terminalSignals     observability.FinishSignals
+	stateTrace          observability.StateTrace
+	firstVisibleEventAt time.Time
 }
 
 // pendingToolCall ties an observed completion to the exact call that began it.
@@ -80,9 +79,6 @@ func attachChatTraceObservers(agent *engine.Engine, recorder *chatTraceRecorder)
 		return
 	}
 	agent.SetRetrievalTraceObserver(recorder.SetRetrievalTrace)
-	agent.SetFreshnessTraceObserver(recorder.SetFreshnessTrace)
-	agent.SetDiagnosisTraceObserver(recorder.SetDiagnosisTrace)
-	agent.SetOutcomeTraceObserver(recorder.SetOutcomeTrace)
 	agent.SetHardBlockObserver(recorder.SetEngineHardBlock)
 	agent.SetTurnCompletionObserver(recorder.SetTurnCompletionTrace)
 	agent.SetRateLimitObserver(recorder.SetRateLimitDecision)
@@ -96,9 +92,6 @@ func clearChatTraceObservers(agent *engine.Engine) {
 		return
 	}
 	agent.SetRetrievalTraceObserver(nil)
-	agent.SetFreshnessTraceObserver(nil)
-	agent.SetDiagnosisTraceObserver(nil)
-	agent.SetOutcomeTraceObserver(nil)
 	agent.SetHardBlockObserver(nil)
 	agent.SetTurnCompletionObserver(nil)
 	agent.SetRateLimitObserver(nil)
@@ -107,42 +100,33 @@ func clearChatTraceObservers(agent *engine.Engine) {
 	agent.SetConfirmationTraceObserver(nil)
 }
 
-func (r *chatTraceRecorder) SetRegistryTraceSupplier(supplier func(time.Time) observability.EntityRegistryTrace) {
-	if r == nil {
-		return
-	}
-	r.registryTraceSupplier = supplier
-}
-
-// SetTerminalSignals records the per-turn terminal facts (empty reply, ReAct
-// round count, round-ceiling) the trace record cannot observe on its own. The
-// chat error is passed separately to Finish; this carries the rest. Call it
-// before Finish; a never-called recorder finalizes a clean turn as "done".
-func (r *chatTraceRecorder) SetTerminalSignals(signals observability.FinishSignals) {
-	if r == nil {
-		return
-	}
-	r.terminalSignals = signals
-}
-
-// SetStateTrace records the per-turn instance-binding state read from the
-// engine getters. Call it before Finish; an un-set recorder leaves State zero
-// (omitted, SHA-stable).
-func (r *chatTraceRecorder) SetStateTrace(state observability.StateTrace) {
-	if r == nil {
-		return
-	}
-	r.stateTrace = state
-}
-
-// SetEngineSnapshot records content-free context and grounding facts after a turn.
+// SetEngineSnapshot is the single turn-end projection from Engine state into
+// the root trace. replyEmpty is transport-owned; every other value comes from
+// the same immutable engine snapshot so independently-read facts cannot drift.
 //
 // The snapshot deliberately contains identifiers and closed-set outcomes only;
 // it does not add a prompt, reply, tool arguments, or transcript to trace
 // storage.
-func (r *chatTraceRecorder) SetEngineSnapshot(snapshot engine.TraceSnapshot) {
+func (r *chatTraceRecorder) SetEngineSnapshot(snapshot engine.TraceSnapshot, replyEmpty bool) {
 	if r == nil {
 		return
+	}
+	r.record.EntityRegistry = snapshot.Registry
+	r.terminalSignals = observability.FinishSignals{
+		ReplyEmpty:                replyEmpty,
+		ReactRounds:               snapshot.ReactRounds,
+		RoundCeilingHit:           snapshot.RoundCeilingHit,
+		ActionProposalDisposition: snapshot.ActionProposalDisposition,
+	}
+	r.stateTrace = observability.StateTrace{
+		SessionStateHydrated:                 snapshot.SessionStateHydrated,
+		ResolutionSource:                     snapshot.ResolutionSource,
+		SelectedInstanceID:                   snapshot.SessionState.SelectedInstanceID,
+		SelectedInstanceIDAtTurnStart:        snapshot.SelectedInstanceIDAtStart,
+		SelectedInstanceSource:               snapshot.SessionState.SelectedInstanceSource,
+		SelectedInstanceFreshness:            snapshot.SessionState.SelectedInstanceFreshness,
+		SelectedInstanceSourceAtTurnStart:    snapshot.SelectedInstanceSourceAtStart,
+		SelectedInstanceFreshnessAtTurnStart: snapshot.SelectedInstanceFreshnessAtStart,
 	}
 	r.record.Outcome.ContextSources = append([]string(nil), snapshot.ContextSources...)
 	r.record.Outcome.ResponseContract = snapshot.ResponseContract
@@ -170,29 +154,6 @@ func (r *chatTraceRecorder) SetRetrievalTrace(trace observability.RetrievalTrace
 		return
 	}
 	r.record.Retrieval = observability.MergeRetrievalTrace(r.record.Retrieval, trace)
-}
-
-func (r *chatTraceRecorder) SetFreshnessTrace(trace observability.FreshnessTrace) {
-	if r == nil {
-		return
-	}
-	r.record.Freshness = observability.MergeFreshnessTrace(r.record.Freshness, trace)
-}
-
-func (r *chatTraceRecorder) SetDiagnosisTrace(trace observability.DiagnosisTrace) {
-	if r == nil {
-		return
-	}
-	r.record.Diagnosis = trace
-}
-
-func (r *chatTraceRecorder) SetOutcomeTrace(trace observability.OutcomeTrace) {
-	if r == nil {
-		return
-	}
-	r.record.Outcome.AttemptedHallucinatedCount = trace.AttemptedHallucinatedCount
-	r.record.Outcome.EscapedHallucinatedCount = trace.EscapedHallucinatedCount
-	r.record.Outcome.KBConflictCount = trace.KBConflictCount
 }
 
 // AddAuthorizationTrace appends one write target's dual-proof audit record; the
@@ -288,7 +249,6 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 		}
 		r.record.ToolCalls = append(r.record.ToolCalls, observability.ToolCallTrace{
 			ID:                   fmt.Sprintf("tool-%d", len(r.record.ToolCalls)+1),
-			TurnIndex:            r.record.TurnIndex,
 			Action:               ev.Action,
 			SelectedFunctionName: ev.SelectedFunctionName,
 			Source:               source,
@@ -313,9 +273,6 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 		r.applyErrorCode(idx, ev.ErrorCode)
 		if r.record.ToolCalls[idx].RequestedTargets > 0 && r.record.ToolCalls[idx].ExecutedTargets == 0 {
 			r.record.ToolCalls[idx].ExecutedTargets = r.record.ToolCalls[idx].RequestedTargets
-		}
-		if len(ev.RendererInputToolArgHashes) > 0 {
-			r.record.Renderer.InputToolArgHashes = append(r.record.Renderer.InputToolArgHashes, ev.RendererInputToolArgHashes...)
 		}
 	case engine.StepError:
 		idx, startedAt := r.matchPending(key, ev.Action, source)
@@ -364,9 +321,6 @@ func (r *chatTraceRecorder) Finish(chatErr error, end time.Time) error {
 	if r.record.Timestamp == "" {
 		r.record.Timestamp = end.UTC().Format(time.RFC3339Nano)
 	}
-	if r.registryTraceSupplier != nil {
-		r.record.EntityRegistry = r.registryTraceSupplier(end)
-	}
 	if chatErr != nil && r.record.EngineHardBlock.Category == "" {
 		r.record.EngineHardBlock = observability.EngineHardBlockTrace{
 			Hit:      true,
@@ -384,12 +338,6 @@ func (r *chatTraceRecorder) Finish(chatErr error, end time.Time) error {
 	if chatErr != nil {
 		// A failed turn did not deliver the normal Agent response contract.
 		r.record.Outcome.ResponseContract = "failure"
-	}
-	for _, call := range r.record.ToolCalls {
-		if call.TurnIndex == r.record.TurnIndex && call.Action == "GetCompShareInstanceMonitor" {
-			r.record.Freshness.MonitorCallInCurrentTurn = true
-			break
-		}
 	}
 	r.record.ActualExecutionTier = r.record.DeriveActualExecutionTier()
 	r.record.Retrieval.RefusalType = r.record.Retrieval.DeriveRefusalType()
@@ -465,10 +413,9 @@ func (r *chatTraceRecorder) matchPending(key, action, source string) (int, time.
 		return pending.index, pending.startedAt
 	}
 	r.record.ToolCalls = append(r.record.ToolCalls, observability.ToolCallTrace{
-		ID:        fmt.Sprintf("tool-%d", len(r.record.ToolCalls)+1),
-		TurnIndex: r.record.TurnIndex,
-		Action:    action,
-		Source:    source,
+		ID:     fmt.Sprintf("tool-%d", len(r.record.ToolCalls)+1),
+		Action: action,
+		Source: source,
 	})
 	return len(r.record.ToolCalls) - 1, time.Time{}
 }

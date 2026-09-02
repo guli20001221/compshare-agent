@@ -209,10 +209,7 @@ type Engine struct {
 	knowledgeRetriever               KnowledgeRetriever
 	agentRuntimeEventsThisTurn       []agentruntime.Event
 	retrievalTraceObserver           func(observability.RetrievalTrace)
-	freshnessTraceObserver           func(observability.FreshnessTrace)
-	diagnosisTraceObserver           func(observability.DiagnosisTrace)
 	turnCompletionObserver           func(observability.TurnCompletionTrace)
-	outcomeTraceObserver             func(observability.OutcomeTrace)
 	authorizationTraceObserver       func(observability.AuthorizationTrace)
 	confirmationTraceObserver        func(observability.ConfirmationTrace)
 	tokenUsageObserver               func(llm.TokenUsage)
@@ -304,8 +301,6 @@ type Engine struct {
 	promptMessagesAssembledPeakThisTurn int
 	promptMessagesCapAppliedThisTurn    bool
 	turnModelCallsThisTurn              int
-	turnModelProviderThisTurn           string
-	turnModelIDsThisTurn                []string
 	turnModelAttemptsThisTurn           []observability.ModelAttemptTrace
 	turnCompletionClassHint             string
 	turnCompletionReasonHint            string
@@ -607,18 +602,6 @@ func (e *Engine) SetKnowledgeRetriever(retriever KnowledgeRetriever) {
 
 func (e *Engine) SetRetrievalTraceObserver(observer func(observability.RetrievalTrace)) {
 	e.retrievalTraceObserver = observer
-}
-
-func (e *Engine) SetFreshnessTraceObserver(observer func(observability.FreshnessTrace)) {
-	e.freshnessTraceObserver = observer
-}
-
-func (e *Engine) SetDiagnosisTraceObserver(observer func(observability.DiagnosisTrace)) {
-	e.diagnosisTraceObserver = observer
-}
-
-func (e *Engine) SetOutcomeTraceObserver(observer func(observability.OutcomeTrace)) {
-	e.outcomeTraceObserver = observer
 }
 
 // SetAuthorizationTraceObserver wires the per-turn write-authorization audit sink;
@@ -1179,9 +1162,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// tool messages at the start of the next turn.
 	defer e.captureTurnTranscript()
 	e.resetTurnCompletion()
-	ctx = llm.WithOutboundCallObserver(ctx, func(call llm.OutboundCall) {
+	ctx = llm.WithOutboundCallObserver(ctx, func(llm.OutboundCall) {
 		e.turnModelCallsThisTurn++
-		e.recordTurnModel(call)
 	})
 	ctx = llm.WithOutboundCallResultObserver(ctx, func(result llm.OutboundCallResult) {
 		e.recordTurnModelAttempt(result)
@@ -2256,9 +2238,6 @@ func (x capabilityHandlerExecutor) execute(ctx context.Context, action string, a
 		TraceResult: result.TraceResult,
 		Attempts:    result.Attempts,
 	}
-	if action == "GetCompShareInstanceMonitor" {
-		event.RendererInputToolArgHashes = hashCapabilityHandlerArgs(args)
-	}
 	x.emit(event)
 	return result.RawResult, nil
 }
@@ -2267,14 +2246,6 @@ func (x capabilityHandlerExecutor) emit(ev StepEvent) {
 	if x.onStep != nil {
 		x.onStep(ev)
 	}
-}
-
-func hashCapabilityHandlerArgs(args map[string]any) []string {
-	hash, err := observability.HashTracePayload(args)
-	if err != nil {
-		return nil
-	}
-	return []string{hash}
 }
 
 func (e *Engine) allowRateLimited(class governance.Class, action string) (governance.Decision, bool) {
@@ -2777,7 +2748,6 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(answerQuestion, query string,
 		AnswerQuestion:         answerQuestion,
 		QueryRaw:               query,
 		QueryNormalized:        retrieved.QueryNormalized,
-		QueryExpansions:        []string{},
 		Hits:                   len(retrieved.Hits),
 		HybridMode:             retrieved.HybridMode,
 		HybridFallbackReason:   retrieved.HybridFallbackReason,
@@ -4833,25 +4803,24 @@ const (
 
 // StepEvent is an intermediate event during the ReAct loop.
 type StepEvent struct {
-	Type                       StepType
-	Action                     string
-	SelectedFunctionName       string
-	Source                     string
-	Args                       map[string]any
-	Message                    string
-	TraceResult                map[string]any // redacted result payload for trace hashing only
-	Attempts                   int
-	RendererInputToolArgHashes []string
-	Capped                     string
-	CapReason                  string
-	RequestedTargets           int
-	ExecutedTargets            int
-	WindowSeconds              int
-	Projected                  bool // ReAct result projection shrank this result (observability only)
-	ErrorCode                  string
-	ToolResultRawRunes         *int
-	ToolResultVisibleRunes     *int
-	ToolResultTruncated        *bool
+	Type                   StepType
+	Action                 string
+	SelectedFunctionName   string
+	Source                 string
+	Args                   map[string]any
+	Message                string
+	TraceResult            map[string]any // redacted result payload for trace hashing only
+	Attempts               int
+	Capped                 string
+	CapReason              string
+	RequestedTargets       int
+	ExecutedTargets        int
+	WindowSeconds          int
+	Projected              bool // ReAct result projection shrank this result (observability only)
+	ErrorCode              string
+	ToolResultRawRunes     *int
+	ToolResultVisibleRunes *int
+	ToolResultTruncated    *bool
 }
 
 // trimHistory keeps the message list under maxRawHistoryRunes by dropping the

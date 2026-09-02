@@ -299,8 +299,6 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"reactRoundsThisTurn":           true,
 		"reactCeilingHitThisTurn":       true,
 		"turnModelCallsThisTurn":        true,
-		"turnModelProviderThisTurn":     true,
-		"turnModelIDsThisTurn":          true,
 		"turnModelAttemptsThisTurn":     true,
 		"turnCompletionClassHint":       true,
 		"turnCompletionReasonHint":      true,
@@ -316,9 +314,6 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"selectedInstanceFreshnessAtTurnStart": true,
 		"instanceResolutionSourceThisTurn":     true,
 		"retrievalTraceObserver":               true,
-		"freshnessTraceObserver":               true,
-		"diagnosisTraceObserver":               true,
-		"outcomeTraceObserver":                 true,
 		"authorizationTraceObserver":           true,
 		// Confirmation outcomes are turn-scoped transport facts. Sharing this
 		// observer would append one tenant's card result to another's trace.
@@ -432,12 +427,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 102, len(perSessionFields); want != got {
+	if want, got := 97, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 108, typ.NumField(); want != got {
+	if want, got := 103, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update this test's whitelists to match.", want, got)
 	}
