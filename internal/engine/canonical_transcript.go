@@ -163,7 +163,7 @@ func buildTranscriptV1(messages []openai.ChatCompletionMessage) *TranscriptV1 {
 			converted.ToolCalls = append(converted.ToolCalls, TranscriptToolCall{
 				ID:        call.ID,
 				Name:      call.Function.Name,
-				Arguments: boundToolArguments(safeConversationText(call.Function.Arguments)),
+				Arguments: boundToolArguments(safeToolConversationText(call.Function.Arguments)),
 			})
 		}
 		out = append(out, converted)

@@ -9,11 +9,11 @@ import (
 
 func TestAuditTaskTextRedactsCredentialButKeepsRepairFacts(t *testing.T) {
 	secret := "sshops-e2e-" + "secret-1234567890"
-	task := "检查实例 cpod-test 的 /v1/models；Authorization: " + "Bearer " + secret + "，期望 HTTP 200"
+	const facts = "检查实例 cpod-test 的 /v1/models，联系 user@example.com 13800138000，项目 12345678-1234-1234-1234-1234567890ab"
+	task := facts + "；Authorization: " + "Bearer " + secret + "，期望 HTTP 200"
 	got := auditTaskText(task)
 
-	require.Contains(t, got, "cpod-test")
-	require.Contains(t, got, "/v1/models")
+	require.Contains(t, got, facts)
 	require.Contains(t, got, "HTTP 200")
 	require.Contains(t, got, "Authorization: Bearer")
 	require.NotContains(t, got, secret)

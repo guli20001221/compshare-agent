@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/config"
-	"github.com/compshare-agent/internal/guardrails"
 	"github.com/compshare-agent/internal/store"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -115,7 +114,7 @@ func TestListSessionsEmptyState(t *testing.T) {
 
 // TestDeriveSessionTitle covers the title derivation used by the chat write path
 // to label history rows: empty input is skipped, CJK survives intact, whitespace
-// collapses, long input truncates by rune, and credentials/PII are redacted so
+// collapses, long input truncates by rune, and credentials are redacted so
 // the sidebar never shows values the message body itself would have redacted.
 func TestDeriveSessionTitle(t *testing.T) {
 	t.Run("empty and whitespace yield empty", func(t *testing.T) {
@@ -133,10 +132,10 @@ func TestDeriveSessionTitle(t *testing.T) {
 		assert.Equal(t, strings.Repeat("好", sessionTitleMaxRunes)+"…", got)
 		assert.Equal(t, sessionTitleMaxRunes+1, len([]rune(got)))
 	})
-	t.Run("PII redacted consistent with stored message body", func(t *testing.T) {
-		got := deriveSessionTitle("我的手机13800138000")
-		assert.NotContains(t, got, "13800138000")
-		assert.Contains(t, got, guardrails.PhoneRedacted)
+	t.Run("ordinary information preserved consistent with stored message body", func(t *testing.T) {
+		for _, text := range []string{"我的手机13800138000", "联系 user@example.com"} {
+			assert.Equal(t, text, deriveSessionTitle(text))
+		}
 	})
 	t.Run("authorization header value never reaches the sidebar", func(t *testing.T) {
 		const secret = "title-auth-secret-0123456789"

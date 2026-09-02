@@ -251,7 +251,7 @@ func TestSetSessionStateNormalizesOnlyV8BackgroundJob(t *testing.T) {
 	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV8, PersistedInstanceOpsJob: job}, 1)
 	state, _, _ := e.SessionStateSnapshot()
 	assert.Equal(t, "uhost-a", state.PersistedInstanceOpsJob.InstanceID)
-	assert.NotContains(t, state.PersistedInstanceOpsJob.Purpose, "user@example.com")
+	assert.Contains(t, state.PersistedInstanceOpsJob.Purpose, "user@example.com")
 	assert.NotContains(t, state.PersistedInstanceOpsJob.Purpose, "secret-value")
 	assert.Empty(t, state.PersistedInstanceOpsJob.UpdatedAt)
 

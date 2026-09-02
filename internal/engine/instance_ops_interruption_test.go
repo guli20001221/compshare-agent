@@ -438,7 +438,7 @@ func TestBackgroundJobPurposeIsRedactedAndRuneBounded(t *testing.T) {
 		"联系 user@example.com token=secret-value "+strings.Repeat("长", 240))
 	purpose := eng.sessionState.PersistedInstanceOpsJob.Purpose
 	require.LessOrEqual(t, len([]rune(purpose)), maxPersistedInstanceOpsJobPurposeRunes)
-	require.NotContains(t, purpose, "user@example.com")
+	require.Contains(t, purpose, "user@example.com")
 	require.NotContains(t, purpose, "secret-value")
 }
 

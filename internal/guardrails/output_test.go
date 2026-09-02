@@ -8,14 +8,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestRedactOutputLeak_IPv4IsPreserved is the inverse of the test it replaces.
+// TestRedactCredentials_IPv4IsPreserved is the inverse of the test it replaces.
 // IPv4 was redacted here and is not any more: the addresses this product prints
 // are the user's own instance endpoints, handed back to the user who owns them,
 // so masking them removed information and prevented nothing. The two cases that
 // made it concrete are the last two below — an SSH login line the user cannot
 // act on, and a loopback-vs-wildcard bind that is the entire answer in a
 // "service is up but unreachable" diagnosis.
-func TestRedactOutputLeak_IPv4IsPreserved(t *testing.T) {
+func TestRedactCredentials_IPv4IsPreserved(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
@@ -31,25 +31,25 @@ func TestRedactOutputLeak_IPv4IsPreserved(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.in, RedactOutputLeak(tc.in), "IPv4 must pass through untouched")
+			assert.Equal(t, tc.in, RedactCredentials(tc.in), "IPv4 must pass through untouched")
 		})
 	}
 }
 
-// TestRedactOutputLeak_StillRedactsCredentialsAlongsideIPs pins the half that did
+// TestRedactCredentials_StillRedactsCredentialsAlongsideIPs pins the half that did
 // NOT change: dropping IPv4 masking must not become an excuse to let an AK/SK or
 // token ride out next to the address it was printed with.
-func TestRedactOutputLeak_StillRedactsCredentialsAlongsideIPs(t *testing.T) {
-	got := RedactOutputLeak(`ssh root@203.0.113.9 -p 23 AccessKey="AKIAIOSFODNN7EXAMPLE"`)
+func TestRedactCredentials_StillRedactsCredentialsAlongsideIPs(t *testing.T) {
+	got := RedactCredentials(`ssh root@203.0.113.9 -p 23 AccessKey="AKIAIOSFODNN7EXAMPLE"`)
 	assert.Contains(t, got, "203.0.113.9", "the endpoint the user needs survives")
 	assert.NotContains(t, got, "AKIAIOSFODNN7EXAMPLE", "the credential next to it does not")
 }
 
-// TestRedactOutputLeak_PreservesRouting pins the contract that
+// TestRedactCredentials_PreservesRouting pins the contract that
 // answer-relevant tokens (GPU model, instance ID, zone code, prices)
 // pass through. If any of these is incorrectly masked, ops reviewing
 // persisted messages cannot follow the question/answer thread.
-func TestRedactOutputLeak_PreservesRouting(t *testing.T) {
+func TestRedactCredentials_PreservesRouting(t *testing.T) {
 	preserved := []string{
 		"4090",
 		"5090",
@@ -72,31 +72,34 @@ func TestRedactOutputLeak_PreservesRouting(t *testing.T) {
 	}
 	for _, s := range preserved {
 		t.Run(s, func(t *testing.T) {
-			assert.Equal(t, s, RedactOutputLeak(s),
+			assert.Equal(t, s, RedactCredentials(s),
 				"answer-relevant token %q must survive output redaction", s)
 		})
 	}
 }
 
-func TestRedactOutputLeak_UUIDProjectID(t *testing.T) {
+func TestRedactCredentials_PreservesOrdinaryInformation(t *testing.T) {
 	uuid := "12345678-1234-1234-1234-1234567890ab"
 	cases := []struct {
 		name string
 		in   string
-		want string
 	}{
-		{"bare UUID", uuid, ProjectIDRedacted},
-		{"中文夹带", "项目 ID 是 " + uuid + " 已设置", "项目 ID 是 " + ProjectIDRedacted + " 已设置"},
-		{"大写", "12345678-ABCD-EF00-1234-1234567890AB", ProjectIDRedacted},
+		{"bare UUID", uuid},
+		{"中文夹带", "项目 ID 是 " + uuid + " 已设置"},
+		{"大写", "12345678-ABCD-EF00-1234-1234567890AB"},
+		{"phone", "13800138000"},
+		{"email", "user@example.com"},
+		{"ID card", "110101199003078888"},
+		{"bank card", "4111111111111111"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, RedactOutputLeak(tc.in))
+			assert.Equal(t, tc.in, RedactCredentials(tc.in))
 		})
 	}
 }
 
-func TestRedactOutputLeak_CredentialMarker(t *testing.T) {
+func TestRedactCredentials_CredentialMarker(t *testing.T) {
 	cases := []struct {
 		name     string
 		in       string
@@ -112,7 +115,7 @@ func TestRedactOutputLeak_CredentialMarker(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := RedactOutputLeak(tc.in)
+			got := RedactCredentials(tc.in)
 			assert.Contains(t, got, tc.mustHave,
 				"input %q → expected placeholder, got %q", tc.in, got)
 			assert.NotContains(t, got, tc.mustGone,
@@ -121,10 +124,10 @@ func TestRedactOutputLeak_CredentialMarker(t *testing.T) {
 	}
 }
 
-// TestRedactOutputLeak_CredentialMarker_NoMatch verifies the
+// TestRedactCredentials_CredentialMarker_NoMatch verifies the
 // marker-required pattern doesn't FP on prose mentioning "access" or
 // "key" without an assignment.
-func TestRedactOutputLeak_CredentialMarker_NoMatch(t *testing.T) {
+func TestRedactCredentials_CredentialMarker_NoMatch(t *testing.T) {
 	prose := []string{
 		"请问 access 是什么意思",
 		"使用密钥需要谨慎",
@@ -133,12 +136,12 @@ func TestRedactOutputLeak_CredentialMarker_NoMatch(t *testing.T) {
 		"按 key 排序",
 	}
 	for _, s := range prose {
-		assert.Equal(t, s, RedactOutputLeak(s),
+		assert.Equal(t, s, RedactCredentials(s),
 			"prose %q must not trigger credential redaction", s)
 	}
 }
 
-func TestRedactOutputLeak_JWT(t *testing.T) {
+func TestRedactCredentials_JWT(t *testing.T) {
 	jwt := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTYifQ.signaturevalue123abc"
 	cases := []struct {
 		name string
@@ -150,12 +153,12 @@ func TestRedactOutputLeak_JWT(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, RedactOutputLeak(tc.in))
+			assert.Equal(t, tc.want, RedactCredentials(tc.in))
 		})
 	}
 }
 
-func TestRedactOutputLeak_BearerToken(t *testing.T) {
+func TestRedactCredentials_BearerToken(t *testing.T) {
 	testToken := "AKIAIOSFODN" + "N7EXAMPLEbCDEF"
 	cases := []struct {
 		name string
@@ -173,7 +176,7 @@ func TestRedactOutputLeak_BearerToken(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := RedactOutputLeak(tc.in)
+			got := RedactCredentials(tc.in)
 			assert.Equal(t, tc.want, got)
 		})
 	}
@@ -420,9 +423,9 @@ func TestReferenceAuthorizationHeaderValuesBoundsMultiParameterAndShellForms(t *
 	}
 }
 
-// TestRedactOutputLeak_Composite checks the realistic case of multiple
+// TestRedactCredentials_Composite checks the realistic case of multiple
 // leak types in one assistant reply.
-func TestRedactOutputLeak_Composite(t *testing.T) {
+func TestRedactCredentials_Composite(t *testing.T) {
 	accessKey := "AKIAIOSFOD" + "NN7EXAMPLE"
 	jupyterToken := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9." +
 		"eyJzdWIiOiIxMjM0NTYifQ.signaturevalue123abc"
@@ -435,11 +438,11 @@ GPU: 4090 (24GB)
 AccessKey="` + accessKey + `"
 Jupyter token: ` + jupyterToken
 
-	got := RedactOutputLeak(in)
+	got := RedactCredentials(in)
 	t.Logf("redacted output: %s", got)
 
 	// Routing tokens preserved.
-	for _, must := range []string{"uhost-abc123", "cn-wlcb-01", "4090", "24GB"} {
+	for _, must := range []string{"uhost-abc123", "cn-wlcb-01", "4090", "24GB", "12345678-1234-1234-1234-1234567890ab"} {
 		assert.Contains(t, got, must, "routing/spec %q must survive", must)
 	}
 
@@ -450,7 +453,6 @@ Jupyter token: ` + jupyterToken
 
 	// Sensitive values gone.
 	for _, leak := range []string{
-		"12345678-1234-1234-1234-1234567890ab",
 		"AKIAIOSFODNN7EXAMPLE",
 		"signaturevalue123abc",
 	} {
@@ -458,20 +460,20 @@ Jupyter token: ` + jupyterToken
 	}
 
 	// Placeholders present.
-	for _, want := range []string{ProjectIDRedacted, CredentialRedactedOutput, TokenRedactedOutput} {
+	for _, want := range []string{CredentialRedactedOutput, TokenRedactedOutput} {
 		assert.Contains(t, got, want, "placeholder %q missing", want)
 	}
 }
 
-func TestRedactOutputLeak_Idempotent(t *testing.T) {
+func TestRedactCredentials_Idempotent(t *testing.T) {
 	in := "IP 1.2.3.4 项目 12345678-1234-1234-1234-1234567890ab AccessKey=ABCDEF1234567890"
-	once := RedactOutputLeak(in)
-	twice := RedactOutputLeak(once)
-	assert.Equal(t, once, twice, "RedactOutputLeak must be idempotent")
+	once := RedactCredentials(in)
+	twice := RedactCredentials(once)
+	assert.Equal(t, once, twice, "RedactCredentials must be idempotent")
 }
 
-func TestRedactOutputLeak_Empty(t *testing.T) {
-	assert.Equal(t, "", RedactOutputLeak(""))
+func TestRedactCredentials_Empty(t *testing.T) {
+	assert.Equal(t, "", RedactCredentials(""))
 }
 
 func TestRedactCredentials_CoversPersistedEnvelopeFormatsWithoutRemovingContext(t *testing.T) {

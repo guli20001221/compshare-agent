@@ -486,7 +486,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			Type:    stepTypeString(ev.Type),
 			Action:  ev.Action,
 			Label:   stepActionLabel(ev.Action),
-			Message: guardrails.RedactOutputLeak(guardrails.RedactPII(ev.Message)),
+			Message: guardrails.RedactCredentials(ev.Message),
 			Index:   stepIndex,
 		})
 		stepIndex++
@@ -733,7 +733,7 @@ func sanitizeConfirmArgs(args map[string]any) map[string]any {
 const maxOCRTextRunes = 1200
 
 // processOCR validates the image, calls the OCR client, and returns
-// PII-filtered, length-capped text. Returns a validation error (caller
+// credential-filtered, length-capped text. Returns a validation error (caller
 // should 400) or ("", nil) on API failure (graceful degradation).
 func (h *Handlers) processOCR(ctx context.Context, requestUUID, imageDataURL string) (string, error) {
 	if _, err := ocr.ValidateImageDataURL(imageDataURL, h.cfg.Agent.OCR.MaxBytes); err != nil {
@@ -746,7 +746,7 @@ func (h *Handlers) processOCR(ctx context.Context, requestUUID, imageDataURL str
 		log.Printf("warning: OCR failed for request %s: %v", requestUUID, err)
 		return "", nil
 	}
-	text = guardrails.RedactPII(text)
+	text = guardrails.RedactCredentials(text)
 	runes := []rune(text)
 	if len(runes) > maxOCRTextRunes {
 		text = string(runes[:maxOCRTextRunes])

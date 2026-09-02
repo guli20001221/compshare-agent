@@ -1,7 +1,10 @@
 package engine
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
+	"reflect"
 	"strings"
 
 	"github.com/compshare-agent/internal/security"
@@ -38,6 +41,31 @@ func safeConversationText(value string) string {
 	return security.RedactOperationalTokensInText(value)
 }
 
+// safeToolConversationText redacts JSON values before encoding them. Applying a
+// credential regexp to serialized JSON can consume an escape rather than the
+// secret it precedes, both breaking the JSON and retaining the credential.
+func safeToolConversationText(value string) string {
+	decoder := json.NewDecoder(strings.NewReader(value))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return safeConversationText(value)
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return safeConversationText(value)
+	}
+	redacted := security.RedactForLLM(decoded)
+	if reflect.DeepEqual(decoded, redacted) {
+		return value
+	}
+	encoded, err := json.Marshal(redacted)
+	if err != nil {
+		return safeConversationText(value)
+	}
+	return string(encoded)
+}
+
 // canonicalConversationText is the persistence-aligned form of a conversation
 // endpoint. HTTP persists user and
 // assistant rows through different redaction boundaries; using those same
@@ -52,6 +80,8 @@ func canonicalConversationText(role, value string) string {
 		return security.RedactUserConversationText(value)
 	case openai.ChatMessageRoleAssistant:
 		return security.RedactAssistantConversationText(value)
+	case openai.ChatMessageRoleTool:
+		return safeToolConversationText(value)
 	}
 	return safeConversationText(value)
 }

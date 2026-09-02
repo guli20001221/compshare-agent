@@ -198,9 +198,10 @@ business fields use the existing PascalCase API contract.
 
 Per-session engines live in `internal/agentpool` (bounded LRU with idle expiry).
 Persisted user/assistant rows rebuild a cold engine, and assistant metadata
-reattaches the canonical tool transcript. PII/credential redaction must remain
+reattaches the canonical tool transcript. Credential redaction must remain
 centralized in `internal/security` and `internal/sanitizer`, with the same
-role-specific representation on hot and cold paths.
+role-specific representation on hot and cold paths. Ordinary phone numbers,
+email addresses and project IDs remain intact.
 
 The store is PostgreSQL via `database/sql` and `lib/pq`. Historical names such
 as `mysql`, `MYSQL_DSN`, `OpenMySQL` and `MySQLMessageStore` remain API/config
