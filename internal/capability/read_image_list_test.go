@@ -36,104 +36,6 @@ func TestImageListDescriptionUsesTheLiveCatalogForNamedModelDeployment(t *testin
 	}
 }
 
-func TestImageListSemanticQueriesPreferCommunityForNamedModelDeployment(t *testing.T) {
-	schema, ok := NewReadCapability(imageListReadSpec()).Tool.Function.Parameters.(map[string]any)
-	require.True(t, ok)
-	properties, ok := schema["properties"].(map[string]any)
-	require.True(t, ok)
-	semanticQueries, ok := properties["semantic_queries"].(map[string]any)
-	require.True(t, ok)
-	description, ok := semanticQueries["description"].(string)
-	require.True(t, ok)
-	require.Contains(t, description, "先查 community")
-	require.Contains(t, description, "未命中或用户要求基础环境时再查 platform")
-}
-
-type communityQueryExec struct {
-	results map[string]map[string]any
-	calls   []string
-}
-
-func (e *communityQueryExec) Execute(_ context.Context, _ string, args map[string]any) (map[string]any, error) {
-	query, _ := args["FuzzySearch"].(string)
-	e.calls = append(e.calls, query)
-	return e.results[query], nil
-}
-
-func (e *communityQueryExec) ExecuteInternal(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
-	return e.Execute(ctx, action, args)
-}
-
-func TestCommunitySemanticQueriesUnionWithGroundedUserQuery(t *testing.T) {
-	group := func(name, id string, deploys int) map[string]any {
-		return map[string]any{
-			"ImageName": name, "CreatedCount": float64(deploys),
-			"Data": []any{map[string]any{"CompShareImageId": id, "Name": name + " v1"}},
-		}
-	}
-	exec := &communityQueryExec{results: map[string]map[string]any{
-		"数字人": {
-			"CompshareImageGroup": []any{
-				group("InfiniteTalk", "infinite-1", 17710),
-				group("HeyGem", "heygem-1", 1076),
-			},
-		},
-		"LiveTalking": {
-			"CompshareImageGroup": []any{
-				group("LiveTalking", "live-1", 4599),
-			},
-		},
-	}}
-
-	result := runImageList(t, exec, ImageListRequest{
-		Source: platform.ImageSourceCommunity, Query: "数字人",
-		SemanticQueries: []string{"LiveTalking"}, Mode: platform.ListModeFiltered,
-	})
-
-	require.Equal(t, []string{"数字人", "LiveTalking"}, exec.calls)
-	require.Equal(t, platform.ReadStatusHandled, result.Status)
-	require.NotNil(t, result.Envelope)
-	names := make([]string, 0, len(result.Envelope.Subjects))
-	for _, subject := range result.Envelope.Subjects {
-		names = append(names, subject.Name)
-	}
-	require.Contains(t, names, "InfiniteTalk")
-	require.Contains(t, names, "LiveTalking")
-	require.Equal(t, "InfiniteTalk", names[0],
-		"the guessed expansion cannot exclude the more popular candidate found by the user's own purpose")
-}
-
-func TestCommunitySemanticQueriesFilterAndDedupeFlatFallback(t *testing.T) {
-	exec := &communityQueryExec{results: map[string]map[string]any{
-		"数字人": {
-			"ImageSet": []any{
-				map[string]any{"CompShareImageId": "img-infinite", "Name": "数字人 InfiniteTalk"},
-				map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu"},
-			},
-		},
-		"LiveTalking": {
-			"ImageSet": []any{
-				map[string]any{"CompShareImageId": "img-live", "Name": "LiveTalking"},
-				map[string]any{"CompShareImageId": "img-infinite", "Name": "数字人 InfiniteTalk"},
-				map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu"},
-			},
-		},
-	}}
-
-	result := runImageList(t, exec, ImageListRequest{
-		Source: platform.ImageSourceCommunity, Query: "数字人",
-		SemanticQueries: []string{"LiveTalking"}, Mode: platform.ListModeFiltered,
-	})
-
-	require.Equal(t, platform.ReadStatusHandled, result.Status)
-	require.NotNil(t, result.Envelope)
-	names := make([]string, 0, len(result.Envelope.Subjects))
-	for _, subject := range result.Envelope.Subjects {
-		names = append(names, subject.Name)
-	}
-	require.Equal(t, []string{"数字人 InfiniteTalk", "LiveTalking"}, names)
-}
-
 // TestImageListHandle_PlatformEmpty: an empty platform image catalog is a
 // structured Empty read (issue 1) — no subjects populated, so no envelope.
 func TestImageListHandle_PlatformEmpty(t *testing.T) {
@@ -156,33 +58,33 @@ func TestImageListHandle_SharedEmpty(t *testing.T) {
 	assert.Contains(t, result.Reply, "不代表知识库中没有")
 }
 
-// --- platform render parity -----------------------------------------------------
+// --- local-filter render parity -----------------------------------------------------
 
-func TestImageListRender_PlatformFilterAndCleanDisplay(t *testing.T) {
+func TestImageListRender_CustomFilterAndCleanDisplay(t *testing.T) {
 	raw := map[string]any{"ImageSet": []any{
 		map[string]any{"CompShareImageId": "img-1", "ImageName": "Ubuntu 22.04 LTS", "ImageType": "System"},
 		map[string]any{"CompShareImageId": "img-2", "ImageName": "PyTorch 2.1", "ImageType": "App"},
 	}}
 	fieldOrder := []string{"CompShareImageId", "ImageName", "ImageType"}
 
-	filtered := renderImageListReply(raw, "ImageSet", fieldOrder, "Ubuntu 22.04", platform.ListModeFiltered)
+	filtered := renderImageListReply(raw, "ImageSet", fieldOrder, "Ubuntu 22.04")
 	assert.Contains(t, filtered, "Ubuntu 22.04 LTS")
 	assert.NotContains(t, filtered, "PyTorch")
 
-	noMatch := renderImageListReply(raw, "ImageSet", fieldOrder, "Debian 12", platform.ListModeFiltered)
+	noMatch := renderImageListReply(raw, "ImageSet", fieldOrder, "Debian 12")
 	assert.Contains(t, noMatch, "当前筛选未命中")
 	assert.Contains(t, noMatch, "不代表知识库中没有")
 
-	byID := renderImageListReply(raw, "ImageSet", fieldOrder, "img-2", platform.ListModeFiltered)
+	byID := renderImageListReply(raw, "ImageSet", fieldOrder, "img-2")
 	assert.Contains(t, byID, "PyTorch 2.1", "a create workflow's returned image id must support a follow-up lookup")
 	assert.NotContains(t, byID, "Ubuntu")
 	assert.NotContains(t, byID, "img-2", "matching by id must not leak the raw id into the clean display")
-	byIDEnvelope := buildImageListEnvelope(raw, "ImageSet", fieldOrder, "img-2", platform.ListModeFiltered,
-		"DescribeCompShareImages", "platform")
+	byIDEnvelope := buildImageListEnvelope(raw, "ImageSet", fieldOrder, "img-2",
+		"DescribeCompShareCustomImages", "custom")
 	require.Len(t, byIDEnvelope.Subjects, 1)
 	assert.Equal(t, "image:img-2", byIDEnvelope.Subjects[0].ID)
 
-	all := renderImageListReply(raw, "ImageSet", fieldOrder, "", platform.ListModeAll)
+	all := renderImageListReply(raw, "ImageSet", fieldOrder, "")
 	assert.Contains(t, all, "名称=Ubuntu 22.04 LTS")
 	assert.Contains(t, all, "镜像类型=System")
 	assert.NotContains(t, all, "img-1", "raw CompShareImageId dropped from clean display")
@@ -194,7 +96,7 @@ func TestImageListRender_CapAndOverflow(t *testing.T) {
 	for i := 0; i < total; i++ {
 		items = append(items, map[string]any{"CompShareImageId": fmt.Sprintf("img-%d", i), "Name": fmt.Sprintf("img-name-%d", i)})
 	}
-	reply := renderImageListReply(map[string]any{"ImageSet": items}, "ImageSet", []string{"CompShareImageId", "Name"}, "", platform.ListModeAll)
+	reply := renderImageListReply(map[string]any{"ImageSet": items}, "ImageSet", []string{"CompShareImageId", "Name"}, "")
 	require.Equal(t, imageListDisplayCap, strings.Count(reply, "名称="))
 	assert.Contains(t, reply, fmt.Sprintf("共 %d 个镜像", total))
 	assert.Contains(t, reply, "可补充关键词")
@@ -211,7 +113,7 @@ func TestImageListRender_CommunityShowsGroupsAndVersions(t *testing.T) {
 			map[string]any{"CompShareImageId": "ltx-1", "Name": "LTX-v1"},
 		}},
 	}}
-	reply := renderCommunityImageReply(raw, "数字人", platform.ListModeFiltered)
+	reply := renderCommunityImageReply(raw)
 	assert.Contains(t, reply, "社区镜像")
 	assert.Contains(t, reply, "LiveTalking")
 	assert.Contains(t, reply, "LTX-2.3")
@@ -221,7 +123,7 @@ func TestImageListRender_CommunityShowsGroupsAndVersions(t *testing.T) {
 
 func TestImageListHandle_CommunityFilteredEmptyKeepsItsScope(t *testing.T) {
 	result := runImageList(t, &fakeReadExec{result: map[string]any{"CompshareImageGroup": []any{}}},
-		ImageListRequest{Source: platform.ImageSourceCommunity, Query: "dify", Mode: platform.ListModeFiltered})
+		ImageListRequest{Source: platform.ImageSourceCommunity, Query: "dify"})
 
 	require.Equal(t, platform.ReadStatusEmpty, result.Status)
 	assert.Contains(t, result.Reply, "当前目录查询没有结果")
@@ -240,19 +142,19 @@ func TestImageListRender_Shared(t *testing.T) {
 			"Owner": map[string]any{"AccountName": "team-a", "AccountId": float64(123)},
 		}},
 	}
-	all, allEmpty := renderSharedImageListReply(raw, "", platform.ListModeAll)
+	all, allEmpty := renderSharedImageListReply(raw, "")
 	assert.False(t, allEmpty, "a populated shared list is not empty")
 	for _, want := range []string{"共享给你的镜像", "名称=shared-env", "所有者=team-a"} {
 		assert.Contains(t, all, want)
 	}
 	assert.NotContains(t, all, "img-shared-1")
 
-	noMatch, noMatchEmpty := renderSharedImageListReply(raw, "llama", platform.ListModeFiltered)
+	noMatch, noMatchEmpty := renderSharedImageListReply(raw, "llama")
 	assert.True(t, noMatchEmpty, "a no-match shared list is a structured Empty read")
 	assert.Contains(t, noMatch, "当前筛选未命中")
 	assert.Contains(t, noMatch, "不代表知识库中没有")
 
-	emptyReply, empty := renderSharedImageListReply(map[string]any{}, "", platform.ListModeAll)
+	emptyReply, empty := renderSharedImageListReply(map[string]any{}, "")
 	assert.True(t, empty)
 	assert.Contains(t, emptyReply, "只说明当前目录查询没有结果")
 	assert.Contains(t, emptyReply, "不代表知识库中没有")
@@ -265,7 +167,7 @@ func TestImageListEnvelope_PlatformDropsRawIDFacts(t *testing.T) {
 		map[string]any{"CompShareImageId": "img-pt", "Name": "PyTorch 2.9", "ImageType": "App"},
 	}}
 	fieldOrder := []string{"CompShareImageId", "CompShareImageName", "ImageName", "ImageType", "Name"}
-	env := buildImageListEnvelope(raw, "ImageSet", fieldOrder, "", platform.ListModeAll, "DescribeCompShareImages", "platform")
+	env := buildImageListEnvelope(raw, "ImageSet", fieldOrder, "", "DescribeCompShareImages", "platform")
 
 	assert.Equal(t, envelope.KindImageList, env.Kind)
 	for _, f := range env.Facts {
@@ -359,7 +261,7 @@ func TestImageListEnvelope_CommunitySortsByDeployCount(t *testing.T) {
 			map[string]any{"CompShareImageId": "cimg-high", "Name": "v1"},
 		}},
 	}}
-	env := buildCommunityImageEnvelope(raw, "", platform.ListModeAll)
+	env := buildCommunityImageEnvelope(raw)
 	require.Len(t, env.Subjects, 2)
 	assert.Equal(t, "image:cimg-high", env.Subjects[0].ID, "most-deployed group's image must sort first")
 	assert.Equal(t, envelope.SubjectImage, env.Subjects[0].Type, "community images are flattened to individually-citable image subjects")
@@ -390,7 +292,7 @@ func TestImageListEnvelope_CommunityFlattensStructuredFacts(t *testing.T) {
 			},
 		},
 	}}
-	env := buildCommunityImageEnvelope(raw, "", platform.ListModeAll)
+	env := buildCommunityImageEnvelope(raw)
 	require.Len(t, env.Subjects, 1)
 	require.Equal(t, "image:cimg-ltx", env.Subjects[0].ID)
 	assert.Equal(t, envelope.SubjectImage, env.Subjects[0].Type)
@@ -429,7 +331,7 @@ func TestImageListEnvelope_CommunityHonestAbsence(t *testing.T) {
 			map[string]any{"Name": "no-id-row"}, // id-less → honest drop, no subject
 		}},
 	}}
-	env := buildCommunityImageEnvelope(raw, "", platform.ListModeAll)
+	env := buildCommunityImageEnvelope(raw)
 	require.Len(t, env.Subjects, 1, "id-less version rows are dropped, never given a synthetic subject")
 	require.Equal(t, "image:cimg-bare", env.Subjects[0].ID)
 	for _, f := range env.Facts {
@@ -484,7 +386,7 @@ func subjectNames(env envelope.Envelope) []string {
 // recommended HeyGem because it was never told HeyGem exists. Breadth first: one
 // version per family before any family gets a second.
 func TestImageListEnvelope_CommunityCapBuysDistinctFamiliesNotDuplicateVersions(t *testing.T) {
-	env := buildCommunityImageEnvelope(digitalHumanCommunityCatalog(), "数字人", platform.ListMode(""))
+	env := buildCommunityImageEnvelope(digitalHumanCommunityCatalog())
 
 	require.Len(t, env.Subjects, imageModelBrowseDisplayCap)
 	assert.Equal(t,
@@ -512,7 +414,7 @@ func TestImageListEnvelope_CommunityStillShowsVersionsWhenTheFieldIsNarrow(t *te
 		}},
 	}}
 
-	env := buildCommunityImageEnvelope(raw, "LiveTalking", platform.ListMode(""))
+	env := buildCommunityImageEnvelope(raw)
 
 	require.Len(t, env.Subjects, 3, "a single-family search still surfaces every version")
 	assert.Equal(t,
@@ -524,7 +426,7 @@ func TestImageListEnvelope_CommunityStillShowsVersionsWhenTheFieldIsNarrow(t *te
 // The truncation note is the Agent's only signal about what it did NOT see. For a
 // recommendation the missing figure is coverage of the FIELD, not of the rows.
 func TestImageListEnvelope_CommunityTruncationNoteReportsFamilyCoverage(t *testing.T) {
-	env := buildCommunityImageEnvelope(digitalHumanCommunityCatalog(), "数字人", platform.ListMode(""))
+	env := buildCommunityImageEnvelope(digitalHumanCommunityCatalog())
 
 	note := ""
 	for _, c := range env.Computed {
@@ -579,7 +481,7 @@ func TestImageListHandle_SourceFacetDispatch(t *testing.T) {
 
 func TestImageListHandle_CommunityFuzzySearchArg(t *testing.T) {
 	exec := &fakeReadExec{result: map[string]any{"CompshareImageGroup": []any{}}}
-	runImageList(t, exec, ImageListRequest{Source: platform.ImageSourceCommunity, Query: "数字人", Mode: platform.ListModeFiltered})
+	runImageList(t, exec, ImageListRequest{Source: platform.ImageSourceCommunity, Query: "数字人"})
 	require.Len(t, exec.calls, 1)
 	assert.Equal(t, "数字人", exec.calls[0].args["FuzzySearch"])
 }

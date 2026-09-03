@@ -53,10 +53,8 @@ var imageDisplaySkipFields = map[string]struct{}{
 
 // ImageListRequest is the capability's own request contract.
 type ImageListRequest struct {
-	Source          platform.ImageSource `json:"source,omitempty"`
-	Query           string               `json:"query,omitempty"`
-	SemanticQueries []string             `json:"semantic_queries,omitempty"`
-	Mode            platform.ListMode    `json:"mode,omitempty"`
+	Source platform.ImageSource `json:"source,omitempty"`
+	Query  string               `json:"query,omitempty"`
 }
 
 // MissingFields: none — an unfiltered platform listing is valid.
@@ -78,13 +76,7 @@ func imageListReadSpec() ReadCapabilitySpec[ImageListRequest, ImageListResponse]
 		Params: objectParam(map[string]schemaNode{
 			"source": enumParam(platform.ImageSourceValues()...),
 			"query": stringParam().described(
-				"只取用户原话的最短有效子串（用途、约束或明确镜像名）；勿猜候选名。无筛选条件留空。",
-			),
-			"semantic_queries": boundedArrayParam(stringParam(), 3).described(
-				"补充查询词。根据用户用途提炼技术、项目类别或运行时名称；不能替代 query，结果会合并。部署具名模型/应用时先查 community，未命中或用户要求基础环境时再查 platform。",
-			),
-			"mode": enumParam(platform.ListModeValues()...).described(
-				"all: query/semantic_queries 留空；filtered 或省略: 按词筛选。",
+				"搜索字符串，可根据用户需求组织镜像名、项目名或技术关键词，留空浏览目录。平台按名称搜索，社区按名称或作者模糊搜索，自制和共享在账户目录中筛选。",
 			),
 		}),
 		Handle: imageListHandle,
@@ -129,253 +121,67 @@ func imageListRender(resp ImageListResponse) ReadResult {
 
 func platformImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) (ImageListResponse, ReadResult) {
 	fieldOrder := []string{"CompShareImageId", "CompShareImageName", "ImageName", "ImageType", "Name"}
-	raw, err := imageExecuteAll(ctx, rt, platformImageAction, "ImageSet", map[string]any{})
+	args := map[string]any{}
+	if query := strings.TrimSpace(req.Query); query != "" {
+		args["Name"] = query
+	}
+	raw, err := imageExecuteAll(ctx, rt, platformImageAction, "ImageSet", args)
 	if err != nil {
 		return ImageListResponse{}, ReadFailureAfterTool(platformImageAction, imageListCapabilityLabel, err)
 	}
-	query, mode := req.Query, req.Mode
-	// Semantic expansion on the platform catalog costs NOTHING extra: unlike the
-	// community path (one upstream FuzzySearch per query), the platform listing is
-	// fetched whole and filtered here, so the expansion is just a wider client-side
-	// match over rows already in hand.
-	//
-	// Why it is needed at all: the platform's inference images are named after the
-	// runtime — vLLM v0.25.1, SGLang v0.5.15, Ollama v0.32.1 — so a user asking for
-	// 大模型推理 matches ZERO of them by name, while the same intent on the community
-	// side expands and matches. The Agent could only answer from the side that had
-	// matches, which is why platform-maintained images never appeared in a
-	// recommendation even though they exist.
-	if queries := imageSearchQueries(req); len(queries) > 1 {
-		raw = filterImageSetByAnyQuery(raw, "ImageSet", queries, imageQueryMatchFields(fieldOrder))
-		// The union IS the filter; re-applying the primary query below would
-		// narrow back to it and erase every expansion (the same self-narrowing
-		// bug the community path documents).
-		query, mode = "", platform.ListModeAll
-	}
-	env := buildImageListEnvelope(raw, "ImageSet", fieldOrder, query, mode, platformImageAction, "platform")
+	// Name filtering belongs to the upstream API; keep every returned candidate.
+	env := buildImageListEnvelope(raw, "ImageSet", fieldOrder, "", platformImageAction, "platform")
 	return ImageListResponse{
-		Reply:    renderImageListReply(raw, "ImageSet", fieldOrder, query, mode),
+		Reply:    renderImageListReply(raw, "ImageSet", fieldOrder, ""),
 		Action:   platformImageAction,
 		Envelope: populatedEnvelope(env),
 	}, ReadResult{}
 }
 
-// imageQueryMatchFields picks the fields a catalog query matches against, from
-// the same fieldOrder buildImageListEnvelope uses — so a pre-filter and the
-// envelope's own filter can never disagree about what "matches" means.
+// imageQueryMatchFields includes names and stable IDs for catalogs whose API
+// does not accept a search term. Status and type are not name-search fields.
 func imageQueryMatchFields(fieldOrder []string) []string {
 	out := make([]string, 0, len(fieldOrder))
-	for _, f := range fieldOrder {
-		switch f {
-		case "Name", "ImageName", "CompShareImageName", "Author":
-			out = append(out, f)
+	for _, field := range fieldOrder {
+		switch field {
+		case "Name", "ImageName", "CompShareImageName", "Author", "CompShareImageId":
+			out = append(out, field)
 		}
 	}
-	return out
-}
-
-// primaryImageQueryMatchFields includes the stable image id in addition to
-// human names. The primary query is copied from the user's request, so an id
-// returned by a just-completed create workflow must be usable for a follow-up
-// status lookup. Semantic expansion deliberately keeps using
-// imageQueryMatchFields above: generated purpose words should never match an
-// opaque id by accident.
-func primaryImageQueryMatchFields(fieldOrder []string) []string {
-	out := imageQueryMatchFields(fieldOrder)
-	for _, f := range fieldOrder {
-		if f == "CompShareImageId" {
-			out = append(out, f)
-			break
-		}
-	}
-	return out
-}
-
-// filterImageSetByAnyQuery keeps every row matching AT LEAST ONE query. Union,
-// never intersection: an expansion may only add candidates, so a bad expansion
-// term costs nothing and cannot hide the images the user's own words found.
-func filterImageSetByAnyQuery(raw map[string]any, listKey string, queries []string, fields []string) map[string]any {
-	if len(queries) == 0 || len(fields) == 0 {
-		return raw
-	}
-	items := mapSliceAt(raw, listKey)
-	kept := make([]any, 0, len(items))
-	for _, item := range items {
-		entry, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		for _, query := range queries {
-			if strings.TrimSpace(query) == "" || entryMatchesSlotQuery(entry, query, fields) {
-				kept = append(kept, item)
-				break
-			}
-		}
-	}
-	out := make(map[string]any, len(raw))
-	for k, v := range raw {
-		out[k] = v
-	}
-	out[listKey] = kept
 	return out
 }
 
 func customImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) (ImageListResponse, ReadResult) {
 	fieldOrder := []string{"CompShareImageId", "Name", "ImageName", "Status"}
+	// The custom-image API has no name filter; retain its tenant-scoped list.
 	raw, err := imageExecuteAll(ctx, rt, customImageAction, "ImageSet", map[string]any{})
 	if err != nil {
 		return ImageListResponse{}, ReadFailureAfterTool(customImageAction, imageListCapabilityLabel, err)
 	}
-	env := buildImageListEnvelope(raw, "ImageSet", fieldOrder, req.Query, req.Mode, customImageAction, "custom")
+	env := buildImageListEnvelope(raw, "ImageSet", fieldOrder, req.Query, customImageAction, "custom")
 	return ImageListResponse{
-		Reply:    renderImageListReply(raw, "ImageSet", fieldOrder, req.Query, req.Mode),
+		Reply:    renderImageListReply(raw, "ImageSet", fieldOrder, req.Query),
 		Action:   customImageAction,
 		Envelope: populatedEnvelope(env),
 	}, ReadResult{}
 }
 
 func communityImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) (ImageListResponse, ReadResult) {
-	queries := imageSearchQueries(req)
-	results := make([]map[string]any, 0, len(queries))
-	for _, query := range queries {
-		// ExcludeReadme: the Readme rich text is never parsed into a catalog entry
-		// — Description is a separate upstream field and is what the model reads —
-		// and it is most of the payload: measured live, the full 835-family catalog
-		// is 5.9MB with Readme and 2.1MB without. We were fetching it and throwing
-		// it away, once per query.
-		args := map[string]any{"ExcludeReadme": true}
-		if query != "" {
-			args["FuzzySearch"] = query
-		}
-		raw, err := imageExecuteAll(ctx, rt, communityImageAction, "CompshareImageGroup", args)
-		if err != nil {
-			return ImageListResponse{}, ReadFailureAfterTool(communityImageAction, imageListCapabilityLabel, err)
-		}
-		results = append(results, filterFlatCommunityImageResult(raw, query))
+	// Readme is not a catalog fact; Description remains in the upstream result.
+	args := map[string]any{"ExcludeReadme": true}
+	if query := strings.TrimSpace(req.Query); query != "" {
+		args["FuzzySearch"] = query
 	}
-	raw := mergeCommunityImageResults(results)
-	// Upstream already applied every individual query. The merged catalog is the
-	// union; applying the primary query again here would erase the semantic
-	// expansions and restore the self-narrowing bug.
-	env := buildCommunityImageEnvelope(raw, "", platform.ListModeAll)
+	raw, err := imageExecuteAll(ctx, rt, communityImageAction, "CompshareImageGroup", args)
+	if err != nil {
+		return ImageListResponse{}, ReadFailureAfterTool(communityImageAction, imageListCapabilityLabel, err)
+	}
+	env := buildCommunityImageEnvelope(raw)
 	return ImageListResponse{
-		Reply:    renderCommunityImageReply(raw, "", platform.ListModeAll),
+		Reply:    renderCommunityImageReply(raw),
 		Action:   communityImageAction,
 		Envelope: populatedEnvelope(env),
 	}, ReadResult{}
-}
-
-func imageSearchQueries(req ImageListRequest) []string {
-	if req.Mode == platform.ListModeAll {
-		return []string{""}
-	}
-	seen := map[string]bool{}
-	out := make([]string, 0, 1+len(req.SemanticQueries))
-	for _, query := range append([]string{req.Query}, req.SemanticQueries...) {
-		query = strings.TrimSpace(query)
-		key := strings.ToLower(query)
-		if query == "" || seen[key] {
-			continue
-		}
-		seen[key] = true
-		out = append(out, query)
-	}
-	if len(out) == 0 {
-		return []string{""}
-	}
-	return out
-}
-
-func mergeCommunityImageResults(results []map[string]any) map[string]any {
-	if len(results) == 0 {
-		return map[string]any{}
-	}
-	groups := make([]map[string]any, 0)
-	flat := make([]any, 0)
-	for _, raw := range results {
-		for _, item := range mapSliceAt(raw, "CompshareImageGroup") {
-			if group, ok := item.(map[string]any); ok {
-				groups = append(groups, group)
-			}
-		}
-		flat = append(flat, mapSliceAt(raw, "ImageSet")...)
-	}
-	merged := map[string]any{}
-	if len(groups) > 0 {
-		deduped := dedupeCommunityImageGroups(groups)
-		items := make([]any, 0, len(deduped))
-		for _, group := range deduped {
-			items = append(items, group)
-		}
-		merged["CompshareImageGroup"] = items
-		merged["TotalCount"] = len(items)
-	}
-	if len(flat) > 0 {
-		deduped := dedupeFlatImageRows(flat)
-		merged["ImageSet"] = deduped
-		if len(groups) == 0 {
-			merged["TotalCount"] = len(deduped)
-		}
-	}
-	return merged
-}
-
-// filterFlatCommunityImageResult preserves the compatibility path for community
-// APIs that return ImageSet instead of CompshareImageGroup. Group responses are
-// already filtered upstream; a flat response is filtered again locally so an
-// upstream implementation that ignores FuzzySearch cannot turn one semantic
-// expansion into an unfiltered catalog.
-func filterFlatCommunityImageResult(raw map[string]any, query string) map[string]any {
-	if strings.TrimSpace(query) == "" || len(mapSliceAt(raw, "CompshareImageGroup")) > 0 {
-		return raw
-	}
-	items := mapSliceAt(raw, "ImageSet")
-	if len(items) == 0 {
-		return raw
-	}
-	filtered := make([]any, 0, len(items))
-	for _, item := range items {
-		entry, ok := item.(map[string]any)
-		if !ok || !entryMatchesSlotQuery(entry, query,
-			[]string{"Name", "ImageName", "CompShareImageName", "Author"}) {
-			continue
-		}
-		filtered = append(filtered, entry)
-	}
-	out := make(map[string]any, len(raw))
-	for key, value := range raw {
-		out[key] = value
-	}
-	out["ImageSet"] = filtered
-	out["TotalCount"] = len(filtered)
-	return out
-}
-
-func dedupeFlatImageRows(items []any) []any {
-	seen := map[string]bool{}
-	out := make([]any, 0, len(items))
-	for _, item := range items {
-		entry, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		key := strings.ToLower(strings.TrimSpace(safeString(entry, "CompShareImageId")))
-		if key == "" {
-			name := strings.ToLower(strings.TrimSpace(bestImageName(entry)))
-			author := strings.ToLower(strings.TrimSpace(safeString(entry, "Author")))
-			if name != "" || author != "" {
-				key = name + "\x00" + author
-			}
-		}
-		if key != "" && seen[key] {
-			continue
-		}
-		if key != "" {
-			seen[key] = true
-		}
-		out = append(out, entry)
-	}
-	return out
 }
 
 func sharedImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRuntime) (ImageListResponse, ReadResult) {
@@ -384,7 +190,7 @@ func sharedImageListHandle(ctx context.Context, req ImageListRequest, rt ReadRun
 		return ImageListResponse{}, ReadFailureAfterTool(sharedImageAction, imageListCapabilityLabel, err)
 	}
 	// Shared-image results do not expose an evidence envelope.
-	reply, empty := renderSharedImageListReply(raw, req.Query, req.Mode)
+	reply, empty := renderSharedImageListReply(raw, req.Query)
 	if empty {
 		return ImageListResponse{}, ReadEmpty(reply)
 	}
@@ -406,15 +212,6 @@ func imageExecuteAll(ctx context.Context, rt ReadRuntime, action, listKey string
 	return raw, nil
 }
 
-// imageFilterQuery is the typed replacement for slotFilterQuery: a "list all"
-// mode clears the keyword filter, otherwise the trimmed query filters.
-func imageFilterQuery(query string, mode platform.ListMode) string {
-	if mode == platform.ListModeAll {
-		return ""
-	}
-	return strings.TrimSpace(query)
-}
-
 // populatedEnvelope returns only evidence envelopes with subjects.
 func populatedEnvelope(env envelope.Envelope) *envelope.Envelope {
 	if len(env.Subjects) == 0 {
@@ -423,16 +220,14 @@ func populatedEnvelope(env envelope.Envelope) *envelope.Envelope {
 	return &env
 }
 
-func renderImageListReply(raw map[string]any, listKey string, fieldOrder []string, searchQuery string, mode platform.ListMode) string {
+func renderImageListReply(raw map[string]any, listKey string, fieldOrder []string, searchQuery string) string {
 	items := mapSliceAt(raw, listKey)
 	if len(items) == 0 {
 		return noImageListReply
 	}
-	query := imageFilterQuery(searchQuery, mode)
-	// Match the user's primary query against names or the stable image id. Status
-	// and type remain non-search fields: asking for "Available" must not dump the
-	// entire usable catalog.
-	matchFields := primaryImageQueryMatchFields(fieldOrder)
+	query := strings.TrimSpace(searchQuery)
+	// Local filtering applies only when the upstream catalog lacks a name filter.
+	matchFields := imageQueryMatchFields(fieldOrder)
 
 	filtered := make([]map[string]any, 0, len(items))
 	for _, item := range items {
@@ -501,10 +296,10 @@ func formatImageDisplayLine(entry map[string]any, fieldOrder []string) string {
 	return strings.Join(parts, ", ")
 }
 
-func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []string, searchQuery string, mode platform.ListMode, action string, category string) envelope.Envelope {
+func buildImageListEnvelope(raw map[string]any, listKey string, fieldOrder []string, searchQuery string, action string, category string) envelope.Envelope {
 	items := mapSliceAt(raw, listKey)
-	query := imageFilterQuery(searchQuery, mode)
-	matchFields := primaryImageQueryMatchFields(fieldOrder)
+	query := strings.TrimSpace(searchQuery)
+	matchFields := imageQueryMatchFields(fieldOrder)
 	filtered := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		entry, ok := item.(map[string]any)
@@ -634,12 +429,12 @@ func appendStructuredImageFacts(env *envelope.Envelope, subjectID string, e depl
 	}
 }
 
-func renderCommunityImageReply(raw map[string]any, searchQuery string, mode platform.ListMode) string {
+func renderCommunityImageReply(raw map[string]any) string {
 	groups := mapSliceAt(raw, "CompshareImageGroup")
 	if len(groups) == 0 {
 		// Fallback: some responses use a flat ImageSet shape.
 		return renderImageListReply(raw, "ImageSet",
-			[]string{"Name", "Author", "CompShareImageId"}, searchQuery, mode)
+			[]string{"Name", "Author", "CompShareImageId"}, "")
 	}
 	filtered := make([]map[string]any, 0, len(groups))
 	for _, item := range groups {
@@ -704,13 +499,13 @@ func renderCommunityImageReply(raw map[string]any, searchQuery string, mode plat
 	return "社区镜像：\n" + strings.Join(lines, "\n")
 }
 
-func buildCommunityImageEnvelope(raw map[string]any, searchQuery string, mode platform.ListMode) envelope.Envelope {
+func buildCommunityImageEnvelope(raw map[string]any) envelope.Envelope {
 	groups := mapSliceAt(raw, "CompshareImageGroup")
 	if len(groups) == 0 {
 		// Some community responses use the flat ImageSet shape; the shared builder
 		// already flattens those per-image with structured facts.
 		return buildImageListEnvelope(raw, "ImageSet",
-			[]string{"Name", "Author", "CompShareImageId"}, searchQuery, mode,
+			[]string{"Name", "Author", "CompShareImageId"}, "",
 			"DescribeCommunityImages", "community")
 	}
 	filtered := make([]map[string]any, 0, len(groups))
@@ -898,12 +693,12 @@ func communityVersionLabel(ver map[string]any) string {
 // renderSharedImageListReply returns the reply and whether the shared-image list
 // is empty (no images or none matching). Shared images carry no evidence
 // envelope, so this bool is how the handler reports a structured Empty read.
-func renderSharedImageListReply(raw map[string]any, searchQuery string, mode platform.ListMode) (string, bool) {
+func renderSharedImageListReply(raw map[string]any, searchQuery string) (string, bool) {
 	items := mapSliceAt(raw, "ImageSet")
 	if len(items) == 0 {
 		return noSharedReply, true
 	}
-	query := imageFilterQuery(searchQuery, mode)
+	query := strings.TrimSpace(searchQuery)
 	filtered := make([]map[string]any, 0, len(items))
 	for _, item := range items {
 		entry, ok := item.(map[string]any)

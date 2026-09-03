@@ -205,9 +205,10 @@ func TestReadRuntimeValidation_RejectsOutOfContractValues(t *testing.T) {
 		{"pricing gpu_count below minimum", ReadToolName(intent.IntentPricingQuery), map[string]any{"gpu_type": "4090", "gpu_count": -1}},
 		{"pricing gpu_count zero", ReadToolName(intent.IntentPricingQuery), map[string]any{"gpu_type": "4090", "gpu_count": 0}},
 		{"image list unknown source", ReadToolName(intent.IntentImageList), map[string]any{"source": "bogus"}},
-		{"image list unknown mode", ReadToolName(intent.IntentImageList), map[string]any{"mode": "bogus"}},
+		{"image list removed mode field", ReadToolName(intent.IntentImageList), map[string]any{"mode": "bogus"}},
 		{"gpu specs unknown detail_level", ReadToolName(intent.IntentGPUSpecsQuery), map[string]any{"detail_level": "bogus"}},
 		{"monitor unknown metric element", ReadToolName(intent.IntentMonitorQuery), map[string]any{"metrics": []any{"bogus"}}},
+		{"monitor typed unknown metric element", ReadToolName(intent.IntentMonitorQuery), map[string]any{"metrics": []string{"bogus"}}},
 		{"monitor unknown nested target type", ReadToolName(intent.IntentMonitorQuery), map[string]any{"targets": []any{map[string]any{"type": "bogus", "value": "x", "source": "user_text"}}}},
 		{"cfs create target_size_gb below minimum", namedReadToolName(readCFSCreatePrice), map[string]any{"zone": "cn-wlcb-01", "target_size_gb": -5}},
 		{"instance access port above maximum", namedReadToolName(instanceAccessCapabilityLabel), map[string]any{
@@ -236,7 +237,7 @@ func TestReadRuntimeValidation_AcceptsInContractValues(t *testing.T) {
 	}{
 		{"pricing full valid", ReadToolName(intent.IntentPricingQuery), map[string]any{"gpu_type": "4090", "gpu_count": 8, "price_kind": "catalog"}},
 		{"pricing optionals omitted", ReadToolName(intent.IntentPricingQuery), map[string]any{"gpu_type": "4090"}},
-		{"image list valid enums", ReadToolName(intent.IntentImageList), map[string]any{"source": "community", "mode": "filtered"}},
+		{"image list valid source and query", ReadToolName(intent.IntentImageList), map[string]any{"source": "community", "query": "LiveTalking"}},
 		{"image list empty (default platform)", ReadToolName(intent.IntentImageList), map[string]any{}},
 		{"gpu specs valid detail_level", ReadToolName(intent.IntentGPUSpecsQuery), map[string]any{"detail_level": "full"}},
 		{"monitor valid metrics + target", ReadToolName(intent.IntentMonitorQuery), map[string]any{"metrics": []any{"gpu", "vram"}, "targets": []any{map[string]any{"type": "name", "value": "train-a", "source": "user_text"}}}},

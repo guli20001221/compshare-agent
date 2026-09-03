@@ -215,24 +215,6 @@ func TestRecentPriorUserTextsExcludesScreenshotOCRAndWrappedCurrentTurn(t *testi
 
 	prior := eng.recentPriorUserTexts(4)
 	require.Equal(t, []string{"上一轮请看截图"}, prior)
-	require.Error(t, capability.ValidateCurrentTurnGrounding(
-		capability.ImageListRequest{
-			Source: platform.ImageSourceCommunity,
-			Query:  "LiveTalking",
-			Mode:   platform.ListModeFiltered,
-		},
-		current,
-		prior...,
-	))
-	require.NoError(t, capability.ValidateCurrentTurnGrounding(
-		capability.ImageListRequest{
-			Source: platform.ImageSourceCommunity,
-			Query:  "数字人镜像",
-			Mode:   platform.ListModeFiltered,
-		},
-		current,
-		prior...,
-	))
 }
 
 func TestConcreteReadReturnsStructuredMissingFieldsBeforeHandler(t *testing.T) {
@@ -286,20 +268,12 @@ func TestRejectedReadArgumentsAskTheModelToCorrectItsOwnCall(t *testing.T) {
 			reasonParts:  []string{"zone_mentions", "cn-wlcb-01", "字面子串"},
 		},
 		{
-			name:         "image expansion limit",
+			name:         "image list removed semantic_queries field",
 			lastUser:     "推荐数字人镜像",
 			action:       capability.ReadToolName(intent.IntentImageList),
-			arguments:    `{"source":"community","query":"数字人","semantic_queries":["LiveTalking","MuseTalk","HeyGem","InfiniteTalk"],"mode":"filtered"}`,
+			arguments:    `{"source":"community","query":"数字人","semantic_queries":["LiveTalking"]}`,
 			sourceStatus: "read_argument_validation",
-			reasonParts:  []string{"semantic_queries", "3"},
-		},
-		{
-			name:         "image mode and expansion conflict",
-			lastUser:     "推荐数字人镜像",
-			action:       capability.ReadToolName(intent.IntentImageList),
-			arguments:    `{"source":"community","query":"数字人","semantic_queries":["LiveTalking"],"mode":"all"}`,
-			sourceStatus: "read_argument_grounding",
-			reasonParts:  []string{"mode=all", "query"},
+			reasonParts:  []string{"semantic_queries"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

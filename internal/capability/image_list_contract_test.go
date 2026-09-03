@@ -1,113 +1,98 @@
 package capability
 
 import (
-	"context"
 	"testing"
 
 	"github.com/compshare-agent/internal/platform"
 	"github.com/stretchr/testify/require"
 )
 
-func TestImageListSemanticQueryLimitComesFromFieldContract(t *testing.T) {
+func TestImageListContractHasOnlySourceAndFreeQuery(t *testing.T) {
 	reg := NewReadCapability(imageListReadSpec())
 	properties := reg.Schema()["properties"].(map[string]any)
-	semanticQueries := properties["semantic_queries"].(map[string]any)
-	require.Equal(t, 3, semanticQueries["maxItems"])
+	require.Len(t, properties, 2)
+	require.Contains(t, properties, "source")
+	require.Contains(t, properties, "query")
 
-	for _, tc := range []struct {
-		name    string
-		queries any
-		valid   bool
-	}{
-		{"empty", []any{}, true},
-		{"at limit", []any{"vLLM", "SGLang", "Ollama"}, true},
-		{"over limit", []any{"vLLM", "SGLang", "Ollama", "ComfyUI"}, false},
-		{"typed slice at limit", []string{"vLLM", "SGLang", "Ollama"}, true},
-		{"typed slice over limit", []string{"vLLM", "SGLang", "Ollama", "ComfyUI"}, false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			_, err := reg.Decode(map[string]any{
-				"source": "platform", "query": "大模型推理", "semantic_queries": tc.queries,
-			})
-			if tc.valid {
-				require.NoError(t, err)
-			} else {
-				require.ErrorContains(t, err, "semantic_queries")
-			}
-		})
+	for _, query := range []string{"vLLM", ""} {
+		request, err := reg.Decode(map[string]any{"source": "community", "query": query})
+		require.NoError(t, err)
+		require.NoError(t, ValidateCurrentTurnGrounding(request, "推荐一个大模型推理镜像"),
+			"catalog search words are model-owned, not user-literal identity fields")
+	}
+	for _, field := range []string{"mode", "semantic_queries"} {
+		_, err := reg.Decode(map[string]any{field: nil})
+		require.ErrorContains(t, err, field)
 	}
 }
 
-func TestArrayFieldContractMaxItemsIsOptional(t *testing.T) {
-	unbounded := arrayParam(stringParam())
-	require.NotContains(t, unbounded.jsonSchema(), "maxItems")
-	require.NoError(t, unbounded.validate([]any{"a", "b", "c", "d"}, "queries"))
-
-	emptyOnly := boundedArrayParam(stringParam(), 0)
-	require.Equal(t, 0, emptyOnly.jsonSchema()["maxItems"])
-	require.NoError(t, emptyOnly.validate([]any{}, "queries"))
-	require.ErrorContains(t, emptyOnly.validate([]any{"a"}, "queries"), "queries")
-	bounded := boundedArrayParam(enumParam("allowed"), 1)
-	require.NoError(t, bounded.validate([]string{"allowed"}, "queries"))
-	require.ErrorContains(t, bounded.validate([]string{"invalid"}, "queries"), "queries[0]")
-}
-
-func TestImageListAllModeRejectsFiltersBeforeUpstream(t *testing.T) {
-	reg := NewReadCapability(imageListReadSpec())
-	for _, source := range platform.ImageSourceValues() {
-		for _, tc := range []struct {
-			name    string
-			query   string
-			queries []any
-		}{
-			{"query", "数字人", nil},
-			{"expansion", "", []any{"LiveTalking"}},
-			{"query and expansion", "数字人", []any{"LiveTalking"}},
-		} {
-			t.Run(source+"/"+tc.name, func(t *testing.T) {
-				exec := &communityQueryExec{}
-				request, err := reg.Decode(map[string]any{
-					"source": source, "mode": "all", "query": tc.query, "semantic_queries": tc.queries,
-				})
-				require.NoError(t, err)
-				// Use the same decode -> grounding -> Run order as the engine.
-				err = ValidateCurrentTurnGrounding(request, "推荐数字人镜像")
-				if err == nil {
-					reg.Run(context.Background(), request, ReadRuntime{Executor: exec})
+func TestImageListQueryMapsToUpstreamWithoutRefiltering(t *testing.T) {
+	flat := map[string]any{"ImageSet": []any{
+		map[string]any{"CompShareImageId": "img-provider", "Name": "Provider Match", "ImageType": "App"},
+	}}
+	grouped := map[string]any{"CompshareImageGroup": []any{
+		map[string]any{"ImageName": "Provider Match", "Author": "creator", "Data": []any{
+			map[string]any{"CompShareImageId": "img-provider", "Name": "Provider Match", "VersionName": "v1"},
+		}},
+	}}
+	for _, tc := range []struct {
+		name   string
+		source platform.ImageSource
+		action string
+		field  string
+		raw    map[string]any
+	}{
+		{"default platform", "", platformImageAction, "Name", flat},
+		{"platform", platform.ImageSourcePlatform, platformImageAction, "Name", flat},
+		{"community groups", platform.ImageSourceCommunity, communityImageAction, "FuzzySearch", grouped},
+		{"community flat response", platform.ImageSourceCommunity, communityImageAction, "FuzzySearch", flat},
+	} {
+		for _, query := range []string{"  creator  ", ""} {
+			t.Run(tc.name+"/"+query, func(t *testing.T) {
+				exec := &fakeReadExec{result: tc.raw}
+				result := runImageList(t, exec, ImageListRequest{Source: tc.source, Query: query})
+				require.Equal(t, platform.ReadStatusHandled, result.Status)
+				require.Len(t, exec.calls, 1)
+				require.Equal(t, tc.action, exec.calls[0].action)
+				want := map[string]any{"Limit": 100, "Offset": 0}
+				if query != "" {
+					want[tc.field] = "creator"
 				}
-				require.ErrorContains(t, err, "mode=all")
-				require.Empty(t, exec.calls, "a conflicting browse/filter request must not issue a catalog read")
+				if tc.source == platform.ImageSourceCommunity {
+					want["ExcludeReadme"] = true
+				}
+				require.Equal(t, want, exec.calls[0].args)
+				require.NotNil(t, result.Envelope)
+				require.Len(t, result.Envelope.Subjects, 1)
+				require.Equal(t, "image:img-provider", result.Envelope.Subjects[0].ID,
+					"the real upstream candidate survives without a second local name filter")
 			})
 		}
 	}
-
-	for _, query := range []string{"", " \n\t"} {
-		request, err := reg.Decode(map[string]any{"mode": "all", "query": query, "semantic_queries": []any{}})
-		require.NoError(t, err)
-		require.NoError(t, ValidateCurrentTurnGrounding(request, "浏览所有镜像"))
-	}
 }
 
-func TestImageListFilteredAndOmittedModeKeepLegalExpansion(t *testing.T) {
-	reg := NewReadCapability(imageListReadSpec())
-	for _, mode := range []string{"", "filtered"} {
-		t.Run(mode, func(t *testing.T) {
-			args := map[string]any{
-				"source": "platform", "query": "Ubuntu", "semantic_queries": []any{"vLLM"},
-			}
-			if mode != "" {
-				args["mode"] = mode
-			}
-			request, err := reg.Decode(args)
-			require.NoError(t, err)
-			require.NoError(t, ValidateCurrentTurnGrounding(request, "推荐 Ubuntu 镜像"))
-			exec := &platformCatalogExec{}
-			result := reg.Run(context.Background(), request, ReadRuntime{Executor: exec})
-			names := envelopeSubjectNames(t, result)
-			require.Contains(t, names, "Ubuntu 22.04 64位")
-			require.Contains(t, names, "vLLM v0.25.1")
-			require.NotContains(t, names, "SGLang v0.5.15")
-			require.Equal(t, 1, exec.calls)
+func TestTenantImageQueriesStayOnTheirScopedLists(t *testing.T) {
+	raw := map[string]any{"ImageSet": []any{
+		map[string]any{"CompShareImageId": "img-torch", "Name": "PyTorch 2.9", "Status": "Available"},
+		map[string]any{"CompShareImageId": "img-ubuntu", "Name": "Ubuntu 22.04", "Status": "Available"},
+	}}
+	for _, tc := range []struct {
+		source platform.ImageSource
+		action string
+	}{
+		{platform.ImageSourceCustom, customImageAction},
+		{platform.ImageSourceShared, sharedImageAction},
+	} {
+		t.Run(string(tc.source), func(t *testing.T) {
+			exec := &fakeReadExec{result: raw}
+			result := runImageList(t, exec, ImageListRequest{Source: tc.source, Query: "PyTorch"})
+			require.Equal(t, platform.ReadStatusHandled, result.Status)
+			require.Len(t, exec.calls, 1)
+			require.Equal(t, tc.action, exec.calls[0].action)
+			require.Equal(t, map[string]any{"Limit": 100, "Offset": 0}, exec.calls[0].args,
+				"these APIs have no Name/FuzzySearch parameter; filtering must not change tenant scope")
+			require.Contains(t, result.Reply, "PyTorch")
+			require.NotContains(t, result.Reply, "Ubuntu")
 		})
 	}
 }
