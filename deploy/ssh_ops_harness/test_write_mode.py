@@ -199,13 +199,13 @@ check("remote-text-tool-routes-known-files-away-from-shell-readers",
 check("remote-search-tool-is-bounded-and-routes-to-exact-read",
       all(term in harness.remote_search.TOOL_DESCRIPTION
           for term in ("literal text fragment", "never follows symlinks", "8 MiB",
-                       "read_text_file", "not recursive grep through ssh_exec",
-                       "validates every descendant")))
+                       "read_text_file", "matching run inside the instance"))
+      and "not recursive grep through ssh_exec" not in harness.remote_search.TOOL_DESCRIPTION)
 check("structured-search-remains-available-with-native-prompt",
       "mcp__ssh_ops__search_text_tree" in harness.ALLOWED_TOOLS)
-check("remote-glob-tool-is-bounded-and-does-not-run-a-shell",
+check("remote-glob-tool-is-bounded-and-traverses-in-guest",
       all(term in harness.remote_search.FIND_DESCRIPTION
-          for term in ("basename glob", "invokes no remote shell", "never follows symlinks",
+          for term in ("basename glob", "inside the instance", "follows no symlink",
                        "100 paths")))
 check("process-environment-tool-is-selected-and-secret-bounded",
       all(term in harness.process_env.TOOL_DESCRIPTION

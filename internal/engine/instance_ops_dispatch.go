@@ -269,16 +269,38 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	e.recordInstanceOpsReferent(instanceID)
 
 	// The agentic loop has no known total, so report a count without a fake N/M denominator.
-	onStep(StepEvent{
+	summary := StepEvent{
 		Type:    StepToolResult,
 		Action:  action,
 		Source:  observability.ToolSourceDiagnosisInternal,
 		Message: fmt.Sprintf("排查完成，共执行 %d 条命令（拒绝 %d 条），正在生成结论", verdict.Ran, verdict.Refused),
-	})
+	}
+	if verdict.AgentFailed {
+		// A settled partial report is deliverable, but it is not a completed
+		// diagnostic turn. Preserve its text and command tallies without retrying
+		// writes or asking the outer model to rewrite the report.
+		summary.Type = StepBlocked
+		summary.Message = fmt.Sprintf("实例内诊断中断，共执行 %d 条命令（拒绝 %d 条），已保留本轮执行记录", verdict.Ran, verdict.Refused)
+		summary.ErrorCode = instanceOpsAgentFailureCode(verdict.ErrClass)
+	}
+	onStep(summary)
 
 	// The verdict is a deterministic final reply: finalReplyPrefix routes it straight
 	// out through agentruntime.Final, structurally beyond any synthesis rewrite (F6).
 	return finalReplyPrefix + verdict.Text
+}
+
+// Only runner protocol metadata becomes a trace code. A future or malformed
+// class degrades to the generic failure; neither verdict nor provider prose is
+// inspected or copied into the activity stream.
+func instanceOpsAgentFailureCode(class string) string {
+	switch class {
+	case "authentication_failed", "billing_error", "rate_limit", "invalid_request",
+		"server_error", "unknown", "model_error", "max_turns", "sdk_timeout", "sdk_error":
+		return "SSH_AGENT_" + strings.ToUpper(class)
+	default:
+		return "SSH_AGENT_FAILED"
+	}
 }
 
 // recordInstanceOpsReferent records an actually reached or successfully checked

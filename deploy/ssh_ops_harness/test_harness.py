@@ -136,6 +136,13 @@ check("secrets-has-pw-and-b64", harness._secrets()[0] == "Pl4inPwd77x" and len(h
 # The native Claude Code preset owns general diagnosis. Adapter prose is intentionally
 # limited; SDK option/argv tests below verify that it appends rather than replaces.
 check("native-prompt-append-is-bounded", len(harness.SYSTEM_PROMPT_APPEND) < 1000)
+check("remote-shell-discloses-launch-context-without-image-specific-recipe",
+      all(text in harness.TOOL_DESC for text in (
+          "does not inherit", "original launcher/configuration", "working directory",
+          "required environment", "within the guest without printing",
+          "original authenticated behavior", "owns the actual listener"))
+      and all(text not in harness.TOOL_DESC for text in (
+          "/proc/1", "JUPYTER_TOKEN", "FileBrowser", "/usr/supervisor")))
 check("platform-auth-comparison-does-not-call-hidden-url-credentials-unauthenticated",
       "baseline without the caller-provided Authorization header" in
           harness.endpoint_probe.tool_description(
@@ -2892,6 +2899,24 @@ try:
         "context": _reference_context,
     }) + "\n")
     _provider_error_wire = _capture(lambda: _asyncio.run(harness.main()))
+    for _failed_query, _expected_failure in (
+            (_provider_error_after_work_query, "server_error"),
+            (_auth_failure_query, "authentication_failed")):
+        async def _events_then_process_exception(prompt, options):
+            async for message in _failed_query(prompt, options):
+                yield message
+            raise RuntimeError("private CLI process error body")
+
+        _fake_sdk.query = _events_then_process_exception
+        sys.stdin.seek(0)
+        _failure_then_exception_wire = _capture(lambda: _asyncio.run(harness.main()))
+        _outcomes = [_json.loads(line[len("@@OUTCOME "):])
+                     for line in _failure_then_exception_wire.splitlines()
+                     if line.startswith("@@OUTCOME ")]
+        check("typed-failure-survives-later-process-exception::" + _expected_failure,
+              len(_outcomes) == 1 and _outcomes[0]["outcome"] == "agent_failed"
+              and _outcomes[0]["err_class"] == _expected_failure
+              and "private CLI process error body" not in _failure_then_exception_wire)
 finally:
     _fake_sdk.query = _saved_provider_query
     sys.stdin = _saved_stdin

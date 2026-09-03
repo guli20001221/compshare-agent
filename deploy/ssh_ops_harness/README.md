@@ -1,7 +1,7 @@
 # 实例内排查与修复（SSH-ops）部署
 
-平台 API 看不到实例内部。生产开启写能力且服务器能证明用户明确选中了目标实例后，助手通过受控工具观察平台入口和实例内部，
-再动手修复并验证，不弹入口卡或逐命令确认。同一会话里最后一次由用户明确选定的目标不因时间间隔失效；OCR、账号唯一实例、被动读取和模型自行选择不能替代用户的目标选择。
+平台 API 看不到实例内部。生产开启写能力后，模型依据完整对话选择目标实例 ID，服务器在当前租户账号内精确核验并绑定该目标的凭据；助手通过受控工具观察平台入口和实例内部，
+再动手修复并验证，不弹入口卡或逐命令确认。完整对话与目标上下文不因用户隔一段时间继续提问而丢失；平台侧操作仍保留各自的目标核验和确认流程。
 外层工具只接收目标和 Task，不再由模型选择 inspect/repair。完整用户请求中的“只检查、不修改”
 约束直接交给同一内层 Agent 遵守，不使用关键词分类或另一个权限模式。
 实例内策略优先“观察变更前状态 → 精确作用域 → 保留回滚 → 事后验证”；普通服务
@@ -19,8 +19,10 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
 - `find_paths` / `search_text_tree`：前者按 basename glob 有界查找文件/目录，后者在已由进程、
   监听或启动器证据确定的一个应用目录内做有界字面量内容搜索；二者都不跟随软链、跳过凭据
   路径、最多访问 256 个目录，路径最多返回 100 条，内容搜索另限 512 个文件 / 8 MiB / 100 条
-  脱敏匹配。它们分别承接 Claude Code 本地 `Glob` 与 `Grep` 在远端实例里的等价职责，不通过
-  远端 shell 执行搜索，也不会因应用恰好在 `/root/<app>` 就要求写操作确认。
+  脱敏匹配。它们分别承接 Claude Code 本地 `Glob` 与 `Grep` 在远端实例里的等价职责，通过已有 SSH
+  连接在 Guest 内运行 Python 3 标准库搜索，不安装文件或依赖；只返回匹配结果，不逐文件下载到控制端。
+  搜索沿用前台命令时限，结构化结果不经过 shell 输出的 16 KiB 展示截断；缺少 Python 时报告失败，
+  Agent 仍可使用 `ssh_exec` 调用实例已有的 `grep` / `find`。
 - `endpoint_probe`：只接受服务端从 `Softwares[].URL` / `TcpForwards` 派生的 opaque ID。
   HTTP 只发一次有界 GET、TCP 只 connect 不发数据；HTTP 可在同一个服务端选定 origin 上指定
   绝对 path/query，以验证 `/health`、`/index.html` 等真实入口，但模型仍不能传 URL、主机、端口、
@@ -54,11 +56,15 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
 内层通过 `system_prompt={"type":"preset","preset":"claude_code","append":...}` 使用固定 CLI
 版本的官方系统提示，不再用自定义诊断手册替换它。附加文本只说明远端目标、runner/Guest 区别、
 既有任务授权和结果格式；工具描述负责接口、超时与后台任务协议。官方提示由 CLI 构造，不复制到仓库。
+SSH 是新建的非交互会话，不自动继承服务原启动环境。工具描述要求重建进程或管理器时沿用
+实测的启动定义、工作目录和必要环境，凭据仅在 Guest 内传递，并验证原认证行为及监听进程归属。
 传入 `system_prompt=None` 在当前 SDK 中是空系统提示，不是恢复官方 preset。
 
 完整角色历史、OCR 与实时平台事实仍由既有 context 管道送入用户 prompt，知识检索工具保持可用。
 官方 preset 不会打开 runner 本机的 Bash/Read/Write；这些工具仍由绑定到目标实例的 SSH/SFTP 工具承接。
 不再注入额外 Stop hook 来改写模型最后一轮任务；验证与总结由原生 Agent 完成。
+SDK 明确报告失败时，活动流标记诊断中断，保留已结算命令数和部分报告，不自动重放命令。
+失败状态来自 SDK/runner 的结构化标记，不从用户日志或模型正文中的错误单词推断。
 命令风险分类仍仅作为审计元数据，不被当作已发生修改的证据。
 提示契约改变会让旧 SDK 游标以完整已知对话开始新会话，不重放旧命令。
 
@@ -87,7 +93,7 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
 PostgreSQL 的 SessionState V10 只保存会话 UUID、稳定工作目录 UUID、实例 ID、契约/模型、conversation anchor 和时间，
 不保存对话、命令或输出；
 换实例、契约/模型变化、本地记录缺失或 Pod 被重建时都会诚实地开始新会话；墙钟时间本身不会切断同一会话的续接。
-当前 Agent session contract v7 绑定原生 Claude Code preset、远端工具与无额外 Stop hook 的执行语义，并保存一枚 64 个小写十六进制字符的 SHA-256 conversation anchor，只表示 inner SDK 已经收到外层对话到哪个位置；
+当前 Agent session contract v8 绑定原生 Claude Code preset、Guest 内搜索与原启动环境恢复的远端工具契约，不注入额外 Stop hook，并保存一枚 64 个小写十六进制字符的 SHA-256 conversation anchor，只表示 inner SDK 已经收到外层对话到哪个位置；
 它不含对话文本。Go 始终在私有握手里发送完整的有界快照和已送达前缀长度；harness 仅在本地 SDK
 transcript 确实存在时把 prompt 收敛为新增后缀，本地记录缺失则以完整快照 fresh start。harness 只在
 V3/V4 角色完整上下文进入真实模型回合后回执该 anchor；旧/不支持的 context、鉴权失败或模型未启动都不能前移它。

@@ -161,7 +161,10 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 		return engine.InstanceOpsVerdict{}, err
 	}
 	ran, refused := tallySteps(res.Steps)
-	return engine.InstanceOpsVerdict{Text: res.Output, Ran: ran, Refused: refused}, nil
+	return engine.InstanceOpsVerdict{
+		Text: res.Output, Ran: ran, Refused: refused,
+		AgentFailed: res.AgentFailed, ErrClass: res.ErrClass,
+	}, nil
 }
 
 // tallySteps counts the executed vs refused commands for the terminal summary line. Failed commands

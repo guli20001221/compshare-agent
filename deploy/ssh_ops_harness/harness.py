@@ -106,6 +106,13 @@ Proven reads and reversible guest-local changes run without per-command prompts.
 data/boot/recovery loss, cross-host writes/control-plane crossings, reboot, accounts/passwords and
 disabling SSH/networking are refused.
 
+The SSH session does not inherit a running service's launch environment. When recreating a
+service or its manager, recover its original launcher/configuration, working directory and
+required environment from observed definitions or the appropriate surviving parent/peer process.
+Transfer credential values within the guest without printing them or replacing authentication.
+Verify the original authenticated behavior and which managed process owns the actual listener;
+a responding page alone does not establish recovery.
+
 For long work set run_in_background=true and provide purpose. The tool owns detachment, logs and
 the opaque job ID; do not hand-roll detachment. At most one background job may be active. Use
 poll_background_job for status and log updates; a terminal poll frees the slot. Reads and scoped
@@ -156,7 +163,7 @@ _AGENT_SESSION_SETTINGS = "runtime-settings.json"
 _MAX_AGENT_SESSION_CONTRACT = 128
 _MAX_AGENT_SESSION_MODEL = 200
 _AGENT_TRANSCRIPT_RETENTION_DAYS = 1
-_AGENT_SESSION_CONTRACT = "sshops-agent-v7"
+_AGENT_SESSION_CONTRACT = "sshops-agent-v8"
 _CONVERSATION_ANCHOR = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -2667,7 +2674,11 @@ async def main():
                 no_progress_stopped = True
                 break
     except Exception as exc:                             # noqa: BLE001 — any SDK/transport failure
-        sdk_error = _sdk_exception_error_class(exc)
+        # The SDK may raise for the CLI's nonzero exit after yielding its typed
+        # failure events. Keep that specific failure instead of replacing it
+        # with the less informative wrapper/process exception.
+        if not sdk_error:
+            sdk_error = _sdk_exception_error_class(exc)
 
     body = verdict.strip() or last_assistant.strip()
     if no_progress_stopped:

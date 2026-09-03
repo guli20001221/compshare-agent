@@ -117,11 +117,17 @@ type InstanceOpsProgress struct {
 	AgentSessionConversationAnchor string
 }
 
-// InstanceOpsVerdict is the terminal root-cause conclusion. Text is the harness's
-// already-scrubbed verdict body; Ran/Refused are the command tallies used for the
-// summary line.
+// InstanceOpsVerdict is the terminal diagnosis or interrupted-run report. Text is
+// the harness's already-scrubbed body; Ran/Refused are independently settled
+// command tallies, not a claim that the user's fault was repaired.
 type InstanceOpsVerdict struct {
 	Text    string
 	Ran     int
 	Refused int
+	// AgentFailed is trusted runner metadata, never inferred from Text. Commands
+	// may already have run, and their results and continuation handles remain valid.
+	AgentFailed bool
+	// ErrClass is the runner's bounded SDK/model failure class. Unknown classes
+	// must become a generic activity code, never customer-visible free-form text.
+	ErrClass string
 }
