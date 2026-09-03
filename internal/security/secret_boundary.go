@@ -382,7 +382,7 @@ func credentialURLClosingDelimiter(text string) string {
 // otherwise a restart can no longer associate a valid tool transcript with the
 // conversation pair that produced it.
 func RedactUserConversationText(s string) string {
-	return RedactOperationalTokensInText(guardrails.RedactPII(s))
+	return RedactOperationalTokensInText(s)
 }
 
 // RedactAssistantConversationText returns the persisted form of an assistant
@@ -396,7 +396,7 @@ func RedactAssistantConversationText(s string) string {
 	// original handoff tool call.
 	s = strings.ReplaceAll(s, agentprotocol.FeishuCustomerSupportMarker,
 		agentprotocol.CustomerSupportHistoryCompletion)
-	redacted := RedactOperationalTokensInText(guardrails.RedactOutputLeak(s))
+	redacted := RedactOperationalTokensInText(s)
 	// A redacted command is not a reusable command. The live SSE response may
 	// still contain the original value, but the persisted/replayed copy cannot.
 	// Make that persistence boundary explicit instead of leaving a later reader (or

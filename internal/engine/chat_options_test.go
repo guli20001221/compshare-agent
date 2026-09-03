@@ -95,10 +95,12 @@ func TestRehydrateHistorySkipsEmptyContent(t *testing.T) {
 		{Role: openai.ChatMessageRoleUser, Content: "valid"},
 	})
 
-	// system + one valid user message
-	require.Len(t, eng.messages, 2)
+	// system + one valid unanswered user + its internal ended-turn boundary
+	require.Len(t, eng.messages, 3)
 	assert.Equal(t, openai.ChatMessageRoleUser, eng.messages[1].Role)
 	assert.Equal(t, "valid", eng.messages[1].Content)
+	assert.Empty(t, eng.messages[2].Content)
+	require.Equal(t, []ConversationPair{{User: "valid"}}, eng.recentCompleteConversationPairs())
 }
 
 func TestRehydrateHistorySkipsNonUserNonAssistantRoles(t *testing.T) {
@@ -110,10 +112,11 @@ func TestRehydrateHistorySkipsNonUserNonAssistantRoles(t *testing.T) {
 		{Role: openai.ChatMessageRoleUser, Content: "hi"},
 	})
 
-	// system + one valid user message
-	require.Len(t, eng.messages, 2)
+	// system + one valid unanswered user + its internal ended-turn boundary
+	require.Len(t, eng.messages, 3)
 	assert.Equal(t, openai.ChatMessageRoleSystem, eng.messages[0].Role)
 	assert.Equal(t, "hi", eng.messages[1].Content)
+	assert.Empty(t, eng.messages[2].Content)
 }
 
 // Low router confidence says nothing about answer validity. It must not turn a

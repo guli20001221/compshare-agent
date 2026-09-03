@@ -62,8 +62,8 @@ func rebuildColdAfterHTTPPersistence(reply string, metadata json.RawMessage) *En
 	cold := NewWithDeps(&mockLLM{}, billingHistoryExecutor(), nil)
 	cold.mutatingToolsEnabled = false
 	cold.RehydrateHistory([]HistoryMessage{
-		{Role: openai.ChatMessageRoleUser, Content: guardrails.RedactPII(billingQuestion)},
-		{Role: openai.ChatMessageRoleAssistant, Content: guardrails.RedactOutputLeak(reply), Transcript: metadata},
+		{Role: openai.ChatMessageRoleUser, Content: guardrails.RedactCredentials(billingQuestion)},
+		{Role: openai.ChatMessageRoleAssistant, Content: guardrails.RedactCredentials(reply), Transcript: metadata},
 	})
 	return cold
 }
@@ -108,8 +108,10 @@ func TestBillingHistoryTellsTheAgentToRefreshRatherThanRefuseARepeatQuestion(t *
 	assembled := nextModelRequest(t, hot)
 	replayed := renderReplayedRegion(t, assembled)
 
-	require.Contains(t, replayed, "用户再次询问时调用 DiagnoseBilling",
+	require.Contains(t, replayed, "用户再次询问当前报价时调用 DiagnoseBilling",
 		"the model sees an actionable fresh-query instruction, not a blanket no-repeat rule")
+	require.Contains(t, replayed, "询问计费规则时检索知识",
+		"a policy follow-up must not be treated as another request for the current quote")
 	require.NotContains(t, replayed, "不要复述、计算或推断金额",
 		"the old rule caused a repeat billing question to fail despite a live billing tool")
 }
@@ -149,8 +151,8 @@ func TestOlderPureBillingTranscriptFailsClosedWithoutReplayingItsCard(t *testing
 	cold := NewWithDeps(&mockLLM{}, billingHistoryExecutor(), nil)
 	cold.mutatingToolsEnabled = false
 	cold.RehydrateHistory([]HistoryMessage{
-		{Role: openai.ChatMessageRoleUser, Content: guardrails.RedactPII(billingQuestion)},
-		{Role: openai.ChatMessageRoleAssistant, Content: guardrails.RedactOutputLeak("【费用明细】每小时 " + billingPrice + " 元"), Transcript: metadata},
+		{Role: openai.ChatMessageRoleUser, Content: guardrails.RedactCredentials(billingQuestion)},
+		{Role: openai.ChatMessageRoleAssistant, Content: guardrails.RedactCredentials("【费用明细】每小时 " + billingPrice + " 元"), Transcript: metadata},
 	})
 	assembled := assembleNextTurn(cold, billingFollowUp)
 	replayed := renderReplayedRegion(t, assembled)

@@ -57,13 +57,28 @@ func TestFilterHistoryKeepsUnpairedUserAcrossAnAbortedAssistant(t *testing.T) {
 		{Role: "assistant", Status: "aborted", Content: ""},
 		{Role: "user", Status: "ok", Content: "都开始收费还是进不去"},
 	})
-	if len(history) != 2 {
-		t.Fatalf("kept %d messages, want both successful user endpoints", len(history))
+	if len(history) != 3 {
+		t.Fatalf("kept %d messages, want both user endpoints and the interrupted boundary", len(history))
 	}
 	if history[0].Role != "user" || history[0].Content != "uhost-1uha5i7jetgm" {
 		t.Fatalf("lost the unpaired target user row: %+v", history)
 	}
-	if history[1].Role != "user" || history[1].Content != "都开始收费还是进不去" {
+	if history[1].Role != "assistant" || history[1].Content != "" {
+		t.Fatalf("interrupted placeholder became an answer: %+v", history)
+	}
+	if history[2].Role != "user" || history[2].Content != "都开始收费还是进不去" {
 		t.Fatalf("lost the continuation user row: %+v", history)
+	}
+}
+
+func TestFilterHistoryCarriesInterruptedTranscriptButNotDisplayPlaceholder(t *testing.T) {
+	for _, status := range []string{"aborted", "error"} {
+		history := filterHistory([]store.Message{
+			{Role: "user", Status: "ok", Content: "q"},
+			{Role: "assistant", Status: status, Content: "本次回复已中止，未完整生成。", Metadata: []byte(sampleTranscript)},
+		})
+		if len(history) != 2 || history[1].Content != "" || string(history[1].Transcript) != sampleTranscript {
+			t.Fatalf("%s did not carry evidence separately from display text: %+v", status, history)
+		}
 	}
 }

@@ -16,20 +16,26 @@ func denyConfirm(_ string, _ map[string]any) bool { return false }
 
 // filterHistory converts a slice of store.Message rows into the
 // engine.HistoryMessage slice used for rehydration. Only messages with
-// status == "ok" and role "user" or "assistant" are included; all others
-// (pending, error, aborted, …) are silently skipped.
+// status == "ok" and role "user" or "assistant" are included. Aborted/error
+// assistant rows carry only their transcript: display placeholders are not
+// answers. Pending rows remain excluded.
 func filterHistory(messages []store.Message) []engine.HistoryMessage {
 	history := make([]engine.HistoryMessage, 0, len(messages))
 	for _, msg := range messages {
-		if msg.Status != "ok" {
+		interrupted := msg.Role == "assistant" && (msg.Status == "aborted" || msg.Status == "error")
+		if msg.Status != "ok" && !interrupted {
 			continue
 		}
 		if msg.Role != "user" && msg.Role != "assistant" {
 			continue
 		}
+		content := msg.Content
+		if interrupted {
+			content = ""
+		}
 		history = append(history, engine.HistoryMessage{
 			Role:       msg.Role,
-			Content:    msg.Content,
+			Content:    content,
 			Transcript: msg.Metadata,
 		})
 	}

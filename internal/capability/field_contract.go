@@ -3,6 +3,7 @@ package capability
 import (
 	"encoding/json"
 	"fmt"
+	"reflect"
 
 	"github.com/compshare-agent/internal/platform"
 )
@@ -151,7 +152,7 @@ func (n schemaNode) jsonSchema() map[string]any {
 }
 
 // validate enforces exactly the constraints the schema advertises but the JSON
-// decoder does not: string enum membership and integer minimums, recursively
+// decoder does not: string enum membership and integer bounds, recursively
 // through objects and arrays. It deliberately does NOT enforce required-field
 // presence — an absent required field is a needs_input clarification
 // (MissingFields), a different control-flow outcome than an out-of-contract
@@ -183,12 +184,12 @@ func (n schemaNode) validate(value any, path string) error {
 		}
 		return nil
 	case nodeArray:
-		items, ok := value.([]any)
-		if !ok || n.items == nil {
+		items := reflect.ValueOf(value)
+		if !items.IsValid() || (items.Kind() != reflect.Slice && items.Kind() != reflect.Array) || n.items == nil {
 			return nil
 		}
-		for i, el := range items {
-			if err := n.items.validate(el, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+		for i := 0; i < items.Len(); i++ {
+			if err := n.items.validate(items.Index(i).Interface(), fmt.Sprintf("%s[%d]", path, i)); err != nil {
 				return err
 			}
 		}

@@ -163,8 +163,8 @@ func TestPoolIdleTTLEviction(t *testing.T) {
 }
 
 // TestFilterHistoryStatusGating verifies that filterHistory only passes through
-// messages whose status is "ok". Messages with status pending / error / aborted
-// or any other value must be excluded regardless of role.
+// successful messages plus unanswered assistant boundaries. Failed display
+// content and pending rows must not become completed answers.
 func TestFilterHistoryStatusGating(t *testing.T) {
 	msgs := []store.Message{
 		{Role: "user", Content: "hello", Status: "ok"},
@@ -181,6 +181,7 @@ func TestFilterHistoryStatusGating(t *testing.T) {
 	want := []engine.HistoryMessage{
 		{Role: "user", Content: "hello"},
 		{Role: "assistant", Content: "hi there"},
+		{Role: "assistant"},
 	}
 
 	require.Equal(t, want, got)

@@ -486,7 +486,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			Type:    stepTypeString(ev.Type),
 			Action:  ev.Action,
 			Label:   stepActionLabel(ev.Action),
-			Message: guardrails.RedactOutputLeak(guardrails.RedactPII(ev.Message)),
+			Message: guardrails.RedactCredentials(ev.Message),
 			Index:   stepIndex,
 		})
 		stepIndex++
@@ -495,6 +495,9 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		TurnID:       base.RequestUUID,
 		ImageContext: prep.ocrText,
 		OnTextDelta: func(s string) {
+			if streamCtx.Err() != nil {
+				return
+			}
 			if firstToken.IsZero() {
 				firstToken = time.Now()
 			}
@@ -535,7 +538,10 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	// detached from streamCtx, bounded, best-effort, and still fail-closed when
 	// prepareChat could not parse/recognize the stored envelope.
 	defer h.persistSessionStateBestEffort(base.Owner, sessionID, agent, prep)
-	if chatErr == nil && !tokenEmitted && reply != "" {
+	if chatErr == nil {
+		chatErr = streamCtx.Err()
+	}
+	if chatErr == nil && streamCtx.Err() == nil && !tokenEmitted && reply != "" {
 		if firstToken.IsZero() {
 			firstToken = time.Now()
 		}
@@ -551,9 +557,15 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 
 	// Client disconnected.
 	if errors.Is(chatErr, context.Canceled) || errors.Is(streamCtx.Err(), context.Canceled) {
-		finishTrace(chatErr)
-		_ = h.persistAssistant(base.Owner, assistantMsgID,
+		terminalErr := chatErr
+		if terminalErr == nil {
+			terminalErr = streamCtx.Err()
+		}
+		finishTrace(terminalErr)
+		agent.MarkLastTurnInterrupted()
+		persistErr := h.persistAssistant(base.Owner, assistantMsgID,
 			store.AssistantPatch{Content: abortedAssistantMessage, Status: "aborted"})
+		h.persistTurnTranscript(base.Owner, assistantMsgID, agent, persistErr)
 		return
 	}
 
@@ -563,13 +575,15 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		code := apiErr.Code
 		_ = writeVisibleEvent(sw, traceRecorder, "error", streamErrorEvent{Code: apiErr.Code, Message: apiErr.Message})
 		finishTrace(chatErr)
-		_ = h.persistAssistant(base.Owner, assistantMsgID,
+		agent.MarkLastTurnInterrupted()
+		persistErr := h.persistAssistant(base.Owner, assistantMsgID,
 			store.AssistantPatch{
 				Status:    "error",
 				ErrorCode: &code,
 				LatencyMs: &latencyMs,
 				TTFTMs:    &ttftMs,
 			})
+		h.persistTurnTranscript(base.Owner, assistantMsgID, agent, persistErr)
 		return
 	}
 
@@ -719,7 +733,7 @@ func sanitizeConfirmArgs(args map[string]any) map[string]any {
 const maxOCRTextRunes = 1200
 
 // processOCR validates the image, calls the OCR client, and returns
-// PII-filtered, length-capped text. Returns a validation error (caller
+// credential-filtered, length-capped text. Returns a validation error (caller
 // should 400) or ("", nil) on API failure (graceful degradation).
 func (h *Handlers) processOCR(ctx context.Context, requestUUID, imageDataURL string) (string, error) {
 	if _, err := ocr.ValidateImageDataURL(imageDataURL, h.cfg.Agent.OCR.MaxBytes); err != nil {
@@ -732,7 +746,7 @@ func (h *Handlers) processOCR(ctx context.Context, requestUUID, imageDataURL str
 		log.Printf("warning: OCR failed for request %s: %v", requestUUID, err)
 		return "", nil
 	}
-	text = guardrails.RedactPII(text)
+	text = guardrails.RedactCredentials(text)
 	runes := []rune(text)
 	if len(runes) > maxOCRTextRunes {
 		text = string(runes[:maxOCRTextRunes])

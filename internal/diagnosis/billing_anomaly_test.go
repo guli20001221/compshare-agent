@@ -29,6 +29,25 @@ func TestBillingChain_NoInstances(t *testing.T) {
 	assert.Len(t, executor.calls, 1)
 }
 
+func TestBillingChain_MissingSpecifiedInstanceDoesNotAssertAccountAbsence(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"UHostSet": []any{}},
+	}}
+	onStep, _ := collectEvents()
+	result, err := NewEngine(executor, onStep).Run(context.Background(), BillingAnomalyChain(), map[string]any{
+		"UHostId": "uhost-not-found",
+	})
+	require.NoError(t, err)
+	require.True(t, result.Success, "the point query completed without finding the requested instance")
+	require.Contains(t, result.Conclusion, "未找到指定实例")
+	require.Contains(t, result.Conclusion, "未取得其当前报价")
+	require.Contains(t, result.Conclusion, "不能判断历史实际扣款")
+	require.NotContains(t, result.Conclusion, "未找到任何实例")
+	require.NotContains(t, result.Conclusion, "可能存在未释放的资源")
+	require.Len(t, executor.calls, 1)
+	require.Equal(t, []any{"uhost-not-found"}, executor.calls[0].args["UHostIds"])
+}
+
 func TestBillingChain_SingleRunning(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {

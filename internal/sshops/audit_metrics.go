@@ -37,8 +37,8 @@ const maxAuditStepRows = 120
 //     would be a second copy of the box's contents in a table nobody reads that way.
 //   - the RAW command. summarizeAuditSteps has always refused it ("raw commands can carry paths,
 //     tokens or user-provided arguments"), and a new column does not change that reasoning. What
-//     is stored is the redacted DISPLAY form — the same two redactors, in the same order, that the
-//     user already saw this command through in the live activity stream.
+//     is stored is the credential-redacted DISPLAY form, using the same credential
+//     rules as the live activity stream.
 //
 // It is also NOT a resume cursor, and must not become one. It records what a past run did so a
 // human can be told; feeding it to a new harness as "already done, skip these" would need a
@@ -68,7 +68,7 @@ func summarizeAuditStepDetail(steps []Step) []PersistedStepSummary {
 	out := make([]PersistedStepSummary, 0, limit)
 	for _, step := range steps[:limit] {
 		out = append(out, PersistedStepSummary{
-			Command:     truncateRunes(guardrails.RedactOutputLeak(guardrails.RedactPII(step.Command)), maxAuditStepCommandRunes),
+			Command:     truncateRunes(guardrails.RedactCredentials(step.Command), maxAuditStepCommandRunes),
 			Tier:        step.Tier,
 			Disposition: step.Disposition,
 			Reason:      step.Reason,

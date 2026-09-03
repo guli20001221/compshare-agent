@@ -8,11 +8,9 @@ import (
 	"unicode/utf8"
 )
 
-// Output leak protection removes credentials, tokens and project UUIDs from
-// assistant replies before persistence. It deliberately preserves operational
-// facts the owner needs to use or troubleshoot their resources: instance IDs,
-// IP addresses, zones, prices and GPU model names. Input-side PII redaction is a
-// separate boundary.
+// Credential protection removes access credentials and tokens before
+// persistence. Ordinary conversation information, including phone numbers,
+// email addresses, project IDs and operational facts, remains intact.
 //
 // Known false-positive surface (acceptable per ticket):
 //   - Marker-prefixed prose: `AccessKey: <opaque-value>`
@@ -22,20 +20,13 @@ import (
 //     redacts. Same root cause — bearer/token regex requires the
 //     marker prefix + 20-char value but cannot validate cred entropy.
 
-// Output-side placeholders. Distinct from PhoneRedacted etc. so an
-// operator scanning persisted messages can attribute redactions to the
-// right Guardrails layer ("[output]:" vs "[已脱敏:..]").
+// User-facing credential placeholders.
 const (
-	ProjectIDRedacted        = "[已脱敏:项目ID]"
 	CredentialRedactedOutput = "[已脱敏:凭据]"
 	TokenRedactedOutput      = "[已脱敏:令牌]"
 )
 
 var (
-	// 8-4-4-4-12 hex UUID. Used for CompShare project_id values and
-	// (incidentally) any standard UUID the LLM might quote.
-	uuidRegex = regexp.MustCompile(`\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b`)
-
 	// JWT shape: 3 base64url segments joined by dots, starts with eyJ
 	// (the base64url encoding of '{"'). Captures the most common bearer
 	// token form (Anthropic / Bedrock / many internal services). Length
@@ -51,7 +42,7 @@ var (
 	bearerRegex = regexp.MustCompile(`(?i)\b(bearer|token)[\s:=]+([A-Za-z0-9+/=_\-\.]{20,})\b`)
 
 	// Persistence-grade credential coverage shared by assistant output and the
-	// persisted execution record. Unlike RedactOutputLeak, these patterns do not
+	// persisted execution record. These patterns do not
 	// touch IP addresses, project IDs, email addresses, or other routing inputs.
 	credentialAssignmentRegex = regexp.MustCompile(
 		`(?i)(["']?\b(?:access[_-]?key(?:[_-]?id|[_-]?secret)?|secret[_-]?key|api[_-]?key|x[_-]?api[_-]?key|ak|sk|access[_-]?token|security[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|token|password|passwd|pwd|private[_-]?key)\b["']?\s*[:=]\s*["']?)([^"'\s,;}&\]]+)`,
@@ -702,23 +693,6 @@ func allHanText(value string) bool {
 		}
 	}
 	return true
-}
-
-// RedactOutputLeak returns a copy of s with output-side leak patterns
-// replaced. Designed for assistant-reply persistence (HTTP messages
-// role=assistant messages.content). Routing-relevant tokens are preserved.
-//
-// Credential cleanup runs through RedactCredentials first; UUID cleanup is
-// independent. IPv4 is deliberately NOT redacted — see the package doc.
-// Idempotent — placeholders contain no dashes in UUID grouping, no eyJ
-// prefix, etc., so re-running is a no-op.
-func RedactOutputLeak(s string) string {
-	if s == "" {
-		return s
-	}
-	out := RedactCredentials(s)
-	out = uuidRegex.ReplaceAllString(out, ProjectIDRedacted)
-	return out
 }
 
 func redactBearerKeepMarkerNormalized(match, replacement string) string {

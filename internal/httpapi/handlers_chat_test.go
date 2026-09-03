@@ -365,7 +365,7 @@ func TestDispatchChatWritesTraceWithTenantAndSession(t *testing.T) {
 	assert.Equal(t, "sess-trace", tenant.ConnectionID)
 }
 
-func TestDispatchChatRedactsUserConversationBeforePersisting(t *testing.T) {
+func TestDispatchChatPreservesOrdinaryUserInformationAndRedactsCredentialsBeforePersisting(t *testing.T) {
 	llmClient := &scriptedChatLLM{content: "ok"}
 	eng := engine.NewWithDeps(llmClient, tools.ToolExecutor(chatExecutor{}), denyConfirm)
 	eng.RehydrateHistory(nil)
@@ -399,10 +399,8 @@ func TestDispatchChatRedactsUserConversationBeforePersisting(t *testing.T) {
 	persisted := messages.appended[0].Content
 	assert.Equal(t, security.RedactUserConversationText(userMessage), persisted,
 		"HTTP persistence and canonical history must share the exact user boundary")
-	assert.Contains(t, persisted, guardrails.PhoneRedacted)
-	assert.Contains(t, persisted, guardrails.EmailRedacted)
-	assert.NotContains(t, persisted, "13800138000")
-	assert.NotContains(t, persisted, "user@example.com")
+	assert.Contains(t, persisted, "13800138000")
+	assert.Contains(t, persisted, "user@example.com")
 	assert.NotContains(t, persisted, "AKIAIOSFODNN7EXAMPLEbCDEF")
 	assert.Contains(t, persisted, "uhost-abc123")
 	assert.Contains(t, persisted, "4090")
@@ -421,6 +419,7 @@ func TestDispatchChatRedactsAssistantCredentialsBeforeSendingAndPersistsSanitize
 	reply := `Instance uhost-abc123 is ready on 4090.
 Public IP: 1.2.3.4
 Project: 12345678-1234-1234-1234-1234567890ab
+Contact: 13800138000 user@example.com
 AccessKey="AKIAIOSFODNN7EXAMPLE"
 token=AKIAIOSFODNN7EXAMPLEbCDEF`
 	llmClient := &scriptedChatLLM{content: reply}
@@ -456,7 +455,7 @@ token=AKIAIOSFODNN7EXAMPLEbCDEF`
 	assert.Contains(t, body, "1.2.3.4")
 	assert.Contains(t, body, "12345678-1234-1234-1234-1234567890ab")
 	assert.NotContains(t, body, "AKIAIOSFODNN7EXAMPLE")
-	assert.NotContains(t, body, guardrails.ProjectIDRedacted)
+	assert.Contains(t, body, "13800138000 user@example.com")
 	assert.True(t,
 		strings.Contains(body, guardrails.CredentialRedactedOutput) || strings.Contains(body, "[REDACTED]"),
 		"assistant output must redact credential bodies before transport, got: %s", body,
@@ -465,14 +464,12 @@ token=AKIAIOSFODNN7EXAMPLEbCDEF`
 	persisted := messages.patch.Content
 	assert.Equal(t, security.RedactAssistantConversationText(security.RedactOperationalTokensInText(reply)), persisted,
 		"HTTP persistence and canonical history must share the exact assistant boundary")
-	// The stored copy must match what was streamed, for IPs specifically: only
-	// the persisted side used to be IP-redacted, so an answer containing an SSH
-	// login line read fine live and came back as "root@[已脱敏:IP]" after the
-	// page was reloaded and history rehydrated. Credentials stay redacted on
-	// both sides — that asymmetry is intentional and asserted below.
+	// Ordinary information must survive both live delivery and a history reload;
+	// access credentials stay redacted at both boundaries.
 	assert.Contains(t, persisted, "1.2.3.4",
 		"a reload must not turn an actionable endpoint into a placeholder")
-	assert.Contains(t, persisted, guardrails.ProjectIDRedacted)
+	assert.Contains(t, persisted, "12345678-1234-1234-1234-1234567890ab")
+	assert.Contains(t, persisted, "13800138000 user@example.com")
 	assert.True(t,
 		strings.Contains(persisted, guardrails.CredentialRedactedOutput) || strings.Contains(persisted, "[REDACTED]"),
 		"persisted assistant output must redact credential bodies, got: %s", persisted,
@@ -481,7 +478,6 @@ token=AKIAIOSFODNN7EXAMPLEbCDEF`
 		strings.Contains(persisted, guardrails.TokenRedactedOutput) || strings.Contains(persisted, "[REDACTED]"),
 		"persisted assistant output must redact token bodies, got: %s", persisted,
 	)
-	assert.NotContains(t, persisted, "12345678-1234-1234-1234-1234567890ab")
 	assert.NotContains(t, persisted, "AKIAIOSFODNN7EXAMPLE")
 	assert.Contains(t, persisted, "uhost-abc123")
 	assert.Contains(t, persisted, "4090")

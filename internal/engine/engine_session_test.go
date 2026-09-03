@@ -251,10 +251,9 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// a shared read budget would let one tenant withdraw the tool from
 		// another's turn, and a shared read set would suppress a chunk body the
 		// other tenant never saw. Reset every turn.
-		"readChunkCallsThisTurn":              true,
-		"readChunkIDsThisTurn":                true,
-		"automaticKnowledgeBodyRunesThisTurn": true,
-		"automaticKnowledgeBodyIDsThisTurn":   true,
+		"readChunkCallsThisTurn":            true,
+		"readChunkIDsThisTurn":              true,
+		"automaticKnowledgeBodyIDsThisTurn": true,
 		// Remote search capabilities are short-lived and must never leave the
 		// current Engine turn. Sharing this map would authorize a cross-tenant
 		// ReadChunk against another user's search result.
@@ -427,12 +426,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 97, len(perSessionFields); want != got {
+	if want, got := 96, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 103, typ.NumField(); want != got {
+	if want, got := 102, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update this test's whitelists to match.", want, got)
 	}

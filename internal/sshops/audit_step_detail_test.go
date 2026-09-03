@@ -25,17 +25,18 @@ func TestAuditStepDetailIsRedactedBeforeItReachesAnyWriter(t *testing.T) {
 	token := "sk-" + strings.Repeat("z", 24)
 	steps := []Step{
 		{Command: `curl -H "Authorization: Bearer ` + token + `" http://127.0.0.1:8188/`, Disposition: "ran"},
-		{Command: "grep alice@example.com /var/log/app.log", Disposition: "ran"},
+		{Command: "grep -E 'alice@example.com|13800138000|12345678-1234-1234-1234-1234567890ab' /var/log/app.log", Disposition: "ran"},
 	}
 	got := summarizeAuditStepDetail(steps)
 	if len(got) != 2 {
 		t.Fatalf("want 2 summaries, got %d", len(got))
 	}
 	joined := got[0].Command + "\n" + got[1].Command
-	for _, secret := range []string{token, "alice@example.com"} {
-		if strings.Contains(joined, secret) {
-			t.Errorf("raw secret %q survived into the persisted step detail:\n%s", secret, joined)
-		}
+	if strings.Contains(joined, token) {
+		t.Errorf("raw credential survived into the persisted step detail:\n%s", joined)
+	}
+	if got[1].Command != steps[1].Command {
+		t.Errorf("ordinary search arguments changed in audit detail: %q", got[1].Command)
 	}
 	// ...and the surrounding command must survive, or the column records nothing usable.
 	if !strings.Contains(joined, "curl") || !strings.Contains(joined, "/var/log/app.log") {

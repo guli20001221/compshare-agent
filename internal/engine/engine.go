@@ -124,7 +124,8 @@ type KnowledgeRetriever interface {
 
 // HistoryMessage is a simplified turn for rehydrating a conversation from
 // persistent storage (e.g. MySQL). Only user and assistant roles are accepted;
-// all other roles and empty content are silently skipped.
+// all other roles and empty user content are skipped. An empty assistant closes
+// an interrupted request without asserting that it was answered.
 type HistoryMessage struct {
 	Role    string
 	Content string
@@ -234,12 +235,10 @@ type Engine struct {
 	// Per-session/per-turn for the same reason as the hits above. Reset every turn.
 	readChunkCallsThisTurn int
 	readChunkIDsThisTurn   map[string]struct{}
-	// automaticKnowledgeBody* bounds deterministic full-body enrichment inside
-	// SearchKnowledge. It is separate from the model-visible ReadChunk budget:
-	// the Agent already chose retrieval, and this removes one fragile follow-up
-	// decision for the strongest accepted evidence only.
-	automaticKnowledgeBodyRunesThisTurn int
-	automaticKnowledgeBodyIDsThisTurn   map[string]struct{}
+	// automaticKnowledgeBodyIDsThisTurn deduplicates automatic body-read attempts
+	// across SearchKnowledge calls, including failed attempts. Each search has its
+	// own bounded body batch, separate from the model-visible ReadChunk budget.
+	automaticKnowledgeBodyIDsThisTurn map[string]struct{}
 	// searchKnowledgeCapabilitiesThisTurn maps only model-visible chunk IDs to
 	// the short-lived remote search_id that surfaced them. It is intentionally
 	// engine-local: sharing it through the process-wide retriever would let one
@@ -897,8 +896,8 @@ func (e *Engine) InitWithContext(userCtx string) {
 
 // RehydrateHistory rebuilds the message history from a prior session stored in
 // persistent storage. It replaces any existing history with a fresh system
-// prompt followed by the supplied user/assistant turns. Empty content and
-// non-user/non-assistant roles are silently skipped.
+// prompt followed by the supplied user/assistant turns. An empty assistant is
+// an interrupted boundary, not a completed answer. Other roles are skipped.
 func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 	// RehydrateHistory is a whole-session message replacement boundary. Durable
 	// execution state, including an opaque guest-job cursor, is installed
@@ -911,12 +910,21 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 	e.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: systemPrompt}}
 	e.recentTurns = nil
 	pendingUser := ""
+	closeUnanswered := func() {
+		if pendingUser == "" {
+			return
+		}
+		e.messages = append(e.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant})
+		e.recordTurn(recordedTurn{User: pendingUser})
+		pendingUser = ""
+	}
 	for _, msg := range msgs {
-		if msg.Content == "" {
+		if msg.Content == "" && msg.Role != openai.ChatMessageRoleAssistant {
 			continue
 		}
 		switch msg.Role {
 		case openai.ChatMessageRoleUser:
+			closeUnanswered()
 			e.messages = append(e.messages, openai.ChatCompletionMessage{Role: msg.Role, Content: msg.Content})
 			pendingUser = msg.Content
 		case openai.ChatMessageRoleAssistant:
@@ -927,7 +935,7 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 			// adapter markup. The canonical transcript records what the live model
 			// actually saw; restore that terminal content on cold rebuild. Ordinary
 			// assistant rows retain their persisted content unchanged.
-			if content, ok := displayProjectedModelHistoryContent(transcript); ok {
+			if content, ok := displayProjectedModelHistoryContent(transcript); ok && assistantContent != "" {
 				assistantContent = content
 			}
 			e.messages = append(e.messages, openai.ChatCompletionMessage{Role: msg.Role, Content: assistantContent})
@@ -942,6 +950,7 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 			pendingUser = ""
 		}
 	}
+	closeUnanswered()
 }
 
 // displayProjectedModelHistoryContent returns the channel-neutral assistant
@@ -1266,7 +1275,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.answerEchoedChunkIDThisTurn = ""
 	e.readChunkCallsThisTurn = 0
 	e.readChunkIDsThisTurn = nil
-	e.automaticKnowledgeBodyRunesThisTurn = 0
 	e.automaticKnowledgeBodyIDsThisTurn = nil
 	e.searchKnowledgeCapabilitiesThisTurn = nil
 	e.belowFloorKnowledgeIDsThisTurn = nil
@@ -2418,15 +2426,16 @@ func isVerbatimReply(result string) (string, bool) {
 
 // verbatimBlockObservation tells the model that the user has already received
 // the authoritative detail while withholding figures that must not be derived.
-const verbatimBlockObservation = "费用明细已按上游结构化数据逐字呈现给用户，本结果不含金额。" +
-	"不要自行给出金额，也不要复述或补充通用费用说明；若用户没有其他问题需要处理，直接结束本回合、不要再输出文字。"
+const verbatimBlockObservation = "费用卡已向用户完整展示上游返回的明细。具体金额仅从这条模型观察中省略，不是接口未返回；不要否定已展示的卡片。" +
+	"本工具范围是当前配置报价及接口明确返回的停机保留项，不代表已回答一般计费规则或历史实际扣款。" +
+	"不要复述、重算或推断金额；未覆盖的规则问题继续检索知识，其他问题用适用工具处理。全部问题已回答时直接结束本回合、不要再输出文字。"
 
 // verbatimBillingHistoryCompletion closes a pure billing exchange in the
 // model-only transcript. It never reaches the browser or messages.content: the
 // user already has the byte-exact card. Its purpose is to preserve the same
 // amount-free semantic boundary after a restart, where the persisted display
 // reply would otherwise be mistaken for the model's final assistant message.
-const verbatimBillingHistoryCompletion = "费用为实时数据；用户再次询问时调用 DiagnoseBilling，不要根据历史估算。"
+const verbatimBillingHistoryCompletion = "费用工具结果已原样展示；用户再次询问当前报价时调用 DiagnoseBilling，询问计费规则时检索知识；不要根据历史估算金额。"
 
 // composeWithVerbatimBlocks puts this turn's verbatim blocks in front of the
 // Agent's own reply. Called from one deferred site at the single turn exit so
@@ -2987,7 +2996,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		if e.feishuSupportRendererThisTurn {
 			reply = agentprotocol.FeishuCustomerSupportMarker
 		}
-		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "已提供人工客服转接说明"})
+		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "已提供客服联系入口，未确认接通或受理"})
 		return finalReplyPrefix + reply
 	}
 
@@ -5046,21 +5055,22 @@ func messagesFromAgentContext(messages []openai.ChatCompletionMessage, view Agen
 		out = append(out, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleSystem, Content: card})
 	}
 	for _, pair := range view.RecentConversation {
-		if pair.User == "" || pair.Assistant == "" {
+		if pair.User == "" {
 			continue
 		}
-		// A usable transcript opens with the exact user question and closes with
-		// the exact final answer — it IS the exchange, recorded verbatim.
+		// A usable transcript opens with the exact user question and preserves
+		// the committed answer, if any. An interrupted turn keeps its observations
+		// without inventing a successful completion.
 		// A bounded/foreign transcript that cannot make that promise falls back to
 		// the complete plain pair rather than replacing history with a prefix.
 		if transcriptReplaysCompletePair(pair) {
 			out = append(out, pair.Transcript...)
 			continue
 		}
-		out = append(out,
-			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: pair.User},
-			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: pair.Assistant},
-		)
+		out = append(out, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: pair.User})
+		if pair.Assistant != "" {
+			out = append(out, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: pair.Assistant})
+		}
 	}
 	// Shared with the persisted canonical transcript so the stored record and
 	// the model's view can never disagree about the turn boundary.
