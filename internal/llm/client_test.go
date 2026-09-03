@@ -39,7 +39,7 @@ func TestClientChatRetriesTransientStreamOpenError(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"retry ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"retry ok\"},\"finish_reason\":\"stop\"}]}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()
@@ -366,7 +366,7 @@ func TestClientChatRetriesTransientStreamRecvError(t *testing.T) {
 			return
 		}
 
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"retry recv ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"retry recv ok\"},\"finish_reason\":\"stop\"}]}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()
@@ -419,6 +419,53 @@ func TestClientChatCarriesLengthFinishReason(t *testing.T) {
 	}
 	if !resp.OutputIncomplete() {
 		t.Fatal("length finish_reason must be treated as truncated output")
+	}
+}
+
+func TestClientChatRejectsStreamWithoutTerminalFinishReason(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{name: "partial_text_eof", body: "data: {\"choices\":[{\"delta\":{\"content\":\"安装 GPU 版（以\"}}]}\n\n"},
+		{name: "partial_text_done_without_finish", body: "data: {\"choices\":[{\"delta\":{\"content\":\"安装 GPU 版（以\"}}]}\n\ndata: [DONE]\n\n"},
+		{name: "partial_tool_eof", body: "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"partial\",\"type\":\"function\",\"function\":{\"name\":\"SearchKnowledge\",\"arguments\":\"{}\"}}]}}]}\n\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var attempts int32
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				atomic.AddInt32(&attempts, 1)
+				w.Header().Set("Content-Type", "text/event-stream")
+				_, _ = io.WriteString(w, tc.body)
+				// A normal HTTP body EOF after a valid delta is not a completed
+				// model choice, even though the SDK reports it as io.EOF.
+			}))
+			defer srv.Close()
+			client := NewClient(config.LLMConfig{BaseURL: srv.URL + "/v1", APIKey: "test-key", Model: "test-model"})
+			var completed []OutboundCallResult
+			ctx := WithOutboundCallResultObserver(context.Background(), func(result OutboundCallResult) {
+				completed = append(completed, result)
+			})
+			var delivered []string
+			resp, err := client.Chat(ctx, ChatRequest{
+				Messages:    []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleUser, Content: "hello"}},
+				OnTextDelta: func(delta string) { delivered = append(delivered, delta) },
+			})
+			if !errors.Is(err, io.ErrUnexpectedEOF) || resp != nil {
+				t.Fatalf("response=%#v error=%v, want no response and unexpected EOF", resp, err)
+			}
+			if len(delivered) != 0 {
+				t.Fatalf("partial attempt leaked to caller: %q", delivered)
+			}
+			if got := atomic.LoadInt32(&attempts); got != maxChatAttempts || len(completed) != maxChatAttempts {
+				t.Fatalf("attempts=%d observations=%d, want bounded retry count %d", got, len(completed), maxChatAttempts)
+			}
+			for i, attempt := range completed {
+				if attempt.Outcome != OutboundAttemptError || attempt.ErrorClass != OutboundErrorStream || attempt.StopReason != "" || attempt.Retried != (i+1 < maxChatAttempts) {
+					t.Fatalf("incomplete attempt recorded as successful: %#v", attempt)
+				}
+			}
+		})
 	}
 }
 
@@ -492,7 +539,7 @@ func TestClientChatCapturesStreamingUsage(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"))
 		_, _ = w.Write([]byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":11,\"completion_tokens\":7,\"total_tokens\":18}}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
@@ -538,7 +585,7 @@ func TestClientChatSendsResponseFormatWhenRequested(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{}\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"{}\"},\"finish_reason\":\"stop\"}]}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()
@@ -581,7 +628,7 @@ func TestClientChatOmitsResponseFormatForToolRequestsByDefault(t *testing.T) {
 		}
 
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"finish_reason\":\"stop\"}]}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()
@@ -632,7 +679,7 @@ func TestClientChatFallsBackWhenStreamingUsageUnsupported(t *testing.T) {
 			t.Fatalf("fallback request should omit stream_options: %s", string(body))
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"fallback ok\"}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"fallback ok\"},\"finish_reason\":\"stop\"}]}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()
@@ -728,7 +775,7 @@ func TestOnTextDeltaCalledInOrderForNonEmptyDeltas(t *testing.T) {
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"你\"}}]}\n\n"))
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"好\"}}]}\n\n"))
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"\"}}]}\n\n"))
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"foo\",\"arguments\":\"{}\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"foo\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()
@@ -761,7 +808,7 @@ func TestOnTextDeltaNotCalledForToolCallOnlyChunks(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		// only a tool-call chunk, no text content
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"bar\",\"arguments\":\"{}\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"bar\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()
@@ -807,7 +854,7 @@ func TestClientChatFallsBackToAutoWhenForcedToolChoiceUnsupported(t *testing.T) 
 			t.Fatalf("fallback request must omit tool_choice (auto): %s", string(body))
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"SearchKnowledge\",\"arguments\":\"{}\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"SearchKnowledge\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()
@@ -843,7 +890,7 @@ func TestClientChatForcedToolChoiceHonoredIsNotDegraded(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(&attempts, 1)
 		w.Header().Set("Content-Type", "text/event-stream")
-		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"SearchKnowledge\",\"arguments\":\"{}\"}}]}}]}\n\n"))
+		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"type\":\"function\",\"function\":{\"name\":\"SearchKnowledge\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n"))
 		_, _ = w.Write([]byte("data: [DONE]\n\n"))
 	}))
 	defer srv.Close()

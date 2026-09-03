@@ -69,7 +69,7 @@ func confirmationArgText(args map[string]any, key string) string {
 		return ""
 	}
 	text := strings.TrimSpace(fmt.Sprint(value))
-	return guardrails.RedactOutputLeak(guardrails.RedactPII(text))
+	return guardrails.RedactCredentials(text)
 }
 
 func confirmationArgInt(args map[string]any, key string) int {

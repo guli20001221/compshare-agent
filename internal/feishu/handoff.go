@@ -61,7 +61,7 @@ func consumeCustomerSupportMarker(answer string) (string, bool) {
 }
 
 func customerSupportReply() string {
-	return "这个问题需要优云智算人工客服协助处理。请扫描下方二维码添加客服，并说明具体诉求、附上必要截图和发生时间。请勿在群内发送验证码、密码或证件信息。"
+	return "这个问题需要优云智算人工客服协助处理。请扫描下方二维码添加客服，并说明具体诉求、附上必要截图和发生时间。这仅提供联系入口，不代表已接通或受理。请勿在群内发送验证码、密码或证件信息。"
 }
 
 func customerSupportImageFallbackReply() string {

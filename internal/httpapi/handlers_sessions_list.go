@@ -83,7 +83,7 @@ func redactSessionTitle(title *string) *string {
 }
 
 // deriveSessionTitle builds a history-row title from the user's first message:
-// credential/PII-redacted by the exact user-message persistence boundary, whitespace
+// credential-redacted by the exact user-message persistence boundary, whitespace
 // collapsed to single spaces, and truncated to sessionTitleMaxRunes runes with
 // an ellipsis. Returns "" for empty/whitespace input, in which case the caller
 // skips the title write. It is called from the chat write path (prepareChat) on

@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/compshare-agent/internal/agentprotocol"
+	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/security"
 )
 
@@ -26,6 +27,9 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 		content = e.finalizeAgentLoopKnowledgeAnswer(ctx, userMsg, content)
 	} else {
 		e.groundingOutcomeThisTurn = groundingUnavailable
+		// Replayed citations remain private display markers even when this turn
+		// did not retrieve new evidence; stripping them does not verify a claim.
+		content = knowledge.StripCiteMarkers(content)
 	}
 	return e.finishResponseDelivery(userMsg, draft, content)
 }

@@ -79,14 +79,15 @@ type OutboundCallResultObserver func(OutboundCallResult)
 // protocol values this client recognizes. Trace is an aggregation boundary,
 // not a place to preserve a provider's arbitrary diagnostic string; new
 // non-empty spellings remain visible as "other" and still fail closed in
-// ChatResponse.OutputIncomplete. A successful response that omitted a native
-// finish_reason is recorded as "unspecified"; it is deliberately distinct
-// from a transport failure, whose attempt result carries no StopReason.
+// ChatResponse.OutputIncomplete. The "unspecified" mapping remains available
+// for legacy records and non-stream response producers; the streaming client
+// rejects a missing native reason before recording success. A failed attempt
+// carries no StopReason.
 func TraceFinishReason(reason string) string {
 	switch normalized := strings.ToLower(strings.TrimSpace(reason)); normalized {
 	// A standard JSON null decodes to the zero value of the SDK's string alias,
-	// so an empty value means this successful response supplied no terminal
-	// reason. A literal "null" is instead a non-standard, non-empty provider
+	// so an empty value means no terminal reason was supplied. A literal
+	// "null" is instead a non-standard, non-empty provider
 	// spelling and intentionally falls through to "other" below.
 	case "":
 		return "unspecified"

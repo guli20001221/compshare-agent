@@ -104,7 +104,8 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 
 // recentConversationPairs projects the existing canonical history at turn entry,
 // before the new user is appended. User-only interrupted turns are retained; raw
-// tool traffic is not. Only recorded complete exchanges can add tool evidence.
+// tool traffic is not. Recorded ended turns can add observed tool evidence even
+// when no assistant answer was delivered.
 // The existing rune budget, not a message count, bounds the result.
 func (e *Engine) recentConversationPairs() []ConversationPair {
 	if e == nil || len(e.messages) == 0 {
@@ -130,8 +131,7 @@ func conversationPairsFromMessages(messages []openai.ChatCompletionMessage) []Co
 				pendingPair = len(pairs) - 1
 			}
 		case openai.ChatMessageRoleAssistant:
-			if pendingPair < 0 ||
-				strings.TrimSpace(message.Content) == "" || len(message.ToolCalls) > 0 {
+			if pendingPair < 0 || len(message.ToolCalls) > 0 {
 				continue
 			}
 			pairs[pendingPair].Assistant = historyConversationText(message.Role, message.Content)
@@ -180,9 +180,6 @@ func (e *Engine) attachRecordedTranscripts(pairs []ConversationPair) []Conversat
 		unconsumed[key] = append(unconsumed[key], j)
 	}
 	for i := range pairs {
-		if pairs[i].Assistant == "" {
-			continue
-		}
 		key := recordedTurnKey(pairs[i].User, pairs[i].Assistant)
 		queue := unconsumed[key]
 		if len(queue) == 0 {
@@ -283,17 +280,24 @@ func conversationPairPlainRunes(pair ConversationPair) int {
 }
 
 // transcriptReplaysCompletePair reports whether Transcript can replace the
-// plain pair without losing semantic dialogue. Tool results can be abbreviated
+// prior turn without losing semantic dialogue. Tool results can be abbreviated
 // with an explicit marker, but the user question and final assistant answer are
-// the continuous conversation and must survive byte-for-byte.
+// the continuous conversation and must survive byte-for-byte. An interrupted
+// turn has no final answer and can replay its paired observations alone.
 func transcriptReplaysCompletePair(pair ConversationPair) bool {
-	if pair.Assistant == "" || len(pair.Transcript) < 2 {
+	if len(pair.Transcript) == 0 {
 		return false
 	}
 	first, last := pair.Transcript[0], pair.Transcript[len(pair.Transcript)-1]
-	return first.Role == openai.ChatMessageRoleUser && first.Content == pair.User &&
-		last.Role == openai.ChatMessageRoleAssistant && last.Content == pair.Assistant &&
-		len(last.ToolCalls) == 0
+	if first.Role != openai.ChatMessageRoleUser || first.Content != pair.User {
+		return false
+	}
+	if pair.Assistant == "" {
+		// An interrupted turn can finish at a tool result. Never import a stored
+		// final answer into a row whose transport did not commit an answer.
+		return last.Role != openai.ChatMessageRoleAssistant || len(last.ToolCalls) > 0
+	}
+	return last.Role == openai.ChatMessageRoleAssistant && last.Content == pair.Assistant && len(last.ToolCalls) == 0
 }
 
 // conversationTranscriptDetailRunes is the positive additional cost of

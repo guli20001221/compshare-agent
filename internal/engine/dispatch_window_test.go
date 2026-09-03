@@ -60,6 +60,22 @@ func TestRequestToolDescriptionUsesCapabilityBoundaryAndP2Template(t *testing.T)
 	}
 }
 
+func TestRequestReinstallDescriptionExcludesSoftwarePackageReinstallation(t *testing.T) {
+	var description string
+	for _, tool := range centralAgentToolWindow(true, false) {
+		if tool.Function != nil && tool.Function.Name == "RequestReinstallInstance" {
+			description = tool.Function.Description
+			break
+		}
+	}
+	require.NotEmpty(t, description)
+	require.Contains(t, description, "重装实例操作系统或替换整个运行镜像")
+	require.Contains(t, description, "不用于重装软件包或依赖")
+	require.Contains(t, description, "具体影响见确认卡")
+	require.NotContains(t, centralAgentToolNames(false, false), "RequestReinstallInstance",
+		"clarifying the operation boundary must not expand write-tool availability")
+}
+
 func TestRequestToolDescriptionsDoNotRepeatSharedPromptOrExecutionChains(t *testing.T) {
 	for _, tool := range centralAgentToolWindow(true, false) {
 		if tool.Function == nil || !strings.HasPrefix(tool.Function.Name, "Request") {
@@ -103,8 +119,8 @@ func TestReinstallProposalDescribesWholeInstanceNotGuestPackages(t *testing.T) {
 			break
 		}
 	}
-	require.Contains(t, description, "替换整台实例的操作系统或容器镜像")
-	require.Contains(t, description, "不是重装实例内的软件包、运行环境或应用")
+	require.Contains(t, description, "重装实例操作系统或替换整个运行镜像")
+	require.Contains(t, description, "不用于重装软件包或依赖")
 }
 
 func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {

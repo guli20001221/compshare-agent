@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -85,10 +86,9 @@ func TestChatCompletionCountsRealOutboundModelRequests(t *testing.T) {
 	assert.Equal(t, "stop", secondAttempt.FinishReason)
 }
 
-// A provider may complete a valid streaming response without sending a native
-// finish_reason. That is not a failed attempt: record it explicitly so trace
-// readers can distinguish it from calls that never reached a response at all.
-func TestChatCompletionRecordsUnspecifiedProviderFinishReason(t *testing.T) {
+// [DONE] without a choice finish_reason cannot attest that the streamed answer
+// is complete. The attempt must remain an error, not success/unspecified.
+func TestChatCompletionRejectsUnspecifiedProviderFinishReason(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"content\":\"正常回答\"}}]}\n\n"))
@@ -104,15 +104,16 @@ func TestChatCompletionRecordsUnspecifiedProviderFinishReason(t *testing.T) {
 	})
 
 	_, err := eng.Chat(context.Background(), "介绍一下平台", noopStep)
-	require.NoError(t, err)
+	require.ErrorIs(t, err, io.ErrUnexpectedEOF)
 	require.Len(t, completions, 1)
-	require.Len(t, completions[0].ModelAttempts, 1)
-	attempt := completions[0].ModelAttempts[0]
-	assert.Equal(t, "model-1", attempt.ID)
-	assert.Equal(t, "openai_compatible", attempt.Provider)
-	assert.Equal(t, "test-model", attempt.Model)
-	assert.Equal(t, "success", attempt.Outcome)
-	assert.Equal(t, "unspecified", attempt.FinishReason)
+	require.Len(t, completions[0].ModelAttempts, 2)
+	for _, attempt := range completions[0].ModelAttempts {
+		assert.Equal(t, "openai_compatible", attempt.Provider)
+		assert.Equal(t, "test-model", attempt.Model)
+		assert.Equal(t, "error", attempt.Outcome)
+		assert.Equal(t, llm.OutboundErrorStream, attempt.ErrorClass)
+		assert.Empty(t, attempt.FinishReason)
+	}
 }
 
 func TestChatCompletionMarksTerminalRateLimit(t *testing.T) {

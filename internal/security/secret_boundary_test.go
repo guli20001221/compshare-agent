@@ -101,6 +101,26 @@ func TestRedactForLLM_RedactsOperationalTokensInStringValues(t *testing.T) {
 	assert.Equal(t, "http://1.2.3.4:8888/lab?foo=bar&token=[REDACTED]", nested["URL"])
 }
 
+func TestConversationTextPreservesOrdinaryInformationAndRedactsOnlyCredentials(t *testing.T) {
+	const ordinary = "手机 13800138000 邮箱 user@example.com 项目 12345678-1234-1234-1234-1234567890ab 身份证 110101199003078888 银行卡 4111111111111111"
+	secret := "conversation-canary-" + "0123456789"
+	for _, tc := range []struct {
+		name   string
+		redact func(string) string
+	}{
+		{"user", RedactUserConversationText},
+		{"assistant", RedactAssistantConversationText},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, ordinary, tc.redact(ordinary))
+			got := tc.redact(ordinary + "\nAuthorization: Bearer " + secret)
+			assert.Contains(t, got, ordinary)
+			assert.NotContains(t, got, secret)
+			assert.Equal(t, got, tc.redact(got))
+		})
+	}
+}
+
 func TestRedactAssistantConversationTextMarksRedactedCommandsAsNonReusable(t *testing.T) {
 	const signedURL = "https://civitai.example/download?Authorization=signed-token-abcdefghijklmnopqrst"
 	raw := "直接复制执行：curl -L '" + signedURL + "' -o model.safetensors"

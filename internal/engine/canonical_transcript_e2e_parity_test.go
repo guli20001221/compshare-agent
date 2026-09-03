@@ -237,9 +237,9 @@ func TestEndToEndHotColdParityAcrossTransforms(t *testing.T) {
 	}
 }
 
-// HTTP persists user and assistant rows through different redaction boundaries.
-// The canonical transcript is the model's history, so a cold reconstruction must
-// still attach it when either display row changed at that boundary. Otherwise the
+// HTTP persists user and assistant rows through role-specific credential boundaries.
+// Ordinary information remains intact; a cold reconstruction must still attach
+// the canonical transcript when either display row changed at that boundary. Otherwise the
 // session silently degrades from tool-backed history to a plain text pair after a
 // restart even though the transcript itself is present and valid.
 func TestHotAndColdReplayAcrossPersistenceRedactions(t *testing.T) {
@@ -250,10 +250,9 @@ func TestHotAndColdReplayAcrossPersistenceRedactions(t *testing.T) {
 		changedRole string
 	}{
 		{
-			name:        "user PII",
-			question:    "请查 alice@example.com 和 13800138000 对应的实例",
-			answer:      "已查到实例状态正常。",
-			changedRole: openai.ChatMessageRoleUser,
+			name:     "user ordinary information",
+			question: "请查 alice@example.com 和 13800138000 对应的实例",
+			answer:   "已查到实例状态正常。",
 		},
 		{
 			name:        "user operational token",
@@ -262,10 +261,9 @@ func TestHotAndColdReplayAcrossPersistenceRedactions(t *testing.T) {
 			changedRole: openai.ChatMessageRoleUser,
 		},
 		{
-			name:        "assistant UUID",
-			question:    "项目状态怎么样？",
-			answer:      "关联项目 12345678-1234-1234-1234-1234567890ab 当前正常。",
-			changedRole: openai.ChatMessageRoleAssistant,
+			name:     "assistant project UUID",
+			question: "项目状态怎么样？",
+			answer:   "关联项目 12345678-1234-1234-1234-1234567890ab 当前正常。",
 		},
 		{
 			name:        "assistant credential placeholder",
@@ -291,10 +289,16 @@ func TestHotAndColdReplayAcrossPersistenceRedactions(t *testing.T) {
 
 			persistedQuestion := security.RedactUserConversationText(tc.question)
 			persistedAnswer := security.RedactAssistantConversationText(tc.answer)
-			if tc.changedRole == openai.ChatMessageRoleUser {
+			switch tc.changedRole {
+			case openai.ChatMessageRoleUser:
 				require.NotEqual(t, tc.question, persistedQuestion, "precondition: the HTTP user persistence boundary changed this endpoint")
-			} else {
+				require.Equal(t, tc.answer, persistedAnswer)
+			case openai.ChatMessageRoleAssistant:
 				require.NotEqual(t, tc.answer, persistedAnswer, "precondition: the HTTP assistant persistence boundary changed this endpoint")
+				require.Equal(t, tc.question, persistedQuestion)
+			default:
+				require.Equal(t, tc.question, persistedQuestion, "ordinary user information must remain intact")
+				require.Equal(t, tc.answer, persistedAnswer, "ordinary assistant information must remain intact")
 			}
 
 			cold := &Engine{}
@@ -309,15 +313,14 @@ func TestHotAndColdReplayAcrossPersistenceRedactions(t *testing.T) {
 				"the persistence redaction boundary must not make a restart change model history")
 			requireTranscriptWasReplayed(t, coldAssembled)
 			replayed := renderReplayedRegion(t, hotAssembled)
+			require.Contains(t, replayed, persistedQuestion)
+			require.Contains(t, replayed, persistedAnswer)
 			if tc.changedRole == openai.ChatMessageRoleUser {
-				require.Contains(t, replayed, persistedQuestion,
-					"the hot transcript must use the same persisted-safe user form")
 				require.NotContains(t, replayed, tc.question)
-			} else {
-				require.Contains(t, replayed, persistedAnswer,
-					"the hot transcript must use the same persisted-safe assistant form")
+			} else if tc.changedRole == openai.ChatMessageRoleAssistant {
 				require.NotContains(t, replayed, tc.answer)
 			}
+			require.NotContains(t, replayed, "AKIAIOSFODNN7EXAMPLEbCDEF", "access credentials must not return through replay")
 		})
 	}
 }

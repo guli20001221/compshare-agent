@@ -215,24 +215,6 @@ func TestRecentPriorUserTextsExcludesScreenshotOCRAndWrappedCurrentTurn(t *testi
 
 	prior := eng.recentPriorUserTexts(4)
 	require.Equal(t, []string{"上一轮请看截图"}, prior)
-	require.Error(t, capability.ValidateCurrentTurnGrounding(
-		capability.ImageListRequest{
-			Source: platform.ImageSourceCommunity,
-			Query:  "LiveTalking",
-			Mode:   platform.ListModeFiltered,
-		},
-		current,
-		prior...,
-	))
-	require.NoError(t, capability.ValidateCurrentTurnGrounding(
-		capability.ImageListRequest{
-			Source: platform.ImageSourceCommunity,
-			Query:  "数字人镜像",
-			Mode:   platform.ListModeFiltered,
-		},
-		current,
-		prior...,
-	))
 }
 
 func TestConcreteReadReturnsStructuredMissingFieldsBeforeHandler(t *testing.T) {
@@ -259,6 +241,7 @@ func TestRejectedReadArgumentsAskTheModelToCorrectItsOwnCall(t *testing.T) {
 		action       string
 		arguments    string
 		sourceStatus string
+		reasonParts  []string
 	}{
 		{
 			name:         "schema validation",
@@ -266,6 +249,7 @@ func TestRejectedReadArgumentsAskTheModelToCorrectItsOwnCall(t *testing.T) {
 			action:       capability.ReadToolName(intent.IntentInstanceAccess),
 			arguments:    `{"targets":[{"type":"uhost_id_user_input","value":"uhost-diag-002","source":"user_text"}],"access_type":"ssh","evil":"injection"}`,
 			sourceStatus: "read_argument_validation",
+			reasonParts:  []string{"evil"},
 		},
 		{
 			name:         "invented grounding filter",
@@ -273,6 +257,7 @@ func TestRejectedReadArgumentsAskTheModelToCorrectItsOwnCall(t *testing.T) {
 			action:       capability.ReadToolName(intent.IntentMonitorHistory),
 			arguments:    `{"time_window":{"type":"absolute","start":"2026-07-18 00:00","end":"2026-07-19 00:00","source_span":"昨天"}}`,
 			sourceStatus: "read_argument_grounding",
+			reasonParts:  []string{"time_window", "absolute", "preset/relative"},
 		},
 		{
 			name:         "catalog zone without same-turn catalog evidence",
@@ -280,6 +265,15 @@ func TestRejectedReadArgumentsAskTheModelToCorrectItsOwnCall(t *testing.T) {
 			action:       capability.ReadToolName(intent.IntentStockAvailability),
 			arguments:    `{"gpu_type":"H20","zone_mentions":["cn-wlcb-01"],"inventory_pool":"Unspecified"}`,
 			sourceStatus: "read_argument_grounding",
+			reasonParts:  []string{"zone_mentions", "cn-wlcb-01", "字面子串"},
+		},
+		{
+			name:         "image list removed semantic_queries field",
+			lastUser:     "推荐数字人镜像",
+			action:       capability.ReadToolName(intent.IntentImageList),
+			arguments:    `{"source":"community","query":"数字人","semantic_queries":["LiveTalking"]}`,
+			sourceStatus: "read_argument_validation",
+			reasonParts:  []string{"semantic_queries"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -296,6 +290,12 @@ func TestRejectedReadArgumentsAskTheModelToCorrectItsOwnCall(t *testing.T) {
 				"the user did not need to add anything; the model owns this repair")
 			require.False(t, result.Retryable)
 			require.Equal(t, tc.sourceStatus, result.Meta.SourceStatus)
+			for _, part := range tc.reasonParts {
+				require.Contains(t, result.Error.Message, part,
+					"the model-visible observation must preserve the specific local validation reason")
+			}
+			require.NotContains(t, result.Error.Message, "工具参数包含用户本轮或近期对话未明确表达",
+				"a schema or field conflict must not be mislabeled as an invented user condition")
 			require.Empty(t, executor.calls, "a rejected call must not reach an upstream read")
 		})
 	}

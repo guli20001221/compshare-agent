@@ -27,58 +27,13 @@ func (e *InstanceIDGroundingMismatch) Error() string {
 
 // ValidateCurrentTurnGrounding verifies the small subset of read arguments that
 // must be grounded in user-authored text. Mutating-adjacent facts such as zones
-// and time windows stay current-turn-only. A read-only image catalog query may
-// also reuse a literal phrase from recent user turns, which preserves normal
-// follow-ups without trusting assistant prose or tool output. The typed handler
-// still never receives chat text: this runs at the engine boundary.
+// and time windows stay current-turn-only. The typed handler never receives
+// chat text: this runs at the engine boundary.
 func ValidateCurrentTurnGrounding(request platform.ReadRequest, currentUserText string, priorUserTexts ...string) error {
 	if err := validateUserLiteralInstanceIDs(targetRefsForGrounding(request), currentUserText, priorUserTexts...); err != nil {
 		return err
 	}
 	switch req := request.(type) {
-	case ImageListRequest:
-		query := strings.TrimSpace(req.Query)
-		if query != "" {
-			grounded := platform.ContainsLiteralSpan(currentUserText, query)
-			for _, prior := range priorUserTexts {
-				grounded = grounded || platform.ContainsLiteralSpan(prior, query)
-			}
-			if !grounded {
-				return fmt.Errorf("query: %q 不是本轮或近期用户原文的字面子串", query)
-			}
-		}
-		if len(req.SemanticQueries) > 3 {
-			return fmt.Errorf("semantic_queries: 最多提供 3 个语义扩展查询词")
-		}
-		if len(req.SemanticQueries) > 0 {
-			// Community and platform both expand; custom and shared do not.
-			// The two that do are the two catalogs a recommendation draws from,
-			// and platform is the one that NEEDS it: its images are named after
-			// the runtime (vLLM / SGLang / Ollama), so a 用途 word matches none of
-			// them and the Agent could previously only answer from community.
-			// Custom and shared stay out because their contents are the tenant's
-			// own artifacts — expanding a user's words into guessed technology
-			// terms there surfaces images by a name the user never used.
-			//
-			// An empty source IS platform: imageListHandle routes it there via its
-			// default branch, so rejecting "" would refuse expansion on exactly the
-			// request shape a model that omits the optional field produces.
-			if req.Source != platform.ImageSourceCommunity &&
-				req.Source != platform.ImageSourcePlatform && req.Source != "" {
-				return fmt.Errorf("semantic_queries: 仅社区或平台镜像目录支持语义扩展")
-			}
-			if query == "" {
-				return fmt.Errorf("semantic_queries: 必须同时保留来自用户原话的 query，语义扩展不能替代原话查询")
-			}
-			if req.Mode == platform.ListModeAll {
-				return fmt.Errorf("semantic_queries: mode=all 时不要提供筛选查询")
-			}
-			for _, expansion := range req.SemanticQueries {
-				if strings.TrimSpace(expansion) == "" {
-					return fmt.Errorf("semantic_queries: 查询词不能为空")
-				}
-			}
-		}
 	case StockAvailabilityRequest:
 		for _, mention := range req.ZoneMentions {
 			if err := requireLiteralSpan(currentUserText, mention, "zone_mentions"); err != nil {
