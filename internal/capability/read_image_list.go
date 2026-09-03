@@ -76,7 +76,7 @@ func imageListReadSpec() ReadCapabilitySpec[ImageListRequest, ImageListResponse]
 		Params: objectParam(map[string]schemaNode{
 			"source": enumParam(platform.ImageSourceValues()...),
 			"query": stringParam().described(
-				"搜索字符串，可根据用户需求组织镜像名、项目名或技术关键词，留空浏览目录。平台按名称搜索，社区按名称或作者模糊搜索，自制和共享在账户目录中筛选。",
+				"镜像名、项目名或技术名称的连续片段，留空浏览目录。平台按名称匹配，社区按名称或作者匹配；上游将整个字符串作为片段，不拆词或进行语义扩展。自制和共享在账户目录中筛选。",
 			),
 		}),
 		Handle: imageListHandle,
