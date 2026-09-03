@@ -72,11 +72,11 @@ type ImageListResponse struct {
 func imageListReadSpec() ReadCapabilitySpec[ImageListRequest, ImageListResponse] {
 	return ReadCapabilitySpec[ImageListRequest, ImageListResponse]{
 		Label:       imageListCapabilityLabel,
-		Description: "查询平台、自制、社区或共享镜像的实时目录，用于浏览、推荐和创建前选型。部署或运行具名模型/应用时先查社区镜像；有精确候选就据此回答，没有则如实说明。目录不能替代登录、默认配置、使用步骤或故障文档，这些仍查知识库。源码、权重或 adapter 问题查模型仓库或知识库。",
+		Description: "查询平台、自制、社区或共享镜像的实时目录，用于浏览、推荐和创建前选型。根据用户用途选择搜索词，具名模型/应用先查社区镜像。未命中时换更短的核心词、相关项目名或留空浏览，再根据真实候选推荐。目录不能替代登录、默认配置、使用步骤或故障文档，这些仍查知识库。源码、权重或 adapter 问题查模型仓库或知识库。",
 		Params: objectParam(map[string]schemaNode{
 			"source": enumParam(platform.ImageSourceValues()...),
 			"query": stringParam().described(
-				"镜像名、项目名或技术名称的连续片段，留空浏览目录。平台按名称匹配，社区按名称或作者匹配；上游将整个字符串作为片段，不拆词或进行语义扩展。自制和共享在账户目录中筛选。",
+				"选择用途对应的一个核心关键词或项目名，不要拼接多个备选词；留空浏览目录。平台按名称匹配，社区按名称或作者匹配；上游将整个字符串作为连续片段，不拆词或进行语义扩展。自制和共享在账户目录中筛选。",
 			),
 		}),
 		Handle: imageListHandle,
