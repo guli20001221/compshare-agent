@@ -1,9 +1,16 @@
-"""Local fake-SFTP tests for bounded remote application-tree text search."""
+"""Guest-worker semantics and bounded SSH-frame tests; no network or model calls."""
+import io
+import json
 import os
 import shutil
-import stat
+import subprocess
+import sys
 import tempfile
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
+import guest_search
 import remote_search
 
 FAILS = []
@@ -23,31 +30,77 @@ class _Attrs:
         self.st_size = value.st_size
 
 
-class _SFTP:
+class _LocalFiles:
     @staticmethod
     def _local(path):
         return os.path.join(root, path.lstrip("/").replace("/", os.sep))
 
-    def listdir_attr(self, path):
+    def entries(self, path):
         local = self._local(path)
-        return [_Attrs(os.path.join(local, name), name) for name in os.listdir(local)]
+        return sorted((name, _Attrs(os.path.join(local, name), name)) for name in os.listdir(local))
 
     def lstat(self, path):
         return _Attrs(self._local(path), os.path.basename(path))
 
-    def file(self, path, mode):
-        return open(self._local(path), mode)  # noqa: PTH123 — local test double only
+    def read(self, path, limit):
+        with open(self._local(path), "rb") as handle:
+            return handle.read(limit)
+
+
+class _Channel:
+    def __init__(self, filesystem=None, payload=None, exit_code=0, stalled=False):
+        self.input = io.StringIO()
+        self.output = b""
+        self.filesystem = filesystem or _LocalFiles()
+        self.payload = payload
+        self.exit_code = exit_code
+        self.stalled = stalled
+        self.closed = False
+
+    def shutdown_write(self):
+        request = json.loads(self.input.getvalue())
+        self.output = (self.payload if self.payload is not None else
+                       json.dumps(guest_search.run(request, self.filesystem), ensure_ascii=True).encode())
+
+    def recv_ready(self):
+        return bool(self.output) and not self.stalled
+
+    def recv(self, count):
+        data, self.output = self.output[:count], self.output[count:]
+        return data
+
+    def recv_stderr_ready(self):
+        return False
+
+    def exit_status_ready(self):
+        return not self.stalled
+
+    def recv_exit_status(self):
+        return self.exit_code
 
     def close(self):
-        pass
+        self.closed = True
+
+
+CLIENTS = []
 
 
 class _Client:
+    def __init__(self, channel=None):
+        self.channel = channel or _Channel()
+        self.commands = []
+        self.closed = False
+        CLIENTS.append(self)
+
     def open_sftp(self):
-        return _SFTP()
+        raise AssertionError("tree traversal must execute in Guest, never use per-file SFTP")
+
+    def exec_command(self, command, timeout):
+        self.commands.append((command, timeout))
+        return self.channel.input, SimpleNamespace(channel=self.channel), None
 
     def close(self):
-        pass
+        self.closed = True
 
 
 def _open(_conn):
@@ -61,7 +114,7 @@ def _unexpected_open(_conn):
 root = tempfile.mkdtemp(prefix="sshops-remote-search-test-")
 try:
     app_root = "/root/LiveTalking"
-    local_app = _SFTP._local(app_root)
+    local_app = _LocalFiles._local(app_root)
     os.makedirs(os.path.join(local_app, "static", "js"), exist_ok=True)
     os.makedirs(os.path.join(local_app, ".ssh"), exist_ok=True)
     fake_key = "sk-test-" + ("m" * 24)
@@ -94,6 +147,11 @@ try:
     check("result-carries-bounded-search-accounting",
           result["files_scanned"] == 1 and result["bytes_scanned"] > 0
           and result["truncated"] is False)
+    check("one-ssh-exec-and-no-sftp-per-search",
+          len(CLIENTS[-1].commands) == 1 and CLIENTS[-1].closed and CLIENTS[-1].channel.closed)
+    check("search-source-uses-python-stdlib-not-preinstalled-rg",
+          "exec python3 -I -B -c" in CLIENTS[-1].commands[0][0]
+          and "exec python -I -B -c" in CLIENTS[-1].commands[0][0])
 
     all_source = remote_search.search({}, {
         "root": app_root, "query": "iceServers", "file_glob": "*.py",
@@ -171,7 +229,110 @@ try:
           and [item["path"] for item in depth_limited["matches"]] == [app_root + "/app.py"])
     check("find-paths-validates-before-connect",
           remote_search.find_paths({}, {"root": "/root", "name_glob": "*"},
-                                   opener=_unexpected_open)["error_class"] == "root_not_allowed")
+                                  opener=_unexpected_open)["error_class"] == "root_not_allowed")
+
+    whole_line_secret = "bound-secret-" + "s" * 180
+    with open(os.path.join(local_app, "large.log"), "w", encoding="utf-8") as handle:
+        for index in range(40):
+            handle.write("large-marker " + str(index) + " " + "x" * 800 + "\n")
+        handle.write("boundary-marker " + "z" * 990 + whole_line_secret + "\n")
+        handle.write("casefold-marker Straße\n")
+    large = remote_search.search({}, {"root": app_root, "query": "large-marker",
+                                     "file_glob": "large.log"}, opener=_open)
+    check("valid-json-over-shell-16k-limit-is-not-clipped",
+          large["ok"] and len(large["matches"]) == 40 and len(json.dumps(large)) > 16000
+          and large["matches"][-1]["line"].startswith("large-marker 39 "))
+    boundary = remote_search.search({}, {"root": app_root, "query": "boundary-marker",
+                                        "file_glob": "large.log"},
+                                    secrets=(whole_line_secret,), opener=_open)
+    check("redaction-precedes-line-clipping-on-the-complete-match",
+          boundary["ok"] and whole_line_secret[:20] not in repr(boundary)
+          and len(boundary["matches"][0]["line"].encode()) <= 1024)
+    folded = remote_search.search({}, {"root": app_root, "query": "STRASSE", "ignore_case": True,
+                                      "file_glob": "large.log"}, opener=_open)
+    check("unicode-casefold-semantics-preserved", folded["ok"] and len(folded["matches"]) == 1)
+    with open(os.path.join(local_app, "binary.dat"), "wb") as handle:
+        handle.write(b"\xff\xfe\x80")
+    binary = remote_search.search({}, {"root": app_root, "query": "marker", "file_glob": "binary.dat"},
+                                  opener=_open)
+    check("invalid-utf8-is-skipped-not-a-search-failure",
+          binary["ok"] and binary["matches"] == [] and binary["skipped"]["not_utf8"] == 1)
+    with patch.object(remote_search, "_MAX_DIRECTORIES", 1):
+        bounded = remote_search.search({}, {"root": app_root, "query": "absent"}, opener=_open)
+        bounded_find = remote_search.find_paths({}, {"root": app_root, "name_glob": "absent"}, opener=_open)
+    check("both-tree-tools-keep-directory-bounds",
+          bounded["truncated"] and bounded["directories_scanned"] == 1
+          and bounded_find["truncated"] and bounded_find["directories_scanned"] == 1)
+    with patch.object(remote_search, "_MAX_FILES", 1):
+        bounded = remote_search.search({}, {"root": app_root, "query": "absent"}, opener=_open)
+    check("content-search-keeps-file-count-bound", bounded["truncated"] and bounded["files_seen"] == 1)
+
+    policy = remote_search._worker_request("search", {"root": app_root})["policy"]
+    candidates = [app_root, "/", "/root/.env", "/root/.ENV.local", "/root/x.pem",
+                  "/root/a/../b", "/root/a\x00b", "/root/" + "x" * 513, "/root/custom_nodes/x.py"]
+    candidates += list(remote_search.remote_text._DENIED_EXACT)
+    candidates += [prefix + "child" for prefix in remote_search.remote_text._DENIED_PREFIXES]
+    candidates += [app_root + "/" + name + "/child" for name in remote_search.remote_text._DENIED_COMPONENTS]
+    candidates += [app_root + "/" + name for name in remote_search.remote_text._DENIED_BASENAMES]
+    check("worker-descendant-policy-matches-shared-remote-text-policy",
+          all(guest_search.path_allowed(path, policy) == remote_search.remote_text._valid_path(path)
+              for path in candidates))
+
+    missing = remote_search.search({}, {"root": app_root + "/missing", "query": "x"}, opener=_open)
+    not_directory = remote_search.find_paths({}, {"root": app_root + "/app.py", "name_glob": "*"}, opener=_open)
+    check("observed-missing-and-wrong-root-types-remain-distinct",
+          missing["error_class"] == "root_not_found"
+          and not_directory["error_class"] == "root_not_directory")
+    class _DeniedFiles(_LocalFiles):
+        def entries(self, path):
+            raise PermissionError("not exposed to the model")
+    denied = remote_search.search({}, {"root": app_root, "query": "x"},
+                                  opener=lambda conn: (_Client(_Channel(filesystem=_DeniedFiles())), None))
+    check("guest-permission-error-is-not-empty-success", denied["error_class"] == "permission_denied")
+    connection = remote_search.search({}, {"root": app_root, "query": "x"},
+                                      opener=lambda conn: (None, {"error": "connect_failed", "detail": "TimeoutError"}))
+    check("ssh-error-retains-concrete-class", connection["error_class"] == "connect_failed"
+          and connection["detail"] == "TimeoutError")
+    for payload, exit_code, expected in [(b"not JSON", 0, "search_failed"),
+                                          (b"{}", 127, "search_failed"),
+                                          (b"", 124, "exec_timeout")]:
+        failed = remote_search.search({}, {"root": app_root, "query": "x"},
+                                      opener=lambda conn: (_Client(_Channel(payload=payload, exit_code=exit_code)), None))
+        check("worker-error-%s-is-not-a-negative-finding" % exit_code,
+              not failed["ok"] and failed["error_class"] == expected
+              and CLIENTS[-1].closed and CLIENTS[-1].channel.closed)
+    with patch.object(remote_search, "_MAX_WIRE_BYTES", 100):
+        oversize = remote_search.search({}, {"root": app_root, "query": "x"},
+                                        opener=lambda conn: (_Client(_Channel(payload=b"x" * 101)), None))
+    check("structured-output-overflow-fails-without-returning-broken-json",
+          not oversize["ok"] and oversize["error_class"] == "search_failed")
+    with patch.object(remote_search.time, "monotonic", side_effect=[0, 31]):
+        timed_out = remote_search.search({}, {"root": app_root, "query": "x"},
+                                         opener=lambda conn: (_Client(_Channel(stalled=True)), None))
+    check("stalled-search-has-time-bound-and-closes-channel", timed_out["error_class"] == "exec_timeout"
+          and CLIENTS[-1].closed and CLIENTS[-1].channel.closed)
+
+    # Exercise the exact standalone worker's stdin/stdout entrypoint, not only imported functions.
+    request = remote_search._worker_request("search", {"root": "/sshops-nonexistent-worker-probe",
+        "query": "x", "ignore_case": False, "file_glob": "*", "max_matches": 1})
+    worker = subprocess.run([sys.executable, "-I", "-B", "-c",
+        Path(guest_search.__file__).read_text(encoding="utf-8")],
+        input=json.dumps(request), capture_output=True, text=True, timeout=10)
+    check("standalone-worker-uses-stdin-without-project-imports",
+          worker.returncode == 0 and json.loads(worker.stdout)["error_class"] == "root_not_found")
+    if os.name == "posix":
+        spec, error = remote_search._validated_args({"root": local_app, "query": "a.*b",
+                                                   "file_glob": "*.js"})
+        check("native-posix-fixture-root-is-valid", error is None)
+        native = subprocess.run(["bash", "-c", remote_search.ssh_transport._bounded(
+            remote_search._worker_command())],
+            input=json.dumps(remote_search._worker_request("search", spec)),
+            capture_output=True, text=True, timeout=35)
+        native_result = json.loads(native.stdout) if native.returncode == 0 else {}
+        check("exact-ssh-command-runs-real-local-filesystem-in-guest-process",
+              native.returncode == 0 and native_result.get("ok")
+              and len(native_result["matches"]) == 1
+              and native_result["matches"][0]["line_number"] == 2)
 
     link_path = os.path.join(local_app, "linked")
     try:

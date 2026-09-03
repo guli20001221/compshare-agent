@@ -100,7 +100,7 @@ func TestRehydrateHistorySkipsEmptyContent(t *testing.T) {
 	assert.Equal(t, openai.ChatMessageRoleUser, eng.messages[1].Role)
 	assert.Equal(t, "valid", eng.messages[1].Content)
 	assert.Empty(t, eng.messages[2].Content)
-	require.Equal(t, []ConversationPair{{User: "valid"}}, eng.recentCompleteConversationPairs())
+	require.Equal(t, []ConversationPair{{User: "valid"}}, eng.recentConversationPairs())
 }
 
 func TestRehydrateHistorySkipsNonUserNonAssistantRoles(t *testing.T) {

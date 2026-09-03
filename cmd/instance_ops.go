@@ -112,21 +112,13 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 		})
 	}
 
-	// The engine has already verified the deployment write grant and the user-selected target. A new
-	// harness consumes the bit below and does not ask for command-level cards. During a rolling/mixed deploy,
-	// an old harness may still emit @@CONFIRM; answer those internally so the same authorized run does
-	// not regress to repeated human intervention. Without the trusted bit this stays nil and Service
-	// fails closed before a write-enabled harness can start.
-	var onConfirm sshops.ConfirmFunc
-	if req.RepairScopeAuthorized {
-		onConfirm = func(sshops.ConfirmRequest) sshops.ConfirmDecision {
-			return sshops.ConfirmDecision{Approved: true}
-		}
+	// Entry already requires the deployment grant and a user-selected target. The private transport
+	// callback grants the same scoped capability and answers older harnesses without a user card.
+	onConfirm := func(sshops.ConfirmRequest) sshops.ConfirmDecision {
+		return sshops.ConfirmDecision{Approved: true}
 	}
-	modelContext := req.Context
-	modelContext.RepairScopeAuthorized = req.RepairScopeAuthorized
 
-	res, err := r.diag.DiagnoseWithContext(ctx, r.describer, owner, req.InstanceID, req.Task, modelContext, onStep, onConfirm)
+	res, err := r.diag.DiagnoseWithContext(ctx, r.describer, owner, req.InstanceID, req.Task, req.Context, onStep, onConfirm)
 	if err != nil {
 		// Translate the no-SSH-target sentinel into the engine's transport-agnostic
 		// mirror so the engine gives an honest, non-retryable refusal (e.g. a Windows
@@ -169,7 +161,10 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 		return engine.InstanceOpsVerdict{}, err
 	}
 	ran, refused := tallySteps(res.Steps)
-	return engine.InstanceOpsVerdict{Text: res.Output, Ran: ran, Refused: refused}, nil
+	return engine.InstanceOpsVerdict{
+		Text: res.Output, Ran: ran, Refused: refused,
+		AgentFailed: res.AgentFailed, ErrClass: res.ErrClass,
+	}, nil
 }
 
 // tallySteps counts the executed vs refused commands for the terminal summary line. Failed commands

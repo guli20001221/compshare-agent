@@ -30,6 +30,7 @@ const knowledgeQueryPlannerPrompt = `你是知识检索问题整理器。仅输�
 要求：
 - 当前问题优先；用户已经换话题时不要继承旧主题。
 - 消解“它、这个、那关机后、浏览器里呢”等指代，保留用户已明确的产品、资源形态（Pod/虚机）、运行形态（平台托管/Guest 自建）、区域、计费/存储条件、作用域/所有者（控制面/Guest/应用/管理器）和限制条件。
+- conversation 按实际角色保留对话和工具观察；从与当前对象对应的工具结果保留已核实条件，不把助手过去的回答或工具调用参数当成已核实事实，不添加对话中没有的条件。
 - 历史助手回答只用于理解指代，agent_proposed_query 只是检索草稿，两者都不能单独作为新增事实的依据；无法确定的条件保持开放，不补猜。
 - search_queries 为 1 到 2 条；简单问题只写 1 条，确有多个独立方面时才拆分。
 - 至少一条写成完整书面问句：根据用户明确表达补全必要的主语、对象和指代，沿用用户原词并整理语序；不要预设文档术语或添加未明确的产品、计费类型、部署形态。
@@ -41,9 +42,9 @@ type knowledgeQueryPlan struct {
 }
 
 type knowledgeQueryPlanInput struct {
-	Conversation  []ConversationPair `json:"conversation"`
-	Current       string             `json:"current_question"`
-	ProposedQuery string             `json:"agent_proposed_query"`
+	Conversation  []openai.ChatCompletionMessage `json:"conversation"`
+	Current       string                         `json:"current_question"`
+	ProposedQuery string                         `json:"agent_proposed_query"`
 }
 
 // planKnowledgeQuery adds one bounded contextualization call for each turn's first
@@ -57,7 +58,7 @@ func (e *Engine) planKnowledgeQuery(ctx context.Context, proposed string) knowle
 		return fallback
 	}
 	input := knowledgeQueryPlanInput{
-		Conversation:  append([]ConversationPair(nil), e.turnContextViewThisTurn.RecentConversation...),
+		Conversation:  e.knowledgeQueryConversation(),
 		Current:       strings.TrimSpace(e.turnContextViewThisTurn.CurrentQuestion),
 		ProposedQuery: strings.TrimSpace(proposed),
 	}
@@ -99,6 +100,42 @@ func (e *Engine) planKnowledgeQuery(ctx context.Context, proposed string) knowle
 	// no extra retrieval against maxRetrievalQueriesPerTurn.
 	plan := validateKnowledgeQueryPlan(planned, fallback, maxKnowledgePlanQueries-1)
 	return withAgentQueryAnchor(plan, strings.TrimSpace(proposed))
+}
+
+// knowledgeQueryConversation uses the same role-aware history entrance as the
+// central agent. Serializing ConversationPair directly duplicated the prose
+// endpoints around a nested Transcript, and omitted every observation made in
+// the current turn. A query must not lose a condition just because the tool read
+// happened this turn or the assistant did not repeat it in its final answer.
+//
+// The planner gets data, not the central agent's policy or another fact cache.
+// Its live tool traffic crosses the existing canonical redaction, bounding and
+// pairing boundary before being included; the pending SearchKnowledge call has
+// no result yet and is dropped by that projector. This does not capture, persist
+// or mutate the active transcript.
+func (e *Engine) knowledgeQueryConversation() []openai.ChatCompletionMessage {
+	messages := e.messages
+	if start := currentTurnStart(messages); start >= 0 {
+		live := messages[start:]
+		current := []openai.ChatCompletionMessage{{
+			Role:    openai.ChatMessageRoleUser,
+			Content: canonicalConversationText(openai.ChatMessageRoleUser, live[0].Content),
+		}}
+		if !oversizedRawTurn(live) {
+			if transcript := buildTranscriptV1(live); transcript != nil {
+				current = ProjectTranscript(transcript)
+			}
+		}
+		messages = append(append([]openai.ChatCompletionMessage(nil), messages[:start]...), current...)
+	}
+	assembled := messagesFromAgentContext(messages, e.turnContextViewThisTurn, e.turnContextViewReady)
+	conversation := make([]openai.ChatCompletionMessage, 0, len(assembled))
+	for _, message := range assembled {
+		if message.Role != openai.ChatMessageRoleSystem {
+			conversation = append(conversation, message)
+		}
+	}
+	return trimAssembledRequest(conversation, maxAssembledRequestRunes)
 }
 
 // withAgentQueryAnchor retains the model's precise query alongside the rewrite.

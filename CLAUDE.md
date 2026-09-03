@@ -125,9 +125,17 @@ calls) is never persisted or executed as a normal answer.
 - a configured Python/Agent-SDK harness;
 - audit migrations `0011`, `0013` and `0014`;
 - the deployment grant `agent.authorization.mutating_tools=true`; and
-- a deterministic current or conversation-bound `user_selected` target. Elapsed
-  wall-clock time does not revoke that explicit choice; a newer user target replaces it. OCR-only,
-  account-single, observed-only, model-selected and expired passive/legacy hints do not authorize entry.
+- an Agent-selected `UHostId`, resolved exactly in the caller's STS account before
+  credentials are fetched and bound to the run. The central Agent interprets
+  conversation and chooses the target; server-side name/ordinal matching does not
+  reinterpret that choice. A run never substitutes another instance or accepts a
+  model-provided host/password. Confirmed platform workflows retain their own
+  selection, existence and confirmation gates.
+
+Ordinary turn entry does not scan names to overwrite target state. Canonical
+history preserves prior IDs and context; an actually reached or successful SSH
+run records an `observed` referent, not a new `user_selected` proof. Missing or
+inaccessible account targets do not establish verified context.
 
 Once those server-owned conditions hold, the lane performs guest-local reversible
 diagnosis, repair and verification without an entry card or per-command prompts.

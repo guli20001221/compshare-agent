@@ -102,7 +102,21 @@ _SYSTEM_PATHS = r"/(?:etc|usr|lib(?:64)?|s?bin|var|boot|opt|root)(?:/|\s|$)"
 # _scan_destructive for the measurement — and note that anything you add here is therefore
 # evaluated against one segment, so a rule must not expect to see the rest of the chain.
 # ===========================================================================
+# These rules name programs, not effects expressed by an argument or target path. They may be
+# skipped only when the WHOLE command is proven to pass arguments solely to existing data-only
+# consumers. Every effect/path rule below remains active even for such commands.
+_DESTRUCTIVE_PROGRAM_WORD_SRC = {
+    r"\bunlink\b", r"\bshred\b", r"\bmkfs\w*\b", r"\bwipefs\b", r"\bblkdiscard\b",
+    r"\b(lvremove|vgremove|pvremove|lvreduce|vgreduce)\b",
+    r"\bshutdown\b", r"\breboot\b", r"\bhalt\b", r"\bpoweroff\b",
+    r"\buserdel\b", r"\bgroupdel\b", r"\bchpasswd\b", r"\busermod\b",
+}
+# Recovery-channel units, not applications whose names merely contain "ssh" or "network".
+_ACCESS_UNIT = (r"(?:sshd?(?:@[\w:.-]+)?|network(?:ing)?|NetworkManager|systemd-networkd)"
+                r"(?:\.(?:service|socket|target))?")
+_ACCESS_UNIT_WORD = rf"(?<![\w@.-]){_ACCESS_UNIT}(?![\w@./-])"
 _DESTRUCTIVE_SRC = [
+    *sorted(_DESTRUCTIVE_PROGRAM_WORD_SRC),
     # ---- deletion -------------------------------------------------------------------------
     # Irreversible or wide deletes are refused; a targeted non-system delete is mutating.
     r"\brm\b[^\n]*\s-{1,2}[a-zA-Z-]*[rR]",                 # recursive: rm -r / -rf / --recursive
@@ -116,27 +130,23 @@ _DESTRUCTIVE_SRC = [
     r"\brm\b[^\n]*\[[^\]]+\]",                              # bracket: /etc/host[s1]
     r"\brm\b[^\n]*\s/(etc|boot|s?bin|lib(64)?|usr|sys|proc|dev|var/lib)(/|\s|$)",
     r"\brm\b[^\n]*\s/\s*$",                                 # rm /
-    r"\bunlink\b", r"\bshred\b",
     # Only zero-length truncation is confirmable; allocation and lockout/kernel targets refuse.
     r"\btruncate\b(?![^\n]*(?:-s\s*0|--size[=\s]*0)(?:\s|$))",
-    r"\bmkfs\w*\b", r"(?<![\w-])dd\b[^\n]*\s(if=|of=|bs=|count=|conv=)",
+    r"(?<![\w-])dd\b[^\n]*\s(if=|of=|bs=|count=|conv=)",
     # fdisk/parted stay destructive EXCEPT the pure LIST mode (-l/--list), which only prints the
     # partition table — that form is allowlisted read-only in _STRUCTURED_DIAG (F9). The interactive
     # editor (`fdisk /dev/sda`) and every other invocation still hard-refuse.
     r"\bfdisk\b(?!\s+(?:-l|--list)\b)", r"\bparted\b(?!\s+(?:-l|--list)\b)",
-    r"\bwipefs\b", r"\bblkdiscard\b", r"\bsgdisk\b\s+(-Z|--zap)",
+    r"\bsgdisk\b\s+(-Z|--zap)",
     r"\bfind\b[^\n]*\s-delete\b",
     # A shell used by find is not itself irreversible. The literal payload is still scanned by
     # every destructive rule, and any shell shape we cannot prove read-only reaches the exact
     # confirmation card. Keeping `sh|bash` here made harmless inspection scripts a hard refusal,
     # contrary to the lane's recoverability boundary.
     r"\bfind\b[^\n]*-exec\s+\S*\b(rm|mv|cp|tee|dd|chmod|chown|truncate|shred|chattr|mkfs|unlink|kill)\b",
-    r"\b(lvremove|vgremove|pvremove|lvreduce|vgreduce)\b",
     r"\bzpool\b\s+destroy\b", r"\bzfs\b\s+destroy\b", r"\bbtrfs\b[^\n]*\bdelete\b",
     # power / boot
-    r"\bshutdown\b", r"\breboot\b", r"\bhalt\b", r"\bpoweroff\b", r"\binit\s+[06]\b",
-    # accounts / auth (a real target arg; `--help` is intercepted above)
-    r"\buserdel\b", r"\bgroupdel\b", r"\bchpasswd\b", r"\busermod\b",
+    r"\binit\s+[06]\b",
     # passwd as a COMMAND (start / after sudo / after a separator), path-qualified or not — but NOT
     # the /etc/passwd data path (cat/stat/df /etc/passwd) nor `getent passwd`.
     r"(?:^|\bsudo\s+|[;&|]\s*)(?:/\S+/)?passwd\b",
@@ -175,8 +185,8 @@ _DESTRUCTIVE_SRC = [
     r"\biptables\b\s+-F", r"\bufw\b\s+disable",
     # Restarting or reloading SSH/network can destroy the recovery channel when config is broken.
     # Starting an already-down service remains confirmable.
-    r"\bsystemctl\b[^\n]*\b(stop|kill|restart|reload|try-restart|force-reload|disable|mask)\b[^\n]*\b\S*(ssh|network)\S*\b",
-    r"\bservice\b\s+\S*(ssh|network)\S*\s+(stop|restart|reload|force-reload)\b",
+    rf"\bsystemctl\b[^\n]*\b(stop|kill|restart|reload|try-restart|force-reload|disable|mask)\b[^\n]*{_ACCESS_UNIT_WORD}",
+    rf"\bservice\b\s+['\"]?{_ACCESS_UNIT}['\"]?\s+(stop|restart|reload|force-reload)\b",
     # process kill of init / critical daemons
     r"\bkill\b\s+(-\w+\s+)*-?1(\s|$)",
     r"\b(pkill|killall)\b[^\n]*\b(sshd|systemd|init|dockerd|containerd)\b",
@@ -272,10 +282,13 @@ _HARD_META = re.compile(r"""[;&`$<>(){}\[\]~]|\n""")
 # Command substitution — denied on the RAW command even inside single quotes (see F14).
 _SUBSTITUTION = re.compile(r"\$\(|`")
 _VARIABLE_EXPANSION = re.compile(r"\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[^}]+\}|[0-9!#*@_-])")
-# Pure stdin->stdout text filters (no file writes, no exec, no file-arg reads).
+# Candidates for stdin->stdout text filters; argument/option checks still apply below.
 # Deliberately EXCLUDES awk/sed (system()/-i/w-file), xargs/tee (exec/write), dd.
+# _program_words_are_data also consumes this set: adding a program requires reviewing ALL its
+# argv-to-execution options there, not merely whether its ordinary stdin-filter form is read-only.
 _SAFE_FILTERS = {"grep", "egrep", "fgrep", "head", "tail", "wc", "sort",
                  "uniq", "cut", "tr", "nl", "column", "rev", "cat", "tac"}
+_OUTPUT_BUILTINS = {"printf", "echo", "true", "false"}
 # Follow/stream flags — scoped to the binaries where -f means "stream" (NOT ps -f / lsblk -f).
 _FOLLOW = re.compile(r"(?:^|\s)(-f|-F|--follow)(?:\s|$)")
 # Per-binary continuous flags that loop forever (cluster-aware, e.g. `free -hs1`, `netstat -tlnpc`).
@@ -524,7 +537,7 @@ _SAFE_READ_PREFIXES = (
 )
 _SAFE_READ_EXACT = {
     "/etc/os-release", "/etc/lsb-release", "/etc/hostname", "/etc/machine-id",
-    "/etc/timezone", "/etc/issue",
+    "/etc/timezone", "/etc/issue", "/etc/resolv.conf",
     "/entrypoint.sh",                                    # F10: container launch script
     # F8: mount/partition config — the core of data-disk "为什么 df 看不到我的盘" diagnosis. A
     # fresh cloud data disk is raw+unmounted, and a WRONG /etc/fstab entry is the classic reason a
@@ -539,6 +552,7 @@ _SAFE_READ_EXACT = {
     # socket tables — the ss/netstat fallback for port-state diagnosis when neither tool is
     # installed (a minimal container). Hex addr/port/state/uid/inode; no user file content, no secret.
     "/proc/net/tcp", "/proc/net/tcp6", "/proc/net/udp", "/proc/net/udp6",
+    "/proc/net/dev", "/proc/net/route",
     "/usr/local/cuda/version.txt", "/usr/local/cuda/version.json",
 }
 # Per-process diagnostic files. `environ` remains excluded and is available only through the
@@ -1045,7 +1059,7 @@ def _is_read_only(cmd: str) -> bool:
     # Pure shell output/status builtins are diagnostics, not guest mutations. Real-file
     # redirection and substitution are rejected before this point, so these forms can only write
     # to the command's captured stdout/stderr or return a status code.
-    if binary in ("printf", "echo", "true", "false"):
+    if binary in _OUTPUT_BUILTINS:
         return True
     if binary == "fuser" and _KILL_FLAG_BINARIES["fuser"].search(cmd):
         return False
@@ -1893,8 +1907,8 @@ def _py_module_run_is_readonly(argv) -> bool:
 
 
 def _is_readonly_py_invocation(binary: str, seg: str) -> bool:
-    """True for `pythonX -c <provably read-only payload>` and `pythonX -m <read-only
-    module>`. Any other interpreter, extra flags, or an unprovable payload returns False
+    """True for Python version/help flags, `-c <provably read-only payload>` and
+    `-m <read-only module>`. Other flags or an unprovable payload return False
     (so the caller refuses it). Fail closed on any parse error."""
     if not _PYTHON_BINARY.fullmatch(binary):
         return False
@@ -1902,6 +1916,8 @@ def _is_readonly_py_invocation(binary: str, seg: str) -> bool:
         argv = shlex.split(seg)
     except ValueError:
         return False
+    if len(argv) > 1 and all(_VERSION_ONLY.fullmatch(arg) for arg in argv[1:]):
+        return True
     if len(argv) == 3 and argv[1] == "-c":               # exactly `python -c <payload>`
         return _py_payload_is_readonly(argv[2])
     if len(argv) >= 3 and argv[1] == "-m":
@@ -2299,7 +2315,7 @@ def _is_mutating_segment(seg: str, _depth: int = 0) -> bool:
     binary = _basename(raw0).lower()
     if binary == "[":
         return not (len(tokens) >= 2 and tokens[-1] == "]")  # shell test; no state change
-    if binary in ("printf", "echo", "true", "false"):
+    if binary in _OUTPUT_BUILTINS:
         return False                                      # captured output/status, no real-file redirect
     # running a file on the box: a script by name, or anything by relative path
     if _SCRIPT_SHAPE.search(binary) or raw0.startswith("./") or raw0.startswith("../"):
@@ -2562,6 +2578,64 @@ def _normalize_paths(cmd: str) -> str:
     return " ".join(out)
 
 
+def _program_words_are_data(cmd: str) -> bool:
+    """Only known data consumers may suppress program-name matches in their arguments.
+
+    This does not grant read-only status or suppress effect/path rules. Unknown execution
+    consumers anywhere in the command retain the raw scan, including pipes into a shell.
+    """
+    # Reuse the existing splitter; do not extend its shell grammar. Quoted data escapes such as
+    # printf's '\n' do not affect boundaries. Escaped quotes, comments and unquoted escapes can.
+    if (_SUBSTITUTION.search(cmd) or "${" in cmd or "$[" in cmd
+            or re.search(r"\\['\"]", cmd)):
+        return False
+    try:
+        shlex.split(cmd)
+    except ValueError:
+        return False
+    masked = _mask_quoted(cmd)
+    # Keep real-file writes behind the raw gate; only reuse the existing null/FD redirections.
+    if re.search(r"[#&<>(){}\\]", _SAFE_REDIR.sub(" ", masked).replace("&&", "")):
+        return False
+    match = _LITERAL_FOR_LOOP.fullmatch(masked)
+    body = cmd
+    if match is not None:
+        values = cmd[match.start("values"):match.end("values")]
+        if re.search(r"[$|]", values):
+            return False
+        body = cmd[match.start("body"):match.end("body")]
+    segments = _split_chain(body)
+    if not segments:
+        return False
+    for seg in segments:
+        try:
+            tokens = shlex.split(seg)
+        except ValueError:
+            return False
+        if not tokens:
+            return False
+        program = tokens[0]
+        binary = _basename(program)
+        if "/" in program and posixpath.dirname(program) not in _SYSTEM_PROGRAM_DIRS:
+            return False
+        if binary == "printf":
+            args = tokens[1:]
+            if args and args[0] == "--":
+                args = args[1:]
+            # Only literal output conversions; -v, %n and computed formats can assign shell
+            # variables whose array subscripts execute arithmetic. Never infer their effects.
+            if (not args or args[0].startswith("-") or "$" in args[0]
+                    or re.fullmatch(r"(?:[^%]|%[-+ #0-9.*]*[diouxXfFeEgGaAcbsqQ%])*", args[0]) is None):
+                return False
+            continue
+        if not (binary in _OUTPUT_BUILTINS or
+                (binary in _SAFE_FILTERS and binary not in _OUTPUT_FLAG_WRITERS) or
+                (binary not in {"[", "sort"} and not _PYTHON_BINARY.fullmatch(binary)
+                 and _is_read_only(seg))):
+            return False
+    return True
+
+
 def _scan_destructive(cmd: str) -> bool:
     """Match the destructive tier PER COMMAND — never across a `;` / `|` / newline boundary.
 
@@ -2570,6 +2644,7 @@ def _scan_destructive(cmd: str) -> bool:
     _split_chain respects quoted separators and newlines. Bare `&` is intentionally not a boundary
     because splitting it would corrupt `2>&1` and `&>` redirections.
     """
+    program_words_are_data = _program_words_are_data(cmd)
     for line in cmd.split("\n"):
         for seg in _split_chain(line):
             norm = _normalize_paths(seg)
@@ -2580,6 +2655,8 @@ def _scan_destructive(cmd: str) -> bool:
             if (_is_regenerable_recursive_delete(seg)
                     and (norm == seg or _is_regenerable_recursive_delete(norm))):
                 pats = _DESTRUCTIVE_NO_RM_RECURSION
+            if program_words_are_data:
+                pats = [p for p in pats if p.pattern not in _DESTRUCTIVE_PROGRAM_WORD_SRC]
             if any(p.search(seg) for p in pats):
                 return True
             if norm != seg and any(p.search(norm) for p in pats):

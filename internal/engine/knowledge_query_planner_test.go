@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/knowledge"
@@ -222,6 +223,100 @@ func TestMultiTurnKnowledgeQueryPlanningIsWiredThroughTheProductionAgentLoop(t *
 	require.NotNil(t, mock.calls[1].ResponseFormat)
 	assert.Equal(t, openai.ChatMessageRoleSystem, mock.calls[1].Messages[0].Role,
 		"the internal planner must never appear as another user turn")
+}
+
+func TestKnowledgeQueryPlannerReplaysCanonicalToolFactsHotAndCold(t *testing.T) {
+	const question = "实例 uhost-test 有没有数据盘"
+	const answer = "只有 390GB 系统盘，没有单独的数据盘。"
+	const next = "怎么添加数据盘"
+	turn := []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: question},
+		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{
+			toolCall("instance-read", "ReadCapability_resource_info", `{"resource_type":"instances","instance_id":"uhost-test"}`),
+		}},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: "instance-read", Content: `{"instance_id":"uhost-test","instance_type":"Container","region":"cn-wlcb","zone":"cn-wlcb-01"}`},
+		{Role: openai.ChatMessageRoleAssistant, Content: answer},
+	}
+	hot, metadata, stats := runHotTurn(turn)
+	require.False(t, stats.Invalid)
+	require.NotEmpty(t, metadata)
+	cold := rebuildCold(question, answer, metadata)
+	var inputs []knowledgeQueryPlanInput
+	for _, eng := range []*Engine{hot, cold} {
+		mock := &mockLLM{responses: []llm.ChatResponse{plannerEcho(next)}}
+		eng.llmClient = mock
+		eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, next, "query-plan", fixedBuildAt)
+		eng.turnContextViewReady = true
+		eng.messages = append(eng.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: next})
+		eng.planKnowledgeQuery(context.Background(), next)
+		require.Len(t, mock.calls, 1)
+		var input knowledgeQueryPlanInput
+		require.NoError(t, json.Unmarshal([]byte(mock.calls[0].Messages[1].Content), &input))
+		require.Len(t, input.Conversation, 5, "one canonical exchange, not duplicated prose plus a nested transcript")
+		assert.Equal(t, openai.ChatMessageRoleTool, input.Conversation[2].Role)
+		assert.Contains(t, input.Conversation[2].Content, `"instance_type":"Container"`,
+			"the actual observation must survive even when the final assistant did not repeat the condition")
+		assert.NotContains(t, input.Conversation[3].Content, "Container")
+		assert.Equal(t, next, input.Conversation[4].Content)
+		inputs = append(inputs, input)
+	}
+	assert.Equal(t, inputs[0], inputs[1], "a process restart must not change the planner's semantic evidence")
+}
+
+func TestKnowledgeQueryPlannerIncludesCompletedCurrentToolObservations(t *testing.T) {
+	const secret = "abcdef0123456789abcdef0123456789"
+	const secretURL = "http://10.0.0.4:8888/lab?token=" + secret
+	const question = "这个环境的目录怎么访问"
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.turnContextViewReady = true
+	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: question}
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "central-policy-must-not-be-copied"},
+		{Role: openai.ChatMessageRoleUser, Content: question},
+		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{
+			toolCall("runtime-read", "ReadRuntime", `{"url":"`+secretURL+`"}`),
+		}},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: "runtime-read", Content: `{"owner":"platform-managed","path":"/cloud","url":"` + secretURL + `"}`},
+		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{
+			toolCall("pending-search", "SearchKnowledge", `{"query":"环境目录访问"}`),
+		}},
+	}
+	before := renderTestMessages(eng.messages)
+	got := eng.knowledgeQueryConversation()
+
+	require.Len(t, got, 3, "only the current question and completed tool round belong to the evidence")
+	assert.Equal(t, openai.ChatMessageRoleTool, got[2].Role)
+	assert.Equal(t, "runtime-read", got[2].ToolCallID)
+	assert.Contains(t, got[2].Content, `"owner":"platform-managed"`)
+	assert.Contains(t, got[2].Content, `"path":"/cloud"`)
+	rendered := renderTestMessages(got)
+	assert.NotContains(t, rendered, secret, "the planner must cross the canonical token-redaction boundary")
+	assert.Contains(t, rendered, "[REDACTED]")
+	assert.NotContains(t, rendered, "pending-search", "unanswered tool calls are not observations")
+	assert.NotContains(t, rendered, "central-policy-must-not-be-copied")
+	assert.Equal(t, before, renderTestMessages(eng.messages), "query planning must not rewrite the central agent's live transcript")
+}
+
+func TestKnowledgeQueryPlannerBoundsLiveObservationsWithCanonicalMarkers(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.turnContextViewReady = true
+	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: "如何使用"}
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "system"},
+		{Role: openai.ChatMessageRoleUser, Content: "如何使用"},
+		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{toolCall("read", "ReadRuntime", `{}`)}},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: "read", Content: strings.Repeat("观", maxTranscriptMessageRunes+100)},
+	}
+	got := eng.knowledgeQueryConversation()
+	require.Len(t, got, 3)
+	assert.Contains(t, got[2].Content, truncationNotice(maxTranscriptMessageRunes+100),
+		"a bounded observation must never look complete")
+	assert.Less(t, len([]rune(got[2].Content)), maxTranscriptMessageRunes+100)
+
+	eng.messages[3].Content = strings.Repeat("x", maxRawTurnBytes+1)
+	got = eng.knowledgeQueryConversation()
+	require.Len(t, got, 1, "pathological live input must not bypass the existing raw-turn guard")
+	assert.Equal(t, "如何使用", got[0].Content)
 }
 
 // The planner may add a standalone rewrite but must retain the model's precise

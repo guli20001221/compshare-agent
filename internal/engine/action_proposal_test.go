@@ -674,7 +674,7 @@ func TestConfirmedFollowUpInheritsConversationBoundSelectedTargetAfterLongPause(
 
 	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
 		"operation": "StopInstanceWorkflow",
-		"slots":     []any{map[string]any{"name": "UHostId", "value": "host"}},
+		"slots":     []any{},
 	})
 
 	require.NoError(t, err)
@@ -711,11 +711,40 @@ func TestConfirmedFollowUpExecutesThroughResolvedTargetAuthority(t *testing.T) {
 
 	out := eng.executeActionProposal(context.Background(), map[string]any{
 		"operation": "StopInstanceWorkflow",
-		"slots":     []any{map[string]any{"name": "UHostId", "value": "host"}},
+		"slots":     []any{map[string]any{"name": "UHostId", "value": "uhost-1"}},
 	}, noopStep)
 
 	require.Contains(t, out, "提交关机请求")
 	require.Contains(t, executor.calls, "StopCompShareInstance")
+}
+
+func TestCarriedBindingDoesNotVerifyADifferentProposedTarget(t *testing.T) {
+	for _, multipleReads := range []bool{false, true} {
+		t.Run(map[bool]string{false: "exact_target_confirmation", true: "existing_ambiguity_gate"}[multipleReads], func(t *testing.T) {
+			eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+			eng.SetSessionState(SessionState{
+				SchemaVersion: SessionStateSchemaCurrent, SelectedInstanceID: "uhost-a",
+				SelectedInstanceSource: SelectedInstanceSourceUser, SelectedInstanceAtUnix: time.Now().Unix(),
+			}, 1)
+			syncTwoInstances(t, eng)
+			eng.lastUserMsg = "停止它"
+			eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-carried", time.Now())
+			eng.turnContextViewReady = true
+			if multipleReads {
+				eng.verifiedInstanceEvidenceThisTurn = map[string]struct{}{"uhost-a": {}, "uhost-b": {}}
+			}
+			resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-carried", "uhost-b"))
+			require.NoError(t, err)
+			if multipleReads {
+				require.False(t, resolved.action.ReadyForConfirmation)
+				require.NotEmpty(t, resolved.action.Conflicts, "old A's binding must not lend B an exemption from the existing inferred-target rule")
+				return
+			}
+			require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
+			require.Equal(t, "uhost-b", resolved.action.Arguments["UHostId"])
+			require.Equal(t, actionresolver.SourceAgentInference, resolved.action.Provenance["UHostId"].Source)
+		})
+	}
 }
 
 func TestDeterministicReinstallReplyDoesNotInventLoginCredentialState(t *testing.T) {

@@ -12,9 +12,15 @@ import (
 // wrote one leaves this blocked until the deadline — which is itself the failure being tested.
 const fakeConfirmHarness = `
 import sys, json
-sys.stdin.readline()                                   # handshake
+conn = json.loads(sys.stdin.readline())
 results = []
 for cmd in ["systemctl restart ollama", "kill 6934"]:
+    if conn.get("repair_scope_authorized") is True:
+        results.append("old-scope-approved")
+        continue
+    if "repair_scope_authorized" in conn:
+        results.append("old-inspection-refused")
+        continue
     sys.stdout.write("@@CONFIRM " + json.dumps({"id": "c%d" % (len(results) + 1), "command": cmd}) + "\n")
     sys.stdout.flush()
     line = sys.stdin.readline()
@@ -24,6 +30,7 @@ for cmd in ["systemctl restart ollama", "kill 6934"]:
     r = json.loads(line)
     results.append("%s:%s:%s" % (r.get("id"), r.get("approved"), r.get("terminal_reason")))
 print("<<<VERDICT>>>")
+print("LEGACY_SCOPE_MISSING=%r" % ("repair_scope_authorized" not in conn))
 print("REPLIES " + "|".join(results))
 print("<<<END>>>")
 `
@@ -77,5 +84,22 @@ func TestMissingConfirmerDeniesEveryWriteRequest(t *testing.T) {
 	}
 	if !strings.Contains(res.Output, "REPLIES c1:False:None|c2:False:None") {
 		t.Fatalf("missing confirmer did not fail closed per command: %q", res.Output)
+	}
+}
+
+func TestSupervisorCurrentGrantAnswersTheLegacyHarnessWireInternally(t *testing.T) {
+	sup := newConfirmSup(t)
+	confirmations := 0
+	res, err := sup.Run(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 23, "S3cr3tPw"), "task", nil,
+		func(ConfirmRequest) ConfirmDecision {
+			confirmations++
+			return ConfirmDecision{Approved: true}
+		})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if confirmations != 2 || !strings.Contains(res.Output, "LEGACY_SCOPE_MISSING=True") ||
+		!strings.Contains(res.Output, "REPLIES c1:True:None|c2:True:None") {
+		t.Fatalf("legacy harness must use the internally answered command wire: %q; callbacks=%d", res.Output, confirmations)
 	}
 }

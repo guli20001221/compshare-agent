@@ -95,7 +95,7 @@ print("HANDSHAKE_OK host=%s user=%s port=%s instance=%s task=%s" % (
     conn.get("host"), conn.get("user"), conn.get("port"), conn.get("instance_id"), conn.get("task")))
 print("HAS_PASSWORD=%s" % bool(conn.get("password")))
 print("AUTH_TOKEN_OK=%s" % (os.environ.get("ANTHROPIC_AUTH_TOKEN") == "modelverse-test-token"))
-print("REPAIR_SCOPE_AUTHORIZED=%s" % conn.get("repair_scope_authorized"))
+print("ALLOW_WRITES=%s" % conn.get("allow_writes"))
 print("AGENT_SESSION=%s/%s/%s/%s" % (
     (conn.get("agent_session") or {}).get("session_id"), (conn.get("agent_session") or {}).get("contract"),
     (conn.get("agent_session") or {}).get("model"), (conn.get("agent_session") or {}).get("resume")))
@@ -163,14 +163,14 @@ func TestSupervisorHandshakeAndScrubbedEnv(t *testing.T) {
 	c := cred("uhost-abc", "1.2.3.4", "root", 23, "S3cr3tPw")
 
 	modelContext := opscontext.Context{
-		RepairScopeAuthorized: true,
 		AgentSession: &opscontext.AgentSession{
 			SessionID: "11111111-1111-4111-8111-111111111111", Contract: "sshops-agent-v1",
 			WorkdirID: "22222222-2222-4222-8222-222222222222",
 			Model:     "gpt-5.6-terra", Resume: true,
 		},
 	}
-	res, err := sup.RunWithContext(context.Background(), c, "health check", modelContext, nil, nil)
+	res, err := sup.RunWithContext(context.Background(), c, "health check", modelContext, nil,
+		func(ConfirmRequest) ConfirmDecision { return ConfirmDecision{Approved: true} })
 	if err != nil {
 		t.Fatalf("run: %v (output=%q)", err, res.Output)
 	}
@@ -201,7 +201,7 @@ func TestSupervisorHandshakeAndScrubbedEnv(t *testing.T) {
 	if strings.Contains(out, "ANTHROPIC_API_KEY") {
 		t.Fatalf("legacy/dummy Anthropic API key should not be present: %q", out)
 	}
-	if !strings.Contains(out, "REPAIR_SCOPE_AUTHORIZED=True") ||
+	if !strings.Contains(out, "ALLOW_WRITES=True") ||
 		!strings.Contains(out, "AGENT_SESSION=11111111-1111-4111-8111-111111111111/sshops-agent-v1/gpt-5.6-terra/True") ||
 		!strings.Contains(out, "SESSION_ROOT=/private/sshops-sessions") {
 		t.Fatalf("private authorization/session handshake fields were not delivered: %q", out)

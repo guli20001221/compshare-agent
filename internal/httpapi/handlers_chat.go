@@ -558,13 +558,20 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	// Client disconnected.
 	if errors.Is(chatErr, context.Canceled) || errors.Is(streamCtx.Err(), context.Canceled) {
 		terminalErr := chatErr
-		if terminalErr == nil {
+		if errors.Is(streamCtx.Err(), context.Canceled) {
+			// A tool may have converted its runner error into a deterministic
+			// reply. The transport still ended by cancellation, even when the
+			// engine returned nil; trace and message persistence must agree.
 			terminalErr = streamCtx.Err()
 		}
 		finishTrace(terminalErr)
 		agent.MarkLastTurnInterrupted()
+		content := abortedAssistantMessage
+		if summary := agent.InstanceOpsInterruptionSummary(); summary != "" {
+			content += "\n\n" + summary
+		}
 		persistErr := h.persistAssistant(base.Owner, assistantMsgID,
-			store.AssistantPatch{Content: abortedAssistantMessage, Status: "aborted"})
+			store.AssistantPatch{Content: security.RedactAssistantConversationText(content), Status: "aborted"})
 		h.persistTurnTranscript(base.Owner, assistantMsgID, agent, persistErr)
 		return
 	}
@@ -588,6 +595,9 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	}
 
 	// Success.
+	if !tokenEmitted && reply != "" {
+		_ = writeVisibleEvent(sw, traceRecorder, "token", tokenEvent{Text: reply})
+	}
 	finishTrace(nil)
 	inputTokens := usage.PromptTokens
 	outputTokens := usage.CompletionTokens

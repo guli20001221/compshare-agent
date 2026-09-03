@@ -187,6 +187,28 @@ func TestFilterHistoryStatusGating(t *testing.T) {
 	require.Equal(t, want, got)
 }
 
+func TestFilterHistoryRetainsUsersAcrossInterruptedReplies(t *testing.T) {
+	rows := []store.Message{
+		{Role: "user", Content: "检查旧实例", Status: "ok"},
+		{Role: "assistant", Content: "已检查", Status: "ok"},
+		{Role: "user", Content: "改为检查新实例", Status: "ok"},
+		{Role: "assistant", Content: "partial reply must not become completed history", Status: "aborted"},
+		{Role: "user", Content: "继续", Status: "ok"},
+		{Role: "assistant", Content: "failed reply", Status: "error"},
+		{Role: "user", Content: "继续", Status: "ok"},
+		{Role: "assistant", Content: "pending reply", Status: "pending"},
+	}
+	eng := &engine.Engine{}
+	eng.RehydrateHistory(agentpool.FilterHistoryForTest(rows))
+	view := (engine.ContextCompiler{}).Compile(eng, "继续", time.Now())
+	require.Equal(t, []engine.ConversationPair{
+		{User: "检查旧实例", Assistant: "已检查"},
+		{User: "改为检查新实例"},
+		{User: "继续"},
+		{User: "继续"},
+	}, view.RecentConversation)
+}
+
 // TestPoolCloseIdempotent verifies that calling Close twice does not panic.
 func TestPoolCloseIdempotent(t *testing.T) {
 	ms := &mockMessageStore{}

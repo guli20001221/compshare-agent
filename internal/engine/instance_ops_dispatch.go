@@ -6,8 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/compshare-agent/internal/capability"
-	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/opscontext"
 	"github.com/compshare-agent/internal/security"
@@ -80,30 +78,10 @@ func instanceOpsNoSSHTargetObservation(action string) string {
 		tools.AgentToolMeta{SourceStatus: "no_ssh_target"}))
 }
 
-// Target refusal text is split by audience: the activity stream gives the user
-// an actionable instruction, while the tool result explains the binding rule to
-// the model. A bare confirmation or a console-only selection does not identify a
-// target in this conversation.
+// INV-11 counts a runner attempt, including one that failed before Guest entry.
 const (
-	// A malformed Mode is the model's error, not a request for the user to learn
-	// internal enum values. Keep the activity stream customer-facing and route
-	// the exact correction through the model-only tool result.
-	instanceOpsModeRefusalForUser  = "实例内排查尚未开始，正在更正调用参数。"
-	instanceOpsModeRefusalForModel = "Mode 参数无效。请将 Mode 设置为 inspect（只读检查）或 repair（可恢复修复），然后重新发出同一次工具调用。"
-	// INV-11 counts an authorized runner attempt, including one that failed
-	// before Guest entry. The wording must not claim that entry occurred.
 	instanceOpsRepeatRefusalForUser  = "本回合已发起过一次实例内排查请求，本次重复调用没有执行。"
 	instanceOpsRepeatRefusalForModel = "本回合已经发起过一次实例内排查请求；请勿重复调用该通道。请基于首次观察继续判断，必要时改用适用的平台只读能力或知识检索。"
-	// instanceOpsTargetRefusalForUser is what the person reads. Actionable, no internal policy.
-	instanceOpsTargetRefusalForUser = "尚未开始实例内排查。请直接回复要排查的实例 ID 或实例名称；" +
-		"如果上面列出了候选实例，回复对应的序号也可以。"
-	// instanceOpsTargetRefusalForModel rides the tool result, which the user never sees. It states
-	// the constraint AND the exits, including the one the agent kept getting wrong: a bare 「确认」
-	// is not an identifier and re-asking for it loops.
-	instanceOpsTargetRefusalForModel = "请先明确要排查的实例。只有用户在消息中直接给出的实例 ID、" +
-		"唯一实例名，或对已展示候选列表的序号，才能作为本次排查目标；不能自行从实例列表挑选，" +
-		"也不能把仅仅读到过的实例当作目标。请让用户在下一条消息里直接给出实例 ID 或名称——" +
-		"用户回复「确认」「是的」这类不含标识的内容不会解除该限制，在控制台里选中实例也不会。"
 )
 
 // executeInstanceOps handles a DiagnoseInstanceInternals tool call: the
@@ -117,11 +95,10 @@ const (
 //
 // Ordering:
 //   - nil-runner  → feature disabled, inert refusal, no slot consumed (INV-10)
-//   - param check → UHostId + Task required
 //   - write grant → the deployment must have enabled autonomous mutating tools
-//   - target proof → the user named/selected this exact instance (never pick a list row)
+//   - param check → UHostId + Task required
 //   - INV-11 gate → at most one in-instance run per turn
-//   - Run         → progress→StepEvent live; verdict → finalReplyPrefix (unrewritable)
+//   - Run         → tenant-scoped exact-ID lookup, fixed credentials/scope, audited execution
 func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
 	// INV-10: with no runner the lane is off. The tool is absent from the window,
 	// so a well-behaved model cannot reach here; a replayed/hallucinated call gets
@@ -143,46 +120,12 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	filtered := e.safeExecutor.FilterArgs(action, args)
 	instanceIDArg, _ := filtered["UHostId"].(string)
 	taskArg, _ := filtered["Task"].(string)
-	modeArg, _ := filtered["Mode"].(string)
 	instanceID := strings.TrimSpace(instanceIDArg)
 	task := strings.TrimSpace(taskArg)
 	if instanceID == "" || task == "" {
 		msg := "请提供要排查的实例 ID 和本次排查目标。"
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 		return friendlyToolResultJSON(msg)
-	}
-	// A literal ID copied from user text must stay whole before this lane even
-	// refreshes the registry. A unique trailing-suffix truncation is a model-owned tool
-	// error: give the next Agent round the exact token, but never rewrite or run
-	// the rejected call. Other target disagreements continue to the existing
-	// binder below, which remains the authority for references and carried state.
-	if err := capability.ValidateUserLiteralInstanceID(instanceID, e.lastUserMsg, e.recentPriorUserTexts(4)...); err != nil {
-		if agentResult, ok := modelOwnedInstanceIDCompletion(action, err); ok {
-			onStep(StepEvent{
-				Type: StepToolResult, Action: action, Source: observability.ToolSourceDiagnosisInternal,
-				Message: "正在按用户原文修正完整实例 ID", ErrorCode: agentResult.Error.Code,
-				TraceResult: map[string]any{"status": "correct_tool_call", "source_status": agentResult.Meta.SourceStatus},
-			})
-			return tools.MarshalAgentToolResult(agentResult)
-		}
-	}
-	// Mode is a capability boundary, not merely prompt wording. Explicit inspection reaches the
-	// same SSH/read surface while the private repair bit stays false, so every mutation is refused
-	// by the harness at runtime. Missing and unknown values fail closed instead of silently granting
-	// repair authority to a malformed/replayed model call.
-	repairScopeAuthorized := false
-	switch strings.ToLower(strings.TrimSpace(modeArg)) {
-	case "repair":
-		repairScopeAuthorized = true
-	case "inspect":
-	default:
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: instanceOpsModeRefusalForUser})
-		return tools.MarshalAgentToolResult(tools.AgentToolInvalidToolCall(
-			action,
-			tools.AgentToolCodeInvalidArguments,
-			instanceOpsModeRefusalForModel,
-			tools.AgentToolMeta{SourceStatus: "invalid_mode"},
-		))
 	}
 	// Build the local-only portion before any platform call. A planner that copied
 	// a user Authorization value into Task must not move it into audit or activity;
@@ -193,41 +136,15 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		authorizations = append(authorizations, item.Value)
 	}
 	task = security.RedactKnownAuthorizationText(task, authorizations)
-	// A long pause may outlive the pooled Engine that originally knew the
-	// account's instance names. Refresh only when this lane is actually invoked,
-	// before target binding, so a current exact name can switch A to B without an
-	// account-wide read on every unrelated chat turn. Failure remains best-effort:
-	// exact current IDs still go through the runner's tenant-scoped point lookup.
-	e.refreshInstanceRegistryForStickySelection(ctx)
-	// A model-authored id is not selection proof. The proof is either an explicit
-	// current-turn target or the same conversation's last genuine user_selected
-	// target. The latter is intentionally not revoked by elapsed wall-clock time:
-	// this lane has no entry card, and real users routinely resume the same repair
-	// after a long-running download, training job, or an overnight pause.
-	if !e.instanceOpsTargetAuthorized(instanceID) {
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: instanceOpsTargetRefusalForUser})
-		return friendlyToolResultJSON(instanceOpsTargetRefusalForModel)
-	}
-	// A cold registry can make a literal ID provable only at this gate. Record the
-	// user's designation before entry. Account-single, screenshot-only and
-	// passively observed targets do not authorize this path and are never recorded here.
-	if e.userNamedInstanceThisTurn(instanceID) || e.userResolvedInstanceThisTurn(instanceID) {
-		e.recordSelectedInstanceIDWithSource(instanceID, "", SelectedInstanceSourceUser)
-	}
-
-	// INV-11: one authorized runner attempt per turn. A rejected target does not
-	// spend this slot, while a runner failure does because it may have partially
-	// executed even when no terminal verdict returned.
+	// The central Agent owns semantic target selection. Pass its ID unchanged;
+	// the runner verifies that exact ID under the request's tenant-scoped STS
+	// identity before fetching credentials or entering the fixed instance scope.
+	// INV-11 counts one runner attempt, including a pre-entry failure.
 	if e.instanceOpsRanThisTurn {
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: instanceOpsRepeatRefusalForUser})
 		return friendlyToolResultJSON(instanceOpsRepeatRefusalForModel)
 	}
 	e.instanceOpsRanThisTurn = true
-
-	// Deterministic binding, not a confirmation card, proves the selected target.
-	// Record before Run because a failed SSH attempt does not undo what the user
-	// chose to diagnose.
-	e.recordSelectedInstanceIDWithSource(instanceID, "", SelectedInstanceSourceUser)
 
 	// Connected and command progress become bounded activity events. Command
 	// output never enters this stream; only metadata does.
@@ -250,6 +167,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 			e.observeInstanceOpsAgentSession(instanceID, p.AgentSessionID, p.AgentSessionWorkdirID,
 				p.AgentSessionContract, p.AgentSessionModel, p.AgentSessionConversationAnchor)
 		case InstanceOpsProgressConnected:
+			e.recordInstanceOpsReferent(instanceID)
 			onStep(StepEvent{
 				Type:    StepToolCall,
 				Action:  action,
@@ -276,11 +194,10 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	modelContext.BackgroundJobSlotBusy = e.backgroundJobSlotBusyForOtherInstance(instanceID)
 	modelContext.AgentSession = e.instanceOpsAgentSessionForRun(instanceID)
 	verdict, err := e.instanceOps.Run(ctx, InstanceOpsRequest{
-		TurnID:                e.currentTurnID,
-		InstanceID:            instanceID,
-		Task:                  task,
-		Context:               modelContext,
-		RepairScopeAuthorized: repairScopeAuthorized,
+		TurnID:     e.currentTurnID,
+		InstanceID: instanceID,
+		Task:       task,
+		Context:    modelContext,
 	}, onProgress)
 	if err != nil {
 		// A control-plane NotFound result is authoritative for this target: its guest job can no
@@ -349,88 +266,52 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		return finalReplyPrefix + msg
 	}
 
+	e.recordInstanceOpsReferent(instanceID)
+
 	// The agentic loop has no known total, so report a count without a fake N/M denominator.
-	onStep(StepEvent{
+	summary := StepEvent{
 		Type:    StepToolResult,
 		Action:  action,
 		Source:  observability.ToolSourceDiagnosisInternal,
 		Message: fmt.Sprintf("排查完成，共执行 %d 条命令（拒绝 %d 条），正在生成结论", verdict.Ran, verdict.Refused),
-	})
+	}
+	if verdict.AgentFailed {
+		// A settled partial report is deliverable, but it is not a completed
+		// diagnostic turn. Preserve its text and command tallies without retrying
+		// writes or asking the outer model to rewrite the report.
+		summary.Type = StepBlocked
+		summary.Message = fmt.Sprintf("实例内诊断中断，共执行 %d 条命令（拒绝 %d 条），已保留本轮执行记录", verdict.Ran, verdict.Refused)
+		summary.ErrorCode = instanceOpsAgentFailureCode(verdict.ErrClass)
+	}
+	onStep(summary)
 
 	// The verdict is a deterministic final reply: finalReplyPrefix routes it straight
 	// out through agentruntime.Final, structurally beyond any synthesis rewrite (F6).
 	return finalReplyPrefix + verdict.Text
 }
 
-// instanceOpsTargetAuthorized decides whether the target was selected by the
-// user strongly enough for the deployment-authorized SSH lane to enter it with
-// no extra card. Authority comes from one of two deterministic sources:
-//
-//   - an explicit current-turn ID, exact name, wrapper, or ordinal resolved
-//     against a list the user actually saw;
-//   - the latest genuine user_selected instance carried by this conversation.
-//
-// Account-single fallback, passive reads, model choice, screenshot OCR and an
-// unresolved/conflicting current reference are deliberately excluded. Time alone
-// does not revoke a user's selection: a newer explicit target replaces it, while
-// the runner still point-checks account ownership and instance state before
-// fetching credentials or dialing.
-func (e *Engine) instanceOpsTargetAuthorized(instanceID string) bool {
-	if e == nil || !e.turnContextViewReady || strings.TrimSpace(instanceID) == "" {
-		return false
+// Only runner protocol metadata becomes a trace code. A future or malformed
+// class degrades to the generic failure; neither verdict nor provider prose is
+// inspected or copied into the activity stream.
+func instanceOpsAgentFailureCode(class string) string {
+	switch class {
+	case "authentication_failed", "billing_error", "rate_limit", "invalid_request",
+		"server_error", "unknown", "model_error", "max_turns", "sdk_timeout", "sdk_error":
+		return "SSH_AGENT_" + strings.ToUpper(class)
+	default:
+		return "SSH_AGENT_FAILED"
 	}
-	view := e.turnContextViewThisTurn
-	binding := e.bindInstanceTarget(view, instanceID)
-	if binding.conflict {
-		return false
-	}
-	if binding.bound() {
-		if !strings.EqualFold(strings.TrimSpace(binding.id), strings.TrimSpace(instanceID)) {
-			return false
-		}
-		if binding.explicit {
-			return true
-		}
-		for _, selected := range view.SelectedEntities {
-			if selected.Kind == "instance" &&
-				selected.Source == SelectedInstanceSourceUser &&
-				selected.Freshness != ContinuityFreshnessExpired &&
-				strings.EqualFold(strings.TrimSpace(selected.ID), strings.TrimSpace(instanceID)) {
-				return true
-			}
-		}
-		return false
-	}
-	// An explicit but unresolved current reference (a typo, an out-of-range
-	// ordinal, or a different cold-registry ID) must never fall back to the old
-	// selection. An exact current-turn ID can still authorize through the cold
-	// registry path; account membership is verified by the runner's point describe.
-	if binding.explicit {
-		return e.userNamedInstanceThisTurn(instanceID)
-	}
-	return false
 }
 
-// userNamedInstanceThisTurn verifies the model-supplied ID against the user's
-// own current message. Both the target gate and designation recorder use it.
-func (e *Engine) userNamedInstanceThisTurn(instanceID string) bool {
-	if e == nil || !e.turnContextViewReady || strings.TrimSpace(instanceID) == "" {
-		return false
+// recordInstanceOpsReferent records an actually reached or successfully checked
+// run target as observation, never as a new user-selected authorization proof.
+// A genuine prior user selection may survive for the same instance; a different
+// model-selected run target replaces that stale referent with observed context.
+func (e *Engine) recordInstanceOpsReferent(instanceID string) {
+	if e.sessionState.SelectedInstanceID != instanceID {
+		e.clearSelectedInstance()
 	}
-	return entity.TextExplicitlyMentionsName(e.turnContextViewThisTurn.CurrentQuestion, instanceID)
-}
-
-// userResolvedInstanceThisTurn verifies a non-literal wrapper (for example an
-// access hostname or shell prompt) against the current complete account snapshot.
-// Requiring an explicit, uniquely bound current-turn reference keeps passive list
-// observations and account-single fallback out of authorization provenance.
-func (e *Engine) userResolvedInstanceThisTurn(instanceID string) bool {
-	if e == nil || !e.turnContextViewReady || strings.TrimSpace(instanceID) == "" {
-		return false
-	}
-	binding := e.bindInstanceTarget(e.turnContextViewThisTurn, instanceID)
-	return binding.explicit && binding.bound() &&
-		strings.EqualFold(strings.TrimSpace(binding.id), strings.TrimSpace(instanceID))
+	e.recordObservedInstanceID(instanceID, "")
 }
 
 // instanceOpsCommandStep maps one command-progress event to its StepEvent. The

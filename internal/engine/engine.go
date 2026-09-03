@@ -1334,10 +1334,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.selectedInstanceSourceAtTurnStart = e.sessionState.SelectedInstanceSource
 	e.selectedInstanceFreshnessAtTurnStart = normalizedSelectedInstanceFreshness(e.sessionState)
 	e.instanceResolutionSourceThisTurn = ""
-	// Record the user's own designation of a target NOW, from this turn's words —
-	// after the turn-start snapshot above is frozen, so the trace still reports
-	// what was CARRIED IN rather than what this turn just established.
-	e.recordUserDesignatedInstance()
+	// Target meaning belongs to the Agent reading canonical conversation, not a
+	// turn-entry name scan. Only confirmed workflows and actual tool observations
+	// update the persisted target context.
 	e.refreshSystemPrompt()
 
 	// Trim before appending to guarantee the new user message is never dropped.
@@ -3396,71 +3395,6 @@ func (e *Engine) recordObservedInstanceFromMonitor(raw map[string]any) {
 			e.recordObservedInstanceID(subjectID, "")
 		}
 	}
-}
-
-// recordUserDesignatedInstance persists a target deterministically resolved from
-// this turn's user-authored ID, exact name or displayed-list ordinal. Carried or
-// observed targets do not refresh this proof. A single boundary-safe literal ID
-// is also retained while the registry is cold: persistence is conversational
-// continuity, not account authority, and every operation still performs its
-// normal point lookup and confirmation before execution.
-func (e *Engine) recordUserDesignatedInstance() {
-	if e == nil || !e.sessionStateHydrated || !e.turnContextViewReady {
-		return
-	}
-	binding := e.bindInstanceTarget(e.turnContextViewThisTurn)
-	if binding.conflict {
-		// The user referred to more than one target. Do not let a later bare
-		// "继续" resurrect the previously selected instance after this turn was
-		// correctly refused as ambiguous.
-		e.clearSelectedInstance()
-		return
-	}
-	if !binding.explicit {
-		return
-	}
-	if binding.bound() {
-		e.recordSelectedInstanceIDWithSource(binding.id, "", SelectedInstanceSourceUser)
-		return
-	}
-
-	// A complete snapshot has authoritatively rejected the reference, so never
-	// turn a typo into a selection. On a cold HTTP session, however, the user may
-	// provide an exact ID and receive a prose-only acknowledgement before any tool
-	// warms the registry. Retain exactly one complete, boundary-safe token so the
-	// next "查这台" turn does not lose the user's choice. Wrapped hostnames are not
-	// mistaken for IDs because their consumed token is not a complete-name span.
-	snap := e.RegistrySnapshot()
-	if snap.FreshAndCompleteAt(time.Now()) {
-		e.clearSelectedInstance()
-		return
-	}
-	tokens := snap.InstanceIDTokensInText(e.turnContextViewThisTurn.CurrentQuestion)
-	if len(tokens) != 1 || !entity.TextExplicitlyMentionsName(
-		e.turnContextViewThisTurn.CurrentQuestion, tokens[0]) {
-		e.clearSelectedInstance()
-		return
-	}
-	e.recordSelectedInstanceIDWithSource(tokens[0], "", SelectedInstanceSourceUser)
-}
-
-// refreshInstanceRegistryForStickySelection restores only the deterministic
-// name-resolution data lost when an idle Engine is evicted. It is invoked only
-// when the model actually requests a target-specific in-instance operation, not
-// on unrelated chat turns. It neither selects an account singleton nor records a
-// passive observation as user authority.
-func (e *Engine) refreshInstanceRegistryForStickySelection(ctx context.Context) {
-	if e == nil || e.registry == nil ||
-		e.sessionState.SelectedInstanceSource != SelectedInstanceSourceUser ||
-		e.sessionState.SelectedInstanceAtUnix <= 0 ||
-		!e.registry.NeedsRefresh(time.Now()) {
-		return
-	}
-	raw, ok := e.querySafeReadResult(ctx, "DescribeCompShareInstance", map[string]any{"Limit": 100})
-	if !ok {
-		return
-	}
-	e.syncRegistryFromDescribe(raw)
 }
 
 // clearSelectedInstance removes conversation target authority while preserving

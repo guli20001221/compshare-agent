@@ -56,7 +56,9 @@ type InstanceOpsRunner interface {
 	Run(ctx context.Context, req InstanceOpsRequest, onProgress func(InstanceOpsProgress)) (InstanceOpsVerdict, error)
 }
 
-// InstanceOpsRequest is the resolved, deployment-authorized request handed to the runner.
+// InstanceOpsRequest is the Agent-selected, deployment-authorized request handed
+// to the runner. The runner must resolve this exact ID under the caller's STS
+// identity and bind credentials, audit and execution to that one instance.
 // TurnID is the server-side audit and retry-dedup identity.
 type InstanceOpsRequest struct {
 	TurnID     string
@@ -65,12 +67,6 @@ type InstanceOpsRequest struct {
 	// Context is the versioned, redacted reference data for the inner agent.
 	// It is independent from Task so observations cannot change the dedup hash.
 	Context opscontext.Context
-	// RepairScopeAuthorized is set only after the engine proves that autonomous writes are enabled
-	// and InstanceID is a current explicit or conversation-bound user_selected target. It authorizes
-	// guest-local, non-destructive repair steps that remain inside InstanceID + Task;
-	// the harness still hard-refuses irreversible/form/control-plane effects. Keeping the bit in the
-	// typed request makes a future direct caller fail closed instead of silently inheriting autonomy.
-	RepairScopeAuthorized bool
 }
 
 // Progress kinds emitted by a runner. Connected and command become live StepEvents; background_job
@@ -121,11 +117,17 @@ type InstanceOpsProgress struct {
 	AgentSessionConversationAnchor string
 }
 
-// InstanceOpsVerdict is the terminal root-cause conclusion. Text is the harness's
-// already-scrubbed verdict body; Ran/Refused are the command tallies used for the
-// summary line.
+// InstanceOpsVerdict is the terminal diagnosis or interrupted-run report. Text is
+// the harness's already-scrubbed body; Ran/Refused are independently settled
+// command tallies, not a claim that the user's fault was repaired.
 type InstanceOpsVerdict struct {
 	Text    string
 	Ran     int
 	Refused int
+	// AgentFailed is trusted runner metadata, never inferred from Text. Commands
+	// may already have run, and their results and continuation handles remain valid.
+	AgentFailed bool
+	// ErrClass is the runner's bounded SDK/model failure class. Unknown classes
+	// must become a generic activity code, never customer-visible free-form text.
+	ErrClass string
 }

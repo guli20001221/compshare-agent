@@ -1,9 +1,9 @@
-"""Offline gate for task-scoped repair and explicit inspection (no network / no SSH / no SDK).
+"""Offline gate for task-scoped repair and transport authorization (no network / no SSH / no SDK).
 
 Run:  python test_write_mode.py   ->  exits non-zero on ANY failure.
 
-The deployment remains repair-capable by default, while an explicit inspect tool call removes runtime
-write authority. Three repair-mode properties have to hold:
+The product has one repair-capable tool surface, bounded by the user's complete request.
+Three repair properties have to hold:
 
   1. commands positively proven read-only execute immediately;
   2. every other reversible guest-local effect runs under the one task-scope authorization;
@@ -50,7 +50,7 @@ def dispatch(command):
     run autonomously and which remain hard-refused.
     """
     harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw",
-                      "repair_scope_authorized": True})
+                      "allow_writes": True})
     del harness.AUDIT[:]
     with confirm_stub.approving():
         res = harness.run_command(command)
@@ -113,82 +113,33 @@ res, entry = dispatch("nvidia-smi")
 check("proven-read-runs-without-a-write-tier", res["executed"] is True and
       entry["disposition"] == "ran_read_only")
 
-# --- one prompt and one tool contract: diagnose, repair autonomously, then verify -----------------
-_WRITE_PROMPT = harness.SYSTEM_PROMPT
-_WRITE_PROMPT_FLAT = flat(_WRITE_PROMPT)
+# --- native prompt append and the remote tool interface -------------------------------------------
+# These assertions cover the adapter, not a script of diagnostic decisions. Model behavior
+# (managed-service recovery, artifact provenance, dependency repair) needs real acceptance cases.
+_WRITE_PROMPT = harness.SYSTEM_PROMPT_APPEND
 _WRITE_DESC = flat(harness.TOOL_DESC)
-check("prompt-authorizes-task-scoped-repair",
-      "server has authorized this user-targeted in-instance repair" in _WRITE_PROMPT_FLAT.lower() and
-      "do not ask again for each command" in _WRITE_PROMPT_FLAT)
-check("prompt-names-hard-limits",
-      "Hard refusal is only" in _WRITE_PROMPT and
-      "tenant/control-plane boundary" in _WRITE_PROMPT)
-check("prompt-contract::shared-core", _WRITE_PROMPT.startswith(harness._SYSTEM_PROMPT_CORE))
-check("prompt-contract::completed-read-no-progress-loop",
-      "never repeat a completed read unless state/time changed" in _WRITE_PROMPT_FLAT
-      and "Vary one input or conclude" in _WRITE_PROMPT_FLAT)
-check("prompt-contract::structured",
-      all(section in _WRITE_PROMPT for section in ("## Evidence model", "## Diagnostic loop",
-                                                    "## Authorization:", "## Final response")))
-check("prompt-contract::layered-evidence",
-      all(layer in _WRITE_PROMPT_FLAT for layer in ("Control-plane metadata", "guest state",
-                                                     "application state", "external reachability")))
-check("prompt-contract::outcome-driven",
-      "observable criterion" in _WRITE_PROMPT and "original user success criterion" in _WRITE_PROMPT)
-check("prompt-contract::actual-runtime",
-      "application's real" in _WRITE_PROMPT and "virtualenv or Conda" in _WRITE_PROMPT)
-check("prompt-contract::managed-ownership-invariant",
-      "controller's ownership state" in _WRITE_PROMPT and "drift rather than proof" in _WRITE_PROMPT)
-check("prompt-contract::reconciles-owner-before-start-and-polls-terminal-state",
-      "Reconcile stale children" in _WRITE_PROMPT_FLAT and
-      "Poll manager transitions to a terminal result" in _WRITE_PROMPT_FLAT)
-check("prompt-contract::single-mode-only",
-      "Authorization: diagnose, repair, verify" in _WRITE_PROMPT and
-      "Authorization: diagnosis only" not in _WRITE_PROMPT)
-check("prompt-contract::no-incident-specific-patches",
-      all(token not in _WRITE_PROMPT.lower()
-          for token in ("filebrowser", "main.py", "/start.d/", "8188", "comfyui")))
-check("prompt-contract::within-argv-safe-band", len(_WRITE_PROMPT) < 5000)
-check("prompt-does-not-arbitrate-skills", "OVERRIDE" not in _WRITE_PROMPT)
-check("prompt-names-no-skill", "skill" not in _WRITE_PROMPT.lower())
-
-check("tool-desc-does-not-forbid-writes", "Read-only commands only" not in _WRITE_DESC)
-check("tool-desc-says-changes-run",
-      "Task scope lets" in _WRITE_DESC and "without per-command prompts" in _WRITE_DESC)
-# The contract tells the model to submit an evidence-backed action rather than stopping at prose.
-check("tool-desc-says-send-not-describe", "send the smallest concrete command" in _WRITE_DESC.lower())
-# Hard limits stay stated so the agent does not plan around commands the executor will reject.
-check("tool-desc-keeps-hard-limits",
-      "irreversible" in _WRITE_DESC.lower() and "control-plane crossings" in _WRITE_DESC and
-      "are refused" in _WRITE_DESC)
-check("tool-desc-forbids-invented-platform-entrypoints",
-      "platform-facing port" in _WRITE_DESC and "substitute service" in _WRITE_DESC)
-# Tool descriptions are behavioral contracts, not a growing list of executable-path exceptions.
-check("tool-desc-states-execution-semantics",
-      all(needle in _WRITE_DESC.lower() for needle in
-          ("fresh, non-interactive ssh session", "25 seconds", "proven reads",
-           "exit status")))
-check("tool-description-prefers-the-actual-runtime",
-      "application's actual interpreter" in _WRITE_DESC)
-check("tool-description-requires-managed-ownership",
-      "Reconcile stale children" in _WRITE_DESC)
-check("tool-description-reconciles-owner-and-polls-transition",
-      "Poll manager transitions" in _WRITE_DESC)
-check("tool-desc-contract-stays-general",
-      all(token not in _WRITE_DESC.lower()
-          for token in ("filebrowser", "main.py", "/start.d/", "8188", "python -c")))
-check("tool-desc-contract-stays-focused", len(_WRITE_DESC) < 2000)
-
-_INSPECT_PROMPT = harness.system_prompt_for_scope(False)
-_INSPECT_DESC = flat(harness.tool_desc_for_scope(False))
-check("inspection-prompt-removes-repair-authorization",
-      "Authorization: inspect only" in _INSPECT_PROMPT and
-      "server has authorized this user-targeted in-instance repair" not in _INSPECT_PROMPT.lower())
-check("inspection-prompt-keeps-shared-evidence-and-outcome-contract",
-      _INSPECT_PROMPT.startswith(harness._SYSTEM_PROMPT_CORE) and
-      "## Final response" in _INSPECT_PROMPT and "已核实" in _INSPECT_PROMPT)
-check("inspection-tool-description-forbids-mutation-and-backgrounding",
-      "observation-only" in _INSPECT_DESC and "do not request background" in _INSPECT_DESC)
+check("native-append-describes-remote-not-runner-environment",
+      "remote instance bound to the ssh_ops tools" in flat(_WRITE_PROMPT)
+      and "runner, not the target" in flat(_WRITE_PROMPT))
+check("native-append-keeps-autonomous-execution",
+      "without per-command confirmation" in flat(_WRITE_PROMPT))
+check("native-append-preserves-the-response-envelope",
+      all(status in _WRITE_PROMPT for status in ("已修复", "部分修复", "未修复", "无需修复", "已核实"))
+      and "remaining unverified work" in _WRITE_PROMPT)
+check("native-append-is-not-a-replacement-diagnostic-manual",
+      len(_WRITE_PROMPT) < 1000 and not hasattr(harness, "_SYSTEM_PROMPT_CORE")
+      and not hasattr(harness, "_SYSTEM_PROMPT_REPAIR_MODE"))
+check("remote-tool-description-states-execution-interface",
+      all(term in _WRITE_DESC for term in ("exit status", "fresh, non-interactive SSH session",
+                                          "25 seconds", "without per-command prompts")))
+check("remote-tool-description-states-unavailable-effects",
+      all(term in _WRITE_DESC for term in ("Irreversible", "control-plane crossings", "are refused")))
+check("native-adapter-has-no-incident-specific-recipes",
+      all(term not in (_WRITE_PROMPT + _WRITE_DESC).lower()
+          for term in ("filebrowser", "comfyui", "main.py", "/start.d/", "8188", "supervisor")))
+check("native-adapter-has-no-inspect-repair-selector",
+      not hasattr(harness, "system_prompt_for_scope") and
+      not hasattr(harness, "tool_desc_for_scope"))
 
 # --- the description must not forbid what the executor allows ------------------------------------
 # The description must match executable policy: supported chaining, pipes and redirection cannot be
@@ -248,154 +199,20 @@ check("remote-text-tool-routes-known-files-away-from-shell-readers",
 check("remote-search-tool-is-bounded-and-routes-to-exact-read",
       all(term in harness.remote_search.TOOL_DESCRIPTION
           for term in ("literal text fragment", "never follows symlinks", "8 MiB",
-                       "read_text_file", "not recursive grep through ssh_exec",
-                       "validates every descendant")))
-check("prompt-routes-recursive-content-search-to-structured-tool",
-      "use search_text_tree" in harness.SYSTEM_PROMPT
-      and "use search_text_tree, not" in flat(harness.TOOL_DESC))
-check("remote-glob-tool-is-bounded-and-does-not-run-a-shell",
+                       "read_text_file", "matching run inside the instance"))
+      and "not recursive grep through ssh_exec" not in harness.remote_search.TOOL_DESCRIPTION)
+check("structured-search-remains-available-with-native-prompt",
+      "mcp__ssh_ops__search_text_tree" in harness.ALLOWED_TOOLS)
+check("remote-glob-tool-is-bounded-and-traverses-in-guest",
       all(term in harness.remote_search.FIND_DESCRIPTION
-          for term in ("basename glob", "invokes no remote shell", "never follows symlinks",
+          for term in ("basename glob", "inside the instance", "follows no symlink",
                        "100 paths")))
 check("process-environment-tool-is-selected-and-secret-bounded",
       all(term in harness.process_env.TOOL_DESCRIPTION
           for term in ("caller-selected", "schema allowlist", "credentials")))
 
-# The lane repairs only the assigned fault; broader application replacement or shutdown requires a
-# separate user decision.
-for _name, _needle in [
-    ("states the scope", "repair the diagnosed fault only"),
-    ("names redeploying an app", "Re-downloading an app"),
-    ("names taking a service down", "disabling unrelated service"),
-    ("routes it to the user rather than forbidding it",
-     "needs explicit user intent"),
-    ("keeps prior user intent bounded to continuation", "prior reports only continue unfinished requests"),
-]:
-    check(f"tool-desc-bounds-scope::{_name}", _needle in _WRITE_DESC)
-
-# A form refusal is recoverable by changing syntax, unlike a denied/expired
-# confirmation. The model must receive that distinction directly from its two
-# authoritative prompt surfaces, and neither should call the user an "operator".
-check("write-tool-desc::reformats-form-refusals",
-      "Rewrite only a rejected form" in _WRITE_DESC)
-check("write-system-prompt::reformats-form-refusals",
-      "rejects only the command form" in _WRITE_PROMPT and "rewrite it into a supported plain command" in _WRITE_PROMPT)
-check("write-system-prompt::does-not-manualize-refused-effects",
-      "do not offer a manual/equivalent bypass" in _WRITE_PROMPT)
-check("write-system-prompt::reports-refused-boundary",
-      "report the boundary and what remains unresolved" in _WRITE_PROMPT)
-check("write-system-prompt::does-not-wait-for-per-command-confirmation",
-      "等待你确认" not in _WRITE_PROMPT and "do not ask again for each command" in _WRITE_PROMPT_FLAT)
-check("write-prompts::name-the-user-not-an-operator",
-      "operator" not in _WRITE_DESC and "operator" not in _WRITE_PROMPT)
-
-# The FileBrowser lesson is "do not invent an app's platform entry", NOT "never mention a
-# platform-level operation". Those were briefly the same rule, and the wider one had no way to be
-# satisfied: nothing in the reference context describes a console control (the fact keys are
-# instance/gpu/image/disks/port_hints/tcp_forwards/declared_software/listeners/catalog), so a
-# repair that genuinely needs a reboot could only ever be reported as 未核实 — turning the one
-# correct handoff into a dead end.
-#
-# Naming the boundary is necessary but not sufficient: this verdict ENDS the turn (the Go side
-# returns it behind finalReplyPrefix), so a sentence that only states "this needs a platform-level
-# restart" leaves the user holding a diagnosis with no next move. The rule therefore has to make the
-# model ASK, which is a question the user can answer on the following turn and the outer agent can
-# act on with RebootInstanceWorkflow. Both surfaces carry all four clauses; they are asserted
-# together because a rule present in only one of them is a rule the model may not see.
-check("write-tool-desc-platform-boundary::forbids-invention",
-      "platform-facing port" in _WRITE_DESC and "substitute service" in _WRITE_DESC)
-check("write-system-prompt-platform-boundary::forbids-invention",
-      "invent a platform-facing" in _WRITE_PROMPT and "substitute service" in _WRITE_PROMPT)
-check("write-tool-desc-platform-boundary::names-and-hands-off-restart",
-      "Instance restart is unavailable" in _WRITE_DESC and
-      "ask whether the user wants one" in _WRITE_DESC)
-check("write-system-prompt-platform-boundary::names-and-hands-off-restart",
-      "需要重启实例才能继续" in _WRITE_PROMPT and
-      "ask whether the user wants the instance restarted" in flat(_WRITE_PROMPT) and
-      "Do not bypass those limits" in _WRITE_PROMPT)
-check("write-prompts::distinguish-service-restart-from-instance-reboot",
-      "A process or service restart is not an instance reboot" in _WRITE_PROMPT_FLAT and
-      "A service restart is not an instance reboot" in _WRITE_DESC and
-      "guest-local restart cannot recover" in _WRITE_PROMPT_FLAT and
-      "guest-local restart cannot recover" in _WRITE_DESC)
-check("write-tool-desc::separates-independent-probes",
-      "Each call is one effect" in _WRITE_DESC and
-      "split independent probes" in _WRITE_DESC)
-# The verdict is Chinese, so the sentence the user actually reads is pinned too.
-check("write-system-prompt::states-the-boundary-in-the-verdict-language",
-      "需要重启实例才能继续" in _WRITE_PROMPT)
-# WHICH layer performs the restart is a fact for the model (it is why the guest shell is off
-# limits), not a phrase for the customer. "平台级重启" says nothing a user can act on, and an
-# English "platform-level restart" in the prompt is an invitation for the model to translate it
-# straight into the verdict. Neither spelling may come back on either surface.
-for _surface, _text in [("desc", _WRITE_DESC), ("prompt", _WRITE_PROMPT)]:
-    check(f"write-prompts::no-layer-jargon-in-the-handoff::{_surface}",
-          "platform-level" not in _text and "平台级" not in _text)
-# The over-broad phrasing, verbatim. It is cheaper to name the sentence we removed than to
-# rediscover why reboots stopped being mentioned.
-for _surface, _text in [("desc", _WRITE_DESC), ("prompt", _WRITE_PROMPT)]:
-    check(f"write-prompts::no-facts-gate-on-console-controls::{_surface}",
-          "platform facts establish" not in _text)
-
-# Load-bearing rules live in the prompt or tool description, not in a deleted skill.
-_wp = _WRITE_PROMPT
-_td = _WRITE_DESC
-# The launcher rule was stated in the system prompt and IGNORED (the run went straight to main.py and
-# never opened /start.d — its log mtime never moved). It lives in the TOOL DESCRIPTION now: that is
-# the only channel with evidence of landing (detach protocol adopted verbatim 2/2, system prompt
-# rules 0/3). Asserted in BOTH directions so it cannot quietly drift back to the dead channel.
-check("tooldesc-rule-prefer-image-launcher",
-      "use its existing supervisor/launcher" in _td and "not an inner binary" in _td)
-check("tooldesc-rule-does-not-invent-manager-ownership",
-      "do not invent a unit" in _td and
-      "only a launcher exists" in _td and "report the durability gap" in _td)
-check("prompt-and-tool-do-not-invent-traceback-semantics",
-      "A traceback proves a failure site, not intended" in flat(_wp) and
-      "A traceback proves the failure site, not intended semantics" in _td and
-      "local test" in _wp and "version contract" in _wp and
-      "reversible rollback/disable within scope" in flat(_wp) and
-      "reversible rollback/disable within scope" in _td)
-check("prompt-and-tool-align-on-managed-service-ownership",
-      "use its existing supervisor" in _wp and "use its existing supervisor" in _td)
-check("prompt-and-tool-start-stopped-managed-definition-before-editing",
-      "Start a stopped unit unchanged" in flat(_wp) and
-      "Start a stopped unit's existing definition unchanged" in _td and
-      "STOPPED alone does not implicate" in _wp and "STOPPED alone does not implicate" in _td and
-      all(term in (_wp + _td) for term in ("manager output", "logs", "direct file check")))
-check("prompts-drop-product-specific-launcher-patches",
-      all(token not in (_wp + _td).lower() for token in ("filebrowser", "main.py", "/start.d/")))
-# Replaces the before/after diff, which could not fire: in the fault under test BOTH ports start
-# down, so "was up before" is empty. This asks about the ports the LAUNCHER defines instead, which is
-# exactly the 7860 case — a port the repair never restored rather than one it broke.
-check("tooldesc-rule-verify-every-launcher-port",
-      "verify every endpoint/component it owns" in _td)
-check("prompt-no-longer-carries-port-diff", "list the listening ports" not in _wp)
-check("prompt-rule-verdict-starts-with-status",
-      all(token in _wp for token in ("`已修复`", "`部分修复`", "`未修复`", "`无需修复`", "`已核实`")) and
-      "only for an inspection-only request" in _wp and
-      "no guest\nmutation ran" in _wp and
-      "never describe a read-only check itself as a repair" in _wp)
-check("prompt-rule-verdict-stays-compact",
-      "Then include `已完成` and, only when needed, `下一步`" in _wp and
-      "结论 / 证据 / 确证vs推测" not in _wp)
-check("prompt-rule-own-failed-commands",
-      "attempts that ran but failed" in _wp and "label it as your action" in _wp and
-      "pending or denied operation as executed" in _wp)
-# The verdict shape must NOT be delegated to a skill the model never opens.
-check("prompt-does-not-delegate-verdict-to-skill",
-      "in the form `instance-repair` specifies" not in _wp)
-# argv ceiling: a prior length probe (N=3/size) initialized cleanly through 6000 chars and died with
-# an instant exit-1 near 12000. Stay inside the VERIFIED band, not merely under the cliff.
-check("prompt-within-verified-length-band", len(_wp) < 6000)
-# The four rules the deleted instance-repair skill carried now have to live where the model actually
-# reads them, or deleting it lost something. Each is asserted against the live prompt/description
-# rather than against a file, which is the whole point of the move.
-check("repair-rule-executed-section-survives", "In `已完成`" in _wp)
-check("repair-rule-long-job-lifecycle-survives",
-      "run_in_background=true" in _td and "timed-out foreground command" in _td and
-      "terminal poll frees the slot" in _td)
-check("repair-rule-own-failed-attempts-survives",
-      "attempts that ran but failed" in _wp and "label it as your action" in _wp)
+# Tool failures themselves carry the executable boundary; do not duplicate their prose
+# into the native system prompt or force a scenario-specific recovery sequence.
 
 # The working root is the real boundary, and it outlived the skills. The CLI discovers content by
 # walking UP from cwd, so anything left on disk near it is reachable by the operations agent. Nothing

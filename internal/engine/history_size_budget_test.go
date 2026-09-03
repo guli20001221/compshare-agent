@@ -30,7 +30,7 @@ func shortTurnEngine(t *testing.T) *Engine {
 func TestReplayWindowIsLimitedBySize(t *testing.T) {
 	e := shortTurnEngine(t)
 
-	pairs := e.recentCompleteConversationPairs()
+	pairs := e.recentConversationPairs()
 
 	require.Less(t, conversationPairsRunes(pairs), maxReplayedHistoryRunes,
 		"premise: %d short exchanges must genuinely fit the budget, or this test is "+
@@ -110,7 +110,7 @@ func TestRecordedTurnKeyDoesNotConfuseAmbiguousSplits(t *testing.T) {
 		}},
 	}}
 
-	pairs := e.recentCompleteConversationPairs()
+	pairs := e.recentConversationPairs()
 
 	require.Len(t, pairs, 1)
 	assert.Empty(t, pairs[0].Transcript,

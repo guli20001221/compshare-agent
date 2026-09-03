@@ -280,10 +280,8 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 		"model":       s.Model,
 		"task":        task, // NL request -> stdin, off the host process table
 		"context":     modelContext,
-		// Server-proven repair-scope authorization is deliberately separate from model-visible context. A new
-		// harness uses it to execute in-scope guest repairs without command-by-command cards; an old
-		// harness ignores it and is supported by the adapter's internal confirmer.
-		"repair_scope_authorized": modelContext.RepairScopeAuthorized,
+		// This private transport capability comes only from the server callback, never model input.
+		"allow_writes": onConfirm != nil,
 		// SessionRoot and AgentSession are private control-plane continuation metadata. They contain
 		// no transcript or credential and never enter the prompt/audit payload.
 		"agent_session": agentSession,

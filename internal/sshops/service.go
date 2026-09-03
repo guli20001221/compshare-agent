@@ -109,9 +109,8 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 	if s.audit == nil {
 		return Result{}, fmt.Errorf("sshops: no audit writer configured, refusing to run (fail-closed)")
 	}
-	// A missing confirmer is not implicit repair authority. Direct/legacy callers may still diagnose,
-	// while every compatibility confirmation receives Approved=false. The product path supplies the
-	// engine-verified repair scope and an internal confirmer only for rolling-version compatibility.
+	// Direct callers without a server callback retain observation access only. The product adapter
+	// supplies the callback after deployment authorization and deterministic target binding.
 	if strings.TrimSpace(task) == "" {
 		task = DefaultDiagnosisTask
 	}
@@ -140,7 +139,7 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 	task = security.RedactKnownAuthorizationText(task, authorizations)
 
 	phase := "read_only"
-	if modelContext.RepairScopeAuthorized {
+	if onConfirm != nil {
 		phase = "read_write"
 	}
 	ev := AuditEvent{
@@ -151,9 +150,7 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 		OrganizationID:    owner.OrganizationID,
 		InstanceID:        cred.InstanceID,
 		Task:              task,
-		// The phase is what the box was ENTERED under, not what commands happened to run. An inspect
-		// session stays read_only even if the model attempted a refused mutation; a repair-authorized
-		// session stays read_write even when diagnosis proved no change was necessary.
+		// Phase records the private transport capability, not whether a command changed the guest.
 		Phase:                phase,
 		ContextSchemaVersion: modelContext.SchemaVersion,
 		ContextFactCoverage:  modelContext.Coverage,

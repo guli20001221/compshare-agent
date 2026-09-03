@@ -248,6 +248,9 @@ func highFanoutEngine(t *testing.T, reads, perResult int) *Engine {
 		})
 	}
 
+	e.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
+		e, currentFanoutQuestion, "t", time.Unix(1_800_000_000, 0))
+	e.turnContextViewReady = true
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role: openai.ChatMessageRoleUser, Content: currentFanoutQuestion,
 	})
@@ -263,8 +266,5 @@ func highFanoutEngine(t *testing.T, reads, perResult int) *Engine {
 		)
 	}
 
-	e.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
-		e, currentFanoutQuestion, "t", time.Unix(1_800_000_000, 0))
-	e.turnContextViewReady = true
 	return e
 }

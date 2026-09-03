@@ -39,6 +39,10 @@ CLASSIFY_CASES = [
     ("lsblk -f", "read_only"),                        # r2 FP: -f = --fs, not follow
     ("hostname", "read_only"),
     ("pstree -aps 63", "read_only"),
+    ("/root/miniconda3/bin/python3.10 --version", "read_only"),
+    ("/usr/bin/python3.10 -V", "read_only"),
+    ("/root/miniconda3/bin/python3.10 --version /tmp/change.py", "mutating"),
+    ("/root/miniconda3/bin/python3.10 --version > /tmp/version.txt", "mutating"),
     ("env -u CUDA_VISIBLE_DEVICES /root/miniconda3/bin/python3.10 -c 'import torch; print(torch.cuda.is_available()); print(torch.cuda.device_count())'", "read_only"),
     ("CUDA_VISIBLE_DEVICES=-1 /root/miniconda3/bin/python3.10 -c 'import torch; print(torch.cuda.is_available()); print(torch.cuda.device_count())'", "read_only"),
     ("CUDA_VISIBLE_DEVICES=0 touch /tmp/x", "mutating"),
@@ -302,6 +306,12 @@ CLASSIFY_CASES = [
     ("du -sh /root/* | sort -h | tail", "read_only"),       # glob under /root piped to safe filters
     ("cat /proc/net/tcp", "read_only"),                     # ss/netstat fallback: socket table
     ("cat /proc/net/tcp6", "read_only"),
+    ("cat /etc/resolv.conf", "read_only"),
+    ("cat /proc/net/dev", "read_only"),
+    ("cat /proc/net/route", "read_only"),
+    ("cat /etc/resolv.conf /proc/net/dev /proc/net/route", "read_only"),
+    ("cat /etc/resolv.conf > /tmp/resolver-copy", "mutating"),
+    ("cat /proc/net/route /root/.ssh/id_rsa", "mutating"),
     ("awk 'NR>1 && $4==\"0A\" {print}' /proc/net/tcp /proc/net/tcp6", "read_only"),
     ("cat /proc/net/tcp | awk '$4==\"0A\" {print}'", "read_only"),
     ("tr '\\0' ' ' < /proc/63/cmdline", "read_only"),
@@ -335,7 +345,7 @@ CLASSIFY_CASES = [
     ("du /var/lib/mysql", "mutating"),                      # /var not opened for du
     ("ls -la /root/models", "read_only"),                   # customer app metadata, never file content
     ("cat /root/.bashrc", "mutating"),                      # content read of /root stays refused
-    ("cat /proc/net/dev", "mutating"),                      # allowlist is EXACT — only tcp/udp added
+    ("cat /proc/net/unix", "mutating"),                     # network reads remain exact-path scoped
 
     # === F6: balanced quotes with no expansion are inert argv data ================================
     # Single quotes never expand. Double quotes are also safe after the raw substitution/variable
@@ -719,6 +729,34 @@ CLASSIFY_CASES = [
     ("systemctl stop ssh", "destructive"),
     ("systemctl disable --now sshd", "destructive"),
     ("systemctl --now mask NetworkManager", "destructive"),
+    # A reversible application restart must not become a recovery-channel lockout by substring.
+    ("sudo systemctl restart sshops-regression.service", "mutating"),
+    ("systemctl restart ssh-dashboard.service", "mutating"),
+    ("systemctl restart network-dashboard.service", "mutating"),
+    ("service ssh-dashboard restart", "mutating"),
+    ("service network-dashboard restart", "mutating"),
+    ("systemctl restart nginx.service | grep ssh", "mutating"),
+    ("systemctl restart nginx.service; grep -E 'ssh|network' /tmp/app.log", "mutating"),
+    ("systemctl restart ssh.service", "destructive"),
+    ("sudo systemctl restart sshd.service", "destructive"),
+    ("systemctl restart network", "destructive"),
+    ("systemctl restart networking.service", "destructive"),
+    ("systemctl restart systemd-networkd.service", "destructive"),
+    ("systemctl stop ssh.socket", "destructive"),
+    ("systemctl stop sshd@client.service", "destructive"),
+    ("systemctl stop nginx.service ssh.service", "destructive"),
+    ("systemctl --no-block restart 'ssh.service'", "destructive"),
+    ("service ssh restart", "destructive"),
+    ("service sshd reload", "destructive"),
+    ("service network restart", "destructive"),
+    ("service 'networking' stop", "destructive"),
+    ("sudo timeout 10 systemctl restart sshd.service", "destructive"),
+    ("env -S 'systemctl restart ssh.service'", "destructive"),
+    ("bash -c 'systemctl restart ssh.service'", "destructive"),
+    ("printf '%s' 'systemctl stop sshd' | sh", "destructive"),
+    ("systemctl --property='Description|Names' restart ssh", "destructive"),
+    # Opaque shell payloads retain the raw rule; this does not add a nested-shell parser.
+    ("bash -c 'systemctl restart nginx.service | grep ssh'", "destructive"),
     # High-impact but reversible guest-local changes belong behind an exact approval card rather
     # than in the hard-refusal tier.
     ("chmod 777 /workspace/app", "mutating"),
@@ -886,6 +924,155 @@ CLASSIFY_CASES = [
     ("evil -q", "mutating"),
     ("unknown-tool --status", "mutating"),
 ]
+
+
+# A real native-history log scan was refused solely because its regex contained "shutdown".
+# Program words in data must not become irreversible effects, but this dynamic/context grep is
+# still NOT a positively proven read: it remains mutating and uses the established repair scope.
+PROGRAM_WORD_SEARCH_LOOP = (
+    'for f in /root/sshops-behavior-history-20260902/logs/*.log; do echo "--- $f"; '
+    "grep -Ein -C 3 'error|exception|traceback|queue|cancel|interrupt|killed|oom|out of memory|"
+    "shutdown|disconnect|failed|sqlite|database|crash' \"$f\" | tail -160; done"
+)
+# Exact multi-command native-history probe from a real refusal. Label printing is data, not a
+# shell execution consumer; a diagnostic word in a later grep must not revoke the whole request.
+NATIVE_HISTORY_PRINTF_SEARCH = (
+    "printf '%s\\n' '--- native-01 markers ---'; grep -nE "
+    "'got prompt|Prompt executed|ERROR|Traceback|0%|100%|Killed|shutdown|exit|signal' "
+    "/root/sshops-behavior-history-20260902/logs/comfyui-native-01.log; "
+    "printf '%s\\n' '--- native-02 markers ---'; grep -nE "
+    "'got prompt|Prompt executed|ERROR|Traceback|0%|100%|Killed|shutdown|exit|signal' "
+    "/root/sshops-behavior-history-20260902/logs/comfyui-native-02.log; "
+    "printf '%s\\n' '--- native-03 markers ---'; grep -nE "
+    "'got prompt|Prompt executed|ERROR|Traceback|0%|100%|Killed|shutdown|exit|signal' "
+    "/root/sshops-behavior-history-20260902/logs/comfyui-native-03.log"
+)
+CLASSIFY_CASES += [
+    (NATIVE_HISTORY_PRINTF_SEARCH, "read_only"),
+    (PROGRAM_WORD_SEARCH_LOOP, "mutating"),
+    (PROGRAM_WORD_SEARCH_LOOP.replace("|shutdown", ""), "mutating"),
+    ("grep -E 'shutdown|oom' /root/comfy.log", "read_only"),
+    ("grep -E 'shutdown|oom' /var/log/syslog", "mutating"),
+    ("grep -E 'shutdown|oom' /etc/shadow", "mutating"),
+    ("grep -C 3 'shutdown|oom' /root/comfy.log", "mutating"),
+    ('grep shutdown "$log"', "mutating"),
+    ("grep shutdown --help", "mutating"),
+    ("cat /root/shutdown.log", "read_only"),
+    ("/usr/bin/grep -E 'shutdown|oom' /root/comfy.log", "read_only"),
+    ("printf '%s' shutdown", "read_only"),
+    ("echo shutdown | cat | grep shutdown | tail -5", "read_only"),
+    ("echo shutdown; echo reboot", "read_only"),
+    ("echo shutdown\ncat /root/reboot.log", "read_only"),
+    ('for x in shutdown reboot; do echo "$x"; done', "read_only"),
+    # Another effect rule is never suppressed just because all program words were data.
+    ("grep 'rm -rf /' /root/comfy.log", "destructive"),
+    ("echo 'dd of=/dev/vda'", "destructive"),
+    ("echo 'init 0'", "destructive"),
+    # Invocation, indirection, wrappers, argv consumers and stdin->code remain refused.
+    ("'shutdown' -h now", "destructive"),
+    ('"/sbin/shutdown" -h now', "destructive"),
+    ("sudo -n shutdown -h now", "destructive"),
+    ("/usr/bin/sudo shutdown -h now", "destructive"),
+    ("sudo -s shutdown", "destructive"),
+    ("nohup shutdown -h now", "destructive"),
+    ("timeout 3 shutdown -h now", "destructive"),
+    ("command shutdown -h now", "destructive"),
+    ("exec shutdown -h now", "destructive"),
+    ("env A=1 shutdown -h now", "destructive"),
+    ("env -S 'shutdown -h now'", "destructive"),
+    ("env --split-string='shutdown -h now'", "destructive"),
+    ("bash -ec 'shutdown -h now'", "destructive"),
+    ("busybox sh -c 'shutdown -h now'", "destructive"),
+    ("printf 'shutdown -h now' | sh", "destructive"),
+    ("echo shutdown | cat | /bin/bash", "destructive"),
+    ('echo shutdown | "$SHELL"', "destructive"),
+    ("eval shutdown", "destructive"),
+    ("python3 -c 'import os; os.system(\"shutdown -h now\")'", "destructive"),
+    ('x=shutdown; "$x" -h now', "destructive"),
+    ('for x in shutdown; do "$x" -h now; done', "destructive"),
+    ("if true; then shutdown -h now; fi", "destructive"),
+    ("echo ok & shutdown -h now", "destructive"),
+    ("case x in x) shutdown;; esac", "destructive"),
+    ("f() { shutdown; }; f", "destructive"),
+    (r"find /root -exec shutdown -h now \;", "destructive"),
+    ("sort --compress-program=shutdown /root/comfy.log", "destructive"),
+    ("echo shutdown | sort --compress-program=sh", "destructive"),
+    ("grep shutdown /root/comfy.log; shutdown --help", "destructive"),
+    ("shutdown --help", "destructive"),
+    # Known helper blind spots deliberately retain the raw gate, even for benign data.
+    ("wrapper --unknown shutdown", "destructive"),
+    ("nohup --unknown=shutdown echo ok", "destructive"),
+    ("sudo grep shutdown /root/comfy.log", "destructive"),
+    ("/root/grep shutdown /root/comfy.log", "destructive"),
+    ("grep 'shutdown /root/comfy.log", "destructive"),
+    ("echo ok # '\nshutdown\n# '", "destructive"),
+    ('echo ok # "\nshutdown\n# "', "destructive"),
+    (r'echo "escaped\" shutdown"', "destructive"),
+    (r"printf '%s\n' shutdown", "read_only"),
+    ('echo shutdown "${value@P}"', "destructive"),
+    ('echo shutdown "$[value]"', "destructive"),
+    ("printf -v x '%s%s%s' 'a[$' '(shutdown)' ']'; printf -v 'a[x]' hi", "destructive"),
+    ('for f in -v; do printf "$f" x \'%s%s%s\' \'a[$\' \'(shutdown)\' \']\'; '
+     'printf "$f" \'a[x]\' hi; done', "destructive"),
+    ("printf -v x shutdown", "destructive"),
+    ("printf '%n' shutdown", "destructive"),
+    ('echo "$(printf shutdown)"', "destructive"),
+    ("grep shutdown /root/comfy.log > /tmp/read-result", "destructive"),
+    ("grep shutdown /root/comfy.log && true", "read_only"),
+    # Common data consumers use the same proof even when their read tier remains conservative.
+    ("printf '%s\\n' '# shutdown markers'; grep -C 3 shutdown /root/comfy.log", "mutating"),
+    ("printf 'shutdown\\n'", "read_only"),
+    ("printf -- '%s\\n' shutdown", "read_only"),
+    ("printf '%s=%08x %.2f\\n' shutdown 1 2", "read_only"),
+    ("printf '%s\\n' shutdown > /tmp/diagnostic.txt", "destructive"),
+    ("printf '%s\\n' shutdown > /etc/ssh/sshd_config", "destructive"),
+    ("printf '%s\\n' shutdown > /dev/nvme0n1", "destructive"),
+    ("printf '%s\\n' shutdown > /dev/vda", "destructive"),
+    ("printf '%s\\n' shutdown 1>&2", "read_only"),
+    ("dmesg -T | grep -Ei 'shutdown|reboot|halt|poweroff' | tail -50", "read_only"),
+    ("journalctl -n 100 --no-pager | grep -Ei 'shutdown|reboot|error'", "read_only"),
+    ("systemctl status shutdown-helper.service --no-pager", "read_only"),
+    ("grep -nE 'shutdown|reboot' /root/comfy.log 2>/dev/null | tail -20", "read_only"),
+    # Interpreter code is not a data-consumer proof. Keep the raw gate even for benign strings;
+    # the existing Python read-tier heuristic is not a binding/receiver execution analysis.
+    ('''python3 -c 'import json; print({"shutdown": True, "reboot": False})' ''', "destructive"),
+    ('''python3 -c 'import torch; print("shutdown diagnostic", torch.cuda.is_available())' ''', "destructive"),
+    ('''/opt/venv/bin/python3.12 -c 'print(open("/root/shutdown.log").read())' ''', "destructive"),
+    ('''python3 -c 'state={"shutdown": False}; print(state)' ''', "destructive"),
+    ('''python3 -c 'import os; print = os.system; print("shutdown -h now")' ''', "destructive"),
+    ('''python3 -c 'import os; len = os.system; len("shutdown -h now")' ''', "destructive"),
+    ('''python3 -c 'import os; import platform; platform = os; platform.system("shutdown -h now")' ''', "destructive"),
+    ('''python3 -c 'import os; import platform; platform.system = os.system; platform.system("shutdown -h now")' ''', "destructive"),
+    ('''python3 -c 'import os; os.system("shutdown -h now")' ''', "destructive"),
+    ('''python3 -c 'import subprocess; subprocess.run(["shutdown", "-h", "now"])' ''', "destructive"),
+    ('''python3 -c 'import os; [print("shutdown") for print in [os.system]]' ''', "destructive"),
+    ('''python3 -c 'import os; platform = os; platform.system("shutdown -h now")' ''', "destructive"),
+    ('''python3 -c 'import os; sysconfig = os; sysconfig.system("shutdown -h now")' ''', "destructive"),
+    ('''python3 -c 'from os import system as f; f("shutdown -h now"); from platform import system as f' ''', "destructive"),
+    ('''python3 -c 'import os; type("Runner", (), {"get": os.system}).get("shutdown -h now")' ''', "destructive"),
+    # Output conversion is deliberately not a shell-variable/format-program parser.
+    ("printf -- '%n' shutdown", "destructive"),
+    ("printf '%5n' shutdown", "destructive"),
+    ("printf '%*n' 1 shutdown", "destructive"),
+    ("printf '%s%n' marker shutdown", "destructive"),
+    ('''printf "$format" shutdown''', "destructive"),
+    ('''printf '%s\\n' shutdown | sh''', "destructive"),
+    ('''printf '%s\\n' shutdown | sudo sh''', "destructive"),
+    ('''printf '%s\\n' shutdown | sort --compress-program=sh''', "destructive"),
+    ('''printf '%s\\n' shutdown | python3 -c 'import os; os.system(input())' ''', "destructive"),
+    # No new heredoc grammar: an unproven interpreter payload retains the original raw gate.
+    ("python3 - <<'PY'\nprint('shutdown')\nPY", "destructive"),
+]
+for program in (
+    "unlink", "shred", "mkfs.ext4", "wipefs", "blkdiscard", "lvremove", "vgremove",
+    "pvremove", "lvreduce", "vgreduce", "shutdown", "reboot", "halt", "poweroff",
+    "userdel", "groupdel", "chpasswd", "usermod",
+):
+    CLASSIFY_CASES.extend([
+        (f"{program} --help", "destructive"),
+        (f"echo {program}", "read_only"),
+        (f"grep '{program}' /root/comfy.log", "read_only"),
+    ])
 
 
 def run_classify():

@@ -109,6 +109,20 @@ func TestKnowledgeToolExcludesCurrentPlatformFacts(t *testing.T) {
 	require.Contains(t, description, "对应只读能力")
 }
 
+// This checks the generated, model-visible boundary; choosing the correct
+// object in a real conversation remains a real-model acceptance requirement.
+func TestReinstallProposalDescribesWholeInstanceNotGuestPackages(t *testing.T) {
+	var description string
+	for _, tool := range centralAgentToolWindow(true, true) {
+		if tool.Function != nil && tool.Function.Name == "RequestReinstallInstance" {
+			description = tool.Function.Description
+			break
+		}
+	}
+	require.Contains(t, description, "重装实例操作系统或替换整个运行镜像")
+	require.Contains(t, description, "不用于重装软件包或依赖")
+}
+
 func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {
 	shapes := []struct {
 		name        string

@@ -43,6 +43,8 @@ type fakeDiagnoser struct {
 	calls          int
 	output         string
 	steps          []sshops.Step
+	agentFailed    bool
+	errClass       string
 	err            error
 	lastOwner      sshops.Owner
 	lastInstanceID string
@@ -63,7 +65,7 @@ func (f *fakeDiagnoser) DiagnoseWithContext(_ context.Context, _ sshops.Describe
 	if f.err != nil {
 		return sshops.Result{}, f.err
 	}
-	return sshops.Result{Output: f.output, Steps: f.steps}, nil
+	return sshops.Result{Output: f.output, Steps: f.steps, AgentFailed: f.agentFailed, ErrClass: f.errClass}, nil
 }
 
 // fakeLimiter returns a fixed allow/deny and records the class it was asked about.
@@ -129,10 +131,9 @@ func TestInstanceOpsRunner_TaskScopeAuthorizationApprovesLegacyConfirm(t *testin
 	r := newInstanceOpsRunner(diag, noopDescriber{}, &fakeLimiter{allow: true})
 
 	_, err := r.Run(userCtx(), engine.InstanceOpsRequest{
-		TurnID:                "turn-scope-auth",
-		InstanceID:            "uhost-x",
-		Task:                  "修复服务",
-		RepairScopeAuthorized: true,
+		TurnID:     "turn-scope-auth",
+		InstanceID: "uhost-x",
+		Task:       "修复服务",
 	}, func(engine.InstanceOpsProgress) {})
 
 	require.NoError(t, err)
@@ -140,24 +141,23 @@ func TestInstanceOpsRunner_TaskScopeAuthorizationApprovesLegacyConfirm(t *testin
 	decision := diag.lastConfirm(sshops.ConfirmRequest{Command: "systemctl restart demo"})
 	require.True(t, decision.Approved)
 	require.Empty(t, decision.TerminalReason)
-	require.True(t, diag.lastContext.RepairScopeAuthorized,
-		"the trusted request bit must reach the private harness context")
 }
 
-// A direct caller cannot smuggle authorization through Context: only the engine request bit is
-// trusted. Keeping the confirmer nil makes Service's existing write-mode precondition fail closed.
-func TestInstanceOpsRunner_MissingTaskScopeAuthorizationDoesNotConstructLegacyConfirmer(t *testing.T) {
-	diag := &fakeDiagnoser{output: "不应执行"}
+func TestInstanceOpsRunner_InspectionRequestKeepsTheSamePrivateTransport(t *testing.T) {
+	diag := &fakeDiagnoser{output: "已核实"}
 	r := newInstanceOpsRunner(diag, noopDescriber{}, &fakeLimiter{allow: true})
+	modelContext := opscontext.Context{ConversationHistory: []opscontext.ConversationMessage{{
+		Role: opscontext.ConversationRoleUser, Content: "只检查 uhost-x 的服务，不要修改",
+	}}}
 
 	_, err := r.Run(userCtx(), engine.InstanceOpsRequest{
-		TurnID: "turn-no-auth", InstanceID: "uhost-x", Task: "修复服务",
-		Context: opscontext.Context{RepairScopeAuthorized: true},
+		TurnID: "turn-inspect", InstanceID: "uhost-x", Task: "检查服务",
+		Context: modelContext,
 	}, func(engine.InstanceOpsProgress) {})
 
 	require.NoError(t, err)
-	require.Nil(t, diag.lastConfirm)
-	require.False(t, diag.lastContext.RepairScopeAuthorized)
+	require.NotNil(t, diag.lastConfirm)
+	require.Equal(t, modelContext, diag.lastContext)
 }
 
 // The activity stream: one synthesized "connected" (exactly once, before the first command) then one
@@ -230,6 +230,55 @@ func TestInstanceOpsRunner_NoConnectedWhenNoCommands(t *testing.T) {
 	require.Empty(t, got, "no command settled → no connected, no command events")
 	require.Equal(t, 0, verdict.Ran)
 	require.Equal(t, 0, verdict.Refused)
+}
+
+func TestInstanceOpsRunner_PreservesTypedAgentFailureAndSettledCommands(t *testing.T) {
+	for _, afterCommands := range []bool{false, true} {
+		t.Run(fmt.Sprintf("after_commands_%t", afterCommands), func(t *testing.T) {
+			diag := &fakeDiagnoser{
+				output: "诊断中断：已保留本轮执行记录。", agentFailed: true, errClass: "server_error",
+			}
+			if afterCommands {
+				diag.steps = []sshops.Step{
+					{Command: "systemctl status app", Tier: "read_only", Disposition: "ran", ExitCode: intp(3)},
+					{Command: "systemctl restart app", Tier: "mutating", Disposition: "ran", ExitCode: intp(0)},
+					{Command: "reboot", Tier: "destructive", Disposition: "refused"},
+					{Command: "cat /var/log/app.log", Tier: "read_only", Disposition: "failed"},
+				}
+			}
+			var progress []engine.InstanceOpsProgress
+			r := newInstanceOpsRunner(diag, noopDescriber{}, nil)
+			verdict, err := r.Run(userCtx(), engine.InstanceOpsRequest{TurnID: "agent-failed", InstanceID: "uhost-x", Task: "repair app"},
+				func(p engine.InstanceOpsProgress) { progress = append(progress, p) })
+
+			require.NoError(t, err, "a deliverable partial verdict must not become a generic transport error")
+			require.True(t, verdict.AgentFailed)
+			require.Equal(t, "server_error", verdict.ErrClass)
+			require.Equal(t, diag.output, verdict.Text)
+			require.Equal(t, 1, diag.calls, "never replay writes after a model error")
+			if afterCommands {
+				require.Equal(t, 2, verdict.Ran)
+				require.Equal(t, 1, verdict.Refused)
+				require.Len(t, progress, 5)
+				require.Equal(t, "mutating", progress[2].Tier)
+			} else {
+				require.Zero(t, verdict.Ran)
+				require.Zero(t, verdict.Refused)
+				require.Empty(t, progress, "an SDK failure before commands cannot synthesize a connected event")
+			}
+		})
+	}
+}
+
+func TestInstanceOpsRunner_DoesNotInferAgentFailureFromVerdictText(t *testing.T) {
+	diag := &fakeDiagnoser{output: `> ❌ {"code":"server_error","type":"server_error","message":"quoted application response"}`}
+	r := newInstanceOpsRunner(diag, noopDescriber{}, nil)
+	verdict, err := r.Run(userCtx(), engine.InstanceOpsRequest{TurnID: "quoted-error", InstanceID: "uhost-x", Task: "explain the app response"},
+		func(engine.InstanceOpsProgress) {})
+	require.NoError(t, err)
+	require.False(t, verdict.AgentFailed)
+	require.Empty(t, verdict.ErrClass)
+	require.Equal(t, diag.output, verdict.Text)
 }
 
 // A nil limiter skips the rate check but still runs the diagnosis.

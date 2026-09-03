@@ -77,7 +77,7 @@ check("legacy-handshake-null-session-and-empty-root-keeps-one-shot-mode",
       harness.normalize_agent_session(None, "", _AGENT_SESSION_MODEL) is None)
 check("rolling-deploy-immediately-previous-agent-contract-degrades-to-one-shot",
       harness.normalize_agent_session({
-          "session_id": _AGENT_SESSION_ID, "contract": "sshops-agent-v2",
+          "session_id": _AGENT_SESSION_ID, "contract": "sshops-agent-v5",
           "model": _AGENT_SESSION_MODEL, "resume": True,
       }, os.path.abspath("agent-session-root"), _AGENT_SESSION_MODEL) is None)
 check("conversation-anchor-normalizes-canonical-lowercase-digest",
@@ -133,41 +133,16 @@ for bad in ['{"user":"u","port":22,"password":"x"}',     # missing host
 harness.set_conn(conn)
 check("cred-not-in-environ", "Pl4inPwd77x" not in "".join(os.environ.values()))
 check("secrets-has-pw-and-b64", harness._secrets()[0] == "Pl4inPwd77x" and len(harness._secrets()) == 2)
-_prompt_flat = " ".join(harness.SYSTEM_PROMPT.split())
-check("prompt-does-not-infer-events-from-absence-or-time-order",
-      "Absence, timestamps or parent PID do not prove history" in _prompt_flat and
-      "name no restart, rebuild, crash, eviction or actor" in _prompt_flat)
-check("prompt-stops-discovery-after-repair-path-is-proven",
-      "never repeat a completed read unless state/time changed" in _prompt_flat and
-      "Vary one input or conclude" in _prompt_flat and
-      "avoid history, backups and unrelated trees" in _prompt_flat)
-check("prompt-prefers-direct-environment-interpreter",
-      "invoke it directly" in _prompt_flat and
-      "instead of sourcing an activation script" in _prompt_flat)
-check("prompt-verifies-platform-manual-runtime-and-ownership-scope",
-      "unknown platform-managed contract or manual/agent ownership boundary" in _prompt_flat and
-      "search platform knowledge" in _prompt_flat and
-      "resource/runtime/ownership before applying" in _prompt_flat and
-      "never invent a launcher across host/guest/manager scopes" in _prompt_flat)
-check("prompt-does-not-call-reproduction-a-repair",
-      "reproduction, compatibility probe, or fault injection is not a repair" in _prompt_flat and
-      "corrected the user's original fault" in _prompt_flat and
-      "post-change" in _prompt_flat and
-      "success criterion remains untested" in _prompt_flat and
-      "one confirmed failure path is removed" in _prompt_flat)
-check("prompt-does-not-call-a-failed-probe-no-repair-needed",
-      "positive observation proves the original user success criterion" in _prompt_flat and
-      "inspection-only run or absence of a state change does not justify" in _prompt_flat and
-      "failed or inconclusive diagnostic/reproduction/repair" in _prompt_flat and
-      "is `未修复`, not `无需修复`" in _prompt_flat)
-check("prompt-has-an-inspection-success-outcome",
-      "For inspection, answer `已核实` only after observing the requested facts without mutation" in _prompt_flat and
-      "`已核实` only for an inspection-only request" in _prompt_flat and
-      "no guest mutation ran" in _prompt_flat)
-check("prompt-requires-runtime-reload-after-on-disk-change",
-      "do not affect a running process until reload/restart" in _prompt_flat and
-      "file checks are not runtime verification" in _prompt_flat and
-      "original criterion are rechecked" in _prompt_flat)
+# The native Claude Code preset owns general diagnosis. Adapter prose is intentionally
+# limited; SDK option/argv tests below verify that it appends rather than replaces.
+check("native-prompt-append-is-bounded", len(harness.SYSTEM_PROMPT_APPEND) < 1000)
+check("remote-shell-discloses-launch-context-without-image-specific-recipe",
+      all(text in harness.TOOL_DESC for text in (
+          "does not inherit", "original launcher/configuration", "working directory",
+          "required environment", "within the guest without printing",
+          "original authenticated behavior", "owns the actual listener"))
+      and all(text not in harness.TOOL_DESC for text in (
+          "/proc/1", "JUPYTER_TOKEN", "FileBrowser", "/usr/supervisor")))
 check("platform-auth-comparison-does-not-call-hidden-url-credentials-unauthenticated",
       "baseline without the caller-provided Authorization header" in
           harness.endpoint_probe.tool_description(
@@ -515,7 +490,7 @@ check("context-v3-establishes-role-complete-conversation-as-the-request",
           "Follow its latest user message",
           "use earlier user and assistant messages to resolve references, choices, parameters and work",
           "Conversation is not proof of the instance's current state",
-          "perform zero writes and follow the mode-specific final response contract")))
+          "perform zero writes and follow the final response contract")))
 check("context-keeps-labelled-ocr-as-evidence-not-effect-approval",
       "screenshot OCR may identify the symptom" in _rendered_context_prompt and
       "fallible evidence" in _rendered_context_prompt)
@@ -569,7 +544,7 @@ _generic_scope_prompt = harness.render_prompt("inspect the reported symptom", {
     "conversation_history": [{"role": "user", "content": "the requested endpoint is unavailable"}],
 })
 check("scope-contract-has-no-incident-specific-runtime-patch",
-      all(term not in (harness.SYSTEM_PROMPT + harness.TOOL_DESC + _generic_scope_prompt).lower()
+      all(term not in (harness.SYSTEM_PROMPT_APPEND + harness.TOOL_DESC + _generic_scope_prompt).lower()
           for term in ("filebrowser", "comfyui", "8188", "main.py", "/start.d/")))
 check("context-carries-labelled-screenshot-error-as-reference",
       "截图 OCR" in _rendered_context_prompt and
@@ -1235,21 +1210,15 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
         check("inv9-real-options-have-only-the-in-process-ssh-ops-mcp",
               isinstance(_real_opts.mcp_servers, dict) and
               set(_real_opts.mcp_servers) == {"ssh_ops"})
-        _stop_hooks = (_real_opts.hooks or {}).get("Stop", [])
-        check("real-build-options-registers-one-official-stop-hook",
-              set((_real_opts.hooks or {}).keys()) == {"Stop"} and
-              len(_stop_hooks) == 1 and _stop_hooks[0].matcher is None and
-              _stop_hooks[0].hooks == [harness._repair_closure_stop_hook])
-        _inspect_opts = harness.build_options(
-            object(), "test-model", 5, repair_scope_authorized=False)
-        check("real-build-options-wire-inspection-prompt-without-repair-hook",
-              _inspect_opts.system_prompt == harness.system_prompt_for_scope(False) and
-              _inspect_opts.hooks is None)
+        check("real-build-options-do-not-inject-a-second-stop-request", not _real_opts.hooks)
+        check("real-build-options-retain-the-native-claude-code-preset",
+              _real_opts.system_prompt == {"type": "preset", "preset": "claude_code",
+                                            "append": harness.SYSTEM_PROMPT_APPEND})
         _continuation_opts = harness.build_options(
             object(), "test-model", 5, {"job_id": _JOB_ID, "state": "running"})
         check("pending-job-options-keep-the-stable-reviewed-surface",
               list(_continuation_opts.allowed_tools) == harness.ALLOWED_TOOLS and
-              set((_continuation_opts.hooks or {}).keys()) == {"Stop"})
+              not _continuation_opts.hooks)
         _fresh_session_opts = harness.build_options(
             object(), _AGENT_SESSION_MODEL, 5, agent_session={
                 "session_id": _AGENT_SESSION_ID, "workdir": os.path.abspath("session-work"),
@@ -1331,6 +1300,13 @@ if "claude_agent_sdk" in sys.modules or _sdk_importable():
                     return a[len(flag) + 1:]
             return None
 
+        check("argv-appends-without-replacing-the-native-system-prompt",
+              _flag_value("--append-system-prompt") == harness.SYSTEM_PROMPT_APPEND and
+              "--system-prompt" not in _argv and "--system-prompt-file" not in _argv)
+        _empty_prompt_argv = _T(prompt="sdk-default-probe", options=_dc.replace(
+            _real_opts, mcp_servers={}, system_prompt=None))._build_command()
+        check("omitting-sdk-system-prompt-is-not-the-native-preset",
+              _flag_value("--system-prompt", _empty_prompt_argv) == "")
         # `--tools ""` is the empty base set. An ABSENT --tools means the CLI's default set exists,
         # which is Bash/Read/Write on the CONTROL-PLANE host — the spike's #1 safety bug.
         check("argv-tools-flag-is-present-and-empty", "--tools" in _argv and _flag_value("--tools") == "")
@@ -1630,7 +1606,7 @@ _timeout_saved_conn, _timeout_saved_run, _timeout_saved_audit = (
 _timeout_state_changes = []
 try:
     harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw",
-                      "repair_scope_authorized": True})
+                      "allow_writes": True})
     harness.AUDIT = []
     harness.ssh_transport.run_ssh = lambda *_args, **_kwargs: {
         "error": "exec_timeout", "detail": "25 seconds", "partial": "still running"}
@@ -1764,87 +1740,21 @@ check("knowledge-old-supervisor-degrades-locally-without-writing-sideband",
       _mixed_deploy_wire.getvalue() == "")
 
 
-# Claude Code's Stop lifecycle is the only generic point at which the harness can reject a
-# premature "done" without parsing a model answer or hard-coding a product/service. A successful
-# mutation gets exactly one continuation. Read-only work and refused writes do not, and the SDK's
-# stop_hook_active recursion marker always wins on the next Stop.
+# Conservative read classifications remain useful audit metadata, not proof of a mutation.
 _saved_audit = harness.AUDIT
 try:
-    harness.AUDIT = []
-    _closure_read_only = _asyncio.run(harness._repair_closure_stop_hook(
-        {"hook_event_name": "Stop", "stop_hook_active": False}, None, {"signal": None}))
-    harness.AUDIT = [
-        {"command": "inspect", "tier": "read_only", "executed": True,
-         "disposition": "ran_read_only"},
-        {"command": "not approved", "tier": "mutating", "executed": False,
-         "disposition": "refused_not_approved"},
-    ]
-    _closure_refused = _asyncio.run(harness._repair_closure_stop_hook(
-        {"hook_event_name": "Stop", "stop_hook_active": False}, None, {"signal": None}))
-    harness.AUDIT.append({"command": "echo-private-command-marker", "tier": "mutating",
-                          "executed": True, "disposition": "ran_mutating"})
-    _closure_after_mutation = _asyncio.run(harness._repair_closure_stop_hook(
-        {"hook_event_name": "Stop", "stop_hook_active": False}, None, {"signal": None}))
-    harness.AUDIT[-1] = {"command": "timed-out-private-command-marker", "tier": "mutating",
-                         "executed": True, "disposition": "exec_timeout"}
-    _closure_after_timed_out_mutation = _asyncio.run(harness._repair_closure_stop_hook(
-        {"hook_event_name": "Stop", "stop_hook_active": False}, None, {"signal": None}))
-    _closure_second_stop = _asyncio.run(harness._repair_closure_stop_hook(
-        {"hook_event_name": "Stop", "stop_hook_active": True}, None, {"signal": None}))
+    for _read_script in (
+        "stat -c '%n %s %y' /tmp/diagnostic.log",
+        "for f in /tmp/*.log; do wc -l \"$f\"; done",
+    ):
+        harness.AUDIT = [{"command": _read_script, "tier": "mutating", "executed": True,
+                          "exit_code": 0, "disposition": "ran_mutating"}]
+        _note = harness._partial_note("interrupted")
+        check(f"partial-read-script-note-does-not-invent-confirmed-change::{_read_script}",
+              "其中可能包含影响实例状态的操作" in _note and
+              _read_script in _note and "已经被改动过" not in _note)
 finally:
     harness.AUDIT = _saved_audit
-
-check("repair-closure-does-not-run-without-a-mutation", _closure_read_only == {})
-check("repair-closure-does-not-run-for-refused-writes", _closure_refused == {})
-check("repair-closure-blocks-the-first-stop-after-a-mutation",
-      _closure_after_mutation.get("decision") == "block" and
-      "original success criterion" in _closure_after_mutation.get("reason", "") and
-      "Do not defer an action" in _closure_after_mutation.get("reason", "") and
-      "echo-private-command-marker" not in _closure_after_mutation.get("reason", ""))
-check("repair-closure-blocks-after-an-executed-mutation-times-out",
-      _closure_after_timed_out_mutation.get("decision") == "block" and
-      "timed-out-private-command-marker" not in
-          _closure_after_timed_out_mutation.get("reason", ""))
-check("repair-closure-allows-the-sdk-recursive-stop", _closure_second_stop == {})
-
-# `已核实` is a product completion state, not merely model prose. It is available only on the typed
-# inspection surface after at least one settled read and no guest mutation that reached execution.
-_saved_audit = harness.AUDIT
-try:
-    harness.AUDIT = [{"command": "inspect", "tier": "read_only", "executed": True,
-                      "disposition": "ran_read_only"}]
-    _inspection_verified = harness._enforce_inspection_outcome(
-        "已核实：目标文件存在。", repair_scope_authorized=False)
-    _repair_cannot_claim_inspection = harness._enforce_inspection_outcome(
-        "已核实：目标文件存在。", repair_scope_authorized=True)
-    harness.AUDIT = []
-    _zero_read_cannot_claim_inspection = harness._enforce_inspection_outcome(
-        "已核实：目标文件存在。", repair_scope_authorized=False)
-    harness.AUDIT = [{"command": "inspect", "tier": "read_only", "executed": False,
-                      "disposition": "ssh_failed"}]
-    _failed_read_cannot_claim_inspection = harness._enforce_inspection_outcome(
-        "已核实：目标文件存在。", repair_scope_authorized=False)
-    harness.AUDIT = [
-        {"command": "inspect", "tier": "read_only", "executed": True,
-         "disposition": "ran_read_only"},
-        {"command": "timed-out write", "tier": "mutating", "executed": True,
-         "disposition": "exec_timeout"},
-    ]
-    _mutation_cannot_claim_inspection = harness._enforce_inspection_outcome(
-        "已核实：目标文件存在。", repair_scope_authorized=False)
-finally:
-    harness.AUDIT = _saved_audit
-
-check("inspection-outcome-keeps-audited-read-only-success",
-      _inspection_verified.startswith("已核实"))
-check("repair-surface-cannot-substitute-inspection-for-the-repair-target",
-      _repair_cannot_claim_inspection.startswith("未修复"))
-check("inspection-outcome-rejects-zero-tool-success",
-      _zero_read_cannot_claim_inspection.startswith("未修复"))
-check("inspection-outcome-rejects-failed-read-success",
-      _failed_read_cannot_claim_inspection.startswith("未修复"))
-check("inspection-outcome-rejects-an-executed-timed-out-mutation",
-      _mutation_cannot_claim_inspection.startswith("部分修复"))
 
 
 def _capture(fn):
@@ -1925,7 +1835,7 @@ try:
     sys.stdin = _io.StringIO(_json.dumps({
         "host": "10.0.0.9", "user": "root", "port": 22, "password": "context-test-password",
         "task": "只读检查配置，不要修改", "context": _reference_context,
-        "repair_scope_authorized": False,
+        "allow_writes": False,
     }) + "\n")
     _main_write_output = _capture(lambda: _asyncio.run(harness.main()))
     sys.stdin = _io.StringIO(_json.dumps({
@@ -1943,7 +1853,7 @@ try:
     sys.stdin = _io.StringIO(_json.dumps({
         "host": "10.0.0.9", "user": "root", "port": 22, "password": "context-test-password",
         "task": "自主修复实例", "context": _reference_context,
-        "repair_scope_authorized": True,
+        "allow_writes": True,
     }) + "\n")
     _main_scope_output = _capture(lambda: _asyncio.run(harness.main()))
     for _guard_task in ("sequential duplicate guard", "parallel duplicate guard"):
@@ -1987,24 +1897,20 @@ check("mcp-surface-version-covers-platform-knowledge-broker",
       _captured_sdk_servers[0]["version"] == "2.7.0")
 check("main-registers-exact-single-repair-tool-surface",
       [tool._test_tool_name for tool in _first_tools] == [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
-check("inspection-scope-removes-the-pure-write-tool",
+check("transport-capability-does-not-change-the-tool-surface",
       [tool._test_tool_name for tool in _legacy_flag_tools] ==
-      [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS
-       if not name.endswith("__atomic_text_edit")])
+      [name.rsplit("__", 1)[-1] for name in harness.ALLOWED_TOOLS])
 _inspection_ssh_tool = next(tool for tool in _legacy_flag_tools
                             if tool._test_tool_name == "ssh_exec")
-check("inspection-scope-describes-observation-not-repair",
-      "observation-only" in _inspection_ssh_tool._test_tool_description and
-      "guest-local repairs" not in _inspection_ssh_tool._test_tool_description)
-# Explicit inspect is a runtime capability boundary, not merely a smaller prompt. Even a fabricated
-# approval reply must not reach either foreground SSH or the background launcher, and it must not
-# emit a confirmation card. Missing repair_scope_authorized remains the rolling-deploy legacy path.
+check("transport-capability-keeps-the-single-tool-description",
+      _inspection_ssh_tool._test_tool_description == harness.TOOL_DESC)
+# A transport without a server grant cannot write or emit a user confirmation card.
 _inspect_saved_conn, _inspect_saved_stdin = harness._CONN, sys.stdin
 _inspect_saved_run, _inspect_saved_start = harness.ssh_transport.run_ssh, harness.remote_job.start
 _inspect_transport_calls = []
 try:
     harness.set_conn({"host": "h", "user": "u", "port": 22, "password": "pw",
-                      "repair_scope_authorized": False})
+                      "allow_writes": False})
     harness.ssh_transport.run_ssh = lambda *_args, **_kwargs: _inspect_transport_calls.append("ssh")
     harness.remote_job.start = lambda *_args, **_kwargs: _inspect_transport_calls.append("job")
     sys.stdin = _io.StringIO('{"id":"c999","approved":true}\n')
@@ -2017,11 +1923,11 @@ try:
 finally:
     harness.ssh_transport.run_ssh, harness.remote_job.start = _inspect_saved_run, _inspect_saved_start
     harness._CONN, sys.stdin = _inspect_saved_conn, _inspect_saved_stdin
-check("inspection-scope-hard-refuses-foreground-mutation-without-a-card",
-      "refused_inspection_scope" in _inspect_mutating_wire and
+check("transport-grant-refuses-foreground-mutation-without-a-card",
+      "refused_not_approved" in _inspect_mutating_wire and
       "@@CONFIRM " not in _inspect_mutating_wire and not _inspect_transport_calls)
-check("inspection-scope-hard-refuses-background-mutation-without-a-card",
-      "refused_inspection_scope" in _inspect_background_wire and
+check("transport-grant-refuses-background-mutation-without-a-card",
+      "refused_not_approved" in _inspect_background_wire and
       "@@CONFIRM " not in _inspect_background_wire and not _inspect_transport_calls)
 check("pending-job-main-keeps-the-reviewed-surface-for-read-only-and-post-terminal-work",
       [tool._test_tool_name for tool in _pending_tools] ==
@@ -2097,7 +2003,7 @@ _scope_saved_conn, _scope_saved_stdin = harness._CONN, sys.stdin
 _scope_saved_start = harness.remote_job.start
 _scope_saved_prepare, _scope_saved_apply = harness.atomic_file.prepare_edit, harness.atomic_file.apply_edit
 try:
-    harness.set_conn(dict(conn, repair_scope_authorized=True))
+    harness.set_conn(dict(conn, allow_writes=True))
     sys.stdin = _io.StringIO("")
     harness.remote_job.start = lambda *_args, **_kwargs: {
         "ok": True, "job_id": _JOB_ID, "state": "running", "stdout": "", "stderr": "",
@@ -2993,6 +2899,24 @@ try:
         "context": _reference_context,
     }) + "\n")
     _provider_error_wire = _capture(lambda: _asyncio.run(harness.main()))
+    for _failed_query, _expected_failure in (
+            (_provider_error_after_work_query, "server_error"),
+            (_auth_failure_query, "authentication_failed")):
+        async def _events_then_process_exception(prompt, options):
+            async for message in _failed_query(prompt, options):
+                yield message
+            raise RuntimeError("private CLI process error body")
+
+        _fake_sdk.query = _events_then_process_exception
+        sys.stdin.seek(0)
+        _failure_then_exception_wire = _capture(lambda: _asyncio.run(harness.main()))
+        _outcomes = [_json.loads(line[len("@@OUTCOME "):])
+                     for line in _failure_then_exception_wire.splitlines()
+                     if line.startswith("@@OUTCOME ")]
+        check("typed-failure-survives-later-process-exception::" + _expected_failure,
+              len(_outcomes) == 1 and _outcomes[0]["outcome"] == "agent_failed"
+              and _outcomes[0]["err_class"] == _expected_failure
+              and "private CLI process error body" not in _failure_then_exception_wire)
 finally:
     _fake_sdk.query = _saved_provider_query
     sys.stdin = _saved_stdin

@@ -10,228 +10,139 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The same production loop as user_designated_instance_test.go, at the registry
-// state production actually runs in.
-//
-// #566 recorded the designation at turn entry from bindInstanceTarget, which finds
-// a typed id through RegistrySnapshot.InstanceIDTokensInText — and that returns nil
-// on an EMPTY snapshot, because its id prefixes are derived from the instances the
-// snapshot already holds (entity/resolve.go:189-197). HTTP sessions skip
-// engine.Init(), so a session that has not listed instances carries exactly that
-// empty snapshot for its whole life, and the shape this lane exists for lists
-// nothing: 「ComfyUI 打不开」, then a bare 「cpod-…」, straight into the lane.
-//
-// The current rule must work without either a warm registry or a confirmation
-// callback: a literal ID in the current message is target proof, and the recorded
-// user_selected target carries a follow-up turn.
-func TestATypedIDIsADesignationEvenWhenTheRegistryIsEmpty(t *testing.T) {
-	const instanceID = "cpod-typed-1"
-	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
-	model := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
-			`{"UHostId":"cpod-typed-1","Task":"排查 ComfyUI 打不开","Mode":"repair"}`)}},
-		{ToolCalls: []openai.ToolCall{toolCall("d2", "DiagnoseInstanceInternals",
-			`{"UHostId":"cpod-typed-1","Task":"继续排查 ComfyUI","Mode":"repair"}`)}},
-	}}
-	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
-	eng.SetInstanceOps(runner)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	// Deliberately NO registry sync: this is the never-synced snapshot a fresh HTTP
-	// session carries, not a contrived state.
-	require.True(t, eng.registry.NeedsRefresh(time.Now()), "the premise is a cold registry")
-
-	_, err := eng.ChatWithOptions(context.Background(),
-		"排查 cpod-typed-1 上的 ComfyUI", noopStep, ChatOptions{})
-	require.NoError(t, err)
-	require.Equal(t, 1, runner.calls)
-
-	state, _, _ := eng.SessionStateSnapshot()
-	require.Equal(t, instanceID, state.SelectedInstanceID,
-		"an empty registry cannot tokenize the id, but the user still typed it")
-	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
-
-	rehydrate(t, eng)
-	_, err = eng.ChatWithOptions(context.Background(), "继续排查", noopStep, ChatOptions{})
-	require.NoError(t, err)
-	require.Equal(t, 2, runner.calls)
-	require.Equal(t, instanceID, runner.lastReq.InstanceID)
-}
-
-// Production case 063 did not call a tool in the designation turn: the model
-// merely replied "已记录". The next turn therefore had no gate at which the old
-// cold-registry fallback could persist the ID. Recording must happen from the
-// user's words at turn entry, independently of whether the planner acts yet.
+// An ID-only message followed by a prose acknowledgement must survive both a
+// live engine and a persisted-history rebuild. The next "continue" is resolved
+// by the central Agent reading that conversation, not a second target parser.
 func TestColdTypedIDSurvivesAProseOnlyAcknowledgement(t *testing.T) {
-	const instanceID = "cpod-1uivn2vwu842"
-	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
-	model := &mockLLM{responses: []llm.ChatResponse{
-		{Content: "已记录当前实例。"},
-		{ToolCalls: []openai.ToolCall{toolCall("d2", "DiagnoseInstanceInternals",
-			`{"UHostId":"cpod-1uivn2vwu842","Task":"只读核查 GPU","Mode":"inspect"}`)}},
-	}}
-	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
-	eng.SetInstanceOps(runner)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	require.True(t, eng.registry.NeedsRefresh(time.Now()), "the premise is a cold registry")
+	for _, cold := range []bool{false, true} {
+		t.Run(map[bool]string{false: "hot", true: "cold"}[cold], func(t *testing.T) {
+			const instanceID = "cpod-1uivn2vwu842"
+			runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
+			model := &mockLLM{responses: []llm.ChatResponse{
+				{Content: "已记录当前实例。"},
+				{ToolCalls: []openai.ToolCall{toolCall("diagnose", "DiagnoseInstanceInternals",
+					"{\"UHostId\":\"cpod-1uivn2vwu842\",\"Task\":\"只读核查 GPU\"}")}},
+			}}
+			eng := NewWithDeps(model, &mockExecutor{}, nil)
+			eng.SetInstanceOps(runner)
+			eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+			require.True(t, eng.registry.NeedsRefresh(time.Now()))
 
-	_, err := eng.ChatWithOptions(context.Background(),
-		instanceID+"这是现在的实例", noopStep, ChatOptions{})
-	require.NoError(t, err)
-	require.Zero(t, runner.calls)
-	state, _, _ := eng.SessionStateSnapshot()
-	require.Equal(t, instanceID, state.SelectedInstanceID)
-	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
+			reply, err := eng.Chat(context.Background(), instanceID, noopStep)
+			require.NoError(t, err)
+			require.Zero(t, runner.calls)
+			state, version, _ := eng.SessionStateSnapshot()
+			require.Empty(t, state.SelectedInstanceID, "a prose acknowledgement is not an actual observation or confirmed workflow")
 
-	rehydrate(t, eng)
-	_, err = eng.ChatWithOptions(context.Background(), "查一下这台的 GPU", noopStep, ChatOptions{})
-	require.NoError(t, err)
-	require.Equal(t, 1, runner.calls)
-	require.Equal(t, instanceID, runner.lastReq.InstanceID)
+			if cold {
+				rebuilt := NewWithDeps(model, &mockExecutor{}, nil)
+				rebuilt.SetInstanceOps(runner)
+				rebuilt.SetSessionState(state, version+1)
+				rebuilt.RehydrateHistory([]HistoryMessage{
+					{Role: openai.ChatMessageRoleUser, Content: instanceID},
+					{Role: openai.ChatMessageRoleAssistant, Content: reply},
+				})
+				eng = rebuilt
+			}
+			_, err = eng.Chat(context.Background(), "继续", noopStep)
+			require.NoError(t, err)
+			require.Equal(t, 1, runner.calls)
+			require.Equal(t, instanceID, runner.lastReq.InstanceID)
+			require.Len(t, model.calls, 2)
+			var history []openai.ChatCompletionMessage
+			for _, message := range model.calls[1].Messages {
+				if message.Role != openai.ChatMessageRoleSystem {
+					history = append(history, message)
+				}
+			}
+			require.Len(t, history, 3)
+			require.Equal(t, instanceID, history[0].Content)
+			require.Equal(t, reply, history[1].Content)
+			require.Equal(t, "继续", history[2].Content)
+			require.Equal(t, instanceID, runner.lastReq.Context.ConversationHistory[0].Content)
+			state, _, _ = eng.SessionStateSnapshot()
+			require.Equal(t, instanceID, state.SelectedInstanceID)
+			require.Equal(t, SelectedInstanceSourceObserved, state.SelectedInstanceSource)
+		})
+	}
 }
 
-// A long pause normally evicts the pooled Engine, so the rehydrated session has
-// target A but no live name catalog. The instance-operations dispatch refresh
-// must let a current exact name select B before carried A can fill the model's
-// tool call.
-func TestLongPausedSelectionRefreshesColdRegistryBeforeANameSwitch(t *testing.T) {
-	const oldID, newID = "cpod-old-1", "cpod-new-2"
-	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
-	model := &mockLLM{responses: []llm.ChatResponse{{ToolCalls: []openai.ToolCall{
-		toolCall("switch-by-name", "DiagnoseInstanceInternals", `{"UHostId":"cpod-new-2","Task":"排查新训练机","Mode":"repair"}`),
-	}}}}
-	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": {
-			"TotalCount": float64(2),
-			"UHostSet": []any{
-				map[string]any{"UHostId": oldID, "Name": "旧训练机", "State": "Running"},
-				map[string]any{"UHostId": newID, "Name": "新训练机", "State": "Running"},
-			},
-		},
-	}}
-	eng := NewWithDeps(model, executor, nil)
-	eng.SetInstanceOps(runner)
-	eng.SetSessionState(SessionState{
-		SchemaVersion:             SessionStateSchemaCurrent,
-		SelectedInstanceID:        oldID,
-		SelectedInstanceName:      "旧训练机",
-		SelectedInstanceSource:    SelectedInstanceSourceUser,
-		SelectedInstanceAtUnix:    time.Now().Add(-2 * time.Hour).Unix(),
-		SelectedInstanceFreshness: ContinuityFreshnessExpired,
-	}, 7)
-	require.True(t, eng.registry.NeedsRefresh(time.Now()), "premise: the rehydrated engine has no catalog")
+// A previous confirmed target is context, not permission to replace a different
+// exact target the model resolves from a newer conversational reference.
+func TestWorkflowTargetAfterProseOnlySwitchKeepsModelID(t *testing.T) {
+	for _, cold := range []bool{false, true} {
+		t.Run(map[bool]string{false: "hot", true: "cold"}[cold], func(t *testing.T) {
+			const priorID, nextID = "uhost-a", "uhost-b"
+			model := &mockLLM{responses: []llm.ChatResponse{
+				{Content: "接下来讨论这台实例。"},
+				{ToolCalls: []openai.ToolCall{toolCall("stop", "RequestStopInstance", `{"UHostId":"uhost-b"}`)}},
+				{Content: "操作已取消。"},
+			}}
+			var describedIDs []string
+			executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+				switch action {
+				case "DescribeCompShareInstance":
+					var id string
+					switch ids := args["UHostIds"].(type) {
+					case []string:
+						require.Len(t, ids, 1)
+						id = ids[0]
+					case []any:
+						require.Len(t, ids, 1)
+						id, _ = ids[0].(string)
+					}
+					require.NotEmpty(t, id)
+					describedIDs = append(describedIDs, id)
+					return map[string]any{"UHostSet": []any{map[string]any{
+						"UHostId": id, "State": "Running", "Zone": "cn-wlcb-01",
+					}}}, nil
+				case "DescribeCompShareSupportZone":
+					return map[string]any{"ZoneInfo": []any{map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb"}}}, nil
+				default:
+					return map[string]any{"RetCode": 0}, nil
+				}
+			}}
+			var confirmedIDs []string
+			confirm := func(action string, args map[string]any) bool {
+				require.Equal(t, "StopInstanceWorkflow", action)
+				id, _ := args["UHostId"].(string)
+				confirmedIDs = append(confirmedIDs, id)
+				return false
+			}
+			eng := NewWithDeps(model, executor, confirm)
+			eng.SetMutatingToolsEnabled(true)
+			eng.SetSessionState(SessionState{
+				SchemaVersion: SessionStateSchemaCurrent, SelectedInstanceID: priorID,
+				SelectedInstanceSource: SelectedInstanceSourceUser, SelectedInstanceAtUnix: time.Now().Unix(),
+			}, 1)
+			syncTwoInstances(t, eng)
+			reply, err := eng.Chat(context.Background(), nextID, noopStep)
+			require.NoError(t, err)
+			state, version, _ := eng.SessionStateSnapshot()
+			require.Equal(t, priorID, state.SelectedInstanceID, "ordinary dialogue must not mint a new user_selected record")
 
-	reply, err := eng.ChatWithOptions(context.Background(), "现在排查「新训练机」", noopStep, ChatOptions{})
-	require.NoError(t, err)
-	debugState, _, _ := eng.SessionStateSnapshot()
-	debugBinding := eng.bindInstanceTarget(eng.turnContextViewThisTurn, newID)
-	require.Equal(t, 1, runner.calls, "reply=%q model_calls=%d executor_calls=%v state=%+v binding=%+v", reply, len(model.calls), executor.calls, debugState, debugBinding)
-	require.Equal(t, newID, runner.lastReq.InstanceID)
-	require.Contains(t, executor.calls, "DescribeCompShareInstance")
-
-	state, _, _ := eng.SessionStateSnapshot()
-	require.Equal(t, newID, state.SelectedInstanceID)
-	require.Equal(t, "新训练机", state.SelectedInstanceName)
-	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
-}
-
-// Production case 124 warmed the registry through resource_info in the same
-// turn, after the immutable context view had been compiled. The access hostname
-// contains the exact account ID, so that fresh deterministic proof must authorize
-// the same target without a confirmation card.
-func TestWrappedAccountIDBecomesDesignationAfterSameTurnRegistryWarmup(t *testing.T) {
-	const instanceID = "cpod-1uivn2vwu842"
-	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成"}}
-	cards := 0
-	eng := newInstanceOpsEngine(runner, func(_ string, args map[string]any) bool {
-		cards++
-		require.Equal(t, instanceID, args["UHostId"])
-		return true
-	})
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	query := "ComfyUI 上传报错：8188-" + instanceID + "-s1.pod.compshare.cn 显示 413"
-	eng.lastUserMsg = query
-	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
-		eng, query, "case-124", time.Now())
-	eng.turnContextViewReady = true
-
-	// Turn entry is cold and must not record the wrapper token as an instance ID.
-	eng.recordUserDesignatedInstance()
-	state, _, _ := eng.SessionStateSnapshot()
-	require.Empty(t, state.SelectedInstanceID)
-
-	// resource_info now supplied the complete live account snapshot.
-	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
-		"TotalCount": float64(2), "UHostSet": []any{
-			map[string]any{"UHostId": instanceID, "Name": "upload-instance", "State": "Running"},
-			map[string]any{"UHostId": "uhost-other-2", "Name": "trainer-b", "State": "Running"},
-		},
-	}, "case-124-resource-info"))
-	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
-		"UHostId": instanceID, "Task": "排查上传 413", "Mode": "repair",
-	}, noopStep)
-	require.NotContains(t, out, instanceOpsTargetRefusalForModel)
-	require.Zero(t, cards, "the uniquely resolved wrapper must not create an entry card")
-	require.Equal(t, 1, runner.calls)
-	state, _, _ = eng.SessionStateSnapshot()
-	require.Equal(t, instanceID, state.SelectedInstanceID)
-	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource,
-		"the user's deterministic wrapped reference becomes the selected target")
-}
-
-// The #546 boundary on the cold path: the model may not manufacture a designation.
-// An id the user never wrote is refused at the gate AND leaves the session with no
-// selection, so a following bare 「继续排查」 has nothing to inherit either.
-func TestAnIDTheUserNeverWroteIsNotADesignationOnAColdRegistry(t *testing.T) {
-	model := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
-			`{"UHostId":"cpod-from-a-list","Task":"排查 ComfyUI 打不开","Mode":"repair"}`)}},
-		{Content: "请告诉我要排查哪台实例。"},
-	}}
-	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
-	eng.SetInstanceOps(&fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "不应到达", Ran: 1}})
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-
-	cards := 0
-	opts := ChatOptions{ConfirmResultFunc: func(string, map[string]any) ConfirmationResult {
-		cards++
-		return ConfirmationResult{Confirmed: true}
-	}}
-	_, err := eng.ChatWithOptions(context.Background(), "ComfyUI 打不开", noopStep, opts)
-	require.NoError(t, err)
-	require.Zero(t, cards, "instance-ops must not invoke workflow confirmation")
-
-	state, _, _ := eng.SessionStateSnapshot()
-	require.Empty(t, state.SelectedInstanceID, "and must not become a designation either")
-	require.Empty(t, state.SelectedInstanceSource)
-}
-
-// The account's sole instance is the ACCOUNT's fact, not something the user
-// pointed at. Recording it as user_selected
-// would make "I happen to own one box" indistinguishable from "I named this box",
-// and the lane's whole target rule is built on that distinction. This is the
-// control that keeps the new record site honest: it fires on the user's literal
-// words, not on every id the model can infer.
-func TestTheSoleInstanceDoesNotAuthorizeInstanceOps(t *testing.T) {
-	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "排查完成", Ran: 1}}
-	model := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
-			`{"UHostId":"uhost-only-1","Task":"排查 ComfyUI 打不开","Mode":"repair"}`)}},
-		{Content: "排查完成。"},
-	}}
-	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
-	eng.SetInstanceOps(runner)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
-		"TotalCount": float64(1), "UHostSet": []any{
-			map[string]any{"UHostId": "uhost-only-1", "Name": "solo", "State": "Running"},
-		},
-	}, "test"))
-
-	_, err := eng.ChatWithOptions(context.Background(), "ComfyUI 打不开", noopStep, ChatOptions{})
-	require.NoError(t, err)
-	require.Zero(t, runner.calls)
-
-	state, _, _ := eng.SessionStateSnapshot()
-	require.NotEqual(t, SelectedInstanceSourceUser, state.SelectedInstanceSource,
-		"owning exactly one instance is not the user designating it")
+			if cold {
+				rebuilt := NewWithDeps(model, executor, confirm)
+				rebuilt.SetMutatingToolsEnabled(true)
+				rebuilt.SetSessionState(state, version+1)
+				rebuilt.RehydrateHistory([]HistoryMessage{
+					{Role: openai.ChatMessageRoleUser, Content: nextID},
+					{Role: openai.ChatMessageRoleAssistant, Content: reply},
+				})
+				eng = rebuilt
+			}
+			_, err = eng.Chat(context.Background(), "停止它", noopStep)
+			require.NoError(t, err)
+			require.Equal(t, []string{nextID}, confirmedIDs, "the confirmation card must retain the model's target, not the old confirmed instance")
+			require.NotEmpty(t, describedIDs)
+			for _, id := range describedIDs {
+				require.Equal(t, nextID, id, "existence and workflow reads must check the proposed target")
+			}
+			require.NotContains(t, executor.calls, "StopCompShareInstance", "declining the card must still prevent the write")
+			require.Contains(t, renderTestMessages(model.calls[1].Messages), nextID)
+			require.Contains(t, renderTestMessages(model.calls[1].Messages), "停止它")
+			state, _, _ = eng.SessionStateSnapshot()
+			require.Equal(t, priorID, state.SelectedInstanceID, "a declined model proposal does not replace the prior confirmed selection")
+		})
+	}
 }
