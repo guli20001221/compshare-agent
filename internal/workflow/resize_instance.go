@@ -170,9 +170,6 @@ func stepQueryForResize() Step {
 			}, nil
 		},
 		CheckResult: func(wfCtx *Context, result map[string]any) CheckOutcome {
-			if isPodInstanceResult(result) {
-				return CheckFailed("当前仅支持 uhost- 前缀实例变配，cpod- 前缀 Pod 实例暂不支持。")
-			}
 			state := extractInstanceState(result)
 			switch state {
 			case "Stopped":

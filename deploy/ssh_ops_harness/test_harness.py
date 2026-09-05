@@ -1042,6 +1042,8 @@ def _make_fake_paramiko(never_exits=False):
 
         def __init__(self, out, err):
             self._out, self._err, self._done = out, err, False
+            self.eof_received = not never_exits
+            self.closed = False
 
         def recv_ready(self):
             return bool(self._out)
@@ -1066,7 +1068,7 @@ def _make_fake_paramiko(never_exits=False):
             return 0
 
         def close(self):
-            pass
+            self.closed = True
 
     class _Stream:
         def __init__(self, chan):

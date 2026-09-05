@@ -100,6 +100,19 @@ func TestDescribeCompShareImagesAllowsImageIDFilter(t *testing.T) {
 	assert.NotContains(t, filtered, "Unexpected")
 }
 
+func TestDescribeCompshareDiskPreservesExplicitAllRegionScope(t *testing.T) {
+	inner := &spyExecutor{}
+	_, err := NewSafeToolExecutor(inner).ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "DescribeCompshareDisk",
+		Args:   map[string]any{"HostId": "cpod-disk-test", "Region": ""},
+		Origin: OriginDiagnosisInternal,
+	})
+	require.NoError(t, err)
+	require.Len(t, inner.args, 1)
+	assert.Equal(t, "cpod-disk-test", inner.args[0]["HostId"])
+	assert.Equal(t, "", inner.args[0]["Region"])
+}
+
 func TestDescribeCommunityImagesAllowsImageIDFilter(t *testing.T) {
 	safe := NewSafeToolExecutor(&spyExecutor{})
 

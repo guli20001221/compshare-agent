@@ -257,7 +257,7 @@ func internalOnlyAllowedParams(action string) []string {
 	case "DescribeCompShareJupyterToken":
 		return []string{"UHostIds"}
 	case "DescribeCompshareDisk":
-		return []string{"HostId"}
+		return []string{"HostId", "Region"}
 	default:
 		return nil
 	}

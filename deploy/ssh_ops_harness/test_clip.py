@@ -90,6 +90,30 @@ def main():
     check("busy output respects deadline", timed_out and channel.closed and channel.stdout_reads == 3)
     check("stderr cannot starve", channel.stderr_reads == channel.stdout_reads and "warning" in stderr.text())
 
+    class StatusBeforeEOF:
+        closed = False
+        eof_received = False
+        reads = 0
+        late_arrived = False
+
+        def recv_ready(self): return self.reads == 0 or (self.reads == 1 and self.late_arrived)
+        def recv_stderr_ready(self): return False
+        def exit_status_ready(self): return True
+        def close(self): self.closed = True
+        def recv(self, size):
+            self.reads += 1
+            if self.reads == 1:
+                return b"first log line\n"
+            self.eof_received = True
+            return b"last failure after exit-status\n"
+
+    delayed = StatusBeforeEOF()
+    with patch("time.sleep", side_effect=lambda _: setattr(delayed, "late_arrived", True)):
+        stdout, _, timed_out = t._pump(delayed, deadline_s=1)
+    check("exit status does not discard late data before EOF",
+          not timed_out and delayed.eof_received and delayed.reads == 2
+          and stdout.text().endswith("last failure after exit-status\n"))
+
     print(f"clip: {len(checks) - len(misses)}/{len(checks)} passed")
     if misses:
         raise SystemExit(f"FAIL: {len(misses)} miss(es)")

@@ -37,6 +37,7 @@ func TestDiskInfoByInstanceUsesResolvedHostAndProjectsFacts(t *testing.T) {
 	require.Len(t, exec.calls, 1)
 	assert.Equal(t, diskInfoAction, exec.calls[0].action)
 	assert.Equal(t, "uhost-1", exec.calls[0].args["HostId"])
+	assert.Equal(t, "", exec.calls[0].args["Region"])
 	assert.Contains(t, result.Reply, "training-data（udisk-1）")
 	assert.Contains(t, result.Reply, "容量 100GB")
 	assert.Contains(t, result.Reply, "挂载点 /dev/vdb")
@@ -50,6 +51,18 @@ func TestDiskInfoByInstanceUsesResolvedHostAndProjectsFacts(t *testing.T) {
 	assertDiskFact(t, result.Envelope, "udisk-1", "source", "UDisk")
 	assertDiskFact(t, result.Envelope, "udisk-1", "zone", "cn-wlcb-01")
 	assertDiskFact(t, result.Envelope, "udisk-1", "expired_time", "2026-02-14 00:26")
+}
+
+func TestDiskInfoDefaultListsDisksAcrossRegions(t *testing.T) {
+	exec := &fakeReadExec{result: diskFixture()}
+	result := NewReadCapability(resourceReadSpec()).Run(context.Background(), ResourceInfoRequest{
+		ResourceType: resourceTypeDisks,
+	}, ReadRuntime{Executor: exec})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Equal(t, map[string]any{"Region": ""}, exec.calls[0].args)
+	assert.Contains(t, result.Reply, "来源 UDisk")
+	assert.Contains(t, result.Reply, "来源 CVolume")
 }
 
 func TestDiskInfoByResourceIDFiltersTheUnifiedResponse(t *testing.T) {

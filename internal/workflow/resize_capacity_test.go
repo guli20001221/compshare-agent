@@ -62,27 +62,42 @@ func TestResizeCapacity_VMDoesNotDependOnSupportZoneCatalog(t *testing.T) {
 	assert.NotContains(t, call.args, "zone_id")
 }
 
-func TestResizeCapacity_CPodStopsAfterDescribe(t *testing.T) {
+func TestResizeCapacity_CPodConfirmsTheCompleteOfferedTarget(t *testing.T) {
+	instance := podStoppedInstanceResult()
+	host := firstUHost(instance)
+	host["CPU"], host["Memory"], host["ChargeType"] = float64(14), float64(32768), "Postpay"
+	host["DiskSet"].([]any)[0].(map[string]any)["DiskType"] = "CVolume"
 	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": podStoppedInstanceResult(),
+		"DescribeCompShareInstance":    instance,
+		"DescribeCompShareSupportZone": resizeSupportZonesResult("cn-pod-01", "cn-pod", 9001, 3001, true),
+		"DescribeAvailableCompShareInstanceTypes": resizeInstanceTypesResult("4090", "cn-pod-01", 1,
+			specCandidate{CPU: 14, MemoryMB: 49152}),
+		"CheckCompShareResourceCapacity":   resizeCapacityResult(1, 14, 48, true),
+		"GetCompShareInstanceUpgradePrice": {"Price": float64(0)},
+		"ResizeCompShareInstance":          {"RetCode": 0},
 	}}
-	confirmed := false
-	result, err := NewEngine(executor, func(string, map[string]any) bool {
-		confirmed = true
+	confirmCalls := 0
+	result, err := NewEngine(executor, func(_ string, summary map[string]any) bool {
+		confirmCalls++
+		assert.Equal(t, float64(14), summary["target_cpu"])
+		assert.Equal(t, float64(1), summary["target_gpu"])
+		assert.Equal(t, float64(49152), summary["target_memory"])
 		return true
-	}, nil).Run(context.Background(), ResizeInstanceDef(), map[string]any{"UHostId": "cpod-test", "Cpu": float64(16)})
+	}, nil).Run(context.Background(), ResizeInstanceDef(), map[string]any{"UHostId": "cpod-test", "Memory": float64(49152)})
 
 	require.NoError(t, err)
-	require.False(t, result.Success)
-	assert.Equal(t, "查询实例", result.StoppedAt)
-	assert.Contains(t, result.Message, "cpod-")
-	assert.False(t, confirmed)
-	require.Len(t, executor.calls, 1)
-	assert.Equal(t, "DescribeCompShareInstance", executor.calls[0].action)
-	_, checked := findExecutorCall(executor.calls, "CheckCompShareResourceCapacity")
-	assert.False(t, checked)
-	_, resized := findExecutorCall(executor.calls, "ResizeCompShareInstance")
-	assert.False(t, resized)
+	require.True(t, result.Success, result.Message)
+	assert.Equal(t, 1, confirmCalls)
+	for _, action := range []string{"CheckCompShareResourceCapacity", "GetCompShareInstanceUpgradePrice", "ResizeCompShareInstance"} {
+		call, ok := findExecutorCall(executor.calls, action)
+		require.True(t, ok, action)
+		assert.Equal(t, uint32(9001), call.args["zone_id"], action)
+	}
+	price, _ := findExecutorCall(executor.calls, "GetCompShareInstanceUpgradePrice")
+	write, _ := findExecutorCall(executor.calls, "ResizeCompShareInstance")
+	assert.Equal(t, price.args["CPU"], write.args["Cpu"])
+	assert.Equal(t, price.args["GPU"], write.args["Gpu"])
+	assert.Equal(t, price.args["Memory"], write.args["Memory"])
 }
 
 func TestResizeCapacity_UHostContainerIsNotTreatedAsPod(t *testing.T) {

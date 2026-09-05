@@ -125,7 +125,10 @@ def _pump(chan, deadline_s: float = None):
         if chan.recv_stderr_ready():
             err.append(chan.recv_stderr(65536))
             moved = True
-        if chan.exit_status_ready() and not chan.recv_ready() and not chan.recv_stderr_ready():
+        # An SSH server can send exit-status before the last data/EOF packets.
+        # An empty ready buffer is only a temporary gap, not stream completion.
+        if (chan.exit_status_ready() and (chan.eof_received or chan.closed)
+                and not chan.recv_ready() and not chan.recv_stderr_ready()):
             return out, err, False
         if not moved:
             time.sleep(0.05)
