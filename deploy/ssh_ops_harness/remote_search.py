@@ -253,21 +253,23 @@ def _receive(channel):
     deadline = time.monotonic() + ssh_transport._EXEC_TIMEOUT
     out, err = bytearray(), bytearray()
     while True:
+        if time.monotonic() >= deadline:
+            raise TimeoutError("structured_search_timeout")
         moved = False
-        while channel.recv_ready():
+        if channel.recv_ready():
             out.extend(channel.recv(65536))
             moved = True
             if len(out) > _MAX_WIRE_BYTES:
                 raise ValueError("structured_output_too_large")
-        while channel.recv_stderr_ready():
+        if channel.recv_stderr_ready():
             err.extend(channel.recv_stderr(4096))
             moved = True
             if len(err) > _MAX_STDERR_BYTES:
                 raise ValueError("structured_stderr_too_large")
-        if channel.exit_status_ready() and not channel.recv_ready() and not channel.recv_stderr_ready():
+        # Exit status may arrive before the last data packet; preserve the complete JSON frame.
+        if (channel.exit_status_ready() and (channel.eof_received or channel.closed)
+                and not channel.recv_ready() and not channel.recv_stderr_ready()):
             return bytes(out), channel.recv_exit_status()
-        if time.monotonic() >= deadline:
-            raise TimeoutError("structured_search_timeout")
         if not moved:
             time.sleep(0.01)
 
