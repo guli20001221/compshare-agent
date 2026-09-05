@@ -1714,6 +1714,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		return runtimeResult.Reply, nil
 	}
 	if !errors.Is(runtimeErr, agentruntime.ErrRoundLimit) {
+		if result, ok := finishCommittedWrite(); ok {
+			e.runtimeFinishReasonThisTurn = result.Reason
+			return result.Reply, nil
+		}
 		if result, ok := finishVerbatimBlocksAfterFailure(); ok {
 			e.runtimeFinishReasonThisTurn = result.Reason
 			return result.Reply, nil

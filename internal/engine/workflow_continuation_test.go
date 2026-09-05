@@ -80,3 +80,35 @@ func TestCommittedWorkflowContinuesTheUsersRemainingTask(t *testing.T) {
 		})
 	}
 }
+
+func TestCommittedWorkflowSurvivesCancellationBeforeTheNextRound(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	model := &mockLLM{responses: []llm.ChatResponse{{ToolCalls: []openai.ToolCall{
+		toolCall("stop", "RequestStopInstance", `{"UHostId":"uhost-a"}`),
+	}}}}
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-a", "Name": "test-a", "State": "Running", "Zone": "cn-wlcb-01", "ChargeType": "Postpay",
+			}}}, nil
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb"}}}, nil
+		}
+		return map[string]any{"RetCode": 0}, nil
+	}}
+	eng := NewWithDeps(model, executor, func(string, map[string]any) bool { return true })
+	eng.SetMutatingToolsEnabled(true)
+	reply, err := eng.Chat(ctx, "关机 uhost-a，然后查询发票进度", func(ev StepEvent) {
+		if ev.Type == StepToolResult && ev.Action == "StopCompShareInstance" {
+			cancel()
+		}
+	})
+	require.NoError(t, err)
+	require.Len(t, eng.committedWriteRepliesThisTurn, 1)
+	require.Contains(t, reply, "提交关机请求")
+	require.Contains(t, reply, "请勿重复提交")
+	require.Len(t, model.calls, 1)
+	require.Equal(t, reply, eng.messages[len(eng.messages)-1].Content)
+}
