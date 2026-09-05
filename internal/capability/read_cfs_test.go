@@ -95,6 +95,15 @@ func TestCFSListHandle_UpstreamError(t *testing.T) {
 	assert.Equal(t, cfsFailureLabel+": "+FriendlyReadFailureReply, result.Reply)
 }
 
+func TestCFSListDoesNotTurnAnEchoedMissingIDIntoAResource(t *testing.T) {
+	exec := &fakeReadExec{result: map[string]any{"CfsId": "cfs-missing", "Found": false}}
+	result := NewReadCapability(cfsListReadSpec()).Run(context.Background(),
+		CFSListRequest{CFS: &platform.CFSRef{ID: "cfs-missing"}}, ReadRuntime{Executor: exec})
+	require.Equal(t, platform.ReadStatusEmpty, result.Status)
+	assert.Contains(t, result.Reply, "未查询到 cfs-missing 的活跃 CFS 记录")
+	assert.NotContains(t, result.Reply, "CFS 共享文件存储：")
+}
+
 func TestCFSListRejectsANonCFSResourceBeforeUpstream(t *testing.T) {
 	exec := &mapReadExec{}
 	reg := NewReadCapability(cfsListReadSpec())

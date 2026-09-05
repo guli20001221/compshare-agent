@@ -224,6 +224,8 @@ func policyForAction(action string) ToolExecutionPolicy {
 
 func internalOnlyAllowedParams(action string) []string {
 	switch action {
+	case "GetCompShareInvoiceIssued":
+		return []string{"Limit", "Offset"}
 	case "CreateCFS":
 		return []string{"Name", "Size", "TotalFiles", "ChargeType", "Quantity", "CouponId", "Zone", "Region"}
 	case "ResizeCFS":

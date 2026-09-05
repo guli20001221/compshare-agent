@@ -112,7 +112,7 @@ print("<<<END>>>")
 const fakeAgentFailureOutcome = `
 import sys, json
 json.loads(sys.stdin.readline())
-print('@@OUTCOME {"outcome":"agent_failed","err_class":"server_error","context_applied":true}')
+print('@@OUTCOME {"outcome":"agent_failed","err_class":"server_error","context_applied":true,"agent_usage":{"input_tokens":210,"output_tokens":5,"cache_read_input_tokens":0,"num_turns":5}}')
 print("<<<VERDICT>>>")
 print("诊断中断：实例内诊断代理未能完成本轮，因此没有形成经验证的最终结论。")
 print("<<<END>>>")
@@ -139,8 +139,29 @@ func TestSupervisorProjectsAgentFailureOutcomeIntoResult(t *testing.T) {
 	if !res.AgentFailed || res.PreflightFailed || res.ErrClass != "server_error" || !res.ContextApplied {
 		t.Fatalf("result did not preserve the harness failure receipt: %+v", res)
 	}
+	if res.AgentUsage == nil || res.AgentUsage.InputTokens == nil || *res.AgentUsage.InputTokens != 210 ||
+		res.AgentUsage.OutputTokens == nil || *res.AgentUsage.OutputTokens != 5 ||
+		res.AgentUsage.CacheReadInputTokens == nil || *res.AgentUsage.CacheReadInputTokens != 0 ||
+		res.AgentUsage.NumTurns == nil || *res.AgentUsage.NumTurns != 5 || res.AgentUsage.CacheCreationInputTokens != nil {
+		t.Fatalf("result lost aggregate SDK usage or conflated missing with zero: %+v", res.AgentUsage)
+	}
 	if strings.Contains(res.Output, "server_error") || !strings.Contains(res.Output, "没有形成经验证的最终结论") {
 		t.Fatalf("customer verdict leaked wire metadata or lost the bounded failure message: %q", res.Output)
+	}
+}
+
+func TestHarnessStderrTailDrainsWithoutRetainingTheWholeSDKLog(t *testing.T) {
+	var log harnessStderrTail
+	chunk := []byte(strings.Repeat("SDK diagnostic line\n", 1000))
+	for i := 0; i < 300; i++ {
+		n, err := log.Write(chunk)
+		if err != nil || n != len(chunk) || len(log.data) > 64<<10 {
+			t.Fatalf("stderr was not drained with bounded retention: n=%d retained=%d err=%v", n, len(log.data), err)
+		}
+	}
+	_, _ = log.Write([]byte("final SDK error"))
+	if !strings.HasSuffix(log.String(), "final SDK error") {
+		t.Fatal("lost the final SDK error")
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/governance"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/opscontext"
 	"github.com/compshare-agent/internal/sshops"
 	"github.com/compshare-agent/internal/tools"
@@ -45,6 +46,7 @@ type fakeDiagnoser struct {
 	steps          []sshops.Step
 	agentFailed    bool
 	errClass       string
+	agentUsage     *observability.AgentRunUsage
 	err            error
 	lastOwner      sshops.Owner
 	lastInstanceID string
@@ -65,7 +67,7 @@ func (f *fakeDiagnoser) DiagnoseWithContext(_ context.Context, _ sshops.Describe
 	if f.err != nil {
 		return sshops.Result{}, f.err
 	}
-	return sshops.Result{Output: f.output, Steps: f.steps, AgentFailed: f.agentFailed, ErrClass: f.errClass}, nil
+	return sshops.Result{Output: f.output, Steps: f.steps, AgentFailed: f.agentFailed, ErrClass: f.errClass, AgentUsage: f.agentUsage}, nil
 }
 
 // fakeLimiter returns a fixed allow/deny and records the class it was asked about.
@@ -237,6 +239,7 @@ func TestInstanceOpsRunner_PreservesTypedAgentFailureAndSettledCommands(t *testi
 		t.Run(fmt.Sprintf("after_commands_%t", afterCommands), func(t *testing.T) {
 			diag := &fakeDiagnoser{
 				output: "诊断中断：已保留本轮执行记录。", agentFailed: true, errClass: "server_error",
+				agentUsage: &observability.AgentRunUsage{InputTokens: intp(210), OutputTokens: intp(5), CacheReadInputTokens: intp(0), NumTurns: intp(5)},
 			}
 			if afterCommands {
 				diag.steps = []sshops.Step{
@@ -255,6 +258,7 @@ func TestInstanceOpsRunner_PreservesTypedAgentFailureAndSettledCommands(t *testi
 			require.True(t, verdict.AgentFailed)
 			require.Equal(t, "server_error", verdict.ErrClass)
 			require.Equal(t, diag.output, verdict.Text)
+			require.Equal(t, diag.agentUsage, verdict.AgentUsage)
 			require.Equal(t, 1, diag.calls, "never replay writes after a model error")
 			if afterCommands {
 				require.Equal(t, 2, verdict.Ran)

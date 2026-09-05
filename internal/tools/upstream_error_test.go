@@ -133,6 +133,7 @@ func TestRetCodeGuidanceCoversCurrentWorkflowContracts(t *testing.T) {
 		{226628, AgentToolStatusRetryLater, "社区镜像正在同步到目标可用区"},
 		{226636, AgentToolStatusChooseAlternative, "目标可用区不支持自制镜像同步"},
 		{226637, AgentToolStatusChooseAlternative, "目标可用区不支持所选镜像类型"},
+		{226644, AgentToolStatusChooseAlternative, "仅镜像发布方可以制作自制镜像"},
 	}
 	for _, tc := range cases {
 		t.Run(fmt.Sprint(tc.code), func(t *testing.T) {

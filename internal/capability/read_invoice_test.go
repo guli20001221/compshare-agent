@@ -43,7 +43,7 @@ func TestInvoiceStatusCallsTheAccountScopedUpstreamAndProjectsStatusEvidence(t *
 	assert.Equal(t, invoiceStatusAction, result.ToolAction)
 	require.Len(t, exec.calls, 1)
 	assert.Equal(t, invoiceStatusAction, exec.calls[0].action)
-	assert.Empty(t, exec.calls[0].args, "tenant identity is server-owned; the model supplies no account fields")
+	assert.Equal(t, map[string]any{"Limit": 100, "Offset": 0}, exec.calls[0].args, "tenant identity is server-owned; only pagination is forwarded")
 	require.NotNil(t, result.Envelope)
 	assert.Equal(t, envelope.KindInvoiceStatus, result.Envelope.Kind)
 	require.Len(t, result.Envelope.Subjects, 1)
@@ -98,5 +98,19 @@ func TestInvoiceStatusIsAConcreteModelVisibleRead(t *testing.T) {
 	_, request, err := DecodeReadRequest(toolName, map[string]any{})
 	require.NoError(t, err)
 	require.IsType(t, InvoiceStatusRequest{}, request)
-	assert.Empty(t, reg.Schema()["properties"])
+	assert.Contains(t, reg.Schema()["properties"], "offset")
+}
+
+func TestInvoiceStatusCanReadPastTheFirstPage(t *testing.T) {
+	exec := &fakeReadExec{result: map[string]any{
+		"TotalCount": float64(102),
+		"InvoiceSet": []any{map[string]any{"InvoiceID": float64(101), "InvoiceAmount": float64(12345), "InvoiceState": "Finished"}},
+	}}
+	result := NewReadCapability(invoiceStatusReadSpec()).Run(context.Background(), InvoiceStatusRequest{Offset: 100}, ReadRuntime{Executor: exec})
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	require.Equal(t, map[string]any{"Limit": 100, "Offset": 100}, exec.calls[0].args)
+	assert.Contains(t, result.Reply, "发票 101")
+	assert.Contains(t, result.Reply, "¥123.45")
+	assert.Contains(t, result.Reply, "共 102 条")
+	assert.Contains(t, result.Reply, "offset=101")
 }

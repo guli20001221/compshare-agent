@@ -76,6 +76,27 @@ func TestModelRepositoryDescriptionDoesNotClaimDeployability(t *testing.T) {
 	}
 }
 
+func TestModelRepositoryPageDoesNotClaimTheWholeCatalogIsEmpty(t *testing.T) {
+	exec := &mapReadExec{results: map[string]map[string]any{
+		modelRepositoryModelAction: {"TotalCount": float64(101), "Models": []any{
+			map[string]any{"Name": "older-model", "Status": "Active", "MissingZoneIDs": []any{float64(5002)}},
+		}},
+	}}
+	args := modelRepositoryArgs(ModelRepositoryRequest{Offset: 100}, nil, 0)
+	assert.Equal(t, 100, args["Offset"])
+	assert.Equal(t, imageModelBrowseDisplayCap, args["Limit"], "a page must not fetch more candidates than the renderer exposes")
+	reply, empty := renderModelRepositoryReply(exec.results[modelRepositoryModelAction], nil,
+		ModelRepositoryRequest{Offset: 100, ReplicaStatus: "Missing"}, 5001, "目标区")
+	assert.False(t, empty)
+	assert.Contains(t, reply, "共 101 个模型")
+	assert.Contains(t, reply, "本页未找到")
+	assert.NotContains(t, reply, "仓库里暂时没有")
+	result := runModelRepository(t, exec, ModelRepositoryRequest{Offset: 100})
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Equal(t, 100, exec.calls[1].args["Offset"])
+	assert.Contains(t, result.Reply, "older-model")
+}
+
 func TestModelRepositoryArgs_MatchesTag(t *testing.T) {
 	req := ModelRepositoryRequest{Query: "LLM", Mode: platform.ListModeFiltered}
 	args := modelRepositoryArgs(req, map[string]any{"Tags": []any{"LLM", "图像生成"}}, 0)

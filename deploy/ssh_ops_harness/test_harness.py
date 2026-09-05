@@ -1609,7 +1609,8 @@ try:
                       "allow_writes": True})
     harness.AUDIT = []
     harness.ssh_transport.run_ssh = lambda *_args, **_kwargs: {
-        "error": "exec_timeout", "detail": "25 seconds", "partial": "still running"}
+        "error": "exec_timeout", "detail": "25 seconds", "partial": "still running",
+        "partial_stderr": "waiting for application shutdown"}
     _timeout_result = harness.run_command(
         "systemctl restart demo", on_mutation=lambda: _timeout_state_changes.append(True))
     _timeout_entry = dict(harness.AUDIT[-1])
@@ -1621,6 +1622,9 @@ check("timed-out-mutation-is-a-real-executed-audit-entry",
       _timeout_entry.get("tier") == "mutating" and _timeout_entry.get("executed") is True and
       _timeout_entry.get("disposition") == "exec_timeout")
 check("timed-out-mutation-invalidates-prior-read-state", _timeout_state_changes == [True])
+check("timed-out-command-keeps-stderr-evidence",
+      "waiting for application shutdown" in _timeout_result["text"]
+      and _timeout_entry["bytes"] == len("still runningwaiting for application shutdown"))
 check("structured-read-policy-refusal-is-a-precondition",
       harness._structured_read_disposition({"ok": False, "error_class": "path_not_allowed"}) ==
       "refused_precondition")
@@ -1785,6 +1789,9 @@ async def _fake_query(prompt, options):
     # carries, or the receipt gate below is being tested against a message that could not occur.
     message.is_error = False
     message.num_turns = 3
+    message.duration_api_ms = 1250
+    message.usage = {"input_tokens": 120, "output_tokens": 20,
+                     "cache_read_input_tokens": 0, "cache_creation_input_tokens": 80}
     yield message
 
 
@@ -1883,6 +1890,13 @@ check("context-main-passes-labelled-prompt-to-sdk",
 check("context-main-receipt-matches-sdk-prompt",
       '"context_applied": true' in _main_output.replace('"context_applied":true', '"context_applied": true'))
 check("context-main-verdict-still-emits", "mocked contextual diagnosis" in _main_output)
+_main_outcome = [_json.loads(line[len("@@OUTCOME "):]) for line in _main_output.splitlines()
+                 if line.startswith("@@OUTCOME ")][0]
+check("sdk-aggregate-usage-crosses-the-main-output-boundary",
+      _main_outcome.get("agent_usage") == {"input_tokens": 120, "output_tokens": 20,
+          "cache_read_input_tokens": 0, "cache_creation_input_tokens": 80,
+          "num_turns": 3, "duration_api_ms": 1250})
+check("missing-sdk-usage-is-not-zero", harness._sdk_run_usage(object()) is None)
 check("private-probe-authorization-never-enters-model-prompt-or-wire-output",
       all(secret not in "".join(_captured_sdk_prompts) + _main_output
           for secret in (_HANDSHAKE_AUTHORIZATION, _HANDSHAKE_AUTH_TOKEN)))
@@ -1958,6 +1972,30 @@ _pending_ssh_tool = next(tool for tool in _pending_tools if tool._test_tool_name
 _pending_atomic_tool = next(tool for tool in _pending_tools
                             if tool._test_tool_name == "atomic_text_edit")
 _first_ssh_tool = next(tool for tool in _first_tools if tool._test_tool_name == "ssh_exec")
+_saved_foreground_run = harness.run_command
+try:
+    import threading as _threading
+    _foreground_started, _foreground_release = _threading.Event(), _threading.Event()
+    _foreground_loop_was_free = []
+
+    def _blocking_foreground_command(command, on_mutation=None):
+        _foreground_started.set()
+        _foreground_loop_was_free.append(_foreground_release.wait(1))
+        return {"text": "probe done", "tier": "read_only", "executed": True, "is_error": False}
+
+    async def _check_foreground_sdk_concurrency():
+        async def release_from_event_loop():
+            while not _foreground_started.is_set():
+                await _asyncio.sleep(0)
+            _foreground_release.set()
+        await _asyncio.gather(
+            _first_ssh_tool({"command": "printf sdk-event-loop-probe"}), release_from_event_loop())
+
+    harness.run_command = _blocking_foreground_command
+    _asyncio.run(_check_foreground_sdk_concurrency())
+    check("foreground-ssh-does-not-block-the-sdk-event-loop", _foreground_loop_was_free == [True])
+finally:
+    harness.run_command = _saved_foreground_run
 _busy_ssh_tool = next(tool for tool in _busy_tools if tool._test_tool_name == "ssh_exec")
 _first_atomic_tool = next(tool for tool in _first_tools
                           if tool._test_tool_name == "atomic_text_edit")
@@ -2692,6 +2730,13 @@ check("main-stops-after-the-model-ignores-a-no-progress-refusal",
           _no_progress_main_wire
       and "should never reach this result" not in _no_progress_main_wire
       and "maximum number of turns" not in _no_progress_main_wire.lower())
+_no_progress_outcome = [_json.loads(line[len("@@OUTCOME "):])
+                        for line in _no_progress_main_wire.splitlines()
+                        if line.startswith("@@OUTCOME ")][0]
+check("no-progress-is-an-unfinished-run-not-a-success",
+      _no_progress_outcome["outcome"] == "agent_failed"
+      and _no_progress_outcome["err_class"] == "no_progress"
+      and "agent_usage" not in _no_progress_outcome)
 
 del harness._DYNAMIC_SECRETS[:]
 harness._remember_authorization("   ")
@@ -2876,6 +2921,7 @@ async def _provider_error_after_work_query(prompt, options):
     result.num_turns = 5
     result.subtype = "success"
     result.api_error_status = 500
+    result.usage = {"input_tokens": 210, "output_tokens": 5, "cache_read_input_tokens": 0}
     yield result
 
 
@@ -2917,6 +2963,10 @@ try:
               len(_outcomes) == 1 and _outcomes[0]["outcome"] == "agent_failed"
               and _outcomes[0]["err_class"] == _expected_failure
               and "private CLI process error body" not in _failure_then_exception_wire)
+        if _expected_failure == "server_error":
+            check("sdk-usage-survives-error-result-and-later-process-exception",
+                  _outcomes[0].get("agent_usage") == {"input_tokens": 210, "output_tokens": 5,
+                      "cache_read_input_tokens": 0, "num_turns": 5})
 finally:
     _fake_sdk.query = _saved_provider_query
     sys.stdin = _saved_stdin

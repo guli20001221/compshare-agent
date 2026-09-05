@@ -247,6 +247,9 @@ type ToolCallTrace struct {
 	ToolResultRawRunes     *int  `json:"tool_result_raw_runes,omitempty"`
 	ToolResultVisibleRunes *int  `json:"tool_result_visible_runes,omitempty"`
 	ToolResultTruncated    *bool `json:"tool_result_truncated,omitempty"`
+	// AgentUsage belongs to this delegated tool run, not ModelAttempts: the SDK
+	// only reports a whole-query aggregate and does not expose each request here.
+	AgentUsage *AgentRunUsage `json:"agent_usage,omitempty"`
 }
 
 const (

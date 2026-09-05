@@ -4,19 +4,17 @@ import (
 	"fmt"
 )
 
-// CustomImageSourceInstanceNote states what制作 does to the SOURCE instance.
-//
-// "不会关闭源实例" is true, and was itself the fix for an earlier reply that
-// wrongly promised a shutdown. But alone it reads as "nothing changes for this
-// machine", which is not what happens: upstream holds the instance in ImageMaking
-// for the duration, releasing its public address and rejecting 开关机 / 重装系统 /
-// 变更配置 with 8964 until制作 ends. A user told only that the machine stays up
-// then loses SSH and reads it as a fault.
-//
-// Exported and shared with the engine's post-write reply (customImageWorkflowReply)
-// so the confirmation card and the confirmation of what happened cannot drift into
-// telling a user two different things about the same operation.
+// CustomImageSourceInstanceNote describes the UHost image-making path, not cPod.
 const CustomImageSourceInstanceNote = "制作期间源实例会进入 ImageMaking 状态：公网地址会被释放，开关机、重装系统、变更配置都会被拒绝，需等制作结束后恢复。"
+
+func customImageSourceInstanceNote(source map[string]any) string {
+	if isPodInstanceResult(source) {
+		// Pod's container-image commit changes the displayed state; it does not
+		// establish the UHost path's public-address and lifecycle restrictions.
+		return "制作期间源实例会显示为 ImageMaking。"
+	}
+	return CustomImageSourceInstanceNote
+}
 
 func CreateCustomImageDef() *Definition {
 	return &Definition{
@@ -126,7 +124,7 @@ func stepConfirmCreateCustomImage() Step {
 				summary["Description"] = description
 			}
 			summary["warning"] = "将基于该实例发起自制镜像制作，不会关闭源实例。但" +
-				CustomImageSourceInstanceNote +
+				customImageSourceInstanceNote(wfCtx.Result("查询源实例")) +
 				"镜像初始状态为 Making，变为 Available 后才能用于创建实例、共享或克隆。"
 			return summary, nil
 		},
@@ -220,6 +218,7 @@ func customImageResultData(wfCtx *Context) map[string]any {
 	if len(out) == 0 {
 		return nil
 	}
+	out["SourceInstanceNote"] = customImageSourceInstanceNote(wfCtx.Result("查询源实例"))
 	return out
 }
 

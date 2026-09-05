@@ -144,6 +144,18 @@ func (e *Engine) executeTypedReadCapability(ctx context.Context, action, capabil
 		readResult.Envelope != nil {
 		return e.buildModelOwnedReadCorrection(action, capabilityLabel, readResult, onStep)
 	}
+	if readResult.Status == platform.ReadStatusFallbackBeforeTool &&
+		(readResult.FallbackReason == platform.ReadFallbackValidation || readResult.FallbackReason == platform.ReadFallbackTimeWindow) {
+		message := strings.TrimSpace(readResult.Reply)
+		if message == "" {
+			message = "当前工具的参数组合无效。"
+		}
+		result := modelOwnedReadArgumentError(action, "read_argument_validation",
+			message+"请依据工具 schema 和已有上下文修正本次调用，不要要求用户重复已经提供的信息。")
+		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct,
+			Message: "正在修正查询参数", ErrorCode: result.Error.Code})
+		return tools.MarshalAgentToolResult(result)
+	}
 	if readResult.Status == platform.ReadStatusUnavailable {
 		return e.buildUnavailableObservation(action, capabilityLabel, readResult, onStep)
 	}

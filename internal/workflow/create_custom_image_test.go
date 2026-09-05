@@ -438,3 +438,28 @@ func TestCustomImageConfirmCardWarnsAboutTheSourceInstanceGoingIntoImageMaking(t
 	assert.Contains(t, warning, "不会关闭源实例",
 		"the earlier correction must survive: 制作 genuinely does not shut the instance down")
 }
+
+func TestPodCustomImageCardAndResultDoNotClaimUHostSideEffects(t *testing.T) {
+	executor := customImageMockExecutor()
+	executor.results["DescribeCompShareInstance"] = customImageContainerInstanceResult("Running")
+	executor.results["DescribeCompShareSupportZone"] = map[string]any{"ZoneInfo": []any{map[string]any{
+		"Zone": "cn-pod-01", "Region": "cn-pod", "ZoneId": float64(5001), "RegionId": float64(1000001),
+	}}}
+	warning := ""
+	eng := NewEngine(executor, func(_ string, args map[string]any) bool {
+		warning, _ = args["warning"].(string)
+		return true
+	}, nil)
+	result, err := eng.Run(context.Background(), CreateCustomImageDef(), map[string]any{
+		"UHostId": "cpod-src", "Name": "container-snapshot",
+	})
+	require.NoError(t, err)
+	require.True(t, result.Success, result.Message)
+	note, ok := result.Data["SourceInstanceNote"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, note)
+	assert.Contains(t, warning, note)
+	assert.Contains(t, note, "ImageMaking")
+	assert.NotContains(t, warning, "公网地址会被释放")
+	assert.NotContains(t, warning, "都会被拒绝")
+}

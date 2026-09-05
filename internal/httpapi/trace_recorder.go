@@ -262,6 +262,7 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 		})
 	case engine.StepToolResult:
 		idx, startedAt := r.matchPending(key, ev.Action, source)
+		r.record.ToolCalls[idx].AgentUsage = ev.AgentUsage
 		r.applySelectedFunctionName(idx, ev.SelectedFunctionName)
 		resultHash, _ := observability.HashTracePayload(ev.TraceResult)
 		r.record.ToolCalls[idx].Status = observability.ToolStatusSuccess
@@ -276,6 +277,7 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 		}
 	case engine.StepError:
 		idx, startedAt := r.matchPending(key, ev.Action, source)
+		r.record.ToolCalls[idx].AgentUsage = ev.AgentUsage
 		r.applySelectedFunctionName(idx, ev.SelectedFunctionName)
 		r.record.ToolCalls[idx].Status = observability.ToolStatusError
 		// Step messages are user-facing diagnostics and may contain upstream
@@ -286,6 +288,7 @@ func (r *chatTraceRecorder) OnStep(ev engine.StepEvent) {
 		r.applyCapFields(idx, ev)
 	case engine.StepBlocked:
 		idx, startedAt := r.matchPending(key, ev.Action, source)
+		r.record.ToolCalls[idx].AgentUsage = ev.AgentUsage
 		r.applySelectedFunctionName(idx, ev.SelectedFunctionName)
 		r.record.ToolCalls[idx].Status = observability.ToolStatusError
 		r.record.ToolCalls[idx].ErrorClass = "blocked"

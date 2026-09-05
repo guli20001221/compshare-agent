@@ -239,6 +239,50 @@ func TestExecuteSearchKnowledge_PartialRemoteUnavailableIsVisible(t *testing.T) 
 	assert.Contains(t, out, `"unavailable_queries":1`)
 }
 
+func TestExecuteSearchKnowledge_PartialOutageKeepsCandidatesReadable(t *testing.T) {
+	eng, scripted := planningEngineWithConversation(t,
+		`{"answer_question":"WorkBuddy怎么配置","search_queries":["WorkBuddy完整配置","WorkBuddy服务设置"]}`,
+		[]knowledge.RetrievalResult{
+			{Enabled: true, Unavailable: true, FailureReason: "mcp_timeout"},
+			{
+				Enabled: true, SearchID: "available-search", HybridMode: knowledge.RetrievalModeQwen3RRF, RerankerMode: "qwen3-reranker-8b",
+				HitItems: []knowledge.RetrievalHit{{Kept: true, Score: 0.26,
+					Chunk: knowledge.KBChunk{ChunkID: "workbuddy-config", Title: "WorkBuddy配置", Content: "配置节选"}}},
+			},
+			{Enabled: true, Empty: true},
+		},
+	)
+	retriever := &remoteChunkStoreRetriever{
+		scriptedKnowledgeRetriever: *scripted,
+		chunks: map[string]knowledge.KBChunk{
+			"workbuddy-config": {ChunkID: "workbuddy-config", Title: "WorkBuddy配置", Content: "配置正文和完整步骤"},
+		},
+	}
+	eng.SetKnowledgeRetriever(retriever)
+
+	search := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "WorkBuddy怎么设置"}, noopStep)
+	observation, ok := tools.ParseAgentToolResult(agentToolObservation("SearchKnowledge", search))
+	require.True(t, ok)
+	require.Equal(t, tools.AgentToolNextInspectCandidates, observation.NextStep)
+	data := observation.Data.(map[string]any)
+	assert.Equal(t, true, data["partial"])
+	assert.Equal(t, true, data["knowledge_unavailable"])
+	assert.Equal(t, float64(1), data["unavailable_queries"])
+	candidates := data["below_floor_candidates"].([]any)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, "workbuddy-config", candidates[0].(map[string]any)["chunk_id"])
+	assert.Empty(t, eng.searchKnowledgeLedgerThisTurn.Items)
+
+	read := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"workbuddy-config"}}, noopStep))
+	item := read["chunks"].([]any)[0].(map[string]any)
+	assert.Equal(t, readChunkStatusRead, item["status"])
+	assert.Equal(t, "配置正文和完整步骤", item["content"])
+	require.Len(t, retriever.reads, 1)
+	assert.Equal(t, "available-search", retriever.reads[0].searchID)
+	require.Len(t, eng.searchKnowledgeLedgerThisTurn.Items, 1)
+	assert.Equal(t, "low", eng.searchKnowledgeLedgerThisTurn.Items[0].ScoreBucket)
+}
+
 func TestExecuteSearchKnowledge_MultipleCallsPreserveActivityIDsInCitationTrace(t *testing.T) {
 	chunkA := knowledge.KBChunk{
 		ChunkID:   "chunk-a",

@@ -29,6 +29,7 @@ type ModelRepositoryRequest struct {
 	ReplicaStatus string            `json:"replica_status,omitempty"`
 	Zone          string            `json:"zone,omitempty"`
 	Mode          platform.ListMode `json:"mode,omitempty"`
+	Offset        int               `json:"offset,omitempty"`
 }
 
 // MissingFields: none — an unfiltered browse is valid.
@@ -52,6 +53,7 @@ func modelRepositoryReadSpec() ReadCapabilitySpec[ModelRepositoryRequest, ModelR
 			"replica_status": enumParam("Unspecified", "Healthy", "Offline", "Incomplete", "Missing").described("副本状态；指定 zone 时按该目标区精确筛选，不指定 zone 时表示任一可用区存在该状态。"),
 			"zone":           stringParam().described("仅在用户明确指定目标可用区，或当前实例事实已给出可用区时填写实时目录中的 Zone；不要猜测。"),
 			"mode":           enumParam(platform.ListModeValues()...),
+			"offset":         integerParam(0).described("分页偏移，默认 0；继续浏览时使用结果给出的下一页偏移。"),
 		}),
 		NeedsZoneCatalog: func(req ModelRepositoryRequest) bool {
 			return strings.TrimSpace(req.Zone) != ""
@@ -95,7 +97,7 @@ func modelRepositoryRender(resp ModelRepositoryResponse) ReadResult {
 }
 
 func modelRepositoryArgs(req ModelRepositoryRequest, tagRaw map[string]any, zoneID uint32) map[string]any {
-	args := map[string]any{"Limit": 100}
+	args := map[string]any{"Limit": imageModelBrowseDisplayCap, "Offset": req.Offset}
 	query := strings.TrimSpace(req.Query)
 	explicitTags := uniqueStrings(req.Tags)
 	tags := explicitTags
@@ -223,10 +225,21 @@ func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, req ModelReposi
 	filtered := filterModelRepositoryModels(models, req.Query, req.Mode)
 	filtered = filterModelRepositoryTargetReplica(filtered, zoneID, req.ReplicaStatus)
 	sections := []string{}
+	if total, known := numericField(modelRaw, "TotalCount"); known {
+		next := req.Offset + len(models)
+		sections = append(sections, fmt.Sprintf("上游筛选共 %d 个模型，本页偏移 %d，返回 %d 个。", int(total), req.Offset, len(models)))
+		if len(models) > 0 && next < int(total) {
+			sections = append(sections, fmt.Sprintf("还有后续目录；继续浏览请使用 offset=%d。", next))
+		}
+	}
 	if len(tags) > 0 {
 		sections = append(sections, "模型仓库标签: "+strings.Join(limitStrings(tags, 20), "、"))
 	}
 	if len(filtered) == 0 {
+		if total, known := numericField(modelRaw, "TotalCount"); known && (total > float64(len(models)) || req.Offset > 0) {
+			sections = append(sections, "本页未找到满足条件的模型；不能据此判断全部目录不存在匹配项。")
+			return strings.Join(sections, "\n"), false
+		}
 		noMatch := "未找到匹配的模型。"
 		if zoneID != 0 && modelRepositoryOptionalEnum(req.ReplicaStatus) != "" {
 			noMatch = fmt.Sprintf("未找到在 %s 副本状态为 %s 的匹配模型。", zoneLabel, modelRepositoryOptionalEnum(req.ReplicaStatus))

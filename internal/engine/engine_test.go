@@ -2006,6 +2006,7 @@ func TestRegistryInvalidatesAfterSuccessfulMutatingTool(t *testing.T) {
 		{ToolCalls: []openai.ToolCall{
 			toolCall("tc1", "RequestStartInstance", `{"UHostId":"uhost-a","StartMode":"normal"}`),
 		}},
+		{Content: "已为实例 uhost-a 执行开机，平台正在处理。"},
 	}}
 	eng := NewWithDeps(mock, executor, func(string, map[string]any) bool { return true })
 	eng.SetMutatingToolsEnabled(true)

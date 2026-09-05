@@ -387,7 +387,7 @@ func stockCapacityPrecheck(ctx context.Context, rt ReadRuntime, req StockAvailab
 		"Limit":     20,
 	})
 	if err != nil {
-		return "", false, ReadFailureAfterTool("DescribeCompShareImages", stockCapabilityLabel, err)
+		return joinStockReply(renderStockCapacityReply(failedStockCapacityChecks(entriesByModel, modelOrder))+"\n容量预检未执行：系统镜像查询暂时失败。", inventoryReply), true, ReadResult{}
 	}
 	if imageRaw == nil {
 		imageRaw = map[string]any{}

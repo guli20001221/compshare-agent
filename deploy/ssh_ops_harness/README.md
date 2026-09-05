@@ -63,8 +63,12 @@ SSH 是新建的非交互会话，不自动继承服务原启动环境。工具�
 完整角色历史、OCR 与实时平台事实仍由既有 context 管道送入用户 prompt，知识检索工具保持可用。
 官方 preset 不会打开 runner 本机的 Bash/Read/Write；这些工具仍由绑定到目标实例的 SSH/SFTP 工具承接。
 不再注入额外 Stop hook 来改写模型最后一轮任务；验证与总结由原生 Agent 完成。
-SDK 明确报告失败时，活动流标记诊断中断，保留已结算命令数和部分报告，不自动重放命令。
+SDK 明确报告失败或无进展循环被终止时，活动流与审计均标记诊断中断，保留已结算命令数和部分报告，不自动重放命令。
 失败状态来自 SDK/runner 的结构化标记，不从用户日志或模型正文中的错误单词推断。
+SSH 前台输出在持续排空时，每路 stdout/stderr 只保留 256 KiB 首尾缓冲，并逐批检查时限；模型仍收到
+脱敏后约 16 KiB 首尾展示，省略的中段和不完整行不冒充完整日志。超时仍保留已收到的 stdout/stderr。
+SDK 的 ResultMessage 聚合 token、缓存 token、轮数和 API 耗时挂在现有 trace 的诊断子运行上；缺失与
+零值分开记录，不伪造逐次模型请求，也不与外层 OpenAI token 口径直接相加。SDK stderr 只保留有界尾部。
 命令风险分类仍仅作为审计元数据，不被当作已发生修改的证据。
 提示契约改变会让旧 SDK 游标以完整已知对话开始新会话，不重放旧命令。
 
@@ -96,7 +100,7 @@ PostgreSQL 的 SessionState V10 只保存会话 UUID、稳定工作目录 UUID�
 当前 Agent session contract v8 绑定原生 Claude Code preset、Guest 内搜索与原启动环境恢复的远端工具契约，不注入额外 Stop hook，并保存一枚 64 个小写十六进制字符的 SHA-256 conversation anchor，只表示 inner SDK 已经收到外层对话到哪个位置；
 它不含对话文本。Go 始终在私有握手里发送完整的有界快照和已送达前缀长度；harness 仅在本地 SDK
 transcript 确实存在时把 prompt 收敛为新增后缀，本地记录缺失则以完整快照 fresh start。harness 只在
-V3/V4 角色完整上下文进入真实模型回合后回执该 anchor；旧/不支持的 context、鉴权失败或模型未启动都不能前移它。
+V3/V5 角色完整上下文进入真实模型回合后回执该 anchor；旧/不支持的 context、鉴权失败或模型未启动都不能前移它。
 每次 resume 都通过 Claude SDK 的 `fork_session` 写入新的尝试 UUID；失败尝试不会追加到已提交 transcript，
 只有成功回执才会将数据库游标前移到该 fork。稳定工作目录 UUID 只负责让连续 fork 仍能找到同一私有 SDK project。
 下一次串行运行前，harness 只保留数据库当前指向的 source JSONL，并删除同一 manifest/workdir 下未回执的

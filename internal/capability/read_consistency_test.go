@@ -100,6 +100,26 @@ func TestReadCatalogSchemaMatchesRequestStruct(t *testing.T) {
 	}
 }
 
+func TestReadTargetSchemaOnlyDeclaresImplementedForms(t *testing.T) {
+	for _, def := range ReadDefinitions() {
+		schema := def.Tool.Function.Parameters.(map[string]any)
+		properties := schema["properties"].(map[string]any)
+		targets, ok := properties["targets"].(map[string]any)
+		if !ok {
+			continue
+		}
+		t.Run(def.Name, func(t *testing.T) {
+			fields := targets["items"].(map[string]any)["properties"].(map[string]any)
+			want := []string{"name", "uhost_id_user_input"}
+			if def.Name == "resource_info" {
+				want = append(want, "filter")
+			}
+			require.ElementsMatch(t, want, schemaEnum(fields["type"].(map[string]any)))
+			require.NotContains(t, fields, "source_span")
+		})
+	}
+}
+
 // enumValuesForType is the single binding from a Go enum type to its allowed
 // wire values. It is the ONLY place the recursive consistency test re-associates
 // a type with a value set, and every entry defers to the platform value
@@ -107,8 +127,6 @@ func TestReadCatalogSchemaMatchesRequestStruct(t *testing.T) {
 // cannot list different members.
 func enumValuesForType(typ reflect.Type) ([]string, bool) {
 	switch typ {
-	case reflect.TypeOf(platform.TargetRefType("")):
-		return platform.TargetRefTypeValues(), true
 	case reflect.TypeOf(platform.TargetSource("")):
 		return platform.TargetSourceValues(), true
 	case reflect.TypeOf(platform.Metric("")):

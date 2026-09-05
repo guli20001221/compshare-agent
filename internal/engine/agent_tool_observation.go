@@ -105,19 +105,18 @@ func agentToolObservation(action, raw string) string {
 		return tools.MarshalAgentToolResult(tools.AgentToolRetryLater(
 			action, toolObservationData(object), "DEPENDENCY_UNAVAILABLE", "服务端暂时无法校验所需资源，请稍后重试。", meta))
 	}
+	// A failed sibling query does not invalidate candidates a successful search
+	// returned. Preserve the partial-outage facts while allowing their inspection.
+	if searchKnowledgeHasNoCitableEvidence(action, object) && nonEmptyCollection(object["below_floor_candidates"]) {
+		return tools.MarshalAgentToolResult(tools.AgentToolCandidatesNeedInspection(
+			action, toolObservationData(object), meta))
+	}
 	if _, hasError := object["error"]; hasError || (!boolField(object, "success") && hasField(object, "success")) {
 		return tools.MarshalAgentToolResult(tools.AgentToolFailure(
 			action, toolObservationData(object), "TOOL_REQUEST_FAILED", "工具未能完成本次请求。", meta))
 	}
 	if searchKnowledgeHasNoCitableEvidence(action, object) {
 		data := toolObservationData(object)
-		if nonEmptyCollection(object["below_floor_candidates"]) {
-			return tools.MarshalAgentToolResult(tools.AgentToolCandidatesNeedInspection(
-				action,
-				data,
-				meta,
-			))
-		}
 		return tools.MarshalAgentToolResult(tools.AgentToolNoCitableEvidence(
 			action,
 			data,

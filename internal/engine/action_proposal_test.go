@@ -775,19 +775,17 @@ func TestStopReplyReportsAsynchronousAcceptance(t *testing.T) {
 	require.Equal(t, reply, committedWriteFallbackReply("StopInstanceWorkflow", params, &workflow.Result{Success: true}))
 }
 
-func TestAdditionalWriteAfterACommittedWritePreservesTheCommittedResult(t *testing.T) {
+func TestAdditionalProposalStillUsesItsOwnResolverAfterACommittedWrite(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.committedWriteRepliesThisTurn = []string{"✅ 已创建实例 uhost-good1，正在初始化。"}
 
 	reply := eng.executeActionProposal(context.Background(), map[string]any{
-		"operation": "StartInstanceWorkflow",
+		"operation": "NoSuchWorkflow",
 	}, noopStep)
 
-	require.True(t, strings.HasPrefix(reply, finalReplyPrefix))
-	require.Contains(t, reply, "已创建实例 uhost-good1")
-	require.Contains(t, reply, "开机")
-	require.Contains(t, reply, "没有执行")
-	require.Equal(t, "additional_write_after_commit", eng.actionProposalDispositionThisTurn)
+	require.False(t, strings.HasPrefix(reply, finalReplyPrefix))
+	require.Equal(t, "rejected:_op=unknown_operation", eng.actionProposalDispositionThisTurn)
+	require.Equal(t, []string{"✅ 已创建实例 uhost-good1，正在初始化。"}, eng.committedWriteRepliesThisTurn)
 }
 
 func TestAnUncommittedProposalDoesNotConsumeTheTurnWriteSlot(t *testing.T) {

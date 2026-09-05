@@ -650,10 +650,13 @@ func TestSafeExecutorUsesPolicyForDisplayAndRedaction(t *testing.T) {
 
 		result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
 			Action: "GetCompShareInvoiceIssued",
+			Args:   map[string]any{"Offset": 100, "Limit": 100},
 			Origin: OriginDiagnosisInternal,
 		})
 
 		require.NoError(t, err)
+		assert.Equal(t, 100, inner.args[0]["Offset"])
+		assert.Equal(t, 100, inner.args[0]["Limit"])
 		rows := result.TraceResult["InvoiceSet"].([]any)
 		row := rows[0].(map[string]any)
 		assert.Equal(t, "[REDACTED]", row["ReceiveEmail"])

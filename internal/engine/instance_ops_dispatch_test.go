@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/opscontext"
 	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/tools"
@@ -361,12 +362,35 @@ func TestInstanceOps_AgentFailureStatusNeverComesFromTextOrUnknownClass(t *testi
 func TestInstanceOpsAgentFailureCodeIsClosed(t *testing.T) {
 	for _, class := range []string{
 		"authentication_failed", "billing_error", "rate_limit", "invalid_request", "server_error",
-		"unknown", "model_error", "max_turns", "sdk_timeout", "sdk_error",
+		"unknown", "model_error", "max_turns", "sdk_timeout", "sdk_error", "no_progress",
 	} {
 		require.Equal(t, "SSH_AGENT_"+strings.ToUpper(class), instanceOpsAgentFailureCode(class))
 	}
 	for _, class := range []string{"", "NEW_ERROR", "future_error", "password=" + "private-value", "server_error\nraw provider body"} {
 		require.Equal(t, "SSH_AGENT_FAILED", instanceOpsAgentFailureCode(class))
+	}
+}
+
+func TestInstanceOps_AggregateUsageStaysOnTheTerminalStep(t *testing.T) {
+	zero, input, turns := 0, 210, 5
+	usage := &observability.AgentRunUsage{InputTokens: &input, CacheReadInputTokens: &zero, NumTurns: &turns}
+	for _, failed := range []bool{false, true} {
+		runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{
+			Text: "本轮诊断结果", AgentFailed: failed, ErrClass: "no_progress", AgentUsage: usage,
+		}}
+		eng := newInstanceOpsEngine(runner, nil)
+		var steps []StepEvent
+		eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&steps))
+		require.Len(t, steps, 1)
+		require.Equal(t, usage, steps[0].AgentUsage)
+		if failed {
+			require.Equal(t, StepBlocked, steps[0].Type)
+			require.Equal(t, "SSH_AGENT_NO_PROGRESS", steps[0].ErrorCode)
+			require.Contains(t, steps[0].Message, "诊断中断")
+			require.NotContains(t, steps[0].Message, "排查完成")
+		} else {
+			require.Equal(t, StepToolResult, steps[0].Type)
+		}
 	}
 }
 

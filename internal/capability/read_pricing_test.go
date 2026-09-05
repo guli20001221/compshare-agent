@@ -2,6 +2,7 @@ package capability
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"testing"
 
@@ -100,6 +101,17 @@ func pricingFixture(extra map[string]any) map[string]any {
 func TestPricingRequestMissingFields(t *testing.T) {
 	require.Equal(t, []platform.MissingField{{Name: "gpu_type", Reason: "required"}}, PricingRequest{}.MissingFields())
 	require.Nil(t, PricingRequest{GPUType: "4090"}.MissingFields())
+}
+
+func TestPricingUpstreamFailureIsNotAParameterCorrection(t *testing.T) {
+	exec := &mapReadExec{
+		results: map[string]map[string]any{pricingDescribeAction: pricingFixture(nil)},
+		errs:    map[string]error{pricingPriceAction: errors.New("upstream temporarily unavailable")},
+	}
+	result := runPricing(t, exec, PricingRequest{GPUType: "4090"})
+	require.Equal(t, platform.ReadStatusFailureAfterTool, result.Status)
+	assert.Equal(t, pricingPriceAction, result.ToolAction)
+	assert.Empty(t, result.FallbackReason)
 }
 
 // TestPricingHandle_PassesMemoryAsMBToAPI is the typed-path parity twin of the

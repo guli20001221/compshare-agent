@@ -82,6 +82,13 @@ func cfsListHandle(ctx context.Context, req CFSListRequest, rt ReadRuntime) (CFS
 	if raw == nil {
 		raw = map[string]any{}
 	}
+	if req.CFS != nil && strings.TrimSpace(req.CFS.ID) != "" {
+		if found, known := boolField(raw, "Found"); known && !found {
+			r := ReadEmpty(fmt.Sprintf("当前未查询到 %s 的活跃 CFS 记录。", strings.TrimSpace(req.CFS.ID)))
+			r.ToolAction = cfsDescribeAction
+			return CFSResponse{}, r
+		}
+	}
 	return CFSResponse{Reply: renderCFSInfoReply(raw), Action: cfsDescribeAction}, ReadResult{}
 }
 

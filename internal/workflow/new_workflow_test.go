@@ -1390,6 +1390,34 @@ func TestReinstall_BlocksWhenImageRequiresLargerSystemDisk(t *testing.T) {
 	assert.False(t, reinstalled)
 }
 
+func TestReinstall_ContainerLayersDoNotRequireReplacingTheSystemDisk(t *testing.T) {
+	instance := containerStoppedInstanceResult()
+	host := instance["UHostSet"].([]any)[0].(map[string]any)
+	host["State"] = "Running"
+	host["DiskSet"] = []any{map[string]any{"Type": "Boot", "Size": float64(100)}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance":    instance,
+		"DescribeCompShareSupportZone": cfsSupportZone("cn-pod-01", "cn-pod", "容器一区", 9001, 3001, true),
+		"DescribeCompShareImages": {"ImageSet": []any{
+			map[string]any{"CompShareImageId": "img-container", "Name": "Container image", "Container": "True", "Size": float64(200 * 1024)},
+		}},
+		"ReinstallCompShareInstance": {"RetCode": 0},
+	}}
+	confirmations := 0
+	eng := NewEngine(executor, func(string, map[string]any) bool {
+		confirmations++
+		return true
+	}, nil)
+	result, err := eng.Run(context.Background(), ReinstallInstanceDef(), map[string]any{
+		"UHostId": "uhost-container-test", "CompShareImageId": "img-container",
+	})
+	require.NoError(t, err)
+	require.True(t, result.Success, result.Message)
+	assert.Equal(t, 1, confirmations)
+	_, reinstalled := findExecutorCall(executor.calls, "ReinstallCompShareInstance")
+	assert.True(t, reinstalled)
+}
+
 func TestReinstall_StoppedUHostContainerCanReplaceSystemDiskWithHostImage(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance":    containerStoppedInstanceResult(),

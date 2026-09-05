@@ -1804,6 +1804,14 @@ func (e *Engine) runToolCallsRound(ctx context.Context, userMsg string, resp *ll
 
 		// Deterministic final reply — return directly without LLM narration
 		if finalMsg, ok := isFinalReply(toolResult); ok {
+			// A later cancellation/failure must not hide earlier committed actions.
+			var committed []string
+			for _, reply := range e.committedWriteRepliesThisTurn {
+				if !strings.Contains(finalMsg, reply) {
+					committed = append(committed, reply)
+				}
+			}
+			finalMsg = strings.Join(append(committed, finalMsg), "\n\n")
 			finalMsg = e.finalizeHostTerminalResponse(userMsg, finalMsg)
 			historyFinalMsg := finalMsg
 			if tc.Function.Name == tools.CustomerSupportHandoffName {
@@ -2600,7 +2608,6 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		resultMeta["partial"] = true
 		resultMeta["unavailable_queries"] = unavailableQueries
 		resultMeta["error"] = "知识库部分检索暂时不可用，当前证据可能不完整。"
-		return searchKnowledgeResultJSON(combined, "", resultMeta)
 	}
 	if len(combined.Items) == 0 && floorDroppedCandidates && !nonFlooredCandidates {
 		belowFloorCandidates := roundRobinBelowFloorKnowledgeCandidates(belowFloorCandidateGroups)
@@ -4025,11 +4032,8 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		// Record the commit BEFORE choosing how to narrate it. From here the write
 		// is irreversible upstream, so every later exit — including one where the
 		// model never speaks again — has to be able to say so.
-		e.committedWriteRepliesThisTurn = append(e.committedWriteRepliesThisTurn,
-			committedWriteFallbackReply(action, finalParams, result))
-		if action == "StopInstanceWorkflow" {
-			return finalReplyPrefix + stopInstanceWorkflowReply(finalParams)
-		}
+		result.Message = committedWriteFallbackReply(action, finalParams, result)
+		e.committedWriteRepliesThisTurn = append(e.committedWriteRepliesThisTurn, result.Message)
 		// A create may have committed upstream without matching the confirmed
 		// contract: the readback can be missing, initialization can fail, or the
 		// served spec can differ from the sealed card. Return those exceptional
@@ -4040,31 +4044,9 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 				return finalReplyPrefix + reply
 			}
 		}
-		// Creating a custom image is asynchronous upstream: Create returns the
-		// image id after the record enters Making, not after it becomes usable.
-		// Keep this deterministic so a narration round cannot turn "started" into
-		// an incorrect claim that the image is already available.
-		if action == "CreateCustomImageWorkflow" {
-			return finalReplyPrefix + customImageWorkflowReply(result)
-		}
-		if action == "CloneCustomImageWorkflow" {
-			return finalReplyPrefix + cloneCustomImageWorkflowReply(result)
-		}
-		if reply, ok := switchChargeTypeWorkflowReply(action, finalParams, result); ok {
-			return finalReplyPrefix + reply
-		}
-		if reply, ok := scheduledShutdownWorkflowReply(action, finalParams, result); ok {
-			return finalReplyPrefix + reply
-		}
-		// Successful no-return-data or password-bearing workflows return a
-		// deterministic final reply so the engine SKIPS the post-workflow LLM
-		// narration round. That extra model call can stall; for
-		// reset/reinstall it also must not be allowed to restate user secrets.
-		// Data-bearing non-secret workflows still narrate so their IDs and next
-		// steps surface.
-		if reply, ok := deterministicWorkflowReply(action, finalParams); ok {
-			return finalReplyPrefix + reply
-		}
+		// Finishing an action does not finish the user's task. Return its actual
+		// outcome (including pending asynchronous work) to the same Agent loop;
+		// any subsequent write gets a fresh workflow context and confirmation.
 	}
 	b, _ := json.Marshal(result)
 	return string(b)
@@ -4099,19 +4081,9 @@ func workflowRequiresInstanceTarget(action string) bool {
 	return false
 }
 
-// deterministicWorkflowReply returns a fixed success reply for lifecycle
-// workflows that carry no critical return data, letting executeWorkflow short-
-// circuit the LLM narration round (see the call site for why). Returns
-// ("", false) for workflows whose result must be narrated (they surface IDs,
-// disk IDs, or post-action guidance the user needs).
-//
-// The reply confirms the action landed and names the target — nothing more. It
-// deliberately does NOT (a) restate a fact the confirmation card already
-// delivered (the stop card carries the precise, conditional billing warning —
-// internal/workflow/stop_instance.go, pinned by stop_start_test.go), nor (b)
-// assert an unverified
-// specific (a reboot completion time we don't control). Secret-bearing ops keep
-// their redaction note + login guidance.
+// deterministicWorkflowReply summarizes a committed lifecycle operation for the
+// tool result and the interruption fallback. Successful results still return to
+// the agent loop so it can finish the rest of the user's request.
 func deterministicWorkflowReply(action string, args map[string]any) (string, bool) {
 	uhost, _ := args["UHostId"].(string)
 	switch action {
@@ -4385,21 +4357,18 @@ func createSpecDisplayValue(field string, value any) string {
 // guaranteed by CreateCompShareCustomImage. Upstream creates the image record in
 // Making and advances it asynchronously, so this must never call a successful
 // create a completed or usable image.
-// customImageSourceInstanceNote is the workflow's own sentence, not a copy of it.
-// The card sets this expectation before the write and this reply restates it
-// after; a user who skimmed one must not get different facts from the other.
-const customImageSourceInstanceNote = workflow.CustomImageSourceInstanceNote
-
 func customImageWorkflowReply(result *workflow.Result) string {
 	imageID := ""
+	sourceNote := ""
 	if result != nil && result.Data != nil {
 		imageID, _ = result.Data["CompShareImageId"].(string)
 		imageID = strings.TrimSpace(imageID)
+		sourceNote, _ = result.Data["SourceInstanceNote"].(string)
 	}
 	if imageID != "" {
-		return fmt.Sprintf("✅ 已发起自制镜像制作（ID: %s）。镜像已进入制作流程（初始状态为 Making）；变为 Available 后才能用于创建实例、共享或克隆。%s", imageID, customImageSourceInstanceNote)
+		return fmt.Sprintf("✅ 已发起自制镜像制作（ID: %s）。镜像已进入制作流程（初始状态为 Making）；变为 Available 后才能用于创建实例、共享或克隆。%s", imageID, sourceNote)
 	}
-	return "✅ 已发起自制镜像制作。镜像已进入制作流程（初始状态为 Making）；变为 Available 后才能用于创建实例、共享或克隆。" + customImageSourceInstanceNote
+	return "✅ 已发起自制镜像制作。镜像已进入制作流程（初始状态为 Making）；变为 Available 后才能用于创建实例、共享或克隆。" + sourceNote
 }
 
 // committedWriteNarrationFailedNote tells the user the missing half explicitly.
@@ -4764,6 +4733,7 @@ type StepEvent struct {
 	ToolResultRawRunes     *int
 	ToolResultVisibleRunes *int
 	ToolResultTruncated    *bool
+	AgentUsage             *observability.AgentRunUsage // delegated-query aggregate, trace only
 }
 
 // trimHistory keeps the message list under maxRawHistoryRunes by dropping the

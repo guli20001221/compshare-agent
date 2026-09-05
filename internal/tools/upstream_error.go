@@ -154,6 +154,7 @@ var retCodeGuidanceByCode = map[int]retCodeGuidance{
 	226628: retryLaterGuidance("社区镜像正在同步到目标可用区：请稍后再试。"),
 	226636: chooseAlternativeGuidance("目标可用区不支持自制镜像同步：请选择其他可用区。"),
 	226637: chooseAlternativeGuidance("目标可用区不支持所选镜像类型：请更换镜像或可用区。"),
+	226644: chooseAlternativeGuidance("当前实例使用收费镜像，仅镜像发布方可以制作自制镜像；当前账号不能从该实例制作自制镜像。"),
 }
 
 func retCodeGuidanceForMessage(code int, msg string) retCodeGuidance {

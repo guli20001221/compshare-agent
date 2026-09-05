@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -37,6 +38,31 @@ func TestChatTraceRecorderReceivesEngineCompletion(t *testing.T) {
 	assert.Equal(t, observability.CompletionClassAgent, got.Completion.Class)
 	assert.Equal(t, observability.CompletionReasonAgentLoop, got.Completion.Reason)
 	assert.Equal(t, observability.TerminatedByDone, got.Outcome.TerminatedBy)
+}
+
+func TestChatTraceRecorderKeepsSDKUsageOnTheExistingDiagnosisRun(t *testing.T) {
+	zero, input, output, turns := 0, 210, 5, 3
+	usage := &observability.AgentRunUsage{
+		InputTokens: &input, OutputTokens: &output, CacheReadInputTokens: &zero, NumTurns: &turns,
+	}
+	for _, terminal := range []engine.StepType{engine.StepToolResult, engine.StepBlocked} {
+		writer := &captureTraceWriter{}
+		recorder := newChatTraceRecorder(writer, BaseRequest{}, "sdk-aggregate", 1, "repair", time.Now())
+		recorder.OnStep(engine.StepEvent{Type: engine.StepToolCall, Action: "DiagnoseInstanceInternals", Source: observability.ToolSourceDiagnosisInternal})
+		recorder.OnStep(engine.StepEvent{Type: terminal, Action: "DiagnoseInstanceInternals", Source: observability.ToolSourceDiagnosisInternal, AgentUsage: usage})
+		require.NoError(t, recorder.Finish(nil, time.Now()))
+		require.Len(t, writer.records, 1)
+		record := writer.records[0]
+		require.Len(t, record.ToolCalls, 1, "aggregate usage does not synthesize SDK provider attempts")
+		require.Equal(t, usage, record.ToolCalls[0].AgentUsage)
+		wire, err := json.Marshal(record.ToolCalls[0])
+		require.NoError(t, err)
+		require.Contains(t, string(wire), `"cache_read_input_tokens":0`)
+		require.NotContains(t, string(wire), "cache_creation_input_tokens")
+		legacy, err := json.Marshal(observability.ToolCallTrace{Action: "DescribeCompShareInstance"})
+		require.NoError(t, err)
+		require.NotContains(t, string(legacy), "agent_usage")
+	}
 }
 
 func TestChatTraceRecorderMarksChatError(t *testing.T) {

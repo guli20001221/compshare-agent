@@ -116,12 +116,17 @@ func pricingHandle(ctx context.Context, req PricingRequest, rt ReadRuntime) (Pri
 	// preference contract: one zone may expose Spot only while another exposes
 	// Postpay/Day/Month for the same GPU name.
 	priced := []gpuPriceRow{}
+	var quoteErr error
+	var failedAction string
 	for _, name := range matched {
 		for _, spec := range pricingSpecs(name, items, req.GPUCount, req.Zone, req.Disks) {
 			args := pricingPriceArgs(name, spec, req.Disks)
 			addPricingPlacementArgs(args, spec.Zone, supportZones)
 			priceRaw, priceAction, errInner := executePricingQuote(ctx, rt, args, req)
 			if errInner != nil {
+				if quoteErr == nil {
+					quoteErr, failedAction = errInner, priceAction
+				}
 				continue
 			}
 			bill := pricingBillingTableForKind(priceRaw, pricingKindForRequest(req))
@@ -149,6 +154,9 @@ func pricingHandle(ctx context.Context, req PricingRequest, rt ReadRuntime) (Pri
 	}
 
 	if len(priced) == 0 {
+		if quoteErr != nil {
+			return PricingResponse{}, ReadFailureAfterTool(failedAction, pricingCapabilityLabel, quoteErr)
+		}
 		return PricingResponse{}, ReadFallbackBeforeTool(platform.ReadFallbackValidation)
 	}
 	return PricingResponse{Rows: priced}, ReadResult{}

@@ -55,7 +55,7 @@ func resourceReadSpec() ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResp
 		Description: "查实例、云盘。查询现有实例的共享带宽归属或切换目标时选择 shared_bandwidth；购买和提速规则另查知识库。",
 		Params: objectParam(map[string]schemaNode{
 			"resource_type": enumParam(resourceTypeInstances, resourceTypeDisks, resourceTypeShareBandwidth).described("instances 查实例；disks 查云盘/CVolume；shared_bandwidth 查实例 EIP 的共享带宽归属、口径和已有切换目标，不代表测速或购买入口。"),
-			"targets":       targetRefsParam(),
+			"targets":       targetRefsParam(platform.TargetRefFilter).described("实例 ID 或精确名称；省略查全部。filter 仅用于 instances/shared_bandwidth，value 用 all、state=running、state=stopped 或 gpu_type=实时型号；不能与 ID/名称混用。disks 只可指定一台实例。"),
 			"disk_ids":      arrayParam(stringParam()).described("磁盘 ID。"),
 		}),
 		NeedsZoneCatalog: func(req ResourceInfoRequest) bool {

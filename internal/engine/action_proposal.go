@@ -1073,16 +1073,6 @@ func uniqueNormalizedEnumQuote(text, quote []rune) (int, int, bool) {
 }
 
 func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any, onStep func(StepEvent)) string {
-	if len(e.committedWriteRepliesThisTurn) > 0 {
-		e.actionProposalDispositionThisTurn = "additional_write_after_commit"
-		operation, _ := args["operation"].(string)
-		label := friendlyActionName(operation)
-		if label == "" {
-			label = "后续写操作"
-		}
-		return finalReplyPrefix + strings.Join(e.committedWriteRepliesThisTurn, "\n") +
-			"\n\n随后提出的“" + label + "”操作没有执行。请在下一条消息中单独提出。"
-	}
 	resolved, err := e.resolveActionProposal(ctx, args)
 	if err != nil {
 		e.actionProposalDispositionThisTurn = "resolve_error"

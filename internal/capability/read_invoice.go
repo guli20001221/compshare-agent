@@ -19,7 +19,9 @@ const (
 	invoiceStatusAction          = "GetCompShareInvoiceIssued"
 )
 
-type InvoiceStatusRequest struct{}
+type InvoiceStatusRequest struct {
+	Offset int `json:"offset,omitempty"`
+}
 
 func (InvoiceStatusRequest) MissingFields() []platform.MissingField { return nil }
 
@@ -38,20 +40,23 @@ type InvoiceStatusItem struct {
 type InvoiceStatusResponse struct {
 	Items      []InvoiceStatusItem
 	TotalCount int
+	Offset     int
 }
 
 func invoiceStatusReadSpec() ReadCapabilitySpec[InvoiceStatusRequest, InvoiceStatusResponse] {
 	return ReadCapabilitySpec[InvoiceStatusRequest, InvoiceStatusResponse]{
 		Label:       invoiceStatusCapabilityLabel,
 		Description: "查询当前账号的发票记录、开具状态、申请时间和金额。只读，不申请或修改发票。",
-		Params:      objectParam(map[string]schemaNode{}),
-		Handle:      invoiceStatusHandle,
-		Render:      invoiceStatusRender,
+		Params: objectParam(map[string]schemaNode{
+			"offset": integerParam(0).described("分页偏移，默认 0；每次最多 100 条。查询更早的记录时使用结果给出的下一页偏移。"),
+		}),
+		Handle: invoiceStatusHandle,
+		Render: invoiceStatusRender,
 	}
 }
 
-func invoiceStatusHandle(ctx context.Context, _ InvoiceStatusRequest, rt ReadRuntime) (InvoiceStatusResponse, ReadResult) {
-	raw, err := rt.Executor.Execute(ctx, invoiceStatusAction, map[string]any{})
+func invoiceStatusHandle(ctx context.Context, req InvoiceStatusRequest, rt ReadRuntime) (InvoiceStatusResponse, ReadResult) {
+	raw, err := rt.Executor.Execute(ctx, invoiceStatusAction, map[string]any{"Limit": 100, "Offset": req.Offset})
 	if err != nil {
 		return InvoiceStatusResponse{}, ReadFailureAfterTool(invoiceStatusAction, invoiceStatusCapabilityLabel, err)
 	}
@@ -62,26 +67,33 @@ func invoiceStatusHandle(ctx context.Context, _ InvoiceStatusRequest, rt ReadRun
 		totalCount = int(value)
 	}
 	if len(items) == 0 {
-		if len(rows) > 0 || totalCount > 0 {
+		if len(rows) > 0 || totalCount > req.Offset {
 			return InvoiceStatusResponse{}, ReadFailureAfterTool(
 				invoiceStatusAction,
 				invoiceStatusCapabilityLabel,
 				fmt.Errorf("upstream reported %d invoice records but none could be projected", totalCount),
 			)
 		}
-		r := ReadEmpty("当前账号没有查询到发票记录。")
+		reply := "当前账号没有查询到发票记录。"
+		if req.Offset > 0 {
+			reply = "本页没有查询到发票记录。"
+		}
+		r := ReadEmpty(reply)
 		r.ToolAction = invoiceStatusAction
 		env := invoiceStatusEnvelope(nil, totalCount)
 		r.Envelope = &env
 		return InvoiceStatusResponse{}, r
 	}
-	return InvoiceStatusResponse{Items: items, TotalCount: totalCount}, ReadResult{}
+	return InvoiceStatusResponse{Items: items, TotalCount: totalCount, Offset: req.Offset}, ReadResult{}
 }
 
 func invoiceStatusRender(resp InvoiceStatusResponse) ReadResult {
 	r := ReadHandled(renderInvoiceStatusReply(resp))
 	r.ToolAction = invoiceStatusAction
 	env := invoiceStatusEnvelope(resp.Items, resp.TotalCount)
+	if next := resp.Offset + len(resp.Items); next < resp.TotalCount {
+		env.Computed = append(env.Computed, envelope.Fact{Key: "next_offset", Label: "下一页偏移", Value: next, Source: envelope.FactSourceComputed})
+	}
 	r.Envelope = &env
 	return r
 }
@@ -176,8 +188,11 @@ func renderInvoiceStatusReply(resp InvoiceStatusResponse) string {
 		}
 		lines = append(lines, fmt.Sprintf("- 发票 %d：%s。", item.ID, strings.Join(parts, "，")))
 	}
-	if resp.TotalCount > len(resp.Items) {
-		lines = append(lines, fmt.Sprintf("本次显示 %d 条，共 %d 条。", len(resp.Items), resp.TotalCount))
+	if resp.TotalCount > len(resp.Items) || resp.Offset > 0 {
+		lines = append(lines, fmt.Sprintf("本次显示第 %d–%d 条，共 %d 条。", resp.Offset+1, resp.Offset+len(resp.Items), resp.TotalCount))
+		if next := resp.Offset + len(resp.Items); next < resp.TotalCount {
+			lines = append(lines, fmt.Sprintf("后续记录可继续查询，下一页 offset=%d。", next))
+		}
 	}
 	return strings.Join(lines, "\n")
 }
