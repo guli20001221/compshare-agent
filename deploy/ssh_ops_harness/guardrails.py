@@ -153,7 +153,7 @@ _DESTRUCTIVE_SRC = [
     # ---- device / critical-path writes ----------------------------------------------------
     # Raw disks, the boot chain and the kernel interfaces stay HARD-REFUSED: a bad write there is
     # either unrecoverable or unreasonable to reason about from a consent card.
-    r">\s*/dev/[sn]d", r"\bof=/dev/",
+    r">\s*/dev/(?:[shv]d|xvd|nvme|loop)", r"\bof=/dev/",
     r">\s*/(boot|sys|proc)\b",
     r"\b(cp|mv|tee|install)\b[^\n]*\s/boot/",
     r"\bsed\b[^\n]*-i\w*[^\n]*\s/boot/",
@@ -1925,6 +1925,45 @@ def _is_readonly_py_invocation(binary: str, seg: str) -> bool:
     return False
 
 
+def _py_program_words_are_data(payload: str) -> bool:
+    """Use the read proof only when its trusted call names/receivers cannot be rebound.
+
+    Read-tier classification may conservatively fall back to task-authorized execution. Removing
+    a hard program-name match additionally requires that `print`, module aliases and method
+    receivers still mean what the AST proof checked.
+    """
+    if not _py_payload_is_readonly(payload):
+        return False
+    tree = ast.parse(payload)
+    call_roots, assigned, imported = set(), set(), set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store):
+            assigned.add(node.id)
+        if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Store):
+            return False
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                name = alias.asname or alias.name.split(".")[0]
+                if name in imported:
+                    return False
+                imported.add(name)
+        if isinstance(node, ast.Call):
+            root = node.func
+            while isinstance(root, ast.Attribute):
+                root = root.value
+            if isinstance(root, ast.Call):
+                # `open(...).read()` is a normal file observation; arbitrary factory-returned
+                # objects can bind a familiar method name to a completely different function.
+                if not (isinstance(root.func, ast.Name) and root.func.id == "open"
+                        and _py_open_is_read(root)):
+                    return False
+                root = root.func
+            if not isinstance(root, ast.Name):
+                return False
+            call_roots.add(root.id)
+    return not (call_roots & assigned)
+
+
 # find primaries that write or block no matter what any -exec inner command is.
 _FIND_WRITE_PRIMARIES = re.compile(r"(?:^|\s)-(delete|ok|okdir|fprint|fprintf|fls)\b")
 
@@ -2135,12 +2174,18 @@ def _http_crosses_guest_boundary(tokens) -> bool:
                 or (binary == "wget" and flag.startswith("-e"))
                 or lower in ("--config", "--execute")):
             return True                                  # config can hide target, body and method
-        if lower in ("-x", "--request", "--method"):
+        if binary == "curl" and (flag in ("-x", "--proxy", "--preproxy")
+                                 or token.startswith("-x") and token != "-x"):
+            # curl's short options are case-sensitive: -x selects a proxy; -X selects a method.
+            # A proxy value is not another HTTP request target, including for a loopback POST.
+            i += 1 if has_eq or flag not in ("-x", "--proxy", "--preproxy") else 2
+            continue
+        if flag == "-X" or lower in ("--request", "--method"):
             method = inline if has_eq else (tokens[i + 1] if i + 1 < len(tokens) else "")
             effect = effect or method.upper() not in _HTTP_READ_METHODS
             i += 1 if has_eq else 2
             continue
-        if lower.startswith("-x") and lower != "-x":
+        if flag.startswith("-X") and flag != "-X":
             effect = effect or token[2:].upper() not in _HTTP_READ_METHODS
             i += 1
             continue
@@ -2578,13 +2623,39 @@ def _normalize_paths(cmd: str) -> str:
     return " ".join(out)
 
 
+def _literal_heredoc(cmd: str):
+    """Separate one complete quoted heredoc from its shell consumer, without interpreting stdin."""
+    header, newline, rest = cmd.partition("\n")
+    marker = re.search(r"<<(['\"])([A-Za-z_]\w*)\1", header) if newline else None
+    if marker is None or _mask_quoted(header)[marker.start():marker.start() + 2] != "<<":
+        return None
+    lines = rest.splitlines(keepends=True)
+    end = next((i for i, line in enumerate(lines)
+                if line.rstrip("\r\n") == marker.group(2)), None)
+    if end is None or "".join(lines[end + 1:]).strip():
+        return None
+    return header[:marker.start()] + header[marker.end():], "".join(lines[:end])
+
+
 def _program_words_are_data(cmd: str) -> bool:
     """Only known data consumers may suppress program-name matches in their arguments.
 
     This does not grant read-only status or suppress effect/path rules. Unknown execution
     consumers anywhere in the command retain the raw scan, including pipes into a shell.
     """
-    # Reuse the existing splitter; do not extend its shell grammar. Quoted data escapes such as
+    # Quoted heredoc stdin is literal shell data; interpreter stdin still needs its AST call proof.
+    heredoc = _literal_heredoc(cmd)
+    if heredoc is not None:
+        consumer, payload = heredoc
+        try:
+            argv = shlex.split(consumer)
+        except ValueError:
+            return False
+        if argv and _PYTHON_BINARY.fullmatch(_basename(argv[0])):
+            return argv[1:] == ["-"] and _py_program_words_are_data(payload)
+        return bool(argv and _basename(argv[0]) in _SAFE_FILTERS
+                    and _program_words_are_data(consumer))
+    # Reuse the existing splitter. Quoted data escapes such as
     # printf's '\n' do not affect boundaries. Escaped quotes, comments and unquoted escapes can.
     if (_SUBSTITUTION.search(cmd) or "${" in cmd or "$[" in cmd
             or re.search(r"\\['\"]", cmd)):
@@ -2594,8 +2665,9 @@ def _program_words_are_data(cmd: str) -> bool:
     except ValueError:
         return False
     masked = _mask_quoted(cmd)
-    # Keep real-file writes behind the raw gate; only reuse the existing null/FD redirections.
-    if re.search(r"[#&<>(){}\\]", _SAFE_REDIR.sub(" ", masked).replace("&&", "")):
+    # Output redirection changes the destination, not the meaning of a data consumer's argv.
+    # The independent destination/effect rules still inspect the original command below.
+    if re.search(r"[#&<(){}\\]", _SAFE_REDIR.sub(" ", masked).replace("&&", "")):
         return False
     match = _LITERAL_FOR_LOOP.fullmatch(masked)
     body = cmd
@@ -2616,6 +2688,9 @@ def _program_words_are_data(cmd: str) -> bool:
             return False
         program = tokens[0]
         binary = _basename(program)
+        if (_PYTHON_BINARY.fullmatch(binary) and len(tokens) == 3 and tokens[1] == "-c"
+                and _py_program_words_are_data(tokens[2])):
+            continue
         if "/" in program and posixpath.dirname(program) not in _SYSTEM_PROGRAM_DIRS:
             return False
         if binary == "printf":

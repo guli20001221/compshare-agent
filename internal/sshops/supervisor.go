@@ -77,7 +77,7 @@ type confirmReply struct {
 // (protocol lines stripped); the credential is never present.
 type Result struct {
 	Output   string // the harness's scrubbed VERDICT body only — @@STEP lines and markers stripped
-	Steps    []Step // one per command the harness ran/refused, in order (the activity stream + audit trail)
+	Steps    []Step // all parsed commands in order; total wire bytes bound memory, UI/audit detail are capped downstream
 	ExitCode int
 	TimedOut bool
 	// PreflightFailed reports that the dial never landed, so NO command ran and the verdict is a
@@ -301,9 +301,9 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 		// Current-request HTTP Authorization values follow the same stdin-only
 		// private channel as SSH credentials and endpoint URLs. The model sees only
 		// each opaque ref through the harness tool schema.
-		"probe_authorizations":     modelContext.ProbeAuthorizations,
-		"pending_background_job":   modelContext.PendingBackgroundJob,
-		"background_job_slot_busy": modelContext.BackgroundJobSlotBusy,
+		"probe_authorizations":           modelContext.ProbeAuthorizations,
+		"pending_background_jobs":        modelContext.PendingBackgroundJobs,
+		"background_job_slots_remaining": max(0, opscontext.MaxBackgroundJobs-modelContext.BackgroundJobsTracked),
 		// The harness always owns a stable two-tool knowledge surface. This private
 		// bit only tells it whether the current supervisor can answer the sideband;
 		// no MCP URL, bearer token or short-lived search capability crosses stdin.
@@ -404,13 +404,6 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 const (
 	maxHarnessStdoutBytes = 1 << 20   // 1 MiB total stdout ceiling — verdict+steps are small; a firehose is a bug
 	maxHarnessStepLine    = 256 << 10 // 256 KiB per-line cap — a step line is metadata; a huge one is malformed
-	// Step-count ceiling. MUST stay >= the harness's turn budget (DEFAULT_MAX_TURNS in harness.py):
-	// a cap below it silently truncates the tail of the activity stream, so the audit tally under-counts
-	// and the user stops seeing commands while the agent is still running.
-	maxHarnessSteps = 120
-	// One model turn can finish one background job and start the next. Keep the pre-launch cursor for
-	// each distinct job while bounding side-band events independently from command/audit rows.
-	maxHarnessJobUpdates = 32
 	// A harness announces at most one SDK cursor for a run. Keep this side band independently
 	// bounded so malformed stdout cannot flood the engine even though it does not consume step quota.
 	maxHarnessAgentSessionUpdates = 1
@@ -419,8 +412,9 @@ const (
 // parseHarnessStream consumes the harness stdout line protocol and returns the terminal VERDICT body
 // plus the ordered command Steps. Only the documented line shapes are trusted; everything else
 // (the CLI's own chatter) is
-// ignored. Bounded on three axes — total bytes, per-line size, step count — so a misbehaving harness
-// cannot exhaust memory or flood the activity stream.
+// ignored. Total bytes and per-line size bound memory. Every parsed command reaches
+// the counters and continuation tracker; only downstream UI and persisted detail
+// are capped, so a model turn containing several tools cannot truncate audit totals.
 //
 //	@@STEP {json}                one per command, metadata only
 //	@@JOB {json}                 opaque background-job handle, not a command/audit step
@@ -429,7 +423,7 @@ const (
 //	<<<VERDICT>>> ... <<<END>>>  the single terminal conclusion block
 //
 // onStep, if non-nil, is invoked for parsed @@STEP command rows and @@JOB lifecycle updates as
-// they are read; only @@STEP rows are bounded by the command-step cap and returned for audit.
+// they are read; all @@STEP rows are returned for aggregate audit accounting.
 // Unknown values are kept verbatim in harnessOutcome.Outcome but map to "entered", so a newer harness
 // inventing a value cannot silently turn a successful diagnosis into a refusal on an older supervisor.
 const (
@@ -497,17 +491,14 @@ func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRe
 				onKnowledge(req)
 			}
 		case strings.HasPrefix(line, "@@STEP "):
-			if len(steps) >= maxHarnessSteps {
-				continue // cap the activity stream; the engine caps too (defense in depth)
-			}
 			if st, ok := parseStep(line[len("@@STEP "):]); ok {
 				steps = append(steps, st)
 				if onStep != nil {
-					onStep(st) // live: fire as parsed, bounded by the same step cap above
+					onStep(st) // UI delivery is bounded by the engine, not command accounting.
 				}
 			}
 		case isJobLine:
-			if st, ok := parseJobUpdate(jobPayload); ok && len(jobsSeen) < maxHarnessJobUpdates {
+			if st, ok := parseJobUpdate(jobPayload); ok {
 				if _, duplicate := jobsSeen[st.JobID]; duplicate {
 					continue
 				}

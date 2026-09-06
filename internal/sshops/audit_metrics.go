@@ -21,10 +21,9 @@ const maxAuditStepCommandRunes = 200
 // have to say "200, or 205 if it was truncated".
 const auditTruncationMarker = "…[截断]"
 
-// maxAuditStepRows bounds how many steps reach the row. The supervisor already caps Steps at
-// maxHarnessSteps, but that is a different file with a different reason to change, and a
-// best-effort Finish that fails on an oversized payload would be logged rather than retried — so
-// the writer carries its own bound instead of trusting the producer's.
+// maxAuditStepRows bounds persisted command detail, not aggregate counters. The
+// supervisor returns every step within its wire-byte budget; retaining a display
+// prefix here must never make CommandsRan or CommandsRefused lose the tail.
 const maxAuditStepRows = 120
 
 // PersistedStepSummary is the persisted, redacted projection of one Step. It exists so an

@@ -72,7 +72,7 @@ func TestParsePersistedContextRejectsMalformedAndUnknownEnvelopes(t *testing.T) 
 
 	for _, raw := range []json.RawMessage{
 		json.RawMessage(`{"agent_session_state":{"schema_version":"0.0"}}`),
-		json.RawMessage(`{"agent_session_state":{"schema_version":"11.0","future":"value"}}`),
+		json.RawMessage(`{"agent_session_state":{"schema_version":"12.0","future":"value"}}`),
 	} {
 		parsed, err := ParsePersistedContext(raw)
 		assert.ErrorIs(t, err, ErrUnknownSessionStateSchema)
@@ -201,14 +201,14 @@ func TestSetSessionStateVersionZeroCannotMintInstanceSelectionAuthority(t *testi
 
 func TestPersistedInstanceOpsJobRoundTripsWithoutExecutablePayload(t *testing.T) {
 	state := SessionState{
-		SchemaVersion: SessionStateSchemaV8,
-		PersistedInstanceOpsJob: PersistedInstanceOpsJob{
+		SchemaVersion: SessionStateSchemaV11,
+		PersistedInstanceOpsJobs: []PersistedInstanceOpsJob{{
 			InstanceID: "uhost-a",
 			JobID:      "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 			State:      "running",
 			Purpose:    "download model weights",
 			UpdatedAt:  "2026-08-25T12:00:00Z",
-		},
+		}},
 	}
 	raw, err := json.Marshal(PersistedContext{AgentSessionState: state})
 	require.NoError(t, err)
@@ -237,23 +237,42 @@ func TestRetiredPendingSelectionIsIgnoredWhenLoadingExistingSessions(t *testing.
 	require.NotContains(t, card, "序号=")
 }
 
-func TestSetSessionStateNormalizesOnlyV8BackgroundJob(t *testing.T) {
+func TestSetSessionStateNormalizesServerOwnedBackgroundJobs(t *testing.T) {
 	job := PersistedInstanceOpsJob{
 		InstanceID: " uhost-a ", JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", State: " running ",
 		Purpose: "contact user@example.com token=secret-value", UpdatedAt: "not-a-time",
 	}
 	e := newEngineForSessionStateTest(t)
-	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV8, PersistedInstanceOpsJob: job}, 1)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV11, PersistedInstanceOpsJobs: []PersistedInstanceOpsJob{job}}, 1)
 	state, _, _ := e.SessionStateSnapshot()
-	assert.Equal(t, "uhost-a", state.PersistedInstanceOpsJob.InstanceID)
-	assert.Contains(t, state.PersistedInstanceOpsJob.Purpose, "user@example.com")
-	assert.NotContains(t, state.PersistedInstanceOpsJob.Purpose, "secret-value")
-	assert.Empty(t, state.PersistedInstanceOpsJob.UpdatedAt)
+	require.Len(t, state.PersistedInstanceOpsJobs, 1)
+	assert.Equal(t, "uhost-a", state.PersistedInstanceOpsJobs[0].InstanceID)
+	assert.Contains(t, state.PersistedInstanceOpsJobs[0].Purpose, "user@example.com")
+	assert.NotContains(t, state.PersistedInstanceOpsJobs[0].Purpose, "secret-value")
+	assert.Empty(t, state.PersistedInstanceOpsJobs[0].UpdatedAt)
 
-	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV7, PersistedInstanceOpsJob: job}, 2)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV7, PersistedInstanceOpsJobs: []PersistedInstanceOpsJob{job}}, 2)
 	state, _, _ = e.SessionStateSnapshot()
-	assert.True(t, state.PersistedInstanceOpsJob.IsZero(),
+	assert.Empty(t, state.PersistedInstanceOpsJobs,
 		"a pre-V8 envelope cannot smuggle a job cursor through an unknown field")
+}
+
+func TestLegacySingleBackgroundJobHydratesAndRewritesAsPlural(t *testing.T) {
+	for _, schema := range []string{SessionStateSchemaV8, SessionStateSchemaV9, SessionStateSchemaV10} {
+		raw := []byte(`{"agent_session_state":{"schema_version":"` + schema + `","persisted_instance_ops_job":{"instance_id":"uhost-a","job_id":"job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"running","purpose":"serve app"}}}`)
+		parsed, err := ParsePersistedContext(raw)
+		require.NoError(t, err)
+		eng := newEngineForSessionStateTest(t)
+		eng.SetSessionState(parsed.AgentSessionState, 1)
+		state, _, _ := eng.SessionStateSnapshot()
+		require.Equal(t, SessionStateSchemaV11, state.SchemaVersion)
+		require.Len(t, state.PersistedInstanceOpsJobs, 1)
+		require.Equal(t, "serve app", state.PersistedInstanceOpsJobs[0].Purpose)
+		encoded, err := json.Marshal(state)
+		require.NoError(t, err)
+		require.Contains(t, string(encoded), `"persisted_instance_ops_jobs"`)
+		require.NotContains(t, string(encoded), `"persisted_instance_ops_job"`)
+	}
 }
 
 func TestPersistedInstanceOpsAgentRoundTripsWithoutTranscriptOrAuthorization(t *testing.T) {

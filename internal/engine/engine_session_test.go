@@ -361,9 +361,9 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// turn-local: sharing them would let one tenant's in-instance run (or its
 		// one-per-turn slot) bleed into another tenant's turn. All reset per turn /
 		// cleared on return.
-		"instanceOps":            true,
-		"instanceOpsRanThisTurn": true,
-		"currentTurnID":          true,
+		"instanceOps":                true,
+		"instanceOpsResultsThisTurn": true,
+		"currentTurnID":              true,
 		// The notice left by a diagnosis that ended without a verdict, drained by the
 		// next turn. Per-session and NOT turn-local — it deliberately outlives the turn
 		// that created it, which is the whole point — and emphatically not shared: it
@@ -378,7 +378,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// the refusal. Turn-local and per-session for the obvious reason: inheriting
 		// another session's reason would tell this user their card timed out when
 		// they declined it, or the reverse. Reset at turn entry beside
-		// instanceOpsRanThisTurn.
+		// instanceOpsResultsThisTurn.
 		"lastConfirmationTerminalReason": true,
 		// Verbatim user blocks accumulated this turn (see verbatimReplyPrefix).
 		// Turn-local: sharing it would splice one tenant's rendered billing figures

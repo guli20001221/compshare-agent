@@ -107,6 +107,8 @@ type MessageStore interface {
 	Append(ctx context.Context, m Message) error
 	UpdateAssistant(ctx context.Context, owner Owner, msgID string, patch AssistantPatch) error
 	ListBySession(ctx context.Context, sessionID string, limit int, cursor string) ([]Message, string, error)
+	// ListRecentBySession returns at most limit newest rows in chronological order.
+	ListRecentBySession(ctx context.Context, sessionID string, limit int) ([]Message, error)
 	GetWithOwnerCheck(ctx context.Context, owner Owner, msgID string) (Message, error)
 }
 

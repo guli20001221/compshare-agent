@@ -66,6 +66,7 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 		OrganizationID:    u.OrganizationID,
 		RequestUUID:       req.TurnID, // the engine turn identity IS the request identity (F21)
 		TurnID:            req.TurnID, // the INV-9 (turn_id, task_hash) dedup key
+		InvocationID:      req.InvocationID,
 	}
 
 	// Translate the sshops activity stream into engine progress. "connected" has no wire line of its

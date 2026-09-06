@@ -131,7 +131,7 @@ func TestPrepareChatRefreshesSessionStateAfterWaitingForLease(t *testing.T) {
 		State: "running", Purpose: "download model", UpdatedAt: "2026-08-25T12:00:00Z",
 	}
 	latestRaw, err := json.Marshal(engine.PersistedContext{AgentSessionState: engine.SessionState{
-		SchemaVersion: engine.SessionStateSchemaV8, PersistedInstanceOpsJob: job,
+		SchemaVersion: engine.SessionStateSchemaV11, PersistedInstanceOpsJobs: []engine.PersistedInstanceOpsJob{job},
 	}})
 	require.NoError(t, err)
 	h := NewHandlers(
@@ -157,7 +157,7 @@ func TestPrepareChatRefreshesSessionStateAfterWaitingForLease(t *testing.T) {
 	state, version, hydrated := prep.agent.SessionStateSnapshot()
 	require.True(t, hydrated)
 	require.Equal(t, 4, version, "hydration must use the row re-read inside the session lease")
-	require.Equal(t, job, state.PersistedInstanceOpsJob)
+	require.Equal(t, []engine.PersistedInstanceOpsJob{job}, state.PersistedInstanceOpsJobs)
 }
 
 func TestTurnLimitAllowsOnlyBoundedActiveJobContinuation(t *testing.T) {
@@ -166,7 +166,7 @@ func TestTurnLimitAllowsOnlyBoundedActiveJobContinuation(t *testing.T) {
 		State: "running", Purpose: "compile requested app", UpdatedAt: "2026-08-25T12:00:00Z",
 	}
 	raw, err := json.Marshal(engine.PersistedContext{AgentSessionState: engine.SessionState{
-		SchemaVersion: engine.SessionStateSchemaV8, PersistedInstanceOpsJob: job,
+		SchemaVersion: engine.SessionStateSchemaV11, PersistedInstanceOpsJobs: []engine.PersistedInstanceOpsJob{job},
 	}})
 	require.NoError(t, err)
 	v7Smuggled := json.RawMessage(`{"agent_session_state":{"schema_version":"7.0","persisted_instance_ops_job":{"instance_id":"uhost-active","job_id":"job-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state":"running"}}}`)
@@ -236,7 +236,7 @@ func TestDispatchChat_MalformedContext_SkipsPersist(t *testing.T) {
 // Case 3: unknown schema_version (forward-rollout protection) — chat
 // completes, NO persistence so a newer binary can later read the row.
 func TestDispatchChat_UnknownSchemaVersion_SkipsPersist(t *testing.T) {
-	futureEnvelope := json.RawMessage(`{"agent_session_state":{"schema_version":"11.0","future_field":"hello"},"client_context":{"app":"console"}}`)
+	futureEnvelope := json.RawMessage(`{"agent_session_state":{"schema_version":"12.0","future_field":"hello"},"client_context":{"app":"console"}}`)
 	h, sessions, _ := newChatTestHandlers(t, store.Session{
 		ID:                "sess-future",
 		TopOrganizationID: 1,
@@ -391,8 +391,8 @@ func TestChatStreamEveryTerminusPersistsExistingContinuationCursors(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			raw, err := json.Marshal(engine.PersistedContext{
 				AgentSessionState: engine.SessionState{
-					SchemaVersion:             engine.SessionStateSchemaV10,
-					PersistedInstanceOpsJob:   job,
+					SchemaVersion:             engine.SessionStateSchemaV11,
+					PersistedInstanceOpsJobs:   []engine.PersistedInstanceOpsJob{job},
 					PersistedInstanceOpsAgent: agentCursor,
 				},
 				ClientContext: json.RawMessage(`{"page":"instance"}`),
@@ -433,7 +433,7 @@ func TestChatStreamEveryTerminusPersistsExistingContinuationCursors(t *testing.T
 				"the detached SessionState write must run once on every terminus")
 			persisted, err := engine.ParsePersistedContext(sessions.byID[sess.ID].Context)
 			require.NoError(t, err)
-			require.Equal(t, job, persisted.AgentSessionState.PersistedInstanceOpsJob)
+			require.Equal(t, []engine.PersistedInstanceOpsJob{job}, persisted.AgentSessionState.PersistedInstanceOpsJobs)
 			require.Equal(t, agentCursor, persisted.AgentSessionState.PersistedInstanceOpsAgent,
 				"the committed SDK cursor must survive every HTTP stream terminus")
 			require.JSONEq(t, `{"page":"instance"}`, string(persisted.ClientContext))

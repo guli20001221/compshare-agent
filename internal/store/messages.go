@@ -139,6 +139,33 @@ LIMIT $5
 	return messages, nextCursor, nil
 }
 
+// ListRecentBySession bounds cold-session reads at the database while preserving
+// conversational order. ListBySession remains forward pagination for the UI.
+func (s *MySQLMessageStore) ListRecentBySession(ctx context.Context, sessionID string, limit int) ([]Message, error) {
+	if limit <= 0 {
+		limit = 50
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT id, session_id, request_uuid, role, content, status, error_code, model, input_tokens, output_tokens, ttft_ms, latency_ms, metadata, created_at
+FROM messages
+WHERE session_id = $1
+ORDER BY created_at DESC, id DESC
+LIMIT $2
+`, sessionID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list recent messages query: %w", err)
+	}
+	defer rows.Close()
+	messages, err := scanMessages(rows)
+	if err != nil {
+		return nil, fmt.Errorf("scan recent messages: %w", err)
+	}
+	for left, right := 0, len(messages)-1; left < right; left, right = left+1, right-1 {
+		messages[left], messages[right] = messages[right], messages[left]
+	}
+	return messages, nil
+}
+
 func (s *MySQLMessageStore) GetWithOwnerCheck(ctx context.Context, owner Owner, msgID string) (Message, error) {
 	rows, err := s.db.QueryContext(ctx, `
 SELECT m.id, m.session_id, m.request_uuid, m.role, m.content, m.status, m.error_code, m.model, m.input_tokens, m.output_tokens, m.ttft_ms, m.latency_ms, m.metadata, m.created_at

@@ -150,6 +150,13 @@ func (m *mockMessages) UpdateAssistant(_ context.Context, _ store.Owner, _ strin
 func (m *mockMessages) ListBySession(_ context.Context, _ string, _ int, _ string) ([]store.Message, string, error) {
 	return m.list, "", nil
 }
+func (m *mockMessages) ListRecentBySession(_ context.Context, _ string, limit int) ([]store.Message, error) {
+	rows := m.list
+	if limit > 0 && len(rows) > limit {
+		rows = rows[len(rows)-limit:]
+	}
+	return append([]store.Message(nil), rows...), nil
+}
 func (m *mockMessages) GetWithOwnerCheck(_ context.Context, _ store.Owner, msgID string) (store.Message, error) {
 	msg, ok := m.checked[msgID]
 	if !ok {

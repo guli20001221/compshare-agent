@@ -140,21 +140,12 @@ type HTTPConfig struct {
 	MaxInputLength       int           `yaml:"max_input_length"`
 	PoolCapacity         int           `yaml:"pool_capacity"`
 	PoolIdleTTL          time.Duration `yaml:"pool_idle_ttl"`
-	// MaxSessionTurns is a product quota. Model history is bounded independently
-	// by request size. Zero or unset uses DefaultMaxSessionTurns.
+	// MaxSessionTurns is an optional product quota. Zero or unset means no
+	// session-turn limit. Model history is bounded independently by request size.
 	MaxSessionTurns int `yaml:"max_session_turns"`
 	// DisableCORS leaves CORS headers to the deployment gateway.
 	DisableCORS bool `yaml:"disable_cors"`
 }
-
-// MaxSessionTurnsCeiling is the product quota, not a model-history window.
-// History itself is bounded by token/rune budgets. Raising this quota also
-// requires auditing the fixed-size cold-session database read.
-const MaxSessionTurnsCeiling = 20
-
-// DefaultMaxSessionTurns is the fallback when agent.http.max_session_turns is
-// zero or unset. It must stay <= MaxSessionTurnsCeiling.
-const DefaultMaxSessionTurns = MaxSessionTurnsCeiling
 
 // MySQLConfig holds PostgreSQL connection settings. The historical Go/YAML name
 // remains for deployment compatibility.
@@ -481,12 +472,6 @@ func validateHTTPConfig(h *HTTPConfig) error {
 	}
 	if h.MaxSessionTurns < 0 {
 		return negativeValueError("agent.http.max_session_turns")
-	}
-	// Product quota; model history is bounded independently by request size.
-	if h.MaxSessionTurns > MaxSessionTurnsCeiling {
-		return fmt.Errorf(
-			"agent.http.max_session_turns=%d exceeds the configured session quota (%d)",
-			h.MaxSessionTurns, MaxSessionTurnsCeiling)
 	}
 	return nil
 }

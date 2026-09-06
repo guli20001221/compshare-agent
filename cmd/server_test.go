@@ -199,6 +199,9 @@ func (serverTestMessageStore) UpdateAssistant(context.Context, store.Owner, stri
 func (serverTestMessageStore) ListBySession(context.Context, string, int, string) ([]store.Message, string, error) {
 	return nil, "", nil
 }
+func (serverTestMessageStore) ListRecentBySession(context.Context, string, int) ([]store.Message, error) {
+	return nil, nil
+}
 func (serverTestMessageStore) GetWithOwnerCheck(context.Context, store.Owner, string) (store.Message, error) {
 	return store.Message{}, sql.ErrNoRows
 }

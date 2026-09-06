@@ -177,14 +177,15 @@ EIP is diagnostic-only and is never selected as a dial target.
 
 If a browser disconnects during a diagnosis, the next turn may show a bounded
 deterministic notice. Ordinary commands are never replayed. When one approved
-managed background job emits its opaque handle, SessionState V8 persists only
+managed background job emits its opaque handle, SessionState V11 persists only
 the instance ID, job ID, lifecycle state, redacted purpose and timestamp. A
 later diagnosis on that instance can poll the handle after a browser disconnect,
 Engine LRU eviction or process restart; neither the command nor its output enters
-conversation/audit storage. One unresolved handle occupies the session's single
-durable job slot until a matching terminal observation clears it.
+conversation/audit storage. Up to 32 unresolved handles are tracked independently;
+a matching terminal observation clears only that job. Running services do not
+prevent other installation or download jobs. V8–V10 single-job JSON migrates on read.
 
-SessionState V10 keeps a same-instance opaque Agent SDK session UUID,
+SessionState V11 also keeps a same-instance opaque Agent SDK session UUID,
 a stable opaque workdir UUID, and a content-free SHA-256 high-water mark for the outer conversation already
 bridged into it. The SDK transcript stays in its existing local ephemeral store
 and never enters PostgreSQL. A fresh inner session receives the canonical bounded
@@ -197,6 +198,14 @@ model-event receipt advances the persisted cursor, so authentication/transport f
 cannot append an uncommitted user prompt to the next retry.
 Before the next serialized attempt, the harness retains only that committed source JSONL
 inside the manifest-bound workdir and removes unreceipted fork JSONLs.
+
+An SSH report returns to the central Agent as an ordinary tool observation, so
+platform workflows and further Guest verification can compose within one turn.
+A repeated canonical tool-call ID reuses its result; a new invocation is not
+blocked just because a previous invocation ran. Audit deduplication uses that
+call ID within the existing turn identity, with Task hashing for legacy callers.
+If parent synthesis fails, already obtained reports remain deliverable without
+replaying Guest commands.
 
 ## Configuration
 

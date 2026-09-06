@@ -51,6 +51,14 @@ func captureSteps(dst *[]StepEvent) func(StepEvent) {
 	return func(s StepEvent) { *dst = append(*dst, s) }
 }
 
+func requireInstanceOpsObservation(t *testing.T, out string) tools.AgentToolResult {
+	t.Helper()
+	require.False(t, strings.HasPrefix(out, finalReplyPrefix))
+	result, ok := tools.ParseAgentToolResult(out)
+	require.True(t, ok, out)
+	return result
+}
+
 func newInstanceOpsEngine(runner InstanceOpsRunner, confirm ConfirmFunc) *Engine {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{results: map[string]map[string]any{}}, confirm)
 	eng.SetInstanceOps(runner)
@@ -101,7 +109,7 @@ func TestInstanceOps_DoesNotUseTheWorkflowConfirmationCallback(t *testing.T) {
 
 	require.Equal(t, 0, confirmCalls)
 	require.Equal(t, 1, runner.calls)
-	require.True(t, strings.HasPrefix(out, finalReplyPrefix))
+	requireInstanceOpsObservation(t, out)
 	state, _, hydrated := eng.SessionStateSnapshot()
 	require.True(t, hydrated)
 	require.Equal(t, "uhost-1", state.SelectedInstanceID)
@@ -118,7 +126,7 @@ func TestInstanceOps_InspectionConstraintStaysInTheCompleteUserRequest(t *testin
 
 	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", args, noopStep)
 
-	require.True(t, strings.HasPrefix(out, finalReplyPrefix))
+	requireInstanceOpsObservation(t, out)
 	require.Equal(t, 1, runner.calls)
 	require.Equal(t, []opscontext.ConversationMessage{{
 		Role: opscontext.ConversationRoleUser, Content: eng.lastUserMsg,
@@ -141,8 +149,8 @@ func TestInstanceOps_StaleModeArgumentsDoNotCreateASeparateRuntime(t *testing.T)
 		out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", args, captureSteps(&steps))
 
 		require.Equal(t, 1, runner.calls)
-		require.True(t, eng.instanceOpsRanThisTurn)
-		require.True(t, strings.HasPrefix(out, finalReplyPrefix))
+		require.NotEmpty(t, eng.instanceOpsResultsThisTurn)
+		requireInstanceOpsObservation(t, out)
 	}
 }
 
@@ -170,7 +178,7 @@ func TestInstanceOps_DeploymentGrantCoversMultipleRepairsAndPersistsAgentCursor(
 	var steps []StepEvent
 	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&steps))
 
-	require.True(t, strings.HasPrefix(out, finalReplyPrefix))
+	requireInstanceOpsObservation(t, out)
 	require.Equal(t, 0, confirmCalls, "the lane must not create entry or command-level UI cards")
 	require.Equal(t, 1, runner.calls)
 	state, _, hydrated := eng.SessionStateSnapshot()
@@ -181,7 +189,7 @@ func TestInstanceOps_DeploymentGrantCoversMultipleRepairsAndPersistsAgentCursor(
 	require.Equal(t, runner.lastReq.Context.BridgeConversationAnchor,
 		state.PersistedInstanceOpsAgent.ConversationAnchor)
 	require.Len(t, state.PersistedInstanceOpsAgent.ConversationAnchor, 64)
-	require.Equal(t, "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", state.PersistedInstanceOpsJob.JobID)
+	require.Equal(t, "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", state.PersistedInstanceOpsJobs[0].JobID)
 
 	commandSteps := 0
 	for _, step := range steps {
@@ -225,7 +233,7 @@ func TestInstanceOps_NilConfirmStillRunsForAnExplicitTarget(t *testing.T) {
 	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), noopStep)
 
 	require.Equal(t, 1, runner.calls)
-	require.True(t, strings.HasPrefix(out, finalReplyPrefix))
+	requireInstanceOpsObservation(t, out)
 }
 
 func TestInstanceOpsAuthorizationUsesPrivateContextAndNeverTheTaskOrConfirmCallback(t *testing.T) {
@@ -245,7 +253,7 @@ func TestInstanceOpsAuthorizationUsesPrivateContextAndNeverTheTaskOrConfirmCallb
 		"Mode":    "inspect",
 	}, noopStep)
 
-	require.True(t, strings.HasPrefix(out, finalReplyPrefix))
+	requireInstanceOpsObservation(t, out)
 	require.Equal(t, 1, runner.calls)
 	require.NotContains(t, runner.lastReq.Task, secret)
 	require.Contains(t, runner.lastReq.Task, "[REDACTED]")
@@ -255,10 +263,9 @@ func TestInstanceOpsAuthorizationUsesPrivateContextAndNeverTheTaskOrConfirmCallb
 		"the exact value exists only on the private request path")
 }
 
-// 门 5 — on success the verdict is the deterministic final reply: it survives the
-// loop byte-for-byte (after the prefix strip), the model is NOT called again, and
-// the turn identity is plumbed into the request (INV-9 dedup key).
-func TestInstanceOps_VerdictSurvivesAsTerminalReply(t *testing.T) {
+// A subagent result preserves evidence and OCR but returns control to the same
+// central Agent. It must not force a final before platform work or verification.
+func TestInstanceOps_VerdictReturnsToTheCentralAgent(t *testing.T) {
 	sentinel := "根因：GPU 驱动与内核版本不匹配，建议重装驱动后重启实例。"
 	const screenshotError = "CUDA driver initialization failed\nNVIDIA_VISIBLE_DEVICES=void"
 	require.Equal(t, sentinel, security.RedactOperationalTokensInText(sentinel),
@@ -267,6 +274,7 @@ func TestInstanceOps_VerdictSurvivesAsTerminalReply(t *testing.T) {
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: sentinel, Ran: 2}}
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("t1", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"排查掉卡","Mode":"repair"}`)}},
+		{Content: sentinel},
 	}}
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, alwaysConfirm)
 	eng.SetInstanceOps(runner)
@@ -274,9 +282,10 @@ func TestInstanceOps_VerdictSurvivesAsTerminalReply(t *testing.T) {
 	reply, err := eng.ChatWithOptions(context.Background(), "我的 uhost-1 实例掉卡了", noopStep,
 		ChatOptions{ImageContext: screenshotError})
 	require.NoError(t, err)
-	require.Equal(t, sentinel, reply, "the harness verdict must be the final reply, unrewritten")
+	require.Equal(t, sentinel, reply)
 	require.Equal(t, 1, runner.calls)
-	require.Len(t, model.calls, 1, "finalReplyPrefix terminates the turn — no synthesis round after the verdict")
+	require.Len(t, model.calls, 2, "the report must be available to the next central Agent round")
+	require.Equal(t, "t1", runner.lastReq.InvocationID)
 	require.NotEmpty(t, runner.lastReq.TurnID, "the turn identity must reach the runner as the audit dedup key")
 	require.NotEmpty(t, runner.lastReq.Context.ConversationHistory)
 	current := runner.lastReq.Context.ConversationHistory[len(runner.lastReq.Context.ConversationHistory)-1]
@@ -305,15 +314,16 @@ func TestInstanceOps_AgentFailureIsDeliveredWithoutClaimingCompletion(t *testing
 			}
 			model := &mockLLM{responses: []llm.ChatResponse{
 				{ToolCalls: []openai.ToolCall{toolCall("typed-error", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"修复服务"}`)}},
+				{Content: partial},
 			}}
 			eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
 			eng.SetInstanceOps(runner)
 			var steps []StepEvent
 			reply, err := eng.Chat(context.Background(), "请修复 uhost-1 上的服务", captureSteps(&steps))
 			require.NoError(t, err)
-			require.Equal(t, partial, reply, "deliver the existing partial report without another synthesis round")
+			require.Equal(t, partial, reply)
 			require.Equal(t, 1, runner.calls)
-			require.Len(t, model.calls, 1, "a failure must not silently replay the task or its writes")
+			require.Len(t, model.calls, 2, "the central Agent receives the partial report without automatically replaying writes")
 			var terminal *StepEvent
 			for i := range steps {
 				if steps[i].Action != "DiagnoseInstanceInternals" {
@@ -346,7 +356,7 @@ func TestInstanceOps_AgentFailureStatusNeverComesFromTextOrUnknownClass(t *testi
 		eng := newInstanceOpsEngine(runner, nil)
 		var steps []StepEvent
 		out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&steps))
-		require.Equal(t, finalReplyPrefix+body, out)
+		require.Contains(t, requireInstanceOpsObservation(t, out).Data.(map[string]any)["report"], body)
 		require.Len(t, steps, 1)
 		require.NotContains(t, steps[0].Message, runner.verdict.ErrClass)
 		if agentFailed {
@@ -404,6 +414,7 @@ func TestInstanceOpsAuthorizationNeverEntersTheMainAgentPrompt(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("auth-1", "DiagnoseInstanceInternals",
 			`{"UHostId":"uhost-1","Task":"使用用户提供的 Authorization 验证接口","Mode":"inspect"}`)}},
+		{Content: "认证接口已验证"},
 	}}
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, alwaysConfirm)
 	eng.SetInstanceOps(runner)
@@ -412,7 +423,7 @@ func TestInstanceOpsAuthorizationNeverEntersTheMainAgentPrompt(t *testing.T) {
 		"请排查 uhost-1，模型下载地址 "+signedURL+"\n**Authorization:** "+secret,
 		noopStep, ChatOptions{ImageContext: "截图报错\nAuthorization: " + ocrSecret})
 	require.NoError(t, err)
-	require.Len(t, model.calls, 1)
+	require.Len(t, model.calls, 2)
 	for _, message := range model.calls[0].Messages {
 		require.NotContains(t, message.Content, secret)
 		require.NotContains(t, message.Content, ocrSecret)
@@ -451,10 +462,9 @@ func TestInstanceOps_ExplicitDiagnosisCarriesTargetIntoNextTurn(t *testing.T) {
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "诊断完成", Ran: 1}}
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("diagnose-first", "DiagnoseInstanceInternals", `{"UHostId":"uhost-confirmed-1","Task":"排查 ComfyUI 无法打开","Mode":"repair"}`)}},
+		{Content: "诊断完成"},
 		{ToolCalls: []openai.ToolCall{toolCall("diagnose-follow-up", "DiagnoseInstanceInternals", `{"UHostId":"uhost-confirmed-1","Task":"继续排查 ComfyUI 无法打开","Mode":"repair"}`)}},
-		// This response is reached only by the old broken path, after its second
-		// tool call is rejected for lacking a carried selection proof.
-		{Content: "请先明确要排查的实例。"},
+		{Content: "诊断完成"},
 	}}
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
 	eng.SetInstanceOps(runner)
@@ -481,7 +491,7 @@ func TestInstanceOps_ExplicitDiagnosisCarriesTargetIntoNextTurn(t *testing.T) {
 	require.Equal(t, 2, runner.calls,
 		"the follow-up must reuse the user-confirmed target instead of asking again")
 	require.Equal(t, instanceID, runner.lastReq.InstanceID)
-	require.Len(t, model.calls, 2, "a valid carried selection must not first be rejected back to the model")
+	require.Len(t, model.calls, 4, "each invocation returns a report without a target refusal or extra clarification")
 }
 
 // The age of contextual state does not gate a model-selected SSH target.
@@ -508,7 +518,7 @@ func TestInstanceOps_LongPausedContextDoesNotGateModelTarget(t *testing.T) {
 		"UHostId": instanceID, "Task": "检查 CLIPLoader", "Mode": "repair",
 	}, noopStep)
 	require.Equal(t, 1, runner.calls)
-	require.True(t, strings.HasPrefix(allowed, finalReplyPrefix))
+	requireInstanceOpsObservation(t, allowed)
 
 	state, _, _ := eng.SessionStateSnapshot()
 	require.Equal(t, SelectedInstanceSourceUser, state.SelectedInstanceSource)
@@ -633,7 +643,7 @@ func TestInstanceOps_NotFoundRefusedHonestly(t *testing.T) {
 	var steps []StepEvent
 	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&steps))
 
-	require.True(t, strings.HasPrefix(out, finalReplyPrefix), "a missing box is a terminal refusal")
+	requireInstanceOpsObservation(t, out)
 	require.Contains(t, out, "找不到实例", "the refusal must name the real cause")
 	require.Contains(t, out, "uhost-", "and the id the user asked about")
 	require.NotContains(t, out, "请稍后重试", "retrying an id that is not in the account can never succeed")
@@ -651,23 +661,21 @@ func TestInstanceOps_NotFoundRefusedHonestly(t *testing.T) {
 	require.NotContains(t, out2, "找不到实例")
 }
 
-// 门 8 — at most one in-instance run per turn, even if the model tweaks one word of
-// the Task to dodge the DB dedup key. The second call returns the "already ran"
-// text, distinct from the decline text (V9).
-func TestInstanceOps_OnePerTurnEvenWithTaskTweak(t *testing.T) {
+// One invocation reuses its outcome. A new canonical call can verify after a
+// platform change or work on a second target in the same user turn.
+func TestInstanceOps_InvocationReplayAndIntentionalFollowup(t *testing.T) {
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "结论", Ran: 1}}
 	eng := newInstanceOpsEngine(runner, alwaysConfirm)
 	ctx := context.Background()
 
-	out1 := eng.executeInstanceOps(ctx, "DiagnoseInstanceInternals", map[string]any{"UHostId": "uhost-1", "Task": "排查掉卡", "Mode": "repair"}, noopStep)
-	out2 := eng.executeInstanceOps(ctx, "DiagnoseInstanceInternals", map[string]any{"UHostId": "uhost-1", "Task": "排查掉卡问题", "Mode": "repair"}, noopStep)
-
-	require.Equal(t, 1, runner.calls, "one-word Task tweak must not buy a second in-instance run")
-	require.True(t, strings.HasPrefix(out1, finalReplyPrefix), "first run returns the terminal verdict")
-	require.Contains(t, out2, "已经发起过一次实例内排查请求")
-	require.NotContains(t, out2, "已经执行过一次")
-	require.NotContains(t, out2, "重复进入实例")
-	require.False(t, strings.HasPrefix(out2, finalReplyPrefix), "the already-ran refusal keeps the turn going")
+	out1 := eng.executeInstanceOpsInvocation(ctx, "DiagnoseInstanceInternals", instanceOpsArgs(), "call-1", noopStep)
+	out2 := eng.executeInstanceOpsInvocation(ctx, "DiagnoseInstanceInternals", map[string]any{"UHostId": "uhost-2", "Task": "排查掉卡问题"}, "call-1", noopStep)
+	require.Equal(t, out1, out2, "replaying a call identity must not execute even if arguments changed")
+	require.Equal(t, 1, runner.calls)
+	requireInstanceOpsObservation(t, out1)
+	out3 := eng.executeInstanceOpsInvocation(ctx, "DiagnoseInstanceInternals", instanceOpsArgs(), "call-2", noopStep)
+	requireInstanceOpsObservation(t, out3)
+	require.Equal(t, 2, runner.calls)
 }
 
 func TestInstanceOps_PreEntryFailureRepeatWordingDoesNotClaimGuestEntry(t *testing.T) {
@@ -690,11 +698,9 @@ func TestInstanceOps_PreEntryFailureRepeatWordingDoesNotClaimGuestEntry(t *testi
 			firstResult, ok := tools.ParseAgentToolResult(first)
 			require.True(t, ok, first)
 			require.Equal(t, tools.AgentToolNextAnswerWithLimits, firstResult.NextStep)
-			require.Contains(t, second, "已经发起过一次实例内排查请求")
-			require.NotContains(t, second, "已经执行过一次")
-			require.NotContains(t, second, "重复进入实例")
+			require.Equal(t, first, second, "duplicate delivery preserves the exact pre-entry observation")
 			require.Len(t, secondSteps, 1)
-			require.Equal(t, instanceOpsRepeatRefusalForUser, secondSteps[0].Message)
+			require.Contains(t, secondSteps[0].Message, "未重复执行实例内命令")
 			require.NotContains(t, secondSteps[0].Message, "进入实例")
 		})
 	}
@@ -711,11 +717,11 @@ func TestInstanceOps_DeploymentWriteGrantIsRequiredAtDispatch(t *testing.T) {
 	out1 := eng.executeInstanceOps(ctx, "DiagnoseInstanceInternals", instanceOpsArgs(), noopStep)
 	require.Zero(t, runner.calls)
 	require.Contains(t, out1, "未在当前环境启用")
-	require.False(t, eng.instanceOpsRanThisTurn)
+	require.Empty(t, eng.instanceOpsResultsThisTurn)
 
 	eng.SetMutatingToolsEnabled(true)
 	out2 := eng.executeInstanceOps(ctx, "DiagnoseInstanceInternals", instanceOpsArgs(), noopStep)
 
 	require.Equal(t, 1, runner.calls)
-	require.True(t, strings.HasPrefix(out2, finalReplyPrefix))
+	requireInstanceOpsObservation(t, out2)
 }

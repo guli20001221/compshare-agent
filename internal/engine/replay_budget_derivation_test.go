@@ -28,8 +28,8 @@ func TestTranscriptSizedHistoryPreservesSessionDialogueAndCompactsOldDetail(t *t
 		{"p90 transcript", 7659},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pairs := make([]ConversationPair, 0, deepestProductionSession)
-			for i := 0; i < deepestProductionSession; i++ {
+			pairs := make([]ConversationPair, 0, budgetFixtureExchanges)
+			for i := 0; i < budgetFixtureExchanges; i++ {
 				pair := ConversationPair{
 					User:      fmt.Sprintf("问题%d", i),
 					Assistant: fmt.Sprintf("回答%d", i),
@@ -41,10 +41,10 @@ func TestTranscriptSizedHistoryPreservesSessionDialogueAndCompactsOldDetail(t *t
 				}
 				pairs = append(pairs, pair)
 			}
-			require.Len(t, pairs, deepestProductionSession, "premise: a full session of tool-using turns")
+			require.Len(t, pairs, budgetFixtureExchanges, "premise: a sequence of tool-using turns")
 
 			kept := budgetReplayedPairs(pairs, maxReplayedHistoryRunes)
-			require.Len(t, kept, deepestProductionSession,
+			require.Len(t, kept, budgetFixtureExchanges,
 				"%d-rune tool results must not make the model forget complete dialogue", tc.perTurn)
 			assert.Empty(t, kept[0].Transcript,
 				"premise: old detail must actually be compacted, or this test only proves a roomy budget")

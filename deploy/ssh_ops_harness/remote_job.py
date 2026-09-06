@@ -28,8 +28,8 @@ POLL_DESCRIPTION = (
     "opaque job-NNN ID and cannot read "
     "an arbitrary path. Set wait_seconds (normally 15-30) so the tool waits before checking instead "
     "of burning model turns in a tight loop. Read-only diagnosis and other task-scoped foreground "
-    "changes remain available while it runs, but a second background job is refused until a poll "
-    "observes a terminal state. After six running polls, stop and report partial repair, the job_id, "
+    "changes remain available while it runs. Independent jobs may run concurrently; poll the specific "
+    "returned job_id for each job. After six running polls, stop and report partial repair, the job_id, "
     "progress and pending "
     "verification; a later turn resumes rather than restarts it. An intentionally long-lived service "
     "is different: once its requested endpoint/application criterion is independently proven, running "
@@ -113,13 +113,50 @@ def command_is_self_backgrounding(command):
     chains remain valid.  Shell `-c` payloads are checked recursively because quoting them does not
     make their ampersand literal to the inner shell.
     """
+    text = str(command or "")
+    heredoc = guardrails._literal_heredoc(text)
+    if heredoc is not None:
+        try:
+            consumer = _unwrap_command_prefix(shlex.split(heredoc[0]))
+            while consumer and consumer[0].rsplit("/", 1)[-1] in guardrails._WRAPPER_BINARIES:
+                inner = guardrails._strip_wrapper(consumer[0].rsplit("/", 1)[-1], consumer)
+                consumer = _unwrap_command_prefix(shlex.split(inner))
+            if consumer and consumer[0].rsplit("/", 1)[-1] in _SHELLS:
+                if command_is_self_backgrounding(heredoc[1]):
+                    return True
+        except ValueError:
+            return True
+        text = heredoc[0]  # quoted stdin is not shell operators or nested shell argv
     try:
-        lexer = shlex.shlex(str(command or ""), posix=True, punctuation_chars=";&|<>")
+        lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|<>")
         lexer.whitespace_split = True
         tokens = list(lexer)
     except ValueError:
         return True
-    if "&" in tokens:
+    # shlex strips quoting, so a token equal to '&' could be ordinary grep/printf data.
+    # Inspect operators before quote removal; retain shlex below for nested shell argv.
+    quote, index = "", 0
+    while index < len(text):
+        char = text[index]
+        if char == "\\" and quote != "'":
+            index += 2
+            continue
+        if quote:
+            if char == quote:
+                quote = ""
+        elif char in "'\"":
+            quote = char
+        elif char == "#" and (index == 0 or text[index - 1].isspace()):
+            newline = text.find("\n", index)
+            index = len(text) if newline < 0 else newline
+            continue
+        elif char == "&":
+            previous = text[index - 1:index]
+            following = text[index + 1:index + 2]
+            if previous not in ("&", ">", "<") and following not in ("&", ">"):
+                return True
+        index += 1
+    if quote:
         return True
     command_tokens = _unwrap_command_prefix(tokens)
     # A shell may be reached after a top-level chain or a transparent wrapper (`cd ... && bash`,

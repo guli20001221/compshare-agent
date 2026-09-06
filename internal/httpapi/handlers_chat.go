@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/agentprotocol"
-	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/guardrails"
 	"github.com/compshare-agent/internal/llm"
@@ -319,16 +318,13 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	// on the last ordinary turn can be polled and verified; once the cursor clears, or six extra
 	// attempts are consumed, the normal cap applies again.
 	maxTurns := h.cfg.Agent.HTTP.MaxSessionTurns
-	if maxTurns <= 0 {
-		maxTurns = config.DefaultMaxSessionTurns
-	}
-	if sess.MessageCount >= maxTurns*2 {
-		continuationTurns := (sess.MessageCount - maxTurns*2) / 2
+	if maxTurns > 0 && sess.MessageCount/2 >= maxTurns {
+		continuationTurns := sess.MessageCount/2 - maxTurns
 		// SetSessionState is the authority for schema-version gating and cursor
 		// normalization.  Inspect that hydrated value rather than the raw JSON, or
 		// a pre-V8/partial cursor could buy continuation turns without a pollable job.
 		normalizedState, _, hydrated := agent.SessionStateSnapshot()
-		activeJob := hydrated && !normalizedState.PersistedInstanceOpsJob.IsZero()
+		activeJob := hydrated && len(normalizedState.PersistedInstanceOpsJobs) > 0
 		if !activeJob || continuationTurns >= maxSessionBackgroundJobContinuationTurns {
 			release()
 			return nil, ErrSessionTurnLimit

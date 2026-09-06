@@ -21,6 +21,9 @@ type Owner struct {
 	// transport paths it equals the request identity (F21); it is a distinct field so the
 	// UNIQUE(turn_id, task_hash) constraint has an explicit, purpose-named source.
 	TurnID string
+	// InvocationID identifies the canonical tool call within that turn. Stable on
+	// delivery replay; different for an intentional follow-up after another tool.
+	InvocationID string
 }
 
 // DefaultDiagnosisTask is the "掉卡" root-cause probe used when the caller passes no task.
@@ -145,7 +148,7 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 	ev := AuditEvent{
 		RequestUUID:       owner.RequestUUID,
 		TurnID:            owner.TurnID,
-		TaskHash:          hashTask(task),
+		TaskHash:          hashInvocationTask(owner.InvocationID, task),
 		TopOrganizationID: owner.TopOrganizationID,
 		OrganizationID:    owner.OrganizationID,
 		InstanceID:        cred.InstanceID,
@@ -233,6 +236,16 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 // capabilities stay outside this identity, so replays of one turn collide
 // deterministically without putting a credential into either the hash input or
 // the audit column; being a hash, the resulting identity is non-reversible.
+// The same canonical invocation cannot replay Guest commands. Different calls
+// within a turn may intentionally verify after a platform operation or target
+// another instance. Context/monitor timestamps never participate in this key.
+func hashInvocationTask(invocationID, task string) string {
+	if invocationID == "" {
+		return hashTask(task) // compatibility callers keep their existing durable key
+	}
+	return hashTask("invocation:" + invocationID)
+}
+
 func hashTask(task string) string {
 	sum := sha256.Sum256([]byte(task))
 	return hex.EncodeToString(sum[:])

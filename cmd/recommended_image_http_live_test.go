@@ -258,6 +258,19 @@ func (s *recommendedImageHistoryStore) ListBySession(_ context.Context, sessionI
 	return messages, "", nil
 }
 
+func (s *recommendedImageHistoryStore) ListRecentBySession(_ context.Context, sessionID string, limit int) ([]store.Message, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sessionID != s.session || limit <= 0 {
+		return nil, nil
+	}
+	messages := s.messages
+	if len(messages) > limit {
+		messages = messages[len(messages)-limit:]
+	}
+	return append([]store.Message(nil), messages...), nil
+}
+
 func (s *recommendedImageHistoryStore) GetWithOwnerCheck(_ context.Context, _ store.Owner, _ string) (store.Message, error) {
 	return store.Message{}, sql.ErrNoRows
 }

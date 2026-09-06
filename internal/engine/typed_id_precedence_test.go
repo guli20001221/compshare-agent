@@ -26,8 +26,10 @@ func TestASecondTypedIDOutranksTheFirstOneItAlreadyBound(t *testing.T) {
 			model := &mockLLM{responses: []llm.ChatResponse{
 				{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
 					`{"UHostId":"cpod-aaaa1111aaaa","Task":"排查 ComfyUI 打不开","Mode":"repair"}`)}},
+				{Content: "排查完成"},
 				{ToolCalls: []openai.ToolCall{toolCall("d2", "DiagnoseInstanceInternals",
 					`{"UHostId":"`+tc.second+`","Task":"排查这台","Mode":"repair"}`)}},
+				{Content: "排查完成"},
 			}}
 			eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
 			eng.SetInstanceOps(runner)

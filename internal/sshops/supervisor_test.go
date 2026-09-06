@@ -599,9 +599,10 @@ func TestParseCurrentAgentSessionRequiresAppliedConversationAnchor(t *testing.T)
 }
 
 func TestParseHarnessStreamCaps(t *testing.T) {
-	// step-count cap: excess @@STEP lines are dropped, not accumulated.
+	// Several tool calls can occur in one SDK turn. Detail/UI caps must not
+	// discard settled commands or job updates before aggregate accounting.
 	var b strings.Builder
-	for range maxHarnessSteps + 20 {
+	for range 140 {
 		b.WriteString(`@@STEP {"command":"x","tier":"read_only","disposition":"ran","exit":0,"bytes":1}` + "\n")
 	}
 	var streamedCap int
@@ -609,12 +610,15 @@ func TestParseHarnessStreamCaps(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if len(steps) != maxHarnessSteps {
-		t.Fatalf("step cap not enforced: got %d, want %d", len(steps), maxHarnessSteps)
+	if len(steps) != 140 {
+		t.Fatalf("lost settled commands: got %d, want 140", len(steps))
 	}
-	// the live stream is bounded by the same cap — a firehose harness cannot flood onStep either
-	if streamedCap != maxHarnessSteps {
-		t.Fatalf("onStep not bounded by the step cap: fired %d, want %d", streamedCap, maxHarnessSteps)
+	if streamedCap != 140 {
+		t.Fatalf("lost continuation/activity callbacks: got %d, want 140", streamedCap)
+	}
+	done := diagnoseWith(t, Result{Steps: steps}, nil)
+	if done.CommandsRan != 140 || len(done.Steps) != maxAuditStepRows {
+		t.Fatalf("aggregate/detail budgets conflated: ran=%d detail=%d", done.CommandsRan, len(done.Steps))
 	}
 
 	// total-bytes cap: a verdict body past the ceiling (many bounded lines) fails closed.

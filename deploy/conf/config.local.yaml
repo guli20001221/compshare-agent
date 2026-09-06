@@ -108,8 +108,8 @@ agent:
     max_input_length: 4000
     pool_capacity: 200
     pool_idle_ttl: "30m"
-    # Product quota. Model history is bounded separately by request size.
-    max_session_turns: 20
+    # Optional product quota; 0 means unlimited. History has a separate size budget.
+    max_session_turns: 0
     # Production gateway owns CORS headers.
     disable_cors: true
 

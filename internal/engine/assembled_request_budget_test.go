@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/prompt"
 	"testing"
 	"time"
@@ -14,12 +13,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// deepestProductionSession is the most exchanges a shipped session can reach:
-// agent.http.max_session_turns may not exceed config.MaxSessionTurnsCeiling.
-// These fixtures anchor to that rather than to a replay-window constant, because
-// there is no replay window any more — the whole point below is that a size
-// budget, not a count, decides what survives.
-const deepestProductionSession = config.MaxSessionTurnsCeiling
+// This is a fixture size, not a production quota. Sessions have no implicit
+// turn limit; model request size, not total session length, bounds replay.
+const budgetFixtureExchanges = 20
 
 // The failure this pins: maxReplayedHistoryRunes is applied at turn ENTRY, when
 // the turn has run no tools, and is never re-checked while the turn accumulates
@@ -86,14 +82,14 @@ func TestOrdinaryTurnIsNotTrimmedByTheRequestBudget(t *testing.T) {
 	// 20-turn session must therefore retain its complete conversational thread.
 	rendered := renderTestMessages(out)
 	survivors := 0
-	for i := 0; i < deepestProductionSession; i++ {
+	for i := 0; i < budgetFixtureExchanges; i++ {
 		if strings.Contains(rendered, fmt.Sprintf("问题%d", i)) {
 			survivors++
 		}
 	}
-	assert.Equal(t, deepestProductionSession, survivors,
-		"only %d of %d exchanges reached an ordinary turn's request", survivors, deepestProductionSession)
-	assert.Contains(t, rendered, fmt.Sprintf("问题%d", deepestProductionSession-1),
+	assert.Equal(t, budgetFixtureExchanges, survivors,
+		"only %d of %d exchanges reached an ordinary turn's request", survivors, budgetFixtureExchanges)
+	assert.Contains(t, rendered, fmt.Sprintf("问题%d", budgetFixtureExchanges-1),
 		"and the newest exchange is never the one dropped")
 }
 
@@ -228,7 +224,7 @@ func highFanoutEngine(t *testing.T, reads, perResult int) *Engine {
 	e.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: prompt.BuildSystemWithOptions("", e.reactPromptBuildOptions())},
 	}
-	for i := 0; i < deepestProductionSession; i++ {
+	for i := 0; i < budgetFixtureExchanges; i++ {
 		q, a := fmt.Sprintf("问题%d", i), fmt.Sprintf("回答%d", i)
 		e.messages = append(e.messages,
 			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: q},

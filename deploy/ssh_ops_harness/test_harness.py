@@ -628,18 +628,17 @@ check("pending-job-command-bearing-shape-is-reduced-to-the-safe-handle",
 check("pending-job-invalid-or-terminal-handle-is-not-resumed",
       harness.normalize_pending_background_job({"job_id": "job-not-opaque", "state": "running"}) is None and
       harness.normalize_pending_background_job({"job_id": _JOB_ID, "state": "succeeded"}) is None)
-_continuation_prompt = harness.render_prepared_prompt("继续排查", None, _pending_job)
-check("pending-job-prompt-requires-exact-poll-and-allows-read-only-work",
-      _JOB_ID in _continuation_prompt and "Read-only diagnosis and other scoped" in _continuation_prompt
+_continuation_prompt = harness.render_prepared_prompt("继续排查", None, [_pending_job])
+check("pending-job-prompt-preserves-exact-ids-and-allows-independent-work",
+      _JOB_ID in _continuation_prompt and "Independent foreground and background work" in _continuation_prompt
       and "download model weights" in _continuation_prompt
-      and "refuse a second background job" in _continuation_prompt
+      and "long-lived service need not finish" in _continuation_prompt
       and "Do not reconstruct or rerun" in _continuation_prompt)
 _busy_elsewhere_prompt = harness.render_prepared_prompt(
-    "检查另一台实例", None, background_job_slot_busy=True)
-check("session-wide-job-slot-blocks-only-a-second-background-launch",
-      "unresolved background job on another instance" in _busy_elsewhere_prompt
-      and "diagnose, read" in _busy_elsewhere_prompt
-      and "scoped reversible foreground changes" in _busy_elsewhere_prompt)
+    "检查另一台实例", None, background_job_slots_remaining=0)
+check("full-job-capacity-does-not-block-foreground-work",
+      "tracked background-job capacity" in _busy_elsewhere_prompt
+      and "other foreground work remains available" in _busy_elsewhere_prompt)
 
 # A server rolled back below this harness still sends v1, and that must keep working — but against
 # the V1 allowlist, not the union. Two directions, because "accepts both" silently becoming "accepts
@@ -1966,7 +1965,7 @@ check("a-later-handshake-without-a-capability-does-not-revive-an-old-reference",
           )._test_tool_schema["properties"]
           for tools in (_legacy_flag_tools, _pending_tools, _busy_tools)))
 check("pending-job-main-prompt-carries-the-opaque-handle-not-a-command",
-      _JOB_ID in _captured_sdk_prompts[2] and "Read-only diagnosis and other scoped" in _captured_sdk_prompts[2] and
+      _JOB_ID in _captured_sdk_prompts[2] and "Independent foreground and background work" in _captured_sdk_prompts[2] and
       "pip install package" not in _captured_sdk_prompts[2])
 _pending_poll_tool = next(tool for tool in _pending_tools
                           if tool._test_tool_name == "poll_background_job")
@@ -2124,7 +2123,7 @@ try:
     })))
 finally:
     harness.remote_job.start = _saved_start_for_busy
-check("other-instance-active-job-refuses-a-second-untrackable-background-launch",
+check("legacy-single-slot-handshake-refuses-a-second-untrackable-background-launch",
       "refused_precondition" in _busy_background_wire and not _busy_start_calls)
 
 _self_background_results = []
@@ -2134,8 +2133,8 @@ check("foreground-self-backgrounding-is-routed-to-the-managed-job-mode",
       "refused_form" in _self_background_wire
       and "run_in_background=true" in _json.dumps(_self_background_results[0]))
 
-# One active background job does not turn exact approval into a hard refusal for unrelated foreground
-# work. It only prevents a second untrackable background launch.
+# The legacy single-slot handshake still permits unrelated foreground work;
+# only launches the old Go producer could not persist remain unavailable.
 _saved_run_ssh, _saved_confirm = harness.ssh_transport.run_ssh, harness._request_confirm
 _saved_prepare_edit, _saved_apply_edit = harness.atomic_file.prepare_edit, harness.atomic_file.apply_edit
 _confirm_calls = []
@@ -2301,7 +2300,7 @@ _second_start_wire = _capture(lambda: _asyncio.run(_pending_ssh_tool({
     "command": "python3 -m pip install another", "purpose": "install another",
     "run_in_background": True,
 })))
-check("one-active-job-cannot-be-replaced-by-a-concurrent-job",
+check("legacy-single-slot-producer-cannot-lose-a-handle-to-a-second-job",
       "@@JOB " not in _second_start_wire and "refused_precondition" in _second_start_wire)
 _endpoint_tool = next(tool for tool in _first_tools if tool._test_tool_name == "endpoint_probe")
 _remote_text_tool = next(tool for tool in _first_tools if tool._test_tool_name == "read_text_file")
@@ -3271,6 +3270,112 @@ check("outcome-line-carries-class", '"err_class": "TimeoutError"' in _oc.replace
 check("outcome-line-defaults-context-receipt-false", '"context_applied": false' in _oc.replace('"context_applied":false', '"context_applied": false'))
 # INV-6 applies here exactly as it does to @@STEP: metadata only, never the credential or the host.
 check("outcome-line-has-no-secret", _BOXPW not in _oc and "10.0.0.9" not in _oc)
+
+
+# Exercise the registered tools, not only the job-list normalizer: an HTTP
+# service stays running while a second installation starts, and both handles
+# survive into a later harness. No network or guest process runs in this test.
+from unittest.mock import patch as _patch
+
+_plural_job_ids = ["job-" + f"{number:032x}" for number in (101, 102, 103)]
+_plural_start_ids = iter(_plural_job_ids)
+_plural_starts, _plural_polls, _plural_results, _plural_prompts = [], [], [], []
+_plural_run_number = [0]
+
+
+def _plural_start(_conn, _command, _purpose, _secrets, job_id=None):
+    _plural_starts.append(job_id)
+    return {"ok": True, "job_id": job_id, "state": "started"}
+
+
+def _plural_poll(_conn, job_id, *_args):
+    _plural_polls.append(job_id)
+    state = "running" if job_id == _plural_job_ids[0] else "succeeded"
+    return {"ok": True, "job_id": job_id, "state": state,
+            "stdout": "healthy" if state == "running" else "installed",
+            "stderr": "", "stdout_bytes_total": 7, "stderr_bytes_total": 0,
+            **({"exit_code": 0} if state == "succeeded" else {})}
+
+
+async def _plural_query(prompt, options):
+    del options
+    _plural_prompts.append(prompt)
+    tools_by_name = {item._test_tool_name: item for item in _captured_sdk_servers[-1]["tools"]}
+    if _plural_run_number[0] == 0:
+        _plural_results.append(await tools_by_name["ssh_exec"]({
+            "command": "python3 -m http.server 18080", "run_in_background": True,
+            "purpose": "run requested service"}))
+        _plural_results.append(await tools_by_name["poll_background_job"]({
+            "job_id": _plural_job_ids[0], "wait_seconds": 0}))
+        _plural_results.append(await tools_by_name["ssh_exec"]({
+            "command": "python3 -m pip install requested-package", "run_in_background": True,
+            "purpose": "install independent dependency"}))
+    elif _plural_run_number[0] == 1:
+        for job_id in _plural_job_ids[:2]:
+            _plural_results.append(await tools_by_name["poll_background_job"]({
+                "job_id": job_id, "wait_seconds": 0}))
+        _plural_results.append(await tools_by_name["poll_background_job"]({
+            "job_id": _plural_job_ids[0], "wait_seconds": 0}))
+        _plural_results.append(await tools_by_name["poll_background_job"]({
+            "job_id": "job-" + "f" * 32, "wait_seconds": 0}))
+        _plural_results.append(await tools_by_name["ssh_exec"]({
+            "command": "python3 -m pip install another-package", "run_in_background": True,
+            "purpose": "install another independent dependency"}))
+    else:
+        _plural_results.append(await tools_by_name["ssh_exec"]({
+            "command": "python3 -m pip install extra-package", "run_in_background": True,
+            "purpose": "installation beyond tracked capacity"}))
+    message = type("ResultMessage", (), {})()
+    message.result, message.is_error, message.num_turns = "tool sequence complete", False, 3
+    yield message
+
+
+_plural_conn = {
+    "host": "127.0.0.1", "user": "root", "port": 22, "password": "offline-canary-password",
+    "allow_writes": True, "task": "start service and install dependencies",
+    "pending_background_jobs": [], "background_job_slots_remaining": harness._MAX_BACKGROUND_JOBS,
+}
+with _patch.dict(sys.modules, {"claude_agent_sdk": _fake_sdk}), \
+        _patch.object(_fake_sdk, "query", _plural_query), \
+        _patch.object(harness, "stage_clean_workdir", lambda: None), \
+        _patch.object(harness, "preflight_probe", lambda _conn: None), \
+        _patch.object(harness, "build_options", lambda *_args, **_kwargs: object()), \
+        _patch.object(harness, "_request_confirm", lambda _display: (True, "")), \
+        _patch.object(harness.remote_job, "new_job_id", lambda: next(_plural_start_ids)), \
+        _patch.object(harness.remote_job, "start", _plural_start), \
+        _patch.object(harness.remote_job, "poll", _plural_poll), \
+        _patch.object(harness, "_CONN", harness._CONN), \
+        _patch.object(sys, "stdin", _io.StringIO(_json.dumps(_plural_conn) + "\n")):
+    _plural_first_wire = _capture(lambda: _asyncio.run(harness.main()))
+    _plural_run_number[0] = 1
+    _resumed_plural_conn = dict(_plural_conn, pending_background_jobs=[
+        {"job_id": _plural_job_ids[0], "state": "running", "purpose": "run requested service"},
+        {"job_id": _plural_job_ids[1], "state": "started", "purpose": "install independent dependency"},
+    ], background_job_slots_remaining=harness._MAX_BACKGROUND_JOBS - 2)
+    sys.stdin = _io.StringIO(_json.dumps(_resumed_plural_conn) + "\n")
+    _plural_second_wire = _capture(lambda: _asyncio.run(harness.main()))
+    _plural_run_number[0] = 2
+    sys.stdin = _io.StringIO(_json.dumps(dict(_plural_conn, background_job_slots_remaining=0)) + "\n")
+    _plural_full_wire = _capture(lambda: _asyncio.run(harness.main()))
+check("running-service-does-not-block-a-second-background-installation",
+      _plural_starts == _plural_job_ids and
+      _plural_results[0]["structuredContent"]["job_id"] == _plural_job_ids[0] and
+      _plural_results[1]["structuredContent"]["state"] == "running" and
+      _plural_results[2]["structuredContent"]["job_id"] == _plural_job_ids[1] and
+      _plural_first_wire.count("@@JOB ") == 2)
+check("resumed-jobs-keep-independent-handles-and-terminal-observation-clears-only-one",
+      all(job_id in _plural_prompts[1] for job_id in _plural_job_ids[:2]) and
+      _plural_results[3]["structuredContent"]["state"] == "running" and
+      _plural_results[4]["structuredContent"]["state"] == "succeeded" and
+      _plural_results[5]["structuredContent"]["state"] == "running" and
+      _plural_results[7]["structuredContent"]["job_id"] == _plural_job_ids[2] and
+      _plural_polls == [_plural_job_ids[0], _plural_job_ids[0], _plural_job_ids[1], _plural_job_ids[0]])
+check("plural-job-poll-does-not-accept-another-targets-or-unknown-handle",
+      _plural_results[6]["structuredContent"]["error_class"] == "invalid_job_id")
+check("full-durable-job-capacity-refuses-before-a-background-launch",
+      _plural_results[8]["structuredContent"]["error_class"] == "refused_precondition" and
+      "@@JOB " not in _plural_full_wire)
+check("go-python-job-capacity-agrees", "MaxBackgroundJobs = " + str(harness._MAX_BACKGROUND_JOBS) in _GO_OPS_CONTEXT)
 
 
 def main():

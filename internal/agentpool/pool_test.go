@@ -15,7 +15,7 @@ import (
 )
 
 // mockMessageStore is a minimal store.MessageStore for tests.
-// It only implements ListBySession; other methods are no-ops.
+// It implements chronological and recent listing; other methods are no-ops.
 type mockMessageStore struct {
 	listCalls int
 	messages  []store.Message
@@ -26,8 +26,15 @@ func (m *mockMessageStore) UpdateAssistant(_ context.Context, _ store.Owner, _ s
 	return nil
 }
 func (m *mockMessageStore) ListBySession(_ context.Context, _ string, _ int, _ string) ([]store.Message, string, error) {
-	m.listCalls++
 	return m.messages, "", nil
+}
+func (m *mockMessageStore) ListRecentBySession(_ context.Context, _ string, limit int) ([]store.Message, error) {
+	m.listCalls++
+	messages := m.messages
+	if limit > 0 && len(messages) > limit {
+		messages = messages[len(messages)-limit:]
+	}
+	return append([]store.Message(nil), messages...), nil
 }
 func (m *mockMessageStore) GetWithOwnerCheck(_ context.Context, _ store.Owner, _ string) (store.Message, error) {
 	return store.Message{}, nil

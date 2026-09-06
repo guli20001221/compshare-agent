@@ -122,14 +122,14 @@ func TestObserveInstanceOpsAgentSessionPersistsOnlyValidatedCursor(t *testing.T)
 
 func TestClientCreatedVersionZeroContextCannotSeedContinuationCursors(t *testing.T) {
 	const injected = "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5"
-	for _, schema := range []string{SessionStateSchemaV8, SessionStateSchemaV9, SessionStateSchemaV10} {
+	for _, schema := range []string{SessionStateSchemaV8, SessionStateSchemaV9, SessionStateSchemaV10, SessionStateSchemaV11} {
 		e := &Engine{}
 		e.SetSessionState(SessionState{
 			SchemaVersion: schema,
-			PersistedInstanceOpsJob: PersistedInstanceOpsJob{
+			PersistedInstanceOpsJobs: []PersistedInstanceOpsJob{{
 				InstanceID: "uhost-a", JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 				State: "running", Purpose: "client supplied", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
-			},
+			}},
 			PersistedInstanceOpsAgent: PersistedInstanceOpsAgentSession{
 				InstanceID: "uhost-a", SessionID: injected, WorkdirID: injected, Contract: instanceOpsAgentSessionContract,
 				Model: "gpt-5.6-terra", UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
@@ -137,7 +137,7 @@ func TestClientCreatedVersionZeroContextCannotSeedContinuationCursors(t *testing
 		}, 0)
 
 		state, _, _ := e.SessionStateSnapshot()
-		require.True(t, state.PersistedInstanceOpsJob.IsZero(), "schema %s seeded a job cursor", schema)
+		require.Empty(t, state.PersistedInstanceOpsJobs, "schema %s seeded a job cursor", schema)
 		require.True(t, state.PersistedInstanceOpsAgent.IsZero(), "schema %s seeded an agent cursor", schema)
 		got := e.instanceOpsAgentSessionForRun("uhost-a")
 		require.False(t, got.Resume)

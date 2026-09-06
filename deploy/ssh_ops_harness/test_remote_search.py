@@ -268,6 +268,33 @@ try:
         bounded = remote_search.search({}, {"root": app_root, "query": "absent"}, opener=_open)
     check("content-search-keeps-file-count-bound", bounded["truncated"] and bounded["files_seen"] == 1)
 
+    budget_root = "/workspace/search-budget"
+    local_budget = _LocalFiles._local(budget_root)
+    os.makedirs(local_budget)
+    with open(os.path.join(local_budget, "model.safetensors"), "wb") as handle:
+        handle.truncate(remote_search._MAX_TOTAL_BYTES + 1)
+    with open(os.path.join(local_budget, "z_config.py"), "w", encoding="utf-8") as handle:
+        handle.write("target_setting = True\n")
+    after_model = remote_search.search({}, {
+        "root": budget_root, "query": "target_setting",
+    }, opener=_open)
+    check("oversized-model-is-skipped-without-abandoning-later-configuration",
+          after_model["ok"] and len(after_model["matches"]) == 1
+          and after_model["matches"][0]["path"].endswith("/z_config.py")
+          and after_model["files_scanned"] == 1 and after_model["skipped"]["file_too_large"] == 1
+          and not after_model["truncated"])
+    for index in range(3):
+        with open(os.path.join(local_budget, "a%d.bin" % index), "wb") as handle:
+            handle.write(b"\0")
+    with patch.object(remote_search, "_MAX_FILES", 2):
+        filtered = remote_search.search({}, {
+            "root": budget_root, "query": "target_setting", "file_glob": "*.py",
+        }, opener=_open)
+    check("nonmatching-files-do-not-spend-the-content-file-budget",
+          filtered["ok"] and len(filtered["matches"]) == 1
+          and filtered["files_scanned"] == 1 and filtered["files_seen"] == 1
+          and not filtered["truncated"])
+
     policy = remote_search._worker_request("search", {"root": app_root})["policy"]
     candidates = [app_root, "/", "/root/.env", "/root/.ENV.local", "/root/x.pem",
                   "/root/a/../b", "/root/a\x00b", "/root/" + "x" * 513, "/root/custom_nodes/x.py"]

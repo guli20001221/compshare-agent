@@ -21,7 +21,12 @@ import (
 
 type interruptedDiagnosisLLM struct{}
 
-func (interruptedDiagnosisLLM) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+func (interruptedDiagnosisLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	for _, message := range req.Messages {
+		if message.Role == openai.ChatMessageRoleTool && message.ToolCallID == "diagnosis-call" {
+			return &llm.ChatResponse{Content: "实例内排查未能完成；已执行情况以本轮记录为准。"}, nil
+		}
+	}
 	return &llm.ChatResponse{ToolCalls: []openai.ToolCall{{
 		ID: "diagnosis-call", Type: openai.ToolTypeFunction,
 		Function: openai.FunctionCall{Name: "DiagnoseInstanceInternals", Arguments: `{"UHostId":"uhost-1","Task":"排查服务状态"}`},
@@ -96,7 +101,8 @@ func TestChatInterruptedDiagnosisPersistsObservedWorkAndCancellation(t *testing.
 			require.Equal(t, 1, sessions.updateContextCalls, "the existing continuation envelope is persisted once")
 			persisted, err := engine.ParsePersistedContext(sessions.byID["interrupted"].Context)
 			require.NoError(t, err)
-			require.Equal(t, jobID, persisted.AgentSessionState.PersistedInstanceOpsJob.JobID)
+			require.Len(t, persisted.AgentSessionState.PersistedInstanceOpsJobs, 1)
+			require.Equal(t, jobID, persisted.AgentSessionState.PersistedInstanceOpsJobs[0].JobID)
 			require.Equal(t, sessionID, persisted.AgentSessionState.PersistedInstanceOpsAgent.SessionID)
 			require.Equal(t, workdirID, persisted.AgentSessionState.PersistedInstanceOpsAgent.WorkdirID)
 			require.Len(t, persisted.AgentSessionState.PersistedInstanceOpsAgent.ConversationAnchor, 64)
@@ -118,7 +124,7 @@ func TestChatInterruptedDiagnosisPersistsObservedWorkAndCancellation(t *testing.
 				require.Contains(t, messages.patch.Content, "可能已修改实例，结果不确定")
 				require.Contains(t, messages.patch.Content, "可能不完整")
 				require.Contains(t, messages.patch.Content, jobID)
-				require.Contains(t, messages.patch.Content, "不会重新启动")
+				require.Contains(t, messages.patch.Content, "不会自动重放原启动命令")
 				require.NotContains(t, messages.patch.Content, secret)
 				require.NotEmpty(t, eng.InstanceOpsInterruptionSummary(), "persistence must not consume the existing next-turn notice")
 			} else {

@@ -99,6 +99,22 @@ check("foreground-chain-remains-supported",
       remote_job.command_is_self_backgrounding("env FOO=1 python3 app.py") is False and
       remote_job.command_is_self_backgrounding(
           "cd /workspace && bash -lc 'printf ready'") is False)
+for literal_command in (
+        "grep -n '&' /workspace/app/config.py",
+        "printf '%s\\n' '&'", 'printf "%s\\n" "&"', r"printf '%s\n' \&",
+        "curl 'http://127.0.0.1:8080/query?a=1&b=2'",
+        "printf ready 2>&1", "printf ready &>/tmp/status.log",
+        "printf ready # & is a comment",
+        "python3 - <<'PY'\nprint(1 & 3)\nPY",
+        "cat <<'EOF' >/tmp/documentation.txt\nbash -c 'sleep 2 &'\nEOF",
+        '''bash -c "printf '%s' '&'"'''):
+    check("quoted-or-redirect-ampersand-is-not-detachment: " + literal_command,
+          remote_job.command_is_self_backgrounding(literal_command) is False)
+check("quoted-data-followed-by-real-background-remains-refused",
+      remote_job.command_is_self_backgrounding("printf '%s' '&'; sleep 2 &") is True)
+check("shell-interpreted-heredoc-still-checks-detachment",
+      remote_job.command_is_self_backgrounding("bash <<'SH'\nsleep 2 &\nSH") is True and
+      remote_job.command_is_self_backgrounding("timeout 10 env bash <<'SH'\nsleep 2 &\nSH") is True)
 check("approval-display-binds-background-mode-purpose-and-command",
       remote_job.confirmation_display("python3 app.py", "start the requested app") ==
       "ssh_exec run_in_background=true purpose=start the requested app command=python3 app.py")
