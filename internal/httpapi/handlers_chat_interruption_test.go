@@ -224,8 +224,6 @@ func (m *interruptedKnowledgeLLM) Chat(ctx context.Context, req llm.ChatRequest)
 		return &llm.ChatResponse{ToolCalls: []openai.ToolCall{{ID: "search-before-interruption", Type: openai.ToolTypeFunction,
 			Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"Pod TCP 7860 端口"}`}}}}, nil
 	case 2:
-		return &llm.ChatResponse{Content: `{"answer_question":"Pod TCP 7860 端口","search_queries":["Pod TCP 7860 端口"]}`}, nil
-	case 3:
 		m.cancel()
 		return nil, ctx.Err()
 	default:
