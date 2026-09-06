@@ -11,14 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The follow-on shape of TestATypedIDIsADesignationEvenWhenTheRegistryIsEmpty:
-// the designation that test records is exactly what broke the NEXT one.
-//
-// Once A is carried as a user selection, a cold registry cannot tokenize a newly
-// typed B. Tier B therefore used to return A before the caller could compare B
-// with the user's literal words. Supplying the proposed target to the binder makes
-// that exact literal an unresolved explicit reference: it suppresses A, while the
-// existing point-query remains responsible for B.
+// A rehydrated conversation keeps the old referent without replacing the
+// Agent's new exact target.
 func TestASecondTypedIDOutranksTheFirstOneItAlreadyBound(t *testing.T) {
 	const first = "cpod-aaaa1111aaaa"
 	for _, tc := range []struct {
@@ -60,26 +54,7 @@ func TestASecondTypedIDOutranksTheFirstOneItAlreadyBound(t *testing.T) {
 	}
 }
 
-func TestAProposedLiteralSuppressesCarriedContextWhenTheRegistryDoesNotKnowItsPrefix(t *testing.T) {
-	const first, second = "cpod-aaaa1111aaaa", "uhost-bbbb2222bbbb"
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	eng.recordSelectedInstanceIDWithSource(first, "old", SelectedInstanceSourceUser)
-	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
-		"TotalCount": float64(1),
-		"UHostSet":   []any{map[string]any{"UHostId": first, "Name": "old", "State": "Running"}},
-	}, "test"))
-
-	view := (ContextCompiler{}).CompileForTurn(eng, "停止 "+second, "turn-new-family", time.Now())
-	binding := eng.bindInstanceTarget(view, second)
-
-	require.True(t, binding.explicit)
-	require.False(t, binding.bound(), "the old carried instance must not replace the literal target")
-}
-
-// The same binding feeds every write workflow before provenance is derived. A
-// current literal target must therefore suppress the carried target there too,
-// rather than being overwritten before the point-query sees it.
+// A new operation keeps its proposed target instead of inheriting another ID.
 func TestASecondTypedIDAlsoOutranksCarriedContextForWriteWorkflows(t *testing.T) {
 	const first, second = "cpod-aaaa1111aaaa", "uhost-bbbb2222bbbb"
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -107,46 +82,8 @@ func TestASecondTypedIDAlsoOutranksCarriedContextForWriteWorkflows(t *testing.T)
 	require.Equal(t, actionresolver.SourceUserExplicit, resolved.action.Provenance["UHostId"].Source)
 }
 
-func TestAWriteWorkflowCannotUseTheCarriedTargetWhenTheUserNamesAnother(t *testing.T) {
-	const carried = "cpod-aaaa1111aaaa"
-	for _, current := range []string{"cpod-bbbb2222bbbb", "uhost-bbbb2222bbbb"} {
-		t.Run(current, func(t *testing.T) {
-			executor := &mockExecutor{results: map[string]map[string]any{
-				"DescribeCompShareInstance": {
-					"UHostSet": []any{map[string]any{"UHostId": carried, "State": "Running"}},
-				},
-			}}
-			eng := NewWithDeps(&mockLLM{}, executor, nil)
-			eng.SetSessionState(SessionState{
-				SchemaVersion:          SessionStateSchemaCurrent,
-				SelectedInstanceID:     carried,
-				SelectedInstanceSource: SelectedInstanceSourceUser,
-				SelectedInstanceAtUnix: time.Now().Unix(),
-			}, 1)
-			eng.lastUserMsg = "停止 " + current
-			eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-new-target", time.Now())
-			eng.turnContextViewReady = true
-
-			resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
-				"turn_id": "turn-new-target", "operation": "StopInstanceWorkflow",
-				"slots": []any{map[string]any{"name": "UHostId", "value": carried}},
-			})
-
-			require.NoError(t, err)
-			require.False(t, resolved.action.ReadyForConfirmation,
-				"the model must not turn a current reference to B into a confirmation card for carried A")
-			require.NotEmpty(t, resolved.action.Conflicts)
-		})
-	}
-}
-
-// The target adjudicator's new conflict arm must separate "the user wrote an id"
-// from "the user pointed at something". An out-of-list ordinal sets explicit and
-// names no id, so gating on explicit stopped 「停止第2台」 from ever reaching a
-// confirmation card — measured: ready=true before the arm existed, a
-// 目标引用不唯一 conflict after. That is the flow the binder's own contract hands
-// to the Agent on purpose: a reference the server cannot prove rides into the
-// card, where the user's confirm is the proof.
+// Names, ordinals and pronouns are resolved by the Agent. A verified concrete
+// target reaches the same confirmation path for every wording.
 func TestAnOrdinalTheServerCannotResolveStillReachesTheCard(t *testing.T) {
 	const inferred = "uhost-2222bbbb2222"
 	for _, msg := range []string{"停止第2台", "把刚才最慢的那台停掉", "停止它"} {
@@ -172,28 +109,4 @@ func TestAnOrdinalTheServerCannotResolveStillReachesTheCard(t *testing.T) {
 			require.True(t, resolved.action.ReadyForConfirmation)
 		})
 	}
-}
-
-// The control on the arm above: when the user DID write an id and the model
-// proposes a different one, that is a disagreement and must still stop.
-func TestAWrittenIDTheModelContradictsStillConflicts(t *testing.T) {
-	const written, inferred = "uhost-1111aaaa1111", "uhost-2222bbbb2222"
-	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeCompShareInstance": {
-			"UHostSet": []any{map[string]any{"UHostId": inferred, "State": "Running"}},
-		},
-	}}
-	eng := NewWithDeps(&mockLLM{}, executor, nil)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	eng.lastUserMsg = "停止 " + written
-	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "t-written", time.Now())
-	eng.turnContextViewReady = true
-
-	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
-		"turn_id": "t-written", "operation": "StopInstanceWorkflow",
-		"slots": []any{map[string]any{"name": "UHostId", "value": inferred}},
-	})
-	require.NoError(t, err)
-	require.NotEmpty(t, resolved.action.Conflicts)
-	require.False(t, resolved.action.ReadyForConfirmation)
 }

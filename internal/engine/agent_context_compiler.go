@@ -11,6 +11,12 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
+// These source labels remain readable in existing session context.
+const (
+	selectionSourceAccountSingle = "account_registry_single"
+	selectionSourcePendingCard   = "pending_selection"
+)
+
 func cloneAgentContext(in AgentContext) AgentContext {
 	out := in
 	out.RecentConversation = append([]ConversationPair(nil), in.RecentConversation...)
@@ -90,17 +96,8 @@ func historyConversationText(role, value string) string {
 	return canonicalConversationText(role, value)
 }
 
-// isLiveSelectionHint reports whether one SelectedEntities row is live selection
-// state rather than an arbitrary model-inferred entity.
-//
-// CompileForTurn assembles SelectedEntities from the account's sole instance,
-// the pending selection card's numbered candidates, and the current
-// SelectedInstanceID with its provenance (user_selected or observed). They are
-// execution state, not a semantic summary of the conversation. A selected
-// instance with empty provenance remains visible for understanding but is
-// not a write-selection proof (selection_binder has its own stricter allowlist).
-//
-// Unknown sources are excluded by default.
+// isLiveSelectionHint includes only recorded execution context and recognized
+// source labels. These are referents for the Agent, not write authorization.
 func isLiveSelectionHint(hint SelectedEntityHint) bool {
 	switch hint.Source {
 	case selectionSourceAccountSingle, selectionSourcePendingCard,
@@ -113,11 +110,6 @@ func isLiveSelectionHint(hint SelectedEntityHint) bool {
 // renderAgentContextCard serializes only the context a transcript cannot carry:
 // live execution state (current selection and pending selection card). Complete
 // prior exchanges live only in the canonical transcript.
-//
-// Selection filtering remains at this model-facing serialization point rather
-// than CompileForTurn. selection_binder and the write-proposal path read
-// view.SelectedEntities as a struct; filtering upstream would silently narrow
-// execution-side target binding instead of only changing what the model reads.
 func renderAgentContextCard(view AgentContext) string {
 	var lines []string
 	lines = append(lines, "【本轮执行上下文（仅用于目标指代）】")

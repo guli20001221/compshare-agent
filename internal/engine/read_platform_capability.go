@@ -351,7 +351,7 @@ func (e *Engine) applyReadEffects(effects []capability.ReadEffect) {
 			if len(eff.Instances) > 1 {
 				candidates := append([]entity.InstanceSnapshot(nil), eff.Instances...)
 				e.displayedResourceSelectionThisTurn = &pendingResourceSelection{
-					snapshot: snapshotFromPendingSelectionCandidates(candidates), candidates: candidates,
+					candidates: candidates,
 				}
 			}
 		}

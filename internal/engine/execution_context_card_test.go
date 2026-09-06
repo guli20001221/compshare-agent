@@ -51,13 +51,10 @@ func TestContextCardDoesNotShipABareHeader(t *testing.T) {
 	}), "semantic-only input must not create an empty card")
 }
 
-func TestContextCompilerKeepsLiveBindingForTheWriteVerifier(t *testing.T) {
+func TestContextCompilerKeepsTheCurrentReferentForTheAgent(t *testing.T) {
 	e := selectionEngine()
 	e.recordSelectedInstanceIDWithSource("inst-BBB", "web-02", SelectedInstanceSourceUser)
 	view := (ContextCompiler{}).CompileForTurn(e, "关掉它", "t", time.Now())
-	binding := e.bindInstanceTarget(view)
-
-	require.Equal(t, "inst-BBB", binding.id)
 	require.Contains(t, renderAgentContextCard(view), "inst-BBB",
-		"the live pick remains model-visible and bindable after semantic state is removed")
+		"the current referent remains visible after target interpretation moves to the Agent")
 }

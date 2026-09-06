@@ -67,6 +67,37 @@ func TestAgentToolObservationMapsFiveStableOutcomes(t *testing.T) {
 	}
 }
 
+func TestMissingWriteTargetAsksTheAgentToCompleteItsCall(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.lastUserMsg = "关闭 uhost-1"
+	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
+		"operation": "StopInstanceWorkflow", "slots": []any{},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"UHostId"}, resolved.action.Missing)
+	require.Empty(t, resolved.action.Arguments, "the server does not fill the omitted target")
+
+	result, ok := tools.ParseAgentToolResult(agentToolObservation("RequestStopInstance", resolvedActionForModel(resolved.action)))
+	require.True(t, ok)
+	require.Equal(t, tools.AgentToolNextCorrectToolCall, result.NextStep)
+	require.Equal(t, tools.AgentToolCodeInvalidArguments, result.Error.Code)
+	require.Equal(t, []string{"UHostId"}, result.Meta.MissingFields)
+	require.Contains(t, result.Error.Message, "用户消息、对话历史或工具结果")
+	require.Contains(t, result.Error.Message, "确实无法确定目标时才询问用户")
+}
+
+func TestMissingCreateSpecificationsKeepTheExistingInputPath(t *testing.T) {
+	raw := resolvedActionForModel(actionresolver.ResolvedAction{
+		Operation: "CreateInstanceWorkflow", Missing: []string{"GpuType", "Zone"}, ReadyForIntake: true,
+	})
+	result, ok := tools.ParseAgentToolResult(agentToolObservation("RequestCreateInstance", raw))
+	require.True(t, ok)
+	require.Equal(t, tools.AgentToolNextAskUser, result.NextStep)
+	require.Equal(t, "MISSING_REQUIRED_FIELDS", result.Error.Code)
+	require.Equal(t, []string{"GpuType", "Zone"}, result.Meta.MissingFields)
+	require.Equal(t, true, result.Data.(map[string]any)["ready_for_intake"])
+}
+
 func TestRejectedWriteProposalIsRoutedToTheResponsibleActor(t *testing.T) {
 	tests := []struct {
 		name     string

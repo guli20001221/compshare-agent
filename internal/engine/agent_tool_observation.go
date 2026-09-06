@@ -53,6 +53,21 @@ func agentToolObservation(action, raw string) string {
 	}
 	if missing := stringFields(object, "missing_fields", "missing"); len(missing) > 0 {
 		meta.MissingFields = missing
+		// A missing operation target is an incomplete tool call, not proof that
+		// the user has not identified it in the conversation or prior reads.
+		if catalog, err := defaultActionCatalog(); err == nil {
+			if spec, ok := catalog.Lookup(stringField(object, "operation")); ok {
+				for _, name := range missing {
+					if !spec.Fields[name].Target {
+						continue
+					}
+					result := tools.AgentToolInvalidToolCall(action, tools.AgentToolCodeInvalidArguments,
+						"本次工具调用缺少操作目标 ID。请先根据用户消息、对话历史或工具结果补全目标后重新调用；确实无法确定目标时才询问用户，不要要求用户重复已经提供的信息。", meta)
+					result.Data = toolObservationData(object)
+					return tools.MarshalAgentToolResult(result)
+				}
+			}
+		}
 		return tools.MarshalAgentToolResult(tools.AgentToolNeedsInput(
 			action,
 			toolObservationData(object),

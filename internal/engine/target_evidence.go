@@ -23,11 +23,8 @@ import (
 // the Agent understands the user and proposes a concrete target; the server verifies
 // existence and shows a card naming the exact id; the user's confirm authorizes it.
 //
-// There is no source-based gate before the card: a deterministic binding, a carried
-// referent and a fresh inference are all verified uniformly. The SelectionBinder's
-// only jobs are to (1) bind/correct a target the user referenced explicitly by
-// id/name/ordinal, (2) refuse when two explicit references conflict, and (3) leave the
-// Agent's proposed concrete target alone when the user made no deterministic reference.
+// Each operation verifies its own proposed target. Conversation references and
+// comparisons are resolved by the Agent, not by a turn-wide target parser.
 //
 // Existence and the network to establish it live HERE, in the engine, so the
 // actionresolver stays a pure, replayable function of its inputs. The model-supplied

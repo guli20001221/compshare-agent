@@ -1343,7 +1343,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.trimHistory()
 
 	// Build the LLM-facing message from the user's text and optional image context.
-	// userMsg remains the authoritative text for deterministic target binding;
+	// userMsg remains the original text for argument provenance;
 	// llmUserMsg carries image evidence into conversation history so the
 	// ReAct LLM can reference it. The recognized text is fenced as untrusted
 	// reference data (see WrapScreenshotContext) — the httpapi persist path
@@ -3315,7 +3315,6 @@ func (e *Engine) recordPendingSelectionFromDisplayedDescribeResult(raw map[strin
 		return
 	}
 	e.displayedResourceSelectionThisTurn = &pendingResourceSelection{
-		snapshot:   snapshotFromPendingSelectionCandidates(instanceSnapshots),
 		candidates: instanceSnapshots,
 	}
 }

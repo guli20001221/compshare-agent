@@ -87,9 +87,8 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 		}
 	}
 	if id := strings.TrimSpace(e.sessionState.SelectedInstanceID); id != "" {
-		// Carry the binding's provenance (observed vs user_selected) so the write
-		// verifier can tell an OBSERVED referent — read-only, never a selection —
-		// from an instance the user genuinely chose.
+		// Retain where and when this referent was recorded; the Agent decides
+		// whether it is the target of the current operation.
 		view.SelectedEntities = append(view.SelectedEntities, SelectedEntityHint{
 			Kind:      "instance",
 			ID:        id,

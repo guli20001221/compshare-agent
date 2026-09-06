@@ -9,9 +9,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Selection continuity has one current storage location: SessionState. These
-// tests ensure a newer selection replaces the old one, stale selections cannot
-// authorize a bare reference, and legacy persisted fields are ignored.
+// Selection continuity retains the current referent for the Agent and ignores
+// superseded or unsupported persisted fields.
 
 // selectionEngine is a hydrated engine with no history — the smallest thing that
 // can hold a selection and compile a context view.
@@ -21,12 +20,7 @@ func selectionEngine() *Engine {
 	return e
 }
 
-// Two SUCCESSFUL operations, then a bare pronoun.
-//
-// Neither operation is blocked: both name their instance explicitly and bind
-// through the binder's explicit-reference tier. It is the turn AFTER them that
-// broke.
-func TestBarePronounAfterTwoOperationsBindsTheNewestPick(t *testing.T) {
+func TestBarePronounAfterTwoOperationsSeesTheNewestPick(t *testing.T) {
 	now := time.Now()
 	e := selectionEngine()
 
@@ -34,11 +28,9 @@ func TestBarePronounAfterTwoOperationsBindsTheNewestPick(t *testing.T) {
 	e.recordSelectedInstanceIDWithSource("inst-BBB", "web-02", SelectedInstanceSourceUser)
 
 	view := (ContextCompiler{}).CompileForTurn(e, "关掉它", "t", now)
-	binding := e.bindInstanceTarget(view)
-
-	require.False(t, binding.conflict,
-		"a superseded pick collided with the live one; the user is told 目标引用不唯一 after two operations that both worked")
-	require.Equal(t, "inst-BBB", binding.id, "the newest pick must win")
+	card := renderAgentContextCard(view)
+	require.Contains(t, card, "inst-BBB")
+	require.NotContains(t, card, "inst-AAA")
 
 	// The live selection must be the only instance the view carries as a user
 	// pick, or the assertion above could hold for the wrong reason.
@@ -60,7 +52,7 @@ func turnEntry(e *Engine, now time.Time) AgentContext {
 // A genuine user selection is conversation-scoped. A long pause changes its
 // observability freshness to stale but must not make a bare continuation lose
 // the selected instance.
-func TestSinglePickPastItsTTLStillBinds(t *testing.T) {
+func TestSinglePickPastItsTTLRemainsVisible(t *testing.T) {
 	base := time.Now()
 	e := selectionEngine()
 
@@ -72,17 +64,15 @@ func TestSinglePickPastItsTTLStillBinds(t *testing.T) {
 	// Non-vacuity: the wall-clock threshold must actually have fired.
 	require.Equal(t, ContinuityFreshnessStale, e.sessionState.SelectedInstanceFreshness)
 
-	binding := e.bindInstanceTarget(view)
-	require.Equal(t, "inst-AAA", binding.id,
-		"elapsed time alone turned a genuine user selection into lost context")
-	require.False(t, binding.conflict)
+	require.Contains(t, renderAgentContextCard(view), "inst-AAA",
+		"elapsed time alone must not erase the user's previous selection")
 }
 
 // Older rows may contain fields the current schema no longer models. Decode them
 // without losing current execution state, and never write the unknown fields back.
 func TestSessionRowFromAnOlderBinaryDropsItsDigest(t *testing.T) {
 	// Hand-author the foreign wire shape because current types cannot emit it.
-	// Keep the timestamp live so the binder does not expire the retained state.
+	// Keep the observation timestamp while decoding the older state.
 	raw := json.RawMessage(fmt.Sprintf(`{"agent_session_state":{
 		"schema_version":"7.0",
 		"selected_instance_id":"inst-BBB",
@@ -117,27 +107,9 @@ func TestSessionRowFromAnOlderBinaryDropsItsDigest(t *testing.T) {
 	require.NotContains(t, string(out), "inst-AAA",
 		"the frozen pick must be gone, not merely unrendered")
 
-	// The retained current selection still binds cleanly.
+	// The retained current selection remains visible to the Agent.
 	e := selectionEngine()
 	e.sessionState = pc.AgentSessionState
 	view := (ContextCompiler{}).CompileForTurn(e, "关掉它", "t", time.Now())
-	binding := e.bindInstanceTarget(view)
-	require.False(t, binding.conflict,
-		"a session poisoned by an older binary still reports 目标引用不唯一")
-	require.Equal(t, "inst-BBB", binding.id)
-}
-
-// A single live pick must still bind — the removal takes away a duplicate, not the
-// feature. Without this, every assertion above is satisfied by a binder that never
-// binds anything.
-func TestSingleLivePickStillBindsABarePronoun(t *testing.T) {
-	now := time.Now()
-	e := selectionEngine()
-	e.recordSelectedInstanceIDWithSource("inst-AAA", "web-01", SelectedInstanceSourceUser)
-
-	view := (ContextCompiler{}).CompileForTurn(e, "关掉它", "t", now)
-	binding := e.bindInstanceTarget(view)
-
-	require.False(t, binding.conflict)
-	require.Equal(t, "inst-AAA", binding.id)
+	require.Contains(t, renderAgentContextCard(view), "inst-BBB")
 }

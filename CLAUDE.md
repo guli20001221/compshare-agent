@@ -53,8 +53,9 @@ The model-visible context card contains only current execution context such as
 a selected instance or a pending candidate. It is not a second memory, and
 semantic summaries or fact caches must not be injected beside the transcript.
 The answer verifier keeps a model-invisible evidence ledger. Workflow forms,
-confirmations, idempotency records and selected-instance provenance are
-transaction/authorization state, not semantic memory, and remain deterministic.
+confirmations and idempotency records are transaction/authorization state, not
+semantic memory, and remain deterministic. Selected-instance provenance describes
+the current referent; it does not authorize or overwrite a tool's target.
 
 History is bounded by size, not message or exchange counts:
 
@@ -90,7 +91,7 @@ Mutating operations live in `internal/workflow/` and are proposed through the
 central Agent. They remain subject to all of these controls:
 
 1. the deployment authorization `agent.authorization.mutating_tools`;
-2. exact target resolution and selected-instance provenance;
+2. exact account-scoped existence verification of the Agent-proposed target;
 3. permission and policy checks;
 4. a user confirmation card;
 5. workflow idempotency and write-side revalidation.
@@ -98,6 +99,12 @@ central Agent. They remain subject to all of these controls:
 Destructive/L2 actions stay refused regardless of the mutating-tools setting.
 Do not turn these controls into prompt instructions or let the model attest its
 own authorization.
+
+The Agent resolves names, ordinals and conversational references separately for
+each operation and supplies its target ID. The server does not derive a single
+target from the whole turn, substitute a historical selection, or infer ambiguity
+from the number of instances read. Candidate lists and the current referent remain
+visible context; each write still verifies its own target and receives its own card.
 
 Editable confirmation forms and guided creation are stable protocol features.
 The server advertises `confirm_form_v1` and `guided_create_v1`; a client must opt
@@ -130,7 +137,7 @@ calls) is never persisted or executed as a normal answer.
   conversation and chooses the target; server-side name/ordinal matching does not
   reinterpret that choice. A run never substitutes another instance or accepts a
   model-provided host/password. Confirmed platform workflows retain their own
-  selection, existence and confirmation gates.
+  existence, business eligibility and confirmation gates.
 
 Ordinary turn entry does not scan names to overwrite target state. Canonical
 history preserves prior IDs and context; an actually reached or successful SSH

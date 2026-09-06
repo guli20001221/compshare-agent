@@ -49,13 +49,7 @@ func operationSupportsGuidedIntake(action string) bool {
 
 type agentContextEvidenceVerifier struct {
 	context AgentContext
-	engine  *Engine
 	spec    actionresolver.OperationSpec
-	// binding is the deterministic instance selection for the turn, computed ONCE
-	// by the SelectionBinder. A bound id is a server-derived SelectionProof; a
-	// conflict means the user's references disagree and every instance target must
-	// be asked, never picked.
-	binding selectionBinding
 	// targetEvidence is the engine-produced existence verdict for each proposed
 	// write target, keyed by (field, kind, id) — never a bare id, so an instance's
 	// proof cannot authorize a same-id disk/CFS. It is built BEFORE Resolve (the
@@ -66,8 +60,8 @@ type agentContextEvidenceVerifier struct {
 
 // VerifyCandidate is the trust boundary for NON-target fields (a current-turn
 // literal span is their only verifiable provenance). Write TARGETS are decided by
-// AdjudicateTarget instead — the resolver calls it directly — so a target's
-// existence outage or a reference conflict lands in the right refusal channel.
+// AdjudicateTarget instead, so account-existence failures are reported separately
+// from non-target argument errors.
 func (v agentContextEvidenceVerifier) VerifyCandidate(candidate actionresolver.SlotCandidate) bool {
 	field, known := v.spec.Fields[candidate.Name]
 	if !known {
@@ -85,11 +79,9 @@ func (v agentContextEvidenceVerifier) VerifyCandidate(candidate actionresolver.S
 	return false
 }
 
-// AdjudicateTarget decides a write target's disposition. A conflict among the
-// user's own references is a Conflict (ask); existence drives the rest — Verified
-// exists (Accept, the confirmation card is the remaining gate), NotFound / an
-// unverified inferred id is a Reject, and an existence-check outage is a
-// DependencyFailure (our failure, never the user's target being invalid).
+// AdjudicateTarget checks the exact target proposed for this operation. The
+// Agent resolves conversational references; account existence and the operation's
+// confirmation card remain server-owned.
 func (v agentContextEvidenceVerifier) AdjudicateTarget(candidate actionresolver.SlotCandidate) actionresolver.TargetVerdict {
 	value, ok := candidate.Value.(string)
 	if !ok || strings.TrimSpace(value) == "" {
@@ -101,21 +93,6 @@ func (v agentContextEvidenceVerifier) AdjudicateTarget(candidate actionresolver.
 		// than fall through to a stale/foreign evidence entry.
 		return actionresolver.TargetReject
 	}
-	if field.TargetKind == "instance" && v.binding.conflict {
-		return actionresolver.TargetConflict
-	}
-	if field.TargetKind == "instance" && v.binding.namedID && !v.binding.bound() &&
-		candidate.Source == actionresolver.SourceAgentInference &&
-		!entity.TextExplicitlyMentionsName(v.context.CurrentQuestion, value) {
-		// The user wrote an instance id this turn and the candidate is a DIFFERENT
-		// one the model inferred. Ask rather than card the wrong target.
-		//
-		// Keyed on namedID, not explicit. An ordinal is explicit and names no id, so
-		// the model's mapping of 第2台 to an id is the intended resolution, not a
-		// contradiction — gating on explicit stopped 「停止第2台」 from ever reaching a
-		// card, which is one of the commonest phrasings in this product's traffic.
-		return actionresolver.TargetConflict
-	}
 	// Look up evidence by the SAME (field, kind, id) key it was built under, so an
 	// instance proof can never be reused for a same-id disk/CFS target.
 	ev, ok := v.targetEvidence[targetEvidenceKey{field: candidate.Name, kind: field.TargetKind, id: strings.TrimSpace(value)}]
@@ -124,38 +101,12 @@ func (v agentContextEvidenceVerifier) AdjudicateTarget(candidate actionresolver.
 	}
 	switch ev.Verdict {
 	case entity.ExistenceVerified:
-		// The id exists — but if the Agent INFERRED it (no user reference bound to
-		// it) AND this turn's own reads surfaced MORE THAN ONE instance, the pick is
-		// arbitrary among many: on a live sample "关闭当前我租界的卡" made terra list 16
-		// running instances and then build a stop confirmation for the FIRST one,
-		// which a reflexive confirm would act on. Route that to the same
-		// "请明确指定要操作的实例" ask channel as a conflicting reference. A pronoun the
-		// Agent resolved to the turn's SINGLE verified instance ("停止它" after reading
-		// one) is unambiguous and still reaches the card; a user_explicit id (even one
-		// a cold registry could not pre-bind) is SourceUserExplicit, and a bound target
-		// is SourceVerifiedContext — only a bare guess among many is caught.
-		if field.TargetKind == "instance" && candidate.Source == actionresolver.SourceAgentInference &&
-			(!v.binding.bound() || v.binding.id != value) && v.inferredInstanceIsAmbiguous() {
-			return actionresolver.TargetConflict
-		}
 		return actionresolver.TargetAccept
 	case entity.ExistenceUnavailable:
 		return actionresolver.TargetDependencyFailure
 	default:
 		return actionresolver.TargetReject
 	}
-}
-
-// inferredInstanceIsAmbiguous reports whether this turn's own evidence points at
-// more than one instance, so an Agent-inferred target is a pick among many rather
-// than a resolved unique referent. It reads the same verified-instance evidence
-// set the existence check trusts: >1 distinct instance verified this turn means a
-// listing was surfaced (a "关掉我的实例"/"关闭当前…卡" among N), whereas exactly one
-// is a pronoun resolved to the single instance just read ("停止它"). A bare guess
-// with no this-turn read (empty set) is left to existence as before — that far
-// rarer case is out of scope for this guard.
-func (v agentContextEvidenceVerifier) inferredInstanceIsAmbiguous() bool {
-	return v.engine != nil && len(v.engine.verifiedInstanceEvidenceThisTurn) > 1
 }
 
 func verifyCurrentQuestionEvidence(context AgentContext, candidate actionresolver.SlotCandidate, codec actionresolver.SlotCodecKind) bool {
@@ -339,15 +290,10 @@ func (e *Engine) resolveActionProposal(ctx context.Context, args map[string]any)
 	}
 	spec, ok := catalog.Lookup(proposal.Operation)
 	if !ok {
-		resolved := actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e}, actionresolver.MachineTypeCatalog{}).Resolve(proposal)
+		resolved := actionresolver.New(catalog, agentContextEvidenceVerifier{context: view}, actionresolver.MachineTypeCatalog{}).Resolve(proposal)
 		return resolvedProposal{action: resolved}, nil
 	}
-	// Deterministic instance selection for the turn, computed ONCE: it binds the
-	// user's verifiable reference (typed id / ordinal / unique name / prior explicit
-	// pick / sole account instance) and is threaded into provenance, the point-query
-	// gate and the target adjudicator so all three agree on which id the user chose.
-	binding := e.bindInstanceTarget(view, proposalInstanceTargetValue(proposal, spec))
-	proposal = e.deriveProposalProvenance(proposal, view, spec, binding)
+	proposal = e.deriveProposalProvenance(proposal, view, spec)
 	// A current-turn opaque image id is a literal user choice, not an Agent
 	// recommendation. The model should carry it in its proposal, but dropping a
 	// syntactically complete id must not turn an exact create request into image
@@ -383,7 +329,7 @@ func (e *Engine) resolveActionProposal(ctx context.Context, args map[string]any)
 		(!imageSourcePresent || imageSourceSlot.Source != actionresolver.SourceUserExplicit) {
 		proposal = upsertVerifiedImageSource(proposal, detectedImageSource)
 	}
-	resolved := actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, engine: e, spec: spec, binding: binding, targetEvidence: targetEvidence}, machineTypes).
+	resolved := actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, spec: spec, targetEvidence: targetEvidence}, machineTypes).
 		WithZoneCatalog(zoneCatalog).
 		WithImageCatalog(imageCatalog).
 		Resolve(proposal)
@@ -479,7 +425,7 @@ func deriveImageSelection(provenance map[string]actionresolver.ResolvedSlot) wor
 // targetEvidenceForProposal builds an existence verdict for every distinct
 // write-target value in the proposal, before the (pure) resolver runs. The engine
 // owns any point-query so a Resolve stays replayable from a trace. Existence is
-// established UNIFORMLY for every concrete target — a deterministic binding, a
+// established UNIFORMLY for every concrete target — a literal user reference, a
 // carried referent and a fresh inference all get the same server-side point-query;
 // the confirmation card + the user's confirm is the SelectionProof, so there is no
 // source-based gate before verification. The verifier is chosen by resource kind;
@@ -561,11 +507,9 @@ func (e *Engine) recordUserSelectedTargets(resolved actionresolver.ResolvedActio
 // whether each value is present in the current user text, a verified entity, or
 // a current/recent read observation. A model cannot promote its own inference
 // into a trusted write target by choosing a source label.
-func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal, view AgentContext, spec actionresolver.OperationSpec, binding selectionBinding) actionresolver.ActionProposal {
-	present := make(map[string]struct{}, len(proposal.Slots))
+func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal, view AgentContext, spec actionresolver.OperationSpec) actionresolver.ActionProposal {
 	for index := range proposal.Slots {
 		candidate := &proposal.Slots[index]
-		present[candidate.Name] = struct{}{}
 		claimedQuote := ""
 		if candidate.Evidence != nil {
 			claimedQuote = strings.TrimSpace(candidate.Evidence.Quote)
@@ -586,17 +530,6 @@ func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal
 		// call. This bit is not serialized and cannot authorize a write.
 		if isString && uniqueUserAuthoredLiteral([]rune(view.CurrentQuestion), []rune(value)) {
 			candidate.UserAuthored = true
-		}
-		// A current explicit reference owns the platform target (for example 第2台).
-		// Carried context can verify the same ID, but cannot replace a different
-		// model-proposed target; that target keeps its inference provenance and
-		// proceeds through its own existence check and confirmation.
-		if field.Target && isString && binding.bound() && field.TargetKind == "instance" &&
-			(binding.explicit || binding.id == value) {
-			candidate.Value = binding.id
-			candidate.Source = actionresolver.SourceVerifiedContext
-			candidate.Evidence = &actionresolver.SourceEvidence{ContextField: "selection_binding"}
-			continue
 		}
 		// ImageSource always uses the explicit quote protocol below, even when the
 		// canonical wire value itself appears in the sentence. Otherwise a negated
@@ -671,24 +604,6 @@ func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal
 		// against SelectedEntities or override it with the sole selected entity.
 		// Existence is proven uniformly by ExactTargetVerifier and the confirmation
 		// card is the SelectionProof — neither reads this source label.
-	}
-	// A missing instance target is completed ONLY from a deterministic binding (the
-	// sole account instance, or a prior explicit pick). A bare command with no
-	// verifiable target is left Missing so the agent asks — never silently completed
-	// from a mere observation.
-	for name, field := range spec.Fields {
-		if !field.Target || field.TargetKind != "instance" {
-			continue
-		}
-		if _, exists := present[name]; exists {
-			continue
-		}
-		if binding.bound() {
-			proposal.Slots = append(proposal.Slots, actionresolver.SlotCandidate{
-				Name: name, Value: binding.id, Source: actionresolver.SourceVerifiedContext,
-				Evidence: &actionresolver.SourceEvidence{ContextField: "selection_binding"},
-			})
-		}
 	}
 	return proposal
 }
