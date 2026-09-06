@@ -68,6 +68,8 @@ func TestModelRepositoryHandle_EmptyFilter(t *testing.T) {
 	assert.Equal(t, []string{"ComfyUI"}, exec.calls[1].args["Categories"])
 	assert.Contains(t, result.Reply, "上游筛选共 0 个模型")
 	assert.Contains(t, result.Reply, "未找到匹配的模型")
+	assert.Contains(t, result.Reply, "不代表完整目录没有相关模型")
+	assert.Contains(t, result.Reply, "清空 categories/tags")
 	assert.NotContains(t, result.Reply, "未获取到模型仓库数据")
 }
 

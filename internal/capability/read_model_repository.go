@@ -244,6 +244,11 @@ func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, req ModelReposi
 		if zoneID != 0 && modelRepositoryOptionalEnum(req.ReplicaStatus) != "" {
 			noMatch = fmt.Sprintf("未找到在 %s 副本状态为 %s 的匹配模型。", zoneLabel, modelRepositoryOptionalEnum(req.ReplicaStatus))
 		}
+		if len(req.Categories) > 0 || len(req.Tags) > 0 {
+			sections = append(sections, noMatch,
+				"本次分类/标签精确筛选无匹配，不代表完整目录没有相关模型。这两个字段区分大小写；若尚未核对目录原值，保留其他条件，清空 categories/tags 并从 offset=0 浏览，再用返回的 Category/Tags 原值筛选。")
+			return strings.Join(sections, "\n"), len(tags) == 0
+		}
 		if len(tags) > 0 {
 			sections = append(sections, noMatch, modelRepositoryGuidanceFooter(false))
 			return strings.Join(sections, "\n"), false
