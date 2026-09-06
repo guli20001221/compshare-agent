@@ -55,13 +55,20 @@ func runModelRepositoryWithZones(t *testing.T, exec ReadExecutor, req ModelRepos
 
 // --- args parity (typed query/mode replaces Slots) ------------------------------
 
-// TestModelRepositoryHandle_Empty: no tags and no models is a structured Empty
-// read (issue 1); a no-match that still shows the tag vocabulary stays Handled.
-func TestModelRepositoryHandle_Empty(t *testing.T) {
-	result := runModelRepository(t, &mapReadExec{}, ModelRepositoryRequest{})
-
+func TestModelRepositoryHandle_EmptyFilter(t *testing.T) {
+	exec := &mapReadExec{results: map[string]map[string]any{
+		modelRepositoryTagAction:   {"Tags": []any{}},
+		modelRepositoryModelAction: {"TotalCount": float64(0), "Models": []any{}},
+	}}
+	result := runModelRepository(t, exec, ModelRepositoryRequest{
+		Categories: []string{"ComfyUI"}, Source: "Internal", Mode: platform.ListModeFiltered,
+	})
 	require.Equal(t, platform.ReadStatusEmpty, result.Status)
-	assert.Contains(t, result.Reply, "未获取到模型仓库数据")
+	require.Len(t, exec.calls, 2)
+	assert.Equal(t, []string{"ComfyUI"}, exec.calls[1].args["Categories"])
+	assert.Contains(t, result.Reply, "上游筛选共 0 个模型")
+	assert.Contains(t, result.Reply, "未找到匹配的模型")
+	assert.NotContains(t, result.Reply, "未获取到模型仓库数据")
 }
 
 func TestModelRepositoryDescriptionDoesNotClaimDeployability(t *testing.T) {

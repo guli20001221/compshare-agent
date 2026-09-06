@@ -45,10 +45,10 @@ func modelRepositoryReadSpec() ReadCapabilitySpec[ModelRepositoryRequest, ModelR
 		Label:       modelRepositoryCapabilityLabel,
 		Description: "查询公共模型目录、路径和目标可用区的副本状态。目录记录不等于目标实例已预置；只有工具明确返回目标可用区副本健康时，才能判断对应路径可直接使用。它不是可创建的镜像目录，也不能证明平台已支持部署。",
 		Params: objectParam(map[string]schemaNode{
-			"query":          stringParam(),
+			"query":          stringParam().described("模型名或仓库名关键词，不用于分类模糊匹配。"),
 			"source":         enumParam("Unspecified", "HuggingFace", "ModelScope", "Internal"),
-			"tags":           arrayParam(stringParam()),
-			"categories":     arrayParam(stringParam()),
+			"tags":           arrayParam(stringParam()).described("精确标签，区分大小写；使用实时标签目录或模型返回的 Tags 原值，未知时留空先浏览目录。"),
+			"categories":     arrayParam(stringParam()).described("精确分类，区分大小写；使用模型目录返回的 Category 原值，未知时留空先浏览目录。"),
 			"status":         enumParam("Unspecified", "Active", "Offline", "Draft"),
 			"replica_status": enumParam("Unspecified", "Healthy", "Offline", "Incomplete", "Missing").described("副本状态；指定 zone 时按该区筛选。未指定 zone 时 Healthy 表示上游未发现任何区的副本问题，其余状态表示任一区存在该问题。"),
 			"zone":           stringParam().described("仅在用户明确指定目标可用区，或当前实例事实已给出可用区时填写实时目录中的 Zone；不要猜测。"),
@@ -248,10 +248,8 @@ func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, req ModelReposi
 			sections = append(sections, noMatch, modelRepositoryGuidanceFooter(false))
 			return strings.Join(sections, "\n"), false
 		}
-		if zoneID != 0 && modelRepositoryOptionalEnum(req.ReplicaStatus) != "" {
-			return noMatch, true
-		}
-		return "未获取到模型仓库数据。", true
+		sections = append(sections, noMatch)
+		return strings.Join(sections, "\n"), true
 	}
 	allLines := []string{}
 	for _, entry := range filtered {
