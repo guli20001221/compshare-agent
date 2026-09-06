@@ -2776,6 +2776,31 @@ def _scrub_b64(text: str) -> str:
     return _B64_BLOB.sub(repl, text)
 
 
+def scrub_output_fragments(head: str, tail: str, secrets: Iterable[str] = ()):
+    """Redact retained log fragments without exposing a cut credential value.
+
+    Partial boundary lines are omitted, not interpreted as standalone text.
+    A private-key block can cross multiple lines and the omitted middle; remove
+    an unfinished head block or a tail block whose BEGIN was omitted as well.
+    All intact text still goes through the ordinary output redactor.
+    """
+    head = head[:head.rfind("\n") + 1]
+    tail = tail[tail.find("\n") + 1:] if "\n" in tail else ""
+    boundary = re.compile(r"-----((?:BEGIN|END)) [A-Z ]*PRIVATE KEY-----")
+    head_marks = list(boundary.finditer(head))
+    head_open = bool(head_marks and head_marks[-1].group(1) == "BEGIN")
+    if head_open:
+        head = head[:head_marks[-1].start()] + "[REDACTED PRIVATE KEY]\n"
+    tail_mark = boundary.search(tail)
+    if tail_mark and tail_mark.group(1) == "END":
+        tail = "[REDACTED PRIVATE KEY]" + tail[tail_mark.end():]
+    elif head_open:
+        # The omitted middle may contain the END, or the retained tail may still
+        # be key material. Without an END in the tail those cases are inseparable.
+        tail = "[omitted continuation of private-key output]"
+    return scrub_output(head, secrets), scrub_output(tail, secrets)
+
+
 def scrub_output(text: str, secrets: Iterable[str] = ()) -> str:
     """Redact secrets from untrusted box output. `secrets` = literal strings the caller knows
     are sensitive (the just-used password AND its base64 form)."""

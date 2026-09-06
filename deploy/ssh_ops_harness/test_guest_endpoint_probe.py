@@ -1,4 +1,6 @@
 """Offline contract tests for the guest-loopback TCP/HTTP probe."""
+import socket
+
 import guest_endpoint_probe
 
 FAILS = []
@@ -74,6 +76,30 @@ check("http-probe-sends-bounded-get-and-literal-host",
 check("http-probe-reports-status-and-body",
       result["ok"] and result["status_code"] == 403 and "Blocked request" in result["body"])
 check("http-probe-closes-channel-and-client", channel.closed and client.closed)
+
+
+class _StalledChannel(_Channel):
+    def recv(self, limit):
+        if self.offset >= len(self.response):
+            raise socket.timeout("fixture body stalled")
+        return super().recv(limit)
+
+
+complete_body = b'{"status":"ok"}'
+response_head = b"HTTP/1.1 200 OK\r\nContent-Length: 15\r\n\r\n"
+complete_client, _, _ = _open(response_head + complete_body)
+complete_result = guest_endpoint_probe.probe(
+    {}, {"protocol": "http", "port": 8000}, opener=lambda _c: (complete_client, None))
+stalled_client = _Client(_Transport(_StalledChannel(response_head + complete_body[:10])))
+stalled_result = guest_endpoint_probe.probe(
+    {}, {"protocol": "http", "port": 8000}, opener=lambda _c: (stalled_client, None))
+check("complete-http-body-is-not-truncated",
+      complete_result["ok"] and complete_result["status_code"] == 200
+      and complete_result["body"] == complete_body.decode() and complete_result["truncated"] is False)
+check("stalled-http-body-keeps-status-and-partial-body-with-truncation",
+      stalled_result["ok"] and stalled_result["probe_completed"] and stalled_result["connected"]
+      and stalled_result["status_code"] == 200 and stalled_result["body"] == complete_body[:10].decode()
+      and stalled_result["truncated"] is True)
 
 auth_token = "guest-api-" + "secret-456"
 auth_value = "Bearer " + auth_token

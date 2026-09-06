@@ -75,16 +75,21 @@ func objectParam(props map[string]schemaNode, required ...string) schemaNode {
 
 // --- Reusable composite fields -------------------------------------------------
 
-func targetRefParam() schemaNode {
+func targetRefParam(extraTypes ...platform.TargetRefType) schemaNode {
+	types := []string{string(platform.TargetRefName), string(platform.TargetRefUHostIDUserInput)}
+	for _, kind := range extraTypes {
+		types = append(types, string(kind))
+	}
 	return objectParam(map[string]schemaNode{
-		"type":        enumParam(platform.TargetRefTypeValues()...),
-		"value":       stringParam(),
-		"source":      enumParam(platform.TargetSourceValues()...),
-		"source_span": stringParam(),
+		"type":   enumParam(types...),
+		"value":  stringParam(),
+		"source": enumParam(platform.TargetSourceValues()...),
 	}, "type", "value", "source")
 }
 
-func targetRefsParam() schemaNode { return arrayParam(targetRefParam()) }
+func targetRefsParam(extraTypes ...platform.TargetRefType) schemaNode {
+	return arrayParam(targetRefParam(extraTypes...))
+}
 
 func cfsRefParam() schemaNode {
 	return objectParam(map[string]schemaNode{

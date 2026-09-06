@@ -43,7 +43,7 @@ func modelOwnedInstanceIDCompletion(action string, err error) (tools.AgentToolRe
 	result := tools.AgentToolInvalidToolCall(
 		action,
 		tools.AgentToolCodeInvalidArguments,
-		"模型提交的实例 ID 被截短。请使用 data.complete_instance_id 中的用户原文完整值修正目标（以及 source_span，如有）后重发同一次工具调用；不要要求用户重复提供，也不要改查其他实例。",
+		"模型提交的实例 ID 被截短。请使用 data.complete_instance_id 中的用户原文完整值修正目标后重发同一次工具调用；不要要求用户重复提供，也不要改查其他实例。",
 		tools.AgentToolMeta{SourceStatus: "instance_id_literal_truncated"},
 	)
 	result.Data = map[string]any{

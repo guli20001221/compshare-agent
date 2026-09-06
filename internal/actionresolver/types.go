@@ -269,14 +269,14 @@ type EvidenceVerifierFunc func(SlotCandidate) bool
 func (f EvidenceVerifierFunc) VerifyCandidate(candidate SlotCandidate) bool { return f(candidate) }
 
 // TargetVerdict is the disposition of a write TARGET, decided by the engine (which
-// owns the selection binding and the existence network) and consumed by the pure
+// owns account-scoped existence checks) and consumed by the pure
 // resolver. It keeps the resolver's four refusal channels honest: a target that
 // cannot be verified is not uniformly "rejected" — an outage is a DependencyFailure
 // and a genuine ambiguity is a Conflict.
 type TargetVerdict int
 
 const (
-	// TargetReject: no verifiable existence — refuse (an unselected/absent id).
+	// TargetReject: no verifiable account existence — refuse.
 	TargetReject TargetVerdict = iota
 	// TargetAccept: exists in the account this turn, no conflict — the target may
 	// reach the confirmation card (the user-confirm event authorizes execution).

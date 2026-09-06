@@ -40,7 +40,7 @@ type knowledgeSynthesisOutput struct {
 // earlier turn retrieved for a different question. Pinned by
 // TestBudgetRecoveryRefusesOnPriorEvidenceAlone.
 func (e *Engine) synthesizeOnBudgetExceeded(ctx context.Context, userMsg string) (string, bool) {
-	resolved := e.resolvedKnowledgeQuestion(userMsg)
+	resolved := e.knowledgeAnswerQuestion(userMsg)
 	// The recovery paths can fire before the SearchKnowledge handler folded its
 	// hits into the per-turn ledger; build it from the gathered hits so evidence
 	// in hand is never discarded for a bare budget refusal.

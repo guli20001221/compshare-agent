@@ -55,13 +55,22 @@ func runModelRepositoryWithZones(t *testing.T, exec ReadExecutor, req ModelRepos
 
 // --- args parity (typed query/mode replaces Slots) ------------------------------
 
-// TestModelRepositoryHandle_Empty: no tags and no models is a structured Empty
-// read (issue 1); a no-match that still shows the tag vocabulary stays Handled.
-func TestModelRepositoryHandle_Empty(t *testing.T) {
-	result := runModelRepository(t, &mapReadExec{}, ModelRepositoryRequest{})
-
+func TestModelRepositoryHandle_EmptyFilter(t *testing.T) {
+	exec := &mapReadExec{results: map[string]map[string]any{
+		modelRepositoryTagAction:   {"Tags": []any{}},
+		modelRepositoryModelAction: {"TotalCount": float64(0), "Models": []any{}},
+	}}
+	result := runModelRepository(t, exec, ModelRepositoryRequest{
+		Categories: []string{"ComfyUI"}, Source: "Internal", Mode: platform.ListModeFiltered,
+	})
 	require.Equal(t, platform.ReadStatusEmpty, result.Status)
-	assert.Contains(t, result.Reply, "未获取到模型仓库数据")
+	require.Len(t, exec.calls, 2)
+	assert.Equal(t, []string{"ComfyUI"}, exec.calls[1].args["Categories"])
+	assert.Contains(t, result.Reply, "上游筛选共 0 个模型")
+	assert.Contains(t, result.Reply, "未找到匹配的模型")
+	assert.Contains(t, result.Reply, "不代表完整目录没有相关模型")
+	assert.Contains(t, result.Reply, "清空 categories/tags")
+	assert.NotContains(t, result.Reply, "未获取到模型仓库数据")
 }
 
 func TestModelRepositoryDescriptionDoesNotClaimDeployability(t *testing.T) {
@@ -74,6 +83,27 @@ func TestModelRepositoryDescriptionDoesNotClaimDeployability(t *testing.T) {
 	} {
 		require.Contains(t, description, want)
 	}
+}
+
+func TestModelRepositoryPageDoesNotClaimTheWholeCatalogIsEmpty(t *testing.T) {
+	exec := &mapReadExec{results: map[string]map[string]any{
+		modelRepositoryModelAction: {"TotalCount": float64(101), "Models": []any{
+			map[string]any{"Name": "older-model", "Status": "Active", "MissingZoneIDs": []any{float64(5002)}},
+		}},
+	}}
+	args := modelRepositoryArgs(ModelRepositoryRequest{Offset: 100}, nil, 0)
+	assert.Equal(t, 100, args["Offset"])
+	assert.Equal(t, imageModelBrowseDisplayCap, args["Limit"], "a page must not fetch more candidates than the renderer exposes")
+	reply, empty := renderModelRepositoryReply(exec.results[modelRepositoryModelAction], nil,
+		ModelRepositoryRequest{Offset: 100, ReplicaStatus: "Missing"}, 5001, "目标区")
+	assert.False(t, empty)
+	assert.Contains(t, reply, "共 101 个模型")
+	assert.Contains(t, reply, "本页未找到")
+	assert.NotContains(t, reply, "仓库里暂时没有")
+	result := runModelRepository(t, exec, ModelRepositoryRequest{Offset: 100})
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Equal(t, 100, exec.calls[1].args["Offset"])
+	assert.Contains(t, result.Reply, "older-model")
 }
 
 func TestModelRepositoryArgs_MatchesTag(t *testing.T) {
@@ -132,10 +162,8 @@ func TestModelRepositoryRender_ListAll(t *testing.T) {
 	assert.NotContains(t, reply, "无需重新下载")
 }
 
-func TestModelRepositoryRender_NameFilterNoMatch(t *testing.T) {
-	modelRaw := map[string]any{"Models": []any{
-		map[string]any{"Name": "Qwen2.5-7B", "Path": "/models/qwen", "Tag": "LLM", "Size": "15GB"},
-	}}
+func TestModelRepositoryRender_UpstreamNoMatch(t *testing.T) {
+	modelRaw := map[string]any{"Models": []any{}}
 	tagRaw := map[string]any{"Tags": []any{"LLM"}}
 	reply, _ := renderModelRepositoryReply(modelRaw, tagRaw, ModelRepositoryRequest{Query: "llama", Mode: platform.ListModeFiltered}, 0, "")
 	assert.Contains(t, reply, "未找到匹配的模型")
@@ -143,6 +171,22 @@ func TestModelRepositoryRender_NameFilterNoMatch(t *testing.T) {
 		assert.Contains(t, reply, want, "a repo miss must guide the user to self-pull")
 	}
 	assert.NotContains(t, reply, "无需重新下载", "the pre-download note belongs to a found listing, not a miss")
+}
+
+func TestModelRepositoryPreservesUpstreamTagMatches(t *testing.T) {
+	exec := &mapReadExec{results: map[string]map[string]any{
+		modelRepositoryTagAction: {"Tags": []any{"LLM"}},
+		modelRepositoryModelAction: {"TotalCount": float64(1), "Models": []any{
+			map[string]any{"Name": "Qwen3-8B", "Tags": []any{"LLM"}, "Status": "Active"},
+		}},
+	}}
+	result := runModelRepository(t, exec, ModelRepositoryRequest{Query: "LLM模型", Mode: platform.ListModeFiltered})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Equal(t, []string{"LLM"}, exec.calls[1].args["Tags"])
+	assert.NotContains(t, exec.calls[1].args, "Keyword")
+	assert.Contains(t, result.Reply, "Qwen3-8B")
+	assert.NotContains(t, result.Reply, "未找到匹配")
 }
 
 func TestModelRepositoryRender_CapsDefaultOutputAtTen(t *testing.T) {

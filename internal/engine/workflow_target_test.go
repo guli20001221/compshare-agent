@@ -35,14 +35,8 @@ func TestWorkflowRequiresInstanceTarget(t *testing.T) {
 	}
 }
 
-// Write-target authority no longer lives in a workflow-layer trust gate — the
-// second authorization center (workflowTargetIsTrusted) was deleted in the P9
-// cutover. It lives ONLY in the Resolver's dual proof: a target is authorized
-// exactly when the server can independently show the user SELECTED it AND that it
-// EXISTS in this account this turn. Every case below therefore enters through
-// resolveActionProposal — the production path — and asserts the
-// resolver's ReadyForConfirmation verdict. A refused target is never made ready,
-// so it can never reach executeResolvedWorkflow.
+// Write targets are existence-verified before the operation's confirmation card.
+// The Agent resolves conversation references and supplies the exact target.
 
 // stopInstanceProposal is a minimal StopInstanceWorkflow proposal naming a target
 // by id, with no source label — the server re-derives provenance, so the model's
@@ -144,23 +138,6 @@ func primeOrdinalSelection(t *testing.T, eng *Engine, userMsg, turnID string) {
 	eng.turnContextViewReady = true
 }
 
-// COUNTEREXAMPLE (the bug the old vacuous test hid): the user selects the 2nd
-// candidate but the Agent submits the 1st candidate's id. The SelectionBinder binds
-// the ordinal to the 2nd instance and OVERRIDES the model's id, so the wrong
-// instance (uhost-a) is never the authorized target — the 2nd (uhost-b) is.
-func TestOrdinalBindsToChosenCandidateNotTheSubmittedOne(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	primeOrdinalSelection(t, eng, "帮我关机第2台", "turn-ord-wrong")
-
-	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-ord-wrong", "uhost-a"))
-
-	require.NoError(t, err)
-	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
-	require.Equal(t, "uhost-b", resolved.action.Arguments["UHostId"],
-		"第2台 binds to the 2nd candidate; the model's 第1台 id must not be operated")
-	require.NotEqual(t, "uhost-a", resolved.action.Arguments["UHostId"])
-}
-
 // Positive control — an ordinal against the displayed list, with the model
 // submitting the matching id, authorizes that exact instance.
 func TestCorrectOrdinalAuthorizesChosenCandidate(t *testing.T) {
@@ -174,65 +151,8 @@ func TestCorrectOrdinalAuthorizesChosenCandidate(t *testing.T) {
 	require.Equal(t, "uhost-b", resolved.action.Arguments["UHostId"])
 }
 
-func TestTwoOrdinalsAreAConflictInsteadOfChoosingOne(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	primeOrdinalSelection(t, eng, "第1台和第2台都要看", "turn-two-ordinals")
-
-	binding := eng.bindInstanceTarget(eng.turnContextViewThisTurn)
-	require.True(t, binding.conflict)
-	require.False(t, binding.bound())
-
-	resolved, err := eng.resolveActionProposal(context.Background(),
-		stopInstanceProposal("turn-two-ordinals", "uhost-a"))
-	require.NoError(t, err)
-	require.False(t, resolved.action.ReadyForConfirmation)
-	require.NotEmpty(t, resolved.action.Conflicts)
-}
-
-// A user reference giving BOTH an id and an ordinal that point at DIFFERENT
-// instances is a conflict the binder refuses to resolve — the agent must ask, never
-// pick one.
-func TestIdAndOrdinalConflictIsRefused(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	primeOrdinalSelection(t, eng, "停止 uhost-a 第2台", "turn-id-ord-conflict")
-
-	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-id-ord-conflict", "uhost-a"))
-
-	require.NoError(t, err)
-	require.False(t, resolved.action.ReadyForConfirmation,
-		"an id (uhost-a) and an ordinal (第2台 -> uhost-b) naming different instances must not authorize either")
-}
-
-// The same id+ordinal conflict must be caught when the LIVE registry is COLD — the
-// default state of a rehydrated HTTP session, where the pending list is restored
-// from the DB but the in-memory EntityRegistry is empty (FreshAndCompleteAt=false),
-// also produced by a post-mutation invalidation or TTL staleness. The binder must
-// resolve the typed id against the pending candidates' own snapshot, so the ordinal
-// cannot silently win. (Regression pin for the audit finding.)
-func TestIdAndOrdinalConflictRefusedOnColdRegistry(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	eng.lastUserMsg = "停止 uhost-a 第2台"
-	eng.recordPendingInstanceSelection([]entity.InstanceSnapshot{
-		testInstance("uhost-a", "alpha", "Running"),
-		testInstance("uhost-b", "beta", "Running"),
-	})
-	// Registry deliberately NOT synced -> cold, so id resolution can only come from
-	// the pending candidates' snapshot.
-	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-cold-conflict", time.Now())
-	eng.turnContextViewReady = true
-
-	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-cold-conflict", "uhost-a"))
-
-	require.NoError(t, err)
-	require.False(t, resolved.action.ReadyForConfirmation,
-		"a cold registry must not let the ordinal silently win over a contradicting typed id")
-	require.NotEmpty(t, resolved.action.Conflicts, "the two-reference disagreement must surface as a conflict to ask about")
-}
-
-// A unique exact instance NAME in the message binds to its id — even when the model
-// submitted the name itself, the binder canonicalizes it to the id and authorizes.
-func TestUniqueExactNameBindsAndAuthorizes(t *testing.T) {
+// The Agent maps the name to an ID before calling the write tool.
+func TestAgentResolvesAnInstanceNameBeforeProposingTheWrite(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 	eng.lastUserMsg = "关闭 alpha"
@@ -240,35 +160,31 @@ func TestUniqueExactNameBindsAndAuthorizes(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-name", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-name", "alpha"))
+	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-name", "uhost-a"))
 
 	require.NoError(t, err)
 	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
 	require.Equal(t, "uhost-a", resolved.action.Arguments["UHostId"],
-		"the exact name alpha uniquely resolves to uhost-a")
+		"the Agent's concrete ID is preserved for existence checking and confirmation")
 }
 
-// A DUPLICATE name (two instances both named "alpha") cannot bind to one id — the
-// binder reports a conflict and the write is refused until the user disambiguates.
-func TestDuplicateNameIsRefused(t *testing.T) {
+func TestAnotherTasksExplicitIDDoesNotReplaceTheProposedTarget(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	eng.lastUserMsg = "关闭 alpha"
-	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{
-		"TotalCount": float64(2),
-		"UHostSet": []any{
-			map[string]any{"UHostId": "uhost-a", "Name": "alpha", "State": "Running"},
-			map[string]any{"UHostId": "uhost-c", "Name": "alpha", "State": "Running"},
-		},
-	}, "test"))
-	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-dupname", time.Now())
+	eng.SetSessionState(SessionState{
+		SchemaVersion: SessionStateSchemaCurrent, SelectedInstanceID: "uhost-b",
+		SelectedInstanceSource: SelectedInstanceSourceUser, SelectedInstanceAtUnix: time.Now().Unix(),
+	}, 1)
+	syncTwoInstances(t, eng)
+	eng.lastUserMsg = "查询 uhost-a 的状态，然后关闭刚才那台"
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-two-tasks", time.Now())
 	eng.turnContextViewReady = true
 
-	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-dupname", "uhost-a"))
+	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-two-tasks", "uhost-b"))
 
 	require.NoError(t, err)
-	require.False(t, resolved.action.ReadyForConfirmation,
-		"a duplicate instance name must be disambiguated, never bound to one id")
+	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
+	require.Equal(t, "uhost-b", resolved.action.Arguments["UHostId"],
+		"the read task's explicit ID must not overwrite the write task's model-resolved target")
 }
 
 // A point-query that FAILS (upstream error) is a DependencyFailure — our outage,
@@ -471,10 +387,9 @@ func TestUnknownTargetKindIsRefusedNotVerifiedAsInstance(t *testing.T) {
 	require.False(t, ev.confirmed())
 }
 
-// Single-instance completion is subject to registry completeness (I): the sole
-// fresh instance in a complete registry is auto-filled from context and
-// authorized even when the user names no id ("关机").
-func TestProposalCompletesSoleFreshInstanceTarget(t *testing.T) {
+// A missing tool argument stays missing; context is supplied to the Agent,
+// not silently converted into execution parameters.
+func TestProposalDoesNotInventAMissingTargetFromSoleInstance(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 	eng.lastUserMsg = "关机"
@@ -490,9 +405,10 @@ func TestProposalCompletesSoleFreshInstanceTarget(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
-	require.Equal(t, "uhost-1", resolved.action.Arguments["UHostId"],
-		"the account's sole fresh instance is completed from context, not guessed")
+	require.False(t, resolved.action.ReadyForConfirmation)
+	require.Empty(t, resolved.action.Arguments["UHostId"])
+	require.Contains(t, resolved.action.Missing, "UHostId",
+		"the Agent must supply the target, even when the account has one instance")
 }
 
 // Single-instance completion is subject to registry completeness (II): an

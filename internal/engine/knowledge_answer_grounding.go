@@ -9,26 +9,17 @@ import (
 )
 
 // Large enough to preserve every evidence item shown during one bounded turn.
-// One SearchKnowledge call may fan out into several retrieval queries, so the
-// limit must not be derived from the number of Agent tool calls alone.
 const searchKnowledgeLedgerTurnMaxItems = 256
 
-// resolvedKnowledgeQuestion is the single question used after retrieval. The
-// bounded query planner separates that answer target from its retrieval queries;
-// using the short last utterance again (for example "粘贴呢") would split
-// retrieval from synthesis. A missing value is repaired once at the boundary so
-// every later stage reads the same question.
-func (e *Engine) resolvedKnowledgeQuestion(fallback string) string {
-	resolved := strings.TrimSpace(e.resolvedKnowledgeQuestionThisTurn)
-	if resolved == "" {
-		resolved = strings.TrimSpace(e.searchKnowledgeLedgerThisTurn.Query)
+// knowledgeAnswerQuestion keeps the first Agent query as the answer context
+// across later searches and citation processing.
+func (e *Engine) knowledgeAnswerQuestion(fallback string) string {
+	question := strings.TrimSpace(e.searchKnowledgeLedgerThisTurn.Query)
+	if question == "" {
+		question = strings.TrimSpace(fallback)
+		e.searchKnowledgeLedgerThisTurn.Query = question
 	}
-	if resolved == "" {
-		resolved = strings.TrimSpace(fallback)
-	}
-	e.resolvedKnowledgeQuestionThisTurn = resolved
-	e.searchKnowledgeLedgerThisTurn.Query = resolved
-	return resolved
+	return question
 }
 
 // finalizeAgentLoopKnowledgeAnswer is the sole SearchKnowledge answer exit. No
@@ -48,7 +39,7 @@ func (e *Engine) finalizeAgentLoopKnowledgeAnswer(_ context.Context, fallbackQue
 	if !e.knowledgeQAAgentLoopThisTurn {
 		return candidate
 	}
-	resolved := e.resolvedKnowledgeQuestion(fallbackQuestion)
+	resolved := e.knowledgeAnswerQuestion(fallbackQuestion)
 	ledger := e.knowledgeLedgerForVerification(resolved)
 
 	echoed := e.recordAnswerEvidenceEcho(candidate)

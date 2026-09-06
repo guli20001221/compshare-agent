@@ -1,4 +1,4 @@
-name: Behavioral Gate
+name: Behavioral measurement (report-only by default)
 
 # In-process behavioral gate. Drives the real engine with the same wiring as the
 # HTTP server (configureSharedDepsFromEnv) and the configured production model —
@@ -61,7 +61,7 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: In-process behavioral gate
+      - name: Measure model decisions (not HTTP acceptance)
         env:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           # STS service credentials — executor mints temp creds via AssumeRole, same as prod.

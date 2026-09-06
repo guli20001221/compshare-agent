@@ -34,7 +34,7 @@ func TestNetAcceleratorRequestHasNoRequiredFields(t *testing.T) {
 
 // The capability is account-scoped. Its request deliberately has no target
 // field that could appear meaningful while being ignored by the upstream call.
-func TestNetAcceleratorHandle_UsesBareAccountScopedCall(t *testing.T) {
+func TestNetAcceleratorHandle_RequestsAllRegionsAndAcceptsLegacyStatus(t *testing.T) {
 	exec := &fakeReadExec{result: map[string]any{"Optimized": true}}
 
 	result := runNetAccelerator(t, exec, NetworkAcceleratorStatusRequest{})
@@ -43,7 +43,7 @@ func TestNetAcceleratorHandle_UsesBareAccountScopedCall(t *testing.T) {
 	assert.Equal(t, "CheckCompShareNetOptimizer", result.ToolAction)
 	require.Len(t, exec.calls, 1)
 	assert.Equal(t, "CheckCompShareNetOptimizer", exec.calls[0].action)
-	assert.Empty(t, exec.calls[0].args, "net-accelerator status takes no instance argument")
+	assert.Equal(t, map[string]any{"Region": ""}, exec.calls[0].args)
 	assert.Contains(t, result.Reply, "已开通")
 }
 
@@ -64,11 +64,13 @@ func TestNetAcceleratorHandle_MissingRegionDoesNotLeakNil(t *testing.T) {
 func TestNetAcceleratorHandle_RegionRowsRendered(t *testing.T) {
 	exec := &fakeReadExec{result: map[string]any{"Info": []any{
 		map[string]any{"Optimized": true, "Region": "cn-bj2", "Zone": "cn-bj2-03"},
+		map[string]any{"Optimized": false, "Region": "cn-sh2", "Zone": "cn-sh2-01"},
 	}}}
 
 	result := runNetAccelerator(t, exec, NetworkAcceleratorStatusRequest{})
 
 	assert.Contains(t, result.Reply, "cn-bj2 cn-bj2-03 已开通")
+	assert.Contains(t, result.Reply, "cn-sh2 cn-sh2-01 未开通")
 }
 
 func TestNetAcceleratorHandle_EmptyPayload(t *testing.T) {

@@ -125,11 +125,34 @@ func TestSwitchChargeTypeConfirmsThenExecutesAndReadsBack(t *testing.T) {
 	assert.Len(t, disks, 2)
 }
 
-func TestSwitchChargeTypeRejectsPodBeforePriceOrConfirmation(t *testing.T) {
-	executor := &switchChargeTypeExecutor{before: switchChargeTypeInstance("cpod-switch", "Postpay")}
-	confirmCalled := false
-	eng := NewEngine(executor, func(string, map[string]any) bool {
-		confirmCalled = true
+func TestSwitchChargeTypePodUsesObservedPlacementAndCVolumeQuote(t *testing.T) {
+	pod := func(chargeType string) map[string]any {
+		result := switchChargeTypeInstance("cpod-switch", chargeType)
+		row := firstUHost(result)
+		row["Zone"], row["Region"] = "cn-bj2-03", "cn-bj2"
+		row["DiskSet"] = []any{map[string]any{
+			"DiskId": "cvolume-boot", "Type": "Boot", "IsBoot": "True",
+			"DiskType": "CVolume", "Size": float64(200),
+		}}
+		return result
+	}
+	executor := &switchChargeTypeExecutor{
+		before: pod("Postpay"), after: pod("Day"),
+		supportZones: map[string]any{"ZoneInfo": []any{map[string]any{
+			"Zone": "cn-bj2-03", "Region": "cn-bj2", "ZoneId": float64(5001), "RegionId": float64(2001),
+		}}},
+		prices: map[string]any{"PriceDetails": []any{map[string]any{
+			"ChargeType": "Day", "Instance": float64(18), "SystemDisks": float64(2), "Disks": float64(2),
+		}}},
+	}
+	confirmCalls := 0
+	eng := NewEngine(executor, func(action string, summary map[string]any) bool {
+		confirmCalls++
+		assert.Equal(t, "SwitchChargeTypeWorkflow", action)
+		assert.Equal(t, "¥2.00/天（预估）", summary["目标系统盘价格"])
+		assert.Equal(t, "¥20.00/天（预估）", summary["目标合计价格"], "CVolume is not added twice")
+		assert.Contains(t, summary["warning"], "实例及其关联云存储")
+		assert.Contains(t, summary["warning"], "系统盘报价来自当前实例详情")
 		return true
 	}, nil)
 
@@ -138,10 +161,27 @@ func TestSwitchChargeTypeRejectsPodBeforePriceOrConfirmation(t *testing.T) {
 	})
 
 	require.NoError(t, err)
-	require.False(t, result.Success)
-	assert.Contains(t, result.Message, "Pod 实例当前不支持切换计费方式")
-	assert.False(t, confirmCalled)
-	assert.Equal(t, []string{"DescribeCompShareInstance"}, switchChargeTypeActions(executor.calls))
+	require.True(t, result.Success, result.Message)
+	assert.Equal(t, 1, confirmCalls)
+	assert.Equal(t, true, result.Data["Verified"])
+	assert.Equal(t, "Day", result.Data["ObservedChargeType"])
+	for _, action := range []string{"GetCompShareInstanceUserPrice", "SwitchChargeType"} {
+		call, ok := findExecutorCall(executor.calls, action)
+		require.True(t, ok)
+		assert.Equal(t, "cn-bj2-03", call.args["Zone"])
+		assert.Equal(t, "cn-bj2", call.args["Region"])
+		assert.Equal(t, uint32(5001), call.args["zone_id"])
+		assert.Equal(t, uint32(2001), call.args["az_group"])
+	}
+	price, _ := findExecutorCall(executor.calls, "GetCompShareInstanceUserPrice")
+	assert.Equal(t, "Day", price.args["ChargeType"])
+	assert.Equal(t, []any{map[string]any{"IsBoot": true, "Type": "CVolume", "Size": uint32(200)}}, price.args["Disks"])
+	write, _ := findExecutorCall(executor.calls, "SwitchChargeType")
+	assert.Equal(t, "cpod-switch", write.args["UHostId"])
+	assert.Equal(t, "Day", write.args["DestChargeType"])
+	assert.Equal(t, []string{
+		"DescribeCompShareInstance", "DescribeCompShareSupportZone", "GetCompShareInstanceUserPrice", "SwitchChargeType", "DescribeCompShareInstance",
+	}, switchChargeTypeActions(executor.calls))
 }
 
 func TestSwitchChargeTypeDoesNotTreatAContainerImageOnUHostAsPod(t *testing.T) {
@@ -149,7 +189,11 @@ func TestSwitchChargeTypeDoesNotTreatAContainerImageOnUHostAsPod(t *testing.T) {
 	after := switchChargeTypeInstance("uhost-container", "Day")
 	before["UHostSet"].([]any)[0].(map[string]any)["InstanceType"] = "Container"
 	after["UHostSet"].([]any)[0].(map[string]any)["InstanceType"] = "Container"
-	executor := &switchChargeTypeExecutor{before: before, after: after}
+	executor := &switchChargeTypeExecutor{before: before, after: after,
+		supportZones: map[string]any{"ZoneInfo": []any{map[string]any{
+			"Zone": "cn-wlcb-01", "Region": "cn-wlcb", "ZoneId": float64(17001), "RegionId": float64(17000),
+		}}},
+	}
 	confirmCalled := false
 	eng := NewEngine(executor, func(string, map[string]any) bool {
 		confirmCalled = true

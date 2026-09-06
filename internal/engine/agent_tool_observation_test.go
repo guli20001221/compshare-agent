@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	"github.com/compshare-agent/internal/actionresolver"
@@ -10,6 +11,37 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
 )
+
+func TestTypedReadPreservesUpstreamFailureDisposition(t *testing.T) {
+	for _, tc := range []struct {
+		code   int
+		status tools.AgentToolStatus
+		next   tools.AgentToolNextStep
+	}{
+		{120, tools.AgentToolStatusRetryLater, tools.AgentToolNextRetryLater},
+		{240, tools.AgentToolStatusFailed, tools.AgentToolNextAnswerUser},
+		{230, tools.AgentToolStatusChooseAlternative, tools.AgentToolNextChooseOption},
+	} {
+		t.Run(strconv.Itoa(tc.code), func(t *testing.T) {
+			upstreamErr := tools.NewUpstreamAPIError(tc.code, "upstream detail")
+			executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+				require.Equal(t, "DescribeCompShareImageTags", action)
+				return nil, upstreamErr
+			}}
+			eng := NewWithDeps(&mockLLM{}, executor, nil)
+			onStep, steps := collectSteps()
+			const action = "ReadCapability_image_tag_catalog"
+			raw := eng.executeConcreteReadCapability(context.Background(), action, map[string]any{}, onStep)
+			result, ok := tools.ParseAgentToolResult(agentToolObservation(action, raw))
+			require.True(t, ok)
+			require.Equal(t, tc.status, result.Status)
+			require.Equal(t, tc.next, result.NextStep)
+			require.Equal(t, "UPSTREAM_RETCODE_"+strconv.Itoa(tc.code), result.Error.Code)
+			require.Equal(t, upstreamErr.UserMessage(), result.Error.Message)
+			require.Equal(t, result.Error.Code, (*steps)[len(*steps)-1].ErrorCode)
+		})
+	}
+}
 
 func TestAgentToolObservationMapsFiveStableOutcomes(t *testing.T) {
 	cases := []struct {
@@ -65,6 +97,37 @@ func TestAgentToolObservationMapsFiveStableOutcomes(t *testing.T) {
 			require.Equal(t, "ReadCapability_image_list", result.Meta.Action)
 		})
 	}
+}
+
+func TestMissingWriteTargetAsksTheAgentToCompleteItsCall(t *testing.T) {
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.lastUserMsg = "关闭 uhost-1"
+	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
+		"operation": "StopInstanceWorkflow", "slots": []any{},
+	})
+	require.NoError(t, err)
+	require.Equal(t, []string{"UHostId"}, resolved.action.Missing)
+	require.Empty(t, resolved.action.Arguments, "the server does not fill the omitted target")
+
+	result, ok := tools.ParseAgentToolResult(agentToolObservation("RequestStopInstance", resolvedActionForModel(resolved.action)))
+	require.True(t, ok)
+	require.Equal(t, tools.AgentToolNextCorrectToolCall, result.NextStep)
+	require.Equal(t, tools.AgentToolCodeInvalidArguments, result.Error.Code)
+	require.Equal(t, []string{"UHostId"}, result.Meta.MissingFields)
+	require.Contains(t, result.Error.Message, "用户消息、对话历史或工具结果")
+	require.Contains(t, result.Error.Message, "确实无法确定目标时才询问用户")
+}
+
+func TestMissingCreateSpecificationsKeepTheExistingInputPath(t *testing.T) {
+	raw := resolvedActionForModel(actionresolver.ResolvedAction{
+		Operation: "CreateInstanceWorkflow", Missing: []string{"GpuType", "Zone"}, ReadyForIntake: true,
+	})
+	result, ok := tools.ParseAgentToolResult(agentToolObservation("RequestCreateInstance", raw))
+	require.True(t, ok)
+	require.Equal(t, tools.AgentToolNextAskUser, result.NextStep)
+	require.Equal(t, "MISSING_REQUIRED_FIELDS", result.Error.Code)
+	require.Equal(t, []string{"GpuType", "Zone"}, result.Meta.MissingFields)
+	require.Equal(t, true, result.Data.(map[string]any)["ready_for_intake"])
 }
 
 func TestRejectedWriteProposalIsRoutedToTheResponsibleActor(t *testing.T) {

@@ -264,31 +264,58 @@ func TestCreateCustomImage_RunningVMCreatesWithoutStopping(t *testing.T) {
 	assert.Len(t, executor.calls, 4, "query instance + query zone + create + optional progress")
 }
 
-func TestCreateCustomImage_RunningPodReadsBackCatalogStatusInsteadOfCallingVMProgress(t *testing.T) {
-	executor := customImageMockExecutor()
-	executor.results["DescribeCompShareInstance"] = customImageContainerInstanceResult("Running")
-	executor.results["DescribeCompShareSupportZone"] = map[string]any{"ZoneInfo": []any{map[string]any{
-		"Zone": "cn-pod-01", "Region": "cn-pod",
-		"ZoneId": float64(8300), "RegionId": float64(1000010),
-	}}}
-	eng := NewEngine(executor, func(string, map[string]any) bool { return true }, nil)
+func TestCreateCustomImage_StatusReadbackMatchesSourceShape(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		id           string
+		instanceType string
+		wantCatalog  bool
+	}{
+		{"pod", "cpod-src", "Container", true},
+		{"uhost-container", "uhost-src", "Container", true},
+		{"vm", "uhost-src", "UHost", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			executor := customImageMockExecutor()
+			source := customImageInstanceResult("Running")
+			if tc.name == "pod" {
+				source = customImageContainerInstanceResult("Running")
+				executor.results["DescribeCompShareSupportZone"] = map[string]any{"ZoneInfo": []any{map[string]any{
+					"Zone": "cn-pod-01", "Region": "cn-pod",
+					"ZoneId": float64(8300), "RegionId": float64(1000010),
+				}}}
+			}
+			firstUHost(source)["InstanceType"] = tc.instanceType
+			executor.results["DescribeCompShareInstance"] = source
+			eng := NewEngine(executor, func(string, map[string]any) bool { return true }, nil)
 
-	result, err := eng.Run(context.Background(), CreateCustomImageDef(), map[string]any{
-		"UHostId": "cpod-src",
-		"Name":    "snapshot-v1",
-	})
+			result, err := eng.Run(context.Background(), CreateCustomImageDef(), map[string]any{
+				"UHostId": tc.id,
+				"Name":    "snapshot-v1",
+			})
 
-	require.NoError(t, err)
-	require.True(t, result.Success)
-	require.NotNil(t, result.Data)
-	assert.Equal(t, "cimg-custom-001", result.Data["CompShareImageId"])
-	assert.Equal(t, "Making", result.Data["Status"])
-	_, vmProgressCalled := findExecutorCall(executor.calls, "GetCompShareImageCreateProgress")
-	assert.False(t, vmProgressCalled, "the VM progress endpoint rejects UHub-backed Pod images")
-	readback, ok := findExecutorCall(executor.calls, "DescribeCompShareCustomImages")
-	require.True(t, ok)
-	assert.Equal(t, "cimg-custom-001", readback.args["CompShareImageId"])
-	assert.Equal(t, 1, readback.args["Limit"])
+			require.NoError(t, err)
+			require.True(t, result.Success)
+			require.NotNil(t, result.Data)
+			assert.Equal(t, "cimg-custom-001", result.Data["CompShareImageId"])
+			vmProgress, vmProgressCalled := findExecutorCall(executor.calls, "GetCompShareImageCreateProgress")
+			catalog, catalogCalled := findExecutorCall(executor.calls, "DescribeCompShareCustomImages")
+			assert.Equal(t, tc.wantCatalog, catalogCalled)
+			assert.Equal(t, !tc.wantCatalog, vmProgressCalled)
+			if tc.wantCatalog {
+				assert.Equal(t, "Making", result.Data["Status"])
+				assert.NotContains(t, result.Data, "Progress")
+				assert.Equal(t, "cimg-custom-001", catalog.args["CompShareImageId"])
+				assert.Equal(t, 1, catalog.args["Limit"])
+			} else {
+				progress, ok := result.Data["Progress"].(map[string]any)
+				require.True(t, ok)
+				assert.Equal(t, float64(65.5), progress["Process"])
+				assert.NotContains(t, result.Data, "Status")
+				assert.Equal(t, "cimg-custom-001", vmProgress.args["CompShareImageId"])
+			}
+		})
+	}
 }
 
 func TestCreateCustomImage_MissingSourceZoneRegionStopsBeforeConfirmation(t *testing.T) {
@@ -437,4 +464,29 @@ func TestCustomImageConfirmCardWarnsAboutTheSourceInstanceGoingIntoImageMaking(t
 			"without being told the machine loses its public address and refuses 开关机")
 	assert.Contains(t, warning, "不会关闭源实例",
 		"the earlier correction must survive: 制作 genuinely does not shut the instance down")
+}
+
+func TestPodCustomImageCardAndResultDoNotClaimUHostSideEffects(t *testing.T) {
+	executor := customImageMockExecutor()
+	executor.results["DescribeCompShareInstance"] = customImageContainerInstanceResult("Running")
+	executor.results["DescribeCompShareSupportZone"] = map[string]any{"ZoneInfo": []any{map[string]any{
+		"Zone": "cn-pod-01", "Region": "cn-pod", "ZoneId": float64(5001), "RegionId": float64(1000001),
+	}}}
+	warning := ""
+	eng := NewEngine(executor, func(_ string, args map[string]any) bool {
+		warning, _ = args["warning"].(string)
+		return true
+	}, nil)
+	result, err := eng.Run(context.Background(), CreateCustomImageDef(), map[string]any{
+		"UHostId": "cpod-src", "Name": "container-snapshot",
+	})
+	require.NoError(t, err)
+	require.True(t, result.Success, result.Message)
+	note, ok := result.Data["SourceInstanceNote"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, note)
+	assert.Contains(t, warning, note)
+	assert.Contains(t, note, "ImageMaking")
+	assert.NotContains(t, warning, "公网地址会被释放")
+	assert.NotContains(t, warning, "都会被拒绝")
 }

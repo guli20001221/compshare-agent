@@ -70,6 +70,23 @@ func TestGPUSpecsRender_FilterAndDetail(t *testing.T) {
 	assert.NotContains(t, full4090, "A100", "full model request still filters unrelated models")
 }
 
+func TestGPUSpecsOverviewUsesTheLargestOfferingAcrossZones(t *testing.T) {
+	raw := map[string]any{"AvailableInstanceTypes": []any{
+		map[string]any{"Name": "5090", "Zone": "cn-wlcb-01", "MachineSizes": []any{map[string]any{"Gpu": float64(4)}}},
+		map[string]any{"Name": "5090", "Zone": "cn-sh2-01", "MachineSizes": []any{map[string]any{"Gpu": float64(8)}}},
+	}}
+	result := runGPUSpecs(t, &fakeReadExec{result: raw}, GPUSpecsRequest{GPUType: "5090"})
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Contains(t, result.Reply, "最大卡数=8")
+	count, ok := resourceFactValue(result.Envelope, "gpu_model:5090", "max_gpu_count")
+	require.True(t, ok)
+	assert.Equal(t, "8", count)
+	// Full detail still shows each zone's own configuration, not the overview merge.
+	full := renderGPUSpecsReply(raw, "5090", platform.DetailLevelFull)
+	assert.Contains(t, full, "可用区=cn-wlcb-01, 完整配置=4卡")
+	assert.Contains(t, full, "可用区=cn-sh2-01, 完整配置=8卡")
+}
+
 // TestGPUSpecsRender_NoMatchFallback: a GPU-like token that matches nothing falls
 // back to the available list with an explicit prefix.
 func TestGPUSpecsRender_NoMatchFallback(t *testing.T) {

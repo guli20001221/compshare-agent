@@ -39,7 +39,8 @@ func netAcceleratorReadSpec() ReadCapabilitySpec[NetworkAcceleratorStatusRequest
 }
 
 func netAcceleratorHandle(ctx context.Context, _ NetworkAcceleratorStatusRequest, rt ReadRuntime) (NetworkAcceleratorStatusResponse, ReadResult) {
-	raw, err := rt.Executor.Execute(ctx, netAcceleratorAction, map[string]any{})
+	// Suppress the executor's default region so upstream returns all zone rows.
+	raw, err := rt.Executor.ExecuteInternal(ctx, netAcceleratorAction, map[string]any{"Region": ""})
 	if err != nil {
 		return NetworkAcceleratorStatusResponse{}, ReadFailureAfterTool(netAcceleratorAction, netAcceleratorCapabilityLabel, err)
 	}

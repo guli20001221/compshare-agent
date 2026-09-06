@@ -155,6 +155,43 @@ func TestAuthorizedWriteFailureReadbackNeverRunsBeforeTheWriteWasAuthorized(t *t
 	assert.Empty(t, executor.calls)
 }
 
+func TestPodSwitchFailureReadsOnceWithoutAssumingNoBillingChange(t *testing.T) {
+	for _, observed := range []string{"Postpay", "Day", ""} {
+		t.Run(observed, func(t *testing.T) {
+			executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+				require.Equal(t, "DescribeCompShareInstance", action)
+				require.Equal(t, []any{"cpod-switch"}, args["UHostIds"])
+				if observed == "" {
+					return nil, errors.New("readback unavailable")
+				}
+				return map[string]any{"UHostSet": []any{map[string]any{
+					"UHostId": "cpod-switch", "ChargeType": observed,
+				}}}, nil
+			}}
+			eng := NewWithDeps(&mockLLM{}, executor, nil)
+			reply, ok := eng.authorizedWriteFailureReply(context.Background(), "SwitchChargeTypeWorkflow", map[string]any{
+				"UHostId": "cpod-switch", "DestChargeType": "Day",
+			}, &workflow.Result{
+				Err:     tools.NewUpstreamAPIError(8433, "upstream action failed"),
+				Failure: &workflow.StepFailure{Step: "切换计费方式", ExecutionAuthorized: true},
+			})
+			require.True(t, ok)
+			assert.Contains(t, reply, "请勿重复提交")
+			assert.NotContains(t, reply, "已切换为")
+			assert.NotContains(t, reply, "余额不足", "8433 has not been established as a balance failure")
+			switch observed {
+			case "Postpay":
+				assert.Contains(t, reply, "本次结果可能不完整")
+			case "Day":
+				assert.Contains(t, reply, "关联存储和完整计费结果仍不确定")
+			default:
+				assert.Contains(t, reply, "本次结果不确定")
+			}
+			assert.Equal(t, []string{"DescribeCompShareInstance"}, executor.calls)
+		})
+	}
+}
+
 func TestReinstallFailureReadbackOnlyClaimsAnObservedImageChange(t *testing.T) {
 	tests := []struct {
 		name       string

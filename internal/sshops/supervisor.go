@@ -2,7 +2,6 @@ package sshops
 
 import (
 	"bufio"
-	"bytes"
 	"context"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/opscontext"
 	"github.com/google/uuid"
 )
@@ -34,7 +34,7 @@ type Supervisor struct {
 	BaseURL            string             // ANTHROPIC_BASE_URL (for production: https://api.modelverse.cn)
 	APIKey             string             // ModelVerse token passed only to the Claude CLI child
 	Model              string             // ModelVerse model id (e.g. gpt-5.6-terra)
-	Timeout            time.Duration      // hard wall-clock per task; default 5m
+	Timeout            time.Duration      // hard wall-clock per task; default 12m
 	KnowledgeRetriever KnowledgeRetriever // read-only Go broker; endpoint/token never enter child env or handshake
 }
 
@@ -101,6 +101,7 @@ type Result struct {
 	// context. It is deliberately false for old harnesses, bounded fallbacks, and any SDK failure
 	// before the first model message, so the finished audit row never overstates delivery.
 	ContextApplied bool
+	AgentUsage     *observability.AgentRunUsage // SDK aggregate for this query, absent without a ResultMessage
 }
 
 // Step is one command the harness ran or refused, parsed from an @@STEP wire line. Metadata ONLY —
@@ -328,7 +329,7 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 	if err != nil {
 		return Result{}, fmt.Errorf("sshops: stdout pipe: %w", err)
 	}
-	var errBuf bytes.Buffer
+	var errBuf harnessStderrTail
 	cmd.Stderr = &errBuf
 
 	if err := cmd.Start(); err != nil {
@@ -382,6 +383,7 @@ func (s Supervisor) RunWithContext(ctx context.Context, cred Credential, task st
 		AgentFailed:     outcome.Outcome == outcomeAgentFailed,
 		ErrClass:        outcome.ErrClass,
 		ContextApplied:  outcome.ContextApplied,
+		AgentUsage:      outcome.AgentUsage,
 	}
 	if cmd.ProcessState != nil {
 		res.ExitCode = cmd.ProcessState.ExitCode()
@@ -438,9 +440,10 @@ const (
 // harnessOutcome is the parsed @@OUTCOME line. An absent line still means the box was entered, but
 // it cannot prove an independently transported context reached the model, so ContextApplied is false.
 type harnessOutcome struct {
-	Outcome        string `json:"outcome"`
-	ErrClass       string `json:"err_class"`
-	ContextApplied bool   `json:"context_applied"`
+	Outcome        string                       `json:"outcome"`
+	ErrClass       string                       `json:"err_class"`
+	ContextApplied bool                         `json:"context_applied"`
+	AgentUsage     *observability.AgentRunUsage `json:"agent_usage,omitempty"`
 }
 
 func parseHarnessStream(r io.Reader, onStep func(Step), onConfirm func(ConfirmRequest), onKnowledge func(KnowledgeRequest)) (verdict string, steps []Step, outcome harnessOutcome, err error) {
@@ -610,6 +613,27 @@ func parseStep(payload string) (Step, bool) {
 		Reason: raw.Reason, ExitCode: raw.Exit, Bytes: raw.Bytes,
 		JobID: raw.JobID, JobState: raw.JobState, JobPurpose: raw.JobPurpose}, true
 }
+
+// SDK stderr can be noisy for an entire long-running repair; only its diagnostic
+// tail is consumed after Wait, so retaining the full stream has no benefit.
+type harnessStderrTail struct{ data []byte }
+
+func (b *harnessStderrTail) Write(p []byte) (int, error) {
+	const limit = 64 << 10
+	n := len(p)
+	if n >= limit {
+		b.data = append(b.data[:0], p[n-limit:]...)
+	} else {
+		if drop := len(b.data) + n - limit; drop > 0 {
+			copy(b.data, b.data[drop:])
+			b.data = b.data[:len(b.data)-drop]
+		}
+		b.data = append(b.data, p...)
+	}
+	return n, nil
+}
+
+func (b *harnessStderrTail) String() string { return string(b.data) }
 
 // tailString returns the last n bytes of s (rune-safe-ish: trims to a valid UTF-8 boundary).
 func tailString(s string, n int) string {

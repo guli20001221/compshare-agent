@@ -9,18 +9,7 @@ const (
 	TargetRefFilter           TargetRefType = "filter"
 	TargetRefName             TargetRefType = "name"
 	TargetRefUHostIDUserInput TargetRefType = "uhost_id_user_input"
-	TargetRefSlotPosition     TargetRefType = "slot_position"
 )
-
-// TargetRefTypeValues is the enum's single source of allowed wire values, in
-// declaration order. The capability tool schema and the runtime validator both
-// read it, so the model-facing enum and the accepted set never drift.
-func TargetRefTypeValues() []string {
-	return []string{
-		string(TargetRefFilter), string(TargetRefName),
-		string(TargetRefUHostIDUserInput), string(TargetRefSlotPosition),
-	}
-}
 
 // TargetSource records whether a reference came from the current user turn or a
 // prior turn. It is a provenance marker, never re-parsed from raw text by a
@@ -40,10 +29,9 @@ func TargetSourceValues() []string {
 // TargetRef is a structured pointer to one or more instances. Capabilities read
 // its fields directly; they never receive the user's raw sentence.
 type TargetRef struct {
-	Type       TargetRefType `json:"type"`
-	Value      string        `json:"value"`
-	Source     TargetSource  `json:"source,omitempty"`
-	SourceSpan string        `json:"source_span,omitempty"`
+	Type   TargetRefType `json:"type"`
+	Value  string        `json:"value"`
+	Source TargetSource  `json:"source,omitempty"`
 }
 
 // Metric is a monitor dimension.

@@ -123,8 +123,8 @@ check("native-append-describes-remote-not-runner-environment",
       and "runner, not the target" in flat(_WRITE_PROMPT))
 check("native-append-keeps-autonomous-execution",
       "without per-command confirmation" in flat(_WRITE_PROMPT))
-check("native-append-preserves-the-response-envelope",
-      all(status in _WRITE_PROMPT for status in ("已修复", "部分修复", "未修复", "无需修复", "已核实"))
+check("native-append-reports-diagnosis-without-claiming-repair",
+      "A diagnosis with no changes is not a repair" in _WRITE_PROMPT
       and "remaining unverified work" in _WRITE_PROMPT)
 check("native-append-is-not-a-replacement-diagnostic-manual",
       len(_WRITE_PROMPT) < 1000 and not hasattr(harness, "_SYSTEM_PROMPT_CORE")

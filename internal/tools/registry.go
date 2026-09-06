@@ -38,7 +38,7 @@ var Registry = []openai.Tool{
 			},
 		},
 	},
-	// --- Knowledge Tools (local, no API call) ---
+	// --- Knowledge tools (engine-owned retriever) ---
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
@@ -70,6 +70,8 @@ var Registry = []openai.Tool{
 				"properties": map[string]any{
 					"chunk_ids": map[string]any{
 						"type":        "array",
+						"minItems":    1,
+						"maxItems":    3,
 						"items":       map[string]any{"type": "string"},
 						"description": "要读取全文的 chunk_id 列表，一次最多 3 个。",
 					},

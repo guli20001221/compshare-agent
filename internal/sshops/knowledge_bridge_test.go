@@ -271,7 +271,7 @@ func TestKnowledgeBridgeSearchDoesNotExposeUnreadableChunkIDsOrUnboundedProductA
 
 func TestKnowledgeBridgeReadIsSearchBoundAndPerCallRuneBounded(t *testing.T) {
 	searchID := "private-search-id"
-	content := strings.Repeat("界", 3000)
+	content := strings.Repeat("界", knowledge.MaxKnowledgeContentRunes+1000)
 	retriever := &bridgeRetriever{
 		result: knowledge.RetrievalResult{Enabled: true, KBVersion: "kb-v1", SearchID: searchID,
 			HybridMode: knowledge.RetrievalModeHybridCosine,
@@ -320,6 +320,36 @@ func TestKnowledgeBridgeReadIsSearchBoundAndPerCallRuneBounded(t *testing.T) {
 	}
 	if got := bridge.handle(KnowledgeRequest{ID: "r3", Operation: "read", ChunkIDs: []string{"chunk-a"}}); got.OK || got.ErrorClass != "limit_exceeded" {
 		t.Fatalf("third read did not hit the per-run limit: %+v", got)
+	}
+}
+
+func TestKnowledgeBridgeReadsThreeFullCorpusChunks(t *testing.T) {
+	content := strings.Repeat("正文", knowledge.MaxKnowledgeContentRunes/2)
+	ids := []string{"chunk-a", "chunk-b", "chunk-c"}
+	retriever := &bridgeRetriever{
+		result: knowledge.RetrievalResult{Enabled: true, KBVersion: "kb-v1", SearchID: "search-full",
+			HybridMode: knowledge.RetrievalModeHybridCosine, HitItems: bridgeHits(3, "摘要")},
+		chunks: map[string]knowledge.KBChunk{},
+	}
+	for _, id := range ids {
+		retriever.chunks[id] = knowledge.KBChunk{ChunkID: id, Content: content}
+	}
+	bridge := newKnowledgeBridge(context.Background(), retriever)
+	if got := bridge.handle(KnowledgeRequest{ID: "s", Operation: "search", Query: "配置步骤"}); !got.OK {
+		t.Fatalf("search failed: %+v", got)
+	}
+	reply := bridge.handle(KnowledgeRequest{ID: "r", Operation: "read", ChunkIDs: ids})
+	if !reply.OK {
+		t.Fatalf("read failed: %+v", reply)
+	}
+	chunks := reply.Result.(knowledgeReadResult).Chunks
+	if len(chunks) != len(ids) {
+		t.Fatalf("got %d chunks, want %d", len(chunks), len(ids))
+	}
+	for i, chunk := range chunks {
+		if chunk.ChunkID != ids[i] || chunk.Content != content || chunk.Truncated {
+			t.Fatalf("chunk %s was not delivered whole: runes=%d truncated=%t", chunk.ChunkID, utf8.RuneCountInString(chunk.Content), chunk.Truncated)
+		}
 	}
 }
 

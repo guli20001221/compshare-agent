@@ -14,7 +14,7 @@ const (
 )
 
 // SelectedEntityHint is identity-only execution context. It helps the model
-// understand references but never bypasses binding, confirmation or policy.
+// understand references but never bypasses existence checks, confirmation or policy.
 type SelectedEntityHint struct {
 	Kind      string `json:"kind,omitempty"`
 	ID        string `json:"id,omitempty"`
@@ -60,8 +60,8 @@ func normalizedSelectedInstanceFreshness(state SessionState) string {
 		return ""
 	}
 	if state.SelectedInstanceAtUnix <= 0 {
-		// A legacy row with no timestamp cannot prove it came through the current
-		// explicit-selection path. Keep it for conversation, not execution binding.
+		// A legacy row with no timestamp has unknown freshness, but its referent
+		// remains available in the conversation.
 		return ContinuityFreshnessExpired
 	}
 	return ContinuityFreshnessFresh

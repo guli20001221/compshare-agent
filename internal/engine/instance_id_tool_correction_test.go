@@ -50,8 +50,8 @@ func (m *instanceIDCorrectionModel) call(id, instanceID string) openai.ToolCall 
 		return toolCall(id, m.action, fmt.Sprintf(`{"UHostId":%q,"Task":"排查 ComfyUI 无法打开","Mode":"inspect"}`, instanceID))
 	}
 	return toolCall(id, m.action, fmt.Sprintf(
-		`{"targets":[{"type":"uhost_id_user_input","value":%q,"source":"user_text","source_span":%q}]}`,
-		instanceID, instanceID,
+		`{"targets":[{"type":"uhost_id_user_input","value":%q,"source":"user_text"}]}`,
+		instanceID,
 	))
 }
 

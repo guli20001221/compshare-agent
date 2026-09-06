@@ -182,6 +182,23 @@ func TestResourceHandle_AppliesStateFilter(t *testing.T) {
 	assert.Equal(t, "1", matched)
 }
 
+func TestResourceHandle_EmptyFilterKeepsTheAccountCount(t *testing.T) {
+	result := runResource(t, &fakeReadExec{result: describeFixture(
+		instanceRowMap("uhost-a", "train-a", "Stopped"),
+	)}, nil, ResourceInfoRequest{Targets: []platform.TargetRef{{
+		Type: platform.TargetRefFilter, Value: "state=running",
+	}}})
+
+	require.Equal(t, platform.ReadStatusEmpty, result.Status)
+	assert.Contains(t, result.Reply, "没有符合筛选条件")
+	count, ok := resourceFactValue(result.Envelope, "", "account_instance_count")
+	require.True(t, ok)
+	assert.Equal(t, "1", count)
+	matched, ok := computedFactValue(result.Envelope, "matched_count")
+	require.True(t, ok)
+	assert.Equal(t, "0", matched)
+}
+
 // TestResourceHandle_ExplicitIDPinsTargetAndDoesNotTruncate: an explicit id
 // reference resolves to a UHostId and the describe call pins exactly that id
 // (the user already chose the target, so nothing is truncated).

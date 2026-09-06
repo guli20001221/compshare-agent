@@ -13,8 +13,8 @@ import (
 )
 
 // maxInstanceOpsStepEvents caps the per-command activity events the engine emits
-// for one in-instance diagnosis. It mirrors the harness's own step cap
-// (maxHarnessSteps=50) and the per-step audit write it drives, so a
+// for one in-instance diagnosis. It is a UI budget below the supervisor's
+// independently bounded audit step count, so a
 // runaway harness cannot flood the activity stream or the turn's DB writes. Beyond
 // the cap, per-command events stop; the terminal summary still reports the totals.
 const maxInstanceOpsStepEvents = 50
@@ -270,10 +270,11 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 
 	// The agentic loop has no known total, so report a count without a fake N/M denominator.
 	summary := StepEvent{
-		Type:    StepToolResult,
-		Action:  action,
-		Source:  observability.ToolSourceDiagnosisInternal,
-		Message: fmt.Sprintf("排查完成，共执行 %d 条命令（拒绝 %d 条），正在生成结论", verdict.Ran, verdict.Refused),
+		Type:       StepToolResult,
+		Action:     action,
+		Source:     observability.ToolSourceDiagnosisInternal,
+		Message:    fmt.Sprintf("排查完成，共执行 %d 条命令（拒绝 %d 条），正在生成结论", verdict.Ran, verdict.Refused),
+		AgentUsage: verdict.AgentUsage,
 	}
 	if verdict.AgentFailed {
 		// A settled partial report is deliverable, but it is not a completed
@@ -296,7 +297,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 func instanceOpsAgentFailureCode(class string) string {
 	switch class {
 	case "authentication_failed", "billing_error", "rate_limit", "invalid_request",
-		"server_error", "unknown", "model_error", "max_turns", "sdk_timeout", "sdk_error":
+		"server_error", "unknown", "model_error", "max_turns", "sdk_timeout", "sdk_error", "no_progress":
 		return "SSH_AGENT_" + strings.ToUpper(class)
 	default:
 		return "SSH_AGENT_FAILED"

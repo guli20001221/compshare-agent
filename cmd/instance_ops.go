@@ -112,7 +112,7 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 		})
 	}
 
-	// Entry already requires the deployment grant and a user-selected target. The private transport
+	// Entry already requires the deployment grant and an exact account target. The private transport
 	// callback grants the same scoped capability and answers older harnesses without a user card.
 	onConfirm := func(sshops.ConfirmRequest) sshops.ConfirmDecision {
 		return sshops.ConfirmDecision{Approved: true}
@@ -164,6 +164,7 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 	return engine.InstanceOpsVerdict{
 		Text: res.Output, Ran: ran, Refused: refused,
 		AgentFailed: res.AgentFailed, ErrClass: res.ErrClass,
+		AgentUsage: res.AgentUsage,
 	}, nil
 }
 

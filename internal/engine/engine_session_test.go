@@ -263,10 +263,6 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// tenant's searches withdraw the tool from another tenant's turn.
 		"searchKnowledgeCallsThisTurn":   true,
 		"searchKnowledgeQueriesThisTurn": true,
-		// The planner's standalone answer target is turn-local. Sharing it would
-		// let one tenant's follow-up retrieval change another tenant's grounding
-		// question even if their evidence sets were distinct.
-		"resolvedKnowledgeQuestionThisTurn": true,
 		// Per-turn ChunkID-keyed evidence ledger (#126), the union of this turn's
 		// SearchKnowledge items, consumed by the grounded-answer cite validator.
 		// Per-session by design — same cross-tenant-leak reasoning as the hits
@@ -426,12 +422,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 96, len(perSessionFields); want != got {
+	if want, got := 95, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 102, typ.NumField(); want != got {
+	if want, got := 101, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update this test's whitelists to match.", want, got)
 	}

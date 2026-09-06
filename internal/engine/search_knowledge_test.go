@@ -218,25 +218,62 @@ func TestExecuteSearchKnowledge_RemoteUnavailableIsDistinctFromEmpty(t *testing.
 	assert.Empty(t, traces[0].RefusedReason)
 }
 
-func TestExecuteSearchKnowledge_PartialRemoteUnavailableIsVisible(t *testing.T) {
-	eng, retriever := planningEngineWithConversation(t,
-		`{"answer_question":"实例关机后还会产生哪些费用","search_queries":["关机后计费规则","数据盘关机是否计费"]}`,
-		[]knowledge.RetrievalResult{
-			{Enabled: true, Empty: true, Unavailable: true, FailureReason: "mcp_timeout"},
-			{Enabled: true, Empty: true},
-			// Third result is for the anchored Agent query. It stays available so
-			// the partial-outage shape under test is still one unavailable query
-			// out of the fan-out, not two.
-			{Enabled: true, Empty: true},
+func TestExecuteSearchKnowledge_RetryReportsItsOwnAvailability(t *testing.T) {
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
+		{Enabled: true, Empty: true, Unavailable: true, FailureReason: "mcp_timeout"},
+		{Enabled: true, Empty: true},
+	}}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+
+	first := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "关机后还收什么"}, noopStep)
+	second := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "数据盘关机是否计费"}, noopStep)
+
+	require.Len(t, retriever.calls, 2)
+	assert.Contains(t, first, `"knowledge_unavailable":true`)
+	assert.NotContains(t, second, `"knowledge_unavailable"`, "the main Agent sees each tool call's actual result")
+	assert.Contains(t, second, `"empty":true`)
+}
+
+func TestExecuteSearchKnowledge_RetryAfterOutageKeepsCandidatesReadable(t *testing.T) {
+	scripted := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
+		{Enabled: true, Unavailable: true, FailureReason: "mcp_timeout"},
+		{
+			Enabled: true, SearchID: "available-search", HybridMode: knowledge.RetrievalModeQwen3RRF, RerankerMode: "qwen3-reranker-8b",
+			HitItems: []knowledge.RetrievalHit{{Kept: true, Score: 0.26,
+				Chunk: knowledge.KBChunk{ChunkID: "workbuddy-config", Title: "WorkBuddy配置", Content: "配置节选"}}},
 		},
-	)
+	}}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	retriever := &remoteChunkStoreRetriever{
+		scriptedKnowledgeRetriever: *scripted,
+		chunks: map[string]knowledge.KBChunk{
+			"workbuddy-config": {ChunkID: "workbuddy-config", Title: "WorkBuddy配置", Content: "配置正文和完整步骤"},
+		},
+	}
+	eng.SetKnowledgeRetriever(retriever)
 
-	out := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "关机后还收什么"}, noopStep)
+	first := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "WorkBuddy怎么设置"}, noopStep)
+	assert.Contains(t, first, `"knowledge_unavailable":true`)
+	search := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "WorkBuddy完整配置"}, noopStep)
+	observation, ok := tools.ParseAgentToolResult(agentToolObservation("SearchKnowledge", search))
+	require.True(t, ok)
+	require.Equal(t, tools.AgentToolNextInspectCandidates, observation.NextStep)
+	data := observation.Data.(map[string]any)
+	assert.NotContains(t, data, "knowledge_unavailable")
+	candidates := data["below_floor_candidates"].([]any)
+	require.Len(t, candidates, 1)
+	assert.Equal(t, "workbuddy-config", candidates[0].(map[string]any)["chunk_id"])
+	assert.Empty(t, eng.searchKnowledgeLedgerThisTurn.Items)
 
-	require.Len(t, retriever.calls, 3)
-	assert.Contains(t, out, `"knowledge_unavailable":true`)
-	assert.Contains(t, out, `"partial":true`)
-	assert.Contains(t, out, `"unavailable_queries":1`)
+	read := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"workbuddy-config"}}, noopStep))
+	item := read["chunks"].([]any)[0].(map[string]any)
+	assert.Equal(t, readChunkStatusRead, item["status"])
+	assert.Equal(t, "配置正文和完整步骤", item["content"])
+	require.Len(t, retriever.reads, 1)
+	assert.Equal(t, "available-search", retriever.reads[0].searchID)
+	require.Len(t, eng.searchKnowledgeLedgerThisTurn.Items, 1)
+	assert.Equal(t, "low", eng.searchKnowledgeLedgerThisTurn.Items[0].ScoreBucket)
 }
 
 func TestExecuteSearchKnowledge_MultipleCallsPreserveActivityIDsInCitationTrace(t *testing.T) {
@@ -266,8 +303,6 @@ func TestExecuteSearchKnowledge_MultipleCallsPreserveActivityIDsInCitationTrace(
 
 	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "GPU 能否调整"}, noopStep)
 	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "更换 GPU 数据会变吗"}, noopStep)
-	assert.Equal(t, "GPU 能否调整", eng.resolvedKnowledgeQuestionThisTurn,
-		"the first history-aware query is the stable question the answer must resolve")
 	assert.Equal(t, "GPU 能否调整", eng.searchKnowledgeLedgerThisTurn.Query,
 		"later subqueries must not turn the verifier input into a synthetic q1 | q2 question")
 	assert.NotContains(t, eng.searchKnowledgeLedgerThisTurn.Query, " | ")
@@ -425,7 +460,7 @@ func TestExecuteSearchKnowledge_TrueEmptyDoesNotClaimTheFloorDroppedCandidates(t
 	assert.NotContains(t, out, `"note"`)
 }
 
-func TestExecuteSearchKnowledge_MultiQueryKeepsStrongEvidenceWithoutFloorWarning(t *testing.T) {
+func TestExecuteSearchKnowledge_LaterSearchKeepsStrongEvidenceWithoutFloorWarning(t *testing.T) {
 	weak := knowledge.RetrievalResult{
 		Enabled:      true,
 		HybridMode:   "qwen3_rrf",
@@ -454,21 +489,24 @@ func TestExecuteSearchKnowledge_MultiQueryKeepsStrongEvidenceWithoutFloorWarning
 			},
 		}},
 	}
-	eng, retriever := planningEngineWithConversation(t,
-		`{"answer_question":"实例关机后还会产生哪些费用","search_queries":["关机费用规则","数据盘关机费用"]}`,
-		[]knowledge.RetrievalResult{weak, strong, {Enabled: true, Empty: true}},
-	)
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{weak, strong}}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
 
-	out := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "关机后还收什么"}, noopStep)
+	first := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "关机后还收什么"}, noopStep)
+	assert.Contains(t, first, `"below_floor_candidates"`)
+	out := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "数据盘关机费用"}, noopStep)
 
-	require.Len(t, retriever.calls, 3)
+	require.Len(t, retriever.calls, 2)
 	assert.Contains(t, out, "strong-platform-fact")
 	assert.NotContains(t, out, "weak-unrelated")
 	assert.NotContains(t, out, `"below_floor_candidates"`)
 	assert.NotContains(t, eng.searchKnowledgeCapabilitiesThisTurn, "weak-unrelated")
-	assert.NotContains(t, eng.belowFloorKnowledgeIDsThisTurn, "weak-unrelated")
+	assert.Contains(t, eng.belowFloorKnowledgeIDsThisTurn, "weak-unrelated", "the prior candidate remains readable without becoming evidence")
+	require.Len(t, eng.searchKnowledgeLedgerThisTurn.Items, 1)
+	assert.Equal(t, "strong-platform-fact", eng.searchKnowledgeLedgerThisTurn.Items[0].ChunkID)
 	assert.NotContains(t, out, `"floor_dropped_all"`,
-		"one weak retrieval must not downgrade a multi-query call that produced citable evidence")
+		"an earlier weak retrieval must not downgrade a later successful search")
 	assert.NotContains(t, out, `"note"`)
 }
 

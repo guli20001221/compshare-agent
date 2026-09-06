@@ -2,6 +2,7 @@ package capability
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"testing"
 
@@ -15,11 +16,8 @@ type fakeReadExecCall struct {
 	args   map[string]any
 }
 
-// fakeReadExec is a single-result executor stub mirroring the legacy
-// mockHandlerExecutor: it records every call and returns the same map for
-// Describe, GetPrice and DescribeCompShareSupportZone. Support-zone parsing
-// yields no zones from the pricing fixture, so no placement args are added —
-// exactly the legacy behaviour the parity assertions below lock in.
+// fakeReadExec records calls and returns one shared fixture. Pricing fixtures
+// carry both the machine and zone catalogs alongside their price response.
 type fakeReadExec struct {
 	result map[string]any
 	calls  []fakeReadExecCall
@@ -69,6 +67,7 @@ func runPricing(t *testing.T, exec ReadExecutor, req PricingRequest) ReadResult 
 
 func pricingFixture(extra map[string]any) map[string]any {
 	result := map[string]any{
+		"ZoneInfo": []any{map[string]any{"Zone": "cn-wlcb-01", "ZoneId": float64(1), "Region": "cn-wlcb"}},
 		"AvailableInstanceTypes": []any{
 			map[string]any{
 				"Name": "4090",
@@ -100,6 +99,54 @@ func pricingFixture(extra map[string]any) map[string]any {
 func TestPricingRequestMissingFields(t *testing.T) {
 	require.Equal(t, []platform.MissingField{{Name: "gpu_type", Reason: "required"}}, PricingRequest{}.MissingFields())
 	require.Nil(t, PricingRequest{GPUType: "4090"}.MissingFields())
+}
+
+func TestPricingUpstreamFailureIsNotAParameterCorrection(t *testing.T) {
+	exec := &mapReadExec{
+		results: map[string]map[string]any{
+			pricingDescribeAction:          pricingFixture(nil),
+			"DescribeCompShareSupportZone": pricingFixture(nil),
+		},
+		errs: map[string]error{pricingPriceAction: errors.New("upstream temporarily unavailable")},
+	}
+	result := runPricing(t, exec, PricingRequest{GPUType: "4090"})
+	require.Equal(t, platform.ReadStatusFailureAfterTool, result.Status)
+	assert.Equal(t, pricingPriceAction, result.ToolAction)
+	assert.Empty(t, result.FallbackReason)
+}
+
+func TestPricingUsesRequestedZoneOrReportsCatalogFailure(t *testing.T) {
+	catalog := pricingFixture(nil)
+	catalog["AvailableInstanceTypes"].([]any)[0].(map[string]any)["Zone"] = "cn-bj2-03"
+	for _, unavailable := range []bool{false, true} {
+		t.Run(map[bool]string{false: "zone_resolved", true: "catalog_unavailable"}[unavailable], func(t *testing.T) {
+			exec := &mapReadExec{results: map[string]map[string]any{
+				pricingDescribeAction: catalog,
+				"DescribeCompShareSupportZone": {"ZoneInfo": []any{map[string]any{
+					"Zone": "cn-bj2-03", "ZoneId": float64(5001), "Region": "cn-bj2", "IsPod": true,
+				}}},
+				pricingPriceAction: {"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Instance": float64(1.23)}}},
+			}}
+			if unavailable {
+				exec.errs = map[string]error{"DescribeCompShareSupportZone": errors.New("temporary catalog outage")}
+			}
+			result := runPricing(t, exec, PricingRequest{GPUType: "4090", Zone: "cn-bj2-03"})
+			if unavailable {
+				require.Equal(t, platform.ReadStatusFailureAfterTool, result.Status)
+				assert.Equal(t, "DescribeCompShareSupportZone", result.ToolAction)
+				require.Len(t, exec.calls, 2, "a quote without the requested location must not be dispatched")
+				return
+			}
+			require.Equal(t, platform.ReadStatusHandled, result.Status)
+			require.Len(t, exec.calls, 3)
+			assert.Equal(t, "cn-bj2", exec.calls[2].args["Region"])
+			assert.Equal(t, "cn-bj2-03", exec.calls[2].args["Zone"])
+			assert.Equal(t, uint32(5001), exec.calls[2].args["zone_id"])
+			assert.Equal(t, true, exec.calls[2].args["IsPod"])
+			assert.Contains(t, result.Reply, "cn-bj2-03")
+			assert.Contains(t, result.Reply, "¥1.23")
+		})
+	}
 }
 
 // TestPricingHandle_PassesMemoryAsMBToAPI is the typed-path parity twin of the
@@ -331,6 +378,7 @@ func TestPricingHandle_DoesNotLetFirstSpotOnlyZoneHideNormalBilling(t *testing.T
 func TestPricingHandle_ExactModelDoesNotExpandMemoryVariant(t *testing.T) {
 	base := pricingFixture(nil)["AvailableInstanceTypes"].([]any)[0]
 	exec := &fakeReadExec{result: map[string]any{
+		"ZoneInfo": pricingFixture(nil)["ZoneInfo"],
 		"AvailableInstanceTypes": []any{
 			base,
 			map[string]any{

@@ -285,7 +285,9 @@ type reinstallImageInfo struct {
 }
 
 func (info reinstallImageInfo) RequiredSystemDiskGB() float64 {
-	if info.SizeMB <= 0 {
+	// Container layers do not replace the UHost system disk; upstream applies
+	// this size check only to host images.
+	if info.Container || info.SizeMB <= 0 {
 		return 0
 	}
 	return math.Ceil(info.SizeMB / 1024)

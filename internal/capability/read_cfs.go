@@ -82,6 +82,13 @@ func cfsListHandle(ctx context.Context, req CFSListRequest, rt ReadRuntime) (CFS
 	if raw == nil {
 		raw = map[string]any{}
 	}
+	if req.CFS != nil && strings.TrimSpace(req.CFS.ID) != "" {
+		if found, known := boolField(raw, "Found"); known && !found {
+			r := ReadEmpty(fmt.Sprintf("当前未查询到 %s 的活跃 CFS 记录。", strings.TrimSpace(req.CFS.ID)))
+			r.ToolAction = cfsDescribeAction
+			return CFSResponse{}, r
+		}
+	}
 	return CFSResponse{Reply: renderCFSInfoReply(raw), Action: cfsDescribeAction}, ReadResult{}
 }
 
@@ -391,7 +398,11 @@ func renderCFSInfoReply(raw map[string]any) string {
 		if ids := uniqueStrings(stringSliceAt(row, "MountedUHostIds")); len(ids) > 0 {
 			mountedInstances = "，挂载实例 " + strings.Join(ids, "、")
 		}
-		lines = append(lines, fmt.Sprintf("- %s（%s）%s%s%s%s%s", name, id, sizeText, charge, mountStatus, expiry, mountedInstances))
+		location := ""
+		if zoneID := uint32Field(row, "ZoneId", "ZoneID"); zoneID != 0 {
+			location = fmt.Sprintf("，可用区编号 %d", zoneID)
+		}
+		lines = append(lines, fmt.Sprintf("- %s（%s）%s%s%s%s%s%s", name, id, sizeText, charge, mountStatus, expiry, mountedInstances, location))
 		shown++
 	}
 	if len(rows) > shown {

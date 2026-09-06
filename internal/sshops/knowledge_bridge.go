@@ -14,10 +14,10 @@ const (
 	maxKnowledgeSearchCallsPerRun = 4
 	maxKnowledgeReadCallsPerRun   = 2
 	maxKnowledgeSearchHits        = 3
-	// Match the outer ReadChunk contract: each of the at-most-two read calls
-	// may request three chunks and returns at most 6000 runes in total.
+	// Match the outer ReadChunk capacity: three maximum-sized corpus chunks
+	// fit whole in each permitted read call.
 	maxKnowledgeReadChunks       = 3
-	maxKnowledgeReadRunes        = 6000
+	maxKnowledgeReadRunes        = maxKnowledgeReadChunks * knowledge.MaxKnowledgeContentRunes
 	maxKnowledgeQueryRunes       = 1024
 	maxKnowledgeContextHintRunes = 200
 	maxKnowledgeRequestIDRunes   = 128

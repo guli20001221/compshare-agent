@@ -32,7 +32,6 @@ func TestKnowledgeAnswerIsFinalizedBeforeAnyTokenReachesTheClient(t *testing.T) 
 	chunk := knowledge.KBChunk{ChunkID: chunkID, KBVersion: "kb.v1", Title: "退款规则", Content: "该订单不支持退款。"}
 	mock := &streamingSeqMockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("search", "SearchKnowledge", `{"query":"该订单是否支持退款"}`)}},
-		plannerEcho("该订单是否支持退款"),
 		{Content: "该订单不支持退款[[" + chunkID + "]]。"},
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)

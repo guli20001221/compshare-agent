@@ -56,6 +56,7 @@ class _Channel:
         self.exit_code = exit_code
         self.stalled = stalled
         self.closed = False
+        self.eof_received = not stalled
 
     def shutdown_write(self):
         request = json.loads(self.input.getvalue())
@@ -306,6 +307,35 @@ try:
                                         opener=lambda conn: (_Client(_Channel(payload=b"x" * 101)), None))
     check("structured-output-overflow-fails-without-returning-broken-json",
           not oversize["ok"] and oversize["error_class"] == "search_failed")
+
+    class _StatusBeforeEOF(_Channel):
+        def __init__(self):
+            super().__init__()
+            self.output = b'{"ok":true,'
+            self.eof_received = False
+
+        def deliver_tail(self, _delay):
+            self.output = b'"matches":[]}'
+            self.eof_received = True
+
+    delayed = _StatusBeforeEOF()
+    with patch.object(remote_search.time, "sleep", side_effect=delayed.deliver_tail):
+        payload, exit_code = remote_search._receive(delayed)
+    check("exit-status-before-eof-preserves-complete-structured-frame",
+          exit_code == 0 and json.loads(payload) == {"ok": True, "matches": []})
+
+    class _BusyChannel(_Channel):
+        def recv_ready(self):
+            return True
+
+        def recv(self, count):
+            return b"x"
+
+    with patch.object(remote_search.time, "monotonic", side_effect=[0, 0, 31]):
+        timed_out = remote_search.search({}, {"root": app_root, "query": "x"},
+                                         opener=lambda conn: (_Client(_BusyChannel()), None))
+    check("continuous-search-output-still-checks-deadline-between-batches",
+          timed_out["error_class"] == "exec_timeout" and CLIENTS[-1].channel.closed)
     with patch.object(remote_search.time, "monotonic", side_effect=[0, 31]):
         timed_out = remote_search.search({}, {"root": app_root, "query": "x"},
                                          opener=lambda conn: (_Client(_Channel(stalled=True)), None))

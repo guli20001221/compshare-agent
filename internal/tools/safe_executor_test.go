@@ -100,6 +100,31 @@ func TestDescribeCompShareImagesAllowsImageIDFilter(t *testing.T) {
 	assert.NotContains(t, filtered, "Unexpected")
 }
 
+func TestDescribeCompshareDiskPreservesExplicitAllRegionScope(t *testing.T) {
+	inner := &spyExecutor{}
+	_, err := NewSafeToolExecutor(inner).ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "DescribeCompshareDisk",
+		Args:   map[string]any{"HostId": "cpod-disk-test", "Region": ""},
+		Origin: OriginDiagnosisInternal,
+	})
+	require.NoError(t, err)
+	require.Len(t, inner.args, 1)
+	assert.Equal(t, "cpod-disk-test", inner.args[0]["HostId"])
+	assert.Equal(t, "", inner.args[0]["Region"])
+}
+
+func TestNetAcceleratorPreservesInternalAllRegionScope(t *testing.T) {
+	inner := &spyExecutor{}
+	_, err := NewSafeToolExecutor(inner).ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "CheckCompShareNetOptimizer",
+		Args:   map[string]any{"Region": ""},
+		Origin: OriginDiagnosisInternal,
+	})
+	require.NoError(t, err)
+	require.Len(t, inner.args, 1)
+	assert.Equal(t, map[string]any{"Region": ""}, inner.args[0])
+}
+
 func TestDescribeCommunityImagesAllowsImageIDFilter(t *testing.T) {
 	safe := NewSafeToolExecutor(&spyExecutor{})
 
@@ -650,10 +675,13 @@ func TestSafeExecutorUsesPolicyForDisplayAndRedaction(t *testing.T) {
 
 		result, err := safe.ExecuteSafe(context.Background(), SafeToolRequest{
 			Action: "GetCompShareInvoiceIssued",
+			Args:   map[string]any{"Offset": 100, "Limit": 100},
 			Origin: OriginDiagnosisInternal,
 		})
 
 		require.NoError(t, err)
+		assert.Equal(t, 100, inner.args[0]["Offset"])
+		assert.Equal(t, 100, inner.args[0]["Limit"])
 		rows := result.TraceResult["InvoiceSet"].([]any)
 		row := rows[0].(map[string]any)
 		assert.Equal(t, "[REDACTED]", row["ReceiveEmail"])

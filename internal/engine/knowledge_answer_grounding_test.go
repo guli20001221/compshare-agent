@@ -334,7 +334,6 @@ func TestKnowledgeGrounding_ProductionAgentLoopWiresGate(t *testing.T) {
 	answer := "该问题的答复见资料[[" + record.ChunkID + "]]。"
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{{ID: "search", Type: openai.ToolTypeFunction, Function: openai.FunctionCall{Name: "SearchKnowledge", Arguments: `{"query":"` + record.ResolvedQuestion + `"}`}}}},
-		plannerEcho(record.ResolvedQuestion),
 		{Content: answer},
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)

@@ -110,18 +110,29 @@ func pricingHandle(ctx context.Context, req PricingRequest, rt ReadRuntime) (Pri
 		return PricingResponse{}, r
 	}
 
-	supportZones, _ := zones.FetchSupportZones(ctx, rt.Executor, 0, 0)
+	supportZones, err := zones.FetchSupportZones(ctx, rt.Executor, 0, 0)
+	if err != nil {
+		return PricingResponse{}, ReadFailureAfterTool("DescribeCompShareSupportZone", pricingCapabilityLabel, err)
+	}
 
 	// Stage 2: inspect every matching offering. Upstream row order is not a
 	// preference contract: one zone may expose Spot only while another exposes
 	// Postpay/Day/Month for the same GPU name.
 	priced := []gpuPriceRow{}
+	var quoteErr error
+	var failedAction string
 	for _, name := range matched {
 		for _, spec := range pricingSpecs(name, items, req.GPUCount, req.Zone, req.Disks) {
 			args := pricingPriceArgs(name, spec, req.Disks)
-			addPricingPlacementArgs(args, spec.Zone, supportZones)
+			if !addPricingPlacementArgs(args, spec.Zone, supportZones) {
+				return PricingResponse{}, ReadFailureAfterTool("DescribeCompShareSupportZone", pricingCapabilityLabel,
+					fmt.Errorf("可用区目录未返回 %s 的有效报价位置", spec.Zone))
+			}
 			priceRaw, priceAction, errInner := executePricingQuote(ctx, rt, args, req)
 			if errInner != nil {
+				if quoteErr == nil {
+					quoteErr, failedAction = errInner, priceAction
+				}
 				continue
 			}
 			bill := pricingBillingTableForKind(priceRaw, pricingKindForRequest(req))
@@ -134,7 +145,6 @@ func pricingHandle(ctx context.Context, req PricingRequest, rt ReadRuntime) (Pri
 				// fetched above for placement args, and the stock capability renders the
 				// same zone as 华北一C (cn-bj2-03) — a price quote that says only
 				// cn-bj2-03 makes the user match two names for one place by hand.
-				// zones.Label falls back to the id when the catalog fetch failed.
 				Zone:        zones.Label(supportZones, spec.Zone),
 				GPU:         spec.GPU,
 				Cpu:         spec.Cpu,
@@ -149,6 +159,9 @@ func pricingHandle(ctx context.Context, req PricingRequest, rt ReadRuntime) (Pri
 	}
 
 	if len(priced) == 0 {
+		if quoteErr != nil {
+			return PricingResponse{}, ReadFailureAfterTool(failedAction, pricingCapabilityLabel, quoteErr)
+		}
 		return PricingResponse{}, ReadFallbackBeforeTool(platform.ReadFallbackValidation)
 	}
 	return PricingResponse{Rows: priced}, ReadResult{}
@@ -245,12 +258,12 @@ func pricingKindForRequest(req PricingRequest) string {
 	return "当前账号价格（含折扣）"
 }
 
-func addPricingPlacementArgs(args map[string]any, zone string, supportZones []zones.ZoneInfo) {
+func addPricingPlacementArgs(args map[string]any, zone string, supportZones []zones.ZoneInfo) bool {
 	if args == nil || zone == "" {
-		return
+		return false
 	}
 	for _, z := range supportZones {
-		if z.Zone != zone {
+		if z.Zone != zone || z.ZoneID == 0 {
 			continue
 		}
 		if z.Region != "" {
@@ -260,14 +273,13 @@ func addPricingPlacementArgs(args map[string]any, zone string, supportZones []zo
 			args["IsPod"] = true
 			args["Zone"] = z.Zone
 		}
-		if z.ZoneID != 0 {
-			args["zone_id"] = z.ZoneID
-		}
+		args["zone_id"] = z.ZoneID
 		if z.RegionID != 0 {
 			args["az_group"] = z.RegionID
 		}
-		return
+		return true
 	}
+	return false
 }
 
 // pricingDefaultSpec captures the requested GPU-count machine size selected from

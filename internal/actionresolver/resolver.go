@@ -96,8 +96,8 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 			continue
 		}
 		// Non-target user_explicit fields are span-verified here; TARGET fields defer
-		// entirely to the target adjudicator below, which weighs selection AND
-		// existence and routes an outage / conflict to the right channel rather than
+		// entirely to the target adjudicator below, which checks account existence
+		// and routes an outage / conflict to the right channel rather than
 		// a blanket "not verified".
 		if !field.Target && candidate.Source == SourceUserExplicit && (candidate.Evidence == nil || r.verifier == nil || !r.verifier.VerifyCandidate(candidate)) {
 			reject(name, RejectUnverifiedSource, RejectionActorModel, fmt.Sprintf("%s: user-explicit source is not verified", name))

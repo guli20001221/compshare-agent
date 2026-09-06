@@ -24,10 +24,14 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
   搜索沿用前台命令时限，结构化结果不经过 shell 输出的 16 KiB 展示截断；缺少 Python 时报告失败，
   Agent 仍可使用 `ssh_exec` 调用实例已有的 `grep` / `find`。
 - `endpoint_probe`：只接受服务端从 `Softwares[].URL` / `TcpForwards` 派生的 opaque ID。
-  HTTP 只发一次有界 GET、TCP 只 connect 不发数据；HTTP 可在同一个服务端选定 origin 上指定
+  HTTP 发有界 GET/HEAD、TCP 只 connect 不发数据；HTTP 可在同一个服务端选定 origin 上指定
   绝对 path/query，以验证 `/health`、`/index.html` 等真实入口，但模型仍不能传 URL、主机、端口、
-  header 或 body，平台 URL 中已有的 token 只在 harness 内私有保留。结果也不带真实地址或 token，
+  任意 header 或 body。当前请求有 Authorization 引用时，可选 opaque ref 对比未带该认证和带认证
+  的两次响应；否则只请求一次。平台 URL 中已有的 token 始终私有保留。结果不带真实地址或 token，
   只证明 ssh-ops runner 这一网络视角。
+- `guest_endpoint_probe`：通过 SSH 通道探测 Guest 的 loopback TCP/HTTP，不依赖 Guest 中的
+  curl 等程序；HTTP 返回状态码及有界正文。正文因大小或读取超时不完整时标记 `truncated`，
+  已收到的状态码与连接结果仍保留，不把部分响应误报成网络不可达。
 - `ssh_exec(run_in_background=true)` / `poll_background_job`：将已经诊断清楚、属于已授权任务范围的
   长命令放入私有 job 目录；stdin/stdout/stderr 全部脱离 SSH 会话，PID 带 job marker，完成码原子落盘。
   同时最多一个 active，期间仍可只读排查；轮询终态后可在同一诊断继续下一项修复。轮询只接受当前
@@ -63,8 +67,12 @@ SSH 是新建的非交互会话，不自动继承服务原启动环境。工具�
 完整角色历史、OCR 与实时平台事实仍由既有 context 管道送入用户 prompt，知识检索工具保持可用。
 官方 preset 不会打开 runner 本机的 Bash/Read/Write；这些工具仍由绑定到目标实例的 SSH/SFTP 工具承接。
 不再注入额外 Stop hook 来改写模型最后一轮任务；验证与总结由原生 Agent 完成。
-SDK 明确报告失败时，活动流标记诊断中断，保留已结算命令数和部分报告，不自动重放命令。
+SDK 明确报告失败或无进展循环被终止时，活动流与审计均标记诊断中断，保留已结算命令数和部分报告，不自动重放命令。
 失败状态来自 SDK/runner 的结构化标记，不从用户日志或模型正文中的错误单词推断。
+SSH 前台输出在持续排空时，每路 stdout/stderr 只保留 256 KiB 首尾缓冲，并逐批检查时限；模型仍收到
+脱敏后约 16 KiB 首尾展示，省略的中段和不完整行不冒充完整日志。超时仍保留已收到的 stdout/stderr。
+SDK 的 ResultMessage 聚合 token、缓存 token、轮数和 API 耗时挂在现有 trace 的诊断子运行上；缺失与
+零值分开记录，不伪造逐次模型请求，也不与外层 OpenAI token 口径直接相加。SDK stderr 只保留有界尾部。
 命令风险分类仍仅作为审计元数据，不被当作已发生修改的证据。
 提示契约改变会让旧 SDK 游标以完整已知对话开始新会话，不重放旧命令。
 
@@ -96,7 +104,7 @@ PostgreSQL 的 SessionState V10 只保存会话 UUID、稳定工作目录 UUID�
 当前 Agent session contract v8 绑定原生 Claude Code preset、Guest 内搜索与原启动环境恢复的远端工具契约，不注入额外 Stop hook，并保存一枚 64 个小写十六进制字符的 SHA-256 conversation anchor，只表示 inner SDK 已经收到外层对话到哪个位置；
 它不含对话文本。Go 始终在私有握手里发送完整的有界快照和已送达前缀长度；harness 仅在本地 SDK
 transcript 确实存在时把 prompt 收敛为新增后缀，本地记录缺失则以完整快照 fresh start。harness 只在
-V3/V4 角色完整上下文进入真实模型回合后回执该 anchor；旧/不支持的 context、鉴权失败或模型未启动都不能前移它。
+V3/V5 角色完整上下文进入真实模型回合后回执该 anchor；旧/不支持的 context、鉴权失败或模型未启动都不能前移它。
 每次 resume 都通过 Claude SDK 的 `fork_session` 写入新的尝试 UUID；失败尝试不会追加到已提交 transcript，
 只有成功回执才会将数据库游标前移到该 fork。稳定工作目录 UUID 只负责让连续 fork 仍能找到同一私有 SDK project。
 下一次串行运行前，harness 只保留数据库当前指向的 source JSONL，并删除同一 manifest/workdir 下未回执的
@@ -147,10 +155,10 @@ SDK 在 `initialize` 等待 60 秒后超时；harness 会在同一个已选 npm 
    `started` 行只说明「请求过上下文」，把它当送达结果读会高估覆盖率——`Finish` 本身也可能失败
    （日志里是 `ssh-ops: audit finish failed …`），那种行会永远停在 `started`。
 
-   当前值是 **`4`**：除当前用户报告和平台事实外，它还携带按真实角色排列的完整历史问答；历史由
+   当前值是 **`5`**：除当前用户报告和平台事实外，它还携带按真实角色排列的完整历史问答；历史由
    Go 侧按完整 exchange 统一预算，harness 不再用另一个字节上限把整块上下文静默丢成 task-only。
-   新 harness 仍接受 v1/v2/v3；旧 harness 遇到 v4 会安全降级成 task-only（终态行就是 `0`，不是
-   半份上下文）。v3 引入角色完整历史，v4 新增权威 `instance.kind=vm|pod`；这个值按资源 ID 契约判定，
+   新 harness 仍接受 v1/v2/v3/v4；不支持该版本的旧 harness 会降级成 task-only（终态行就是 `0`，不是
+   半份上下文）。v5 增加上游运行形态和平台监控来源，v3 引入角色完整历史，v4 新增权威 `instance.kind=vm|pod`；这个值按资源 ID 契约判定，
    不能从 PID 1、镜像或 `InstanceType=Container` 猜测。v1 用一个 `instance.reported_ports` 同时装 Describe 的
    `Ports` 与 `TcpForwards`，v2 拆成 `platform.instance_port_hints` / `platform.tcp_forwards`，
    并新增 `instance.declared_software`（**只有名字**：同级的 `URL` 里带活的 Jupyter token）和

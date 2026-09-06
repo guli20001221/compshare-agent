@@ -224,6 +224,8 @@ func policyForAction(action string) ToolExecutionPolicy {
 
 func internalOnlyAllowedParams(action string) []string {
 	switch action {
+	case "GetCompShareInvoiceIssued":
+		return []string{"Limit", "Offset"}
 	case "CreateCFS":
 		return []string{"Name", "Size", "TotalFiles", "ChargeType", "Quantity", "CouponId", "Zone", "Region"}
 	case "ResizeCFS":
@@ -255,7 +257,7 @@ func internalOnlyAllowedParams(action string) []string {
 	case "DescribeCompShareJupyterToken":
 		return []string{"UHostIds"}
 	case "DescribeCompshareDisk":
-		return []string{"HostId"}
+		return []string{"HostId", "Region"}
 	default:
 		return nil
 	}
@@ -265,6 +267,8 @@ func internalOnlyAllowedParams(action string) []string {
 // capabilities and workflows. They are never model parameters.
 func backendOnlyAllowedParams(action string) []string {
 	switch action {
+	case "CheckCompShareNetOptimizer":
+		return []string{"Region"}
 	case "DescribeCompShareInstance":
 		return []string{"IncludeShareBandwidth"}
 	case "CheckCompShareResourceCapacity":

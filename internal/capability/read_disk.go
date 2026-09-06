@@ -52,7 +52,9 @@ func diskInfoHandle(ctx context.Context, req DiskInfoRequest, rt ReadRuntime) (D
 		return DiskInfoResponse{}, ReadConflict("磁盘查询一次只能按一台实例筛选，请指定其中一台实例。")
 	}
 
-	args := map[string]any{}
+	// This API lists disks across regions. Do not inherit the executor's
+	// default Region, which would filter out another region's CVolumes.
+	args := map[string]any{"Region": ""}
 	if len(hostIDs) == 1 {
 		args["HostId"] = hostIDs[0]
 	}

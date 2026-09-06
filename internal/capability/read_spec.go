@@ -87,8 +87,11 @@ type ReadResult struct {
 	FailureClass       platform.ReadFailureClass
 	FallbackReason     platform.ReadFallbackReason
 	ToolAction         string
-	Envelope           *envelope.Envelope
-	MissingFields      []platform.MissingField
+	// Err preserves the execution failure for the shared Agent error policy;
+	// a human-readable hint alone does not say whether another option can help.
+	Err           error `json:"-"`
+	Envelope      *envelope.Envelope
+	MissingFields []platform.MissingField
 	// Alternatives is the payload of the unavailable status only: the supported
 	// capabilities the model should redirect the user to. Read solely by the
 	// engine's Unavailable observation branch, never by the general read path.
@@ -179,6 +182,7 @@ func ReadFailureAfterTool(action, label string, err error) ReadResult {
 				Reply:        msg,
 				FailureClass: platform.ReadFailureActionableUpstream,
 				ToolAction:   action,
+				Err:          err,
 			}
 		}
 	}
@@ -191,6 +195,7 @@ func ReadFailureAfterTool(action, label string, err error) ReadResult {
 		Reply:        reply,
 		FailureClass: platform.ReadFailureGenericRead,
 		ToolAction:   action,
+		Err:          err,
 	}
 }
 

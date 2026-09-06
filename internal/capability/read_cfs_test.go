@@ -50,7 +50,7 @@ func TestCFSListHandle_AnswersWithoutPolicyBoilerplate(t *testing.T) {
 	exec := &mapReadExec{results: map[string]map[string]any{
 		"DescribeCFS": {"CFSSet": []any{
 			map[string]any{
-				"CfsId": "cfs-test", "Name": "shared-train", "Size": float64(100),
+				"CfsId": "cfs-test", "Name": "shared-train", "Size": float64(100), "ZoneId": float64(5001),
 				"ChargeType": "Month", "MountStatus": "Mounted", "PurchaseValue": float64(2000),
 				"MountedUHostIds": []any{"cpod-1", "cpod-2"},
 			},
@@ -65,6 +65,7 @@ func TestCFSListHandle_AnswersWithoutPolicyBoilerplate(t *testing.T) {
 	assert.Equal(t, "DescribeCFS", exec.calls[0].action)
 	assert.Contains(t, result.Reply, "shared-train")
 	assert.Contains(t, result.Reply, "100GB")
+	assert.Contains(t, result.Reply, "可用区编号 5001")
 	assert.Contains(t, result.Reply, "到期 1970-01-01 08:33")
 	assert.Contains(t, result.Reply, "挂载实例 cpod-1、cpod-2")
 	assert.NotContains(t, result.Reply, "只读", "a listing does not announce its own read-only-ness")
@@ -93,6 +94,15 @@ func TestCFSListHandle_UpstreamError(t *testing.T) {
 	result := reg.Run(context.Background(), CFSListRequest{}, ReadRuntime{Executor: errReadExec{err: errors.New("boom")}})
 	require.Equal(t, platform.ReadStatusFailureAfterTool, result.Status)
 	assert.Equal(t, cfsFailureLabel+": "+FriendlyReadFailureReply, result.Reply)
+}
+
+func TestCFSListDoesNotTurnAnEchoedMissingIDIntoAResource(t *testing.T) {
+	exec := &fakeReadExec{result: map[string]any{"CfsId": "cfs-missing", "Found": false}}
+	result := NewReadCapability(cfsListReadSpec()).Run(context.Background(),
+		CFSListRequest{CFS: &platform.CFSRef{ID: "cfs-missing"}}, ReadRuntime{Executor: exec})
+	require.Equal(t, platform.ReadStatusEmpty, result.Status)
+	assert.Contains(t, result.Reply, "未查询到 cfs-missing 的活跃 CFS 记录")
+	assert.NotContains(t, result.Reply, "CFS 共享文件存储：")
 }
 
 func TestCFSListRejectsANonCFSResourceBeforeUpstream(t *testing.T) {

@@ -45,6 +45,9 @@ func RenderResourceSummary(instances []entity.InstanceSnapshot, meta ResourceEnv
 // the raw code; it never substitutes a local alias or inferred location.
 func RenderResourceSummaryWithZoneCatalog(instances []entity.InstanceSnapshot, meta ResourceEnvelopeMeta, zoneCatalog *deployment.ZoneCatalogSnapshot) string {
 	if len(instances) == 0 {
+		if meta.FilterApplied != "" {
+			return "没有符合筛选条件的实例。"
+		}
 		return noInstancesReply
 	}
 	// Caller is expected to have already applied SortInstancesForDisplay /

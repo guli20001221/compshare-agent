@@ -90,14 +90,14 @@ DISALLOWED_TOOLS = [
 ]
 
 # Keep the CLI's native reasoning prompt. This append describes only the remote
-# execution environment and the response envelope consumed by this product.
+# execution environment and how to report the observed outcome.
 SYSTEM_PROMPT_APPEND = """Work on the remote instance bound to the ssh_ops tools. The CLI's local
 working directory and OS belong to the runner, not the target. The prompt contains the user
 conversation and platform facts; platform knowledge tools are available. Guest-local repair is
 authorized without per-command confirmation; the tools report their execution limits.
 
-Begin the final response with 已修复, 部分修复, 未修复, 无需修复 or 已核实. Summarize the observed
-result, actual changes and remaining unverified work in the user's language."""
+Lead with the observed outcome of the user's task. A diagnosis with no changes is not a repair.
+Summarize actual changes and remaining unverified work in the user's language."""
 
 TOOL_DESC = """Execute a shell command on the bound remote instance and return stdout, stderr and
 exit status. This is a fresh, non-interactive SSH session with a 25 seconds foreground limit.
@@ -1435,7 +1435,30 @@ def _partial_note(sdk_error: str) -> str:
             "本轮没有形成经验证的最终结论。）" % sdk_error)
 
 
-def _emit_outcome(outcome: str, err_class: str = "", context_applied: bool = False) -> None:
+def _sdk_run_usage(msg):
+    """Copy the SDK's aggregate for this query, including failed result messages.
+
+    These are Anthropic-protocol input/cache categories, not OpenAI prompt_tokens;
+    keep them separate and never reconstruct provider requests or price this model.
+    Missing counters stay absent; explicitly returned zero remains zero.
+    """
+    raw = getattr(msg, "usage", None)
+    usage = {}
+    if isinstance(raw, dict):
+        for key in ("input_tokens", "output_tokens", "cache_read_input_tokens",
+                    "cache_creation_input_tokens"):
+            value = raw.get(key)
+            if type(value) is int and value >= 0:
+                usage[key] = value
+    for key in ("num_turns", "duration_api_ms"):
+        value = getattr(msg, key, None)
+        if type(value) is int and value >= 0:
+            usage[key] = value
+    return usage or None
+
+
+def _emit_outcome(outcome: str, err_class: str = "", context_applied: bool = False,
+                  agent_usage=None) -> None:
     """Declare the preflight outcome and whether context reached the model prompt.
 
     Carries only bounded metadata — never reason prose, task/context data, host or credential — so it
@@ -1443,8 +1466,10 @@ def _emit_outcome(outcome: str, err_class: str = "", context_applied: bool = Fal
     that proves a model turn began; preflight/early SDK failures retain false. The terminal outcome
     lets the supervisor finish the audit without inspecting verdict prose.
     """
-    sys.stdout.write("@@OUTCOME " + json.dumps(
-        {"outcome": outcome, "err_class": err_class, "context_applied": bool(context_applied)}, ensure_ascii=False) + "\n")
+    payload = {"outcome": outcome, "err_class": err_class, "context_applied": bool(context_applied)}
+    if agent_usage is not None:
+        payload["agent_usage"] = agent_usage
+    sys.stdout.write("@@OUTCOME " + json.dumps(payload, ensure_ascii=False) + "\n")
     sys.stdout.flush()
 
 
@@ -1538,12 +1563,15 @@ def run_command(command: str, on_mutation=None) -> dict:
         if res.get("error") == "exec_timeout":
             # It DID run — it just never returned. Say so, hand back whatever it printed, and tell
             # the agent not to retry the same shape, or it burns the wall clock again.
-            entry.update(executed=True, disposition="exec_timeout", bytes=len(res.get("partial", "")))
             partial = res.get("partial", "").strip()
+            partial_stderr = res.get("partial_stderr", "").strip()
+            entry.update(executed=True, disposition="exec_timeout",
+                         bytes=len(partial) + len(partial_stderr))
             return {"text": (f"$ {command}\n⚠ 该命令 {res['detail']} 内没有返回（阻塞/持续输出），已强制中断。"
                              f"不要重试同样的命令，换一个会立即结束的形式（例如加 `timeout 5`、`-n`、"
                              f"`| head`，或读日志文件而不是跟随它）。"
-                             + (f"\n中断前的输出：\n{partial}" if partial else "")),
+                             + (f"\n中断前的输出：\n{partial}" if partial else "")
+                             + (f"\n中断前的 stderr：\n{partial_stderr}" if partial_stderr else "")),
                     "is_error": True, "tier": tier, "executed": True}
         if res.get("error"):
             entry["disposition"] = res["error"]
@@ -2292,7 +2320,7 @@ async def main():
                 "ssh_exec command=" + command[:_MAX_REMOTE_COMMAND])
             if blocked is not None:
                 return blocked
-        r = run_command(command, on_mutation=read_progress.advance)
+        r = await asyncio.to_thread(run_command, command, on_mutation=read_progress.advance)
         if r["tier"] == "read_only" and r["executed"] and not r["is_error"]:
             observed = read_progress.observe(
                 "ssh_exec", progress_args, progress_schema,
@@ -2620,9 +2648,13 @@ async def main():
     agent_session_receipt_sent = False
     observed_agent_session_id = None
     no_progress_stopped = False
+    agent_usage = None
     try:
         async for msg in query(prompt=prompt, options=options):
             kind = type(msg).__name__
+            if kind == "ResultMessage":
+                # Result usage is already aggregated for this query, not a delta.
+                agent_usage = _sdk_run_usage(msg)
             observed = _message_session_id(msg, kind)
             if observed is not None:
                 observed_agent_session_id = observed
@@ -2682,6 +2714,7 @@ async def main():
 
     body = verdict.strip() or last_assistant.strip()
     if no_progress_stopped:
+        sdk_error = "no_progress"
         body = ("未修复：诊断代理在实例状态未变化时连续重复同一个只读检查，"
                 "已自动停止以避免无效循环。此前的观察和操作仍保留在活动记录中，"
                 "但本轮没有形成经验证的最终结论。")
@@ -2696,7 +2729,8 @@ async def main():
         body = "（诊断已结束，但未生成明确结论"
         body += "）"
     _emit_outcome("agent_failed" if sdk_error else "", sdk_error,
-                  context_applied=model_turn_began and reference_context is not None)
+                  context_applied=model_turn_began and reference_context is not None,
+                  agent_usage=agent_usage)
     _emit_verdict(body)
 
 

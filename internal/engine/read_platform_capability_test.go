@@ -244,6 +244,30 @@ func TestRejectedReadArgumentsAskTheModelToCorrectItsOwnCall(t *testing.T) {
 		reasonParts  []string
 	}{
 		{
+			name:         "unsupported ordinal target",
+			lastUser:     "查询第2台",
+			action:       capability.ReadToolName(intent.IntentResourceInfo),
+			arguments:    `{"targets":[{"type":"slot_position","value":"2","source":"user_text"}]}`,
+			sourceStatus: "read_argument_validation",
+			reasonParts:  []string{"type"},
+		},
+		{
+			name:         "filter unsupported by access reader",
+			lastUser:     "查运行中实例的 SSH 登录方式",
+			action:       capability.ReadToolName(intent.IntentInstanceAccess),
+			arguments:    `{"targets":[{"type":"filter","value":"state=running","source":"user_text"}],"access_type":"ssh"}`,
+			sourceStatus: "read_argument_validation",
+			reasonParts:  []string{"type"},
+		},
+		{
+			name:         "invalid cross-field combination",
+			lastUser:     "查询实例共享带宽",
+			action:       capability.ReadToolName(intent.IntentResourceInfo),
+			arguments:    `{"resource_type":"shared_bandwidth","disk_ids":["cvolume-1"]}`,
+			sourceStatus: "read_argument_validation",
+			reasonParts:  []string{"参数组合"},
+		},
+		{
 			name:         "schema validation",
 			lastUser:     "查询 uhost-diag-002 的 SSH 登录方式",
 			action:       capability.ReadToolName(intent.IntentInstanceAccess),

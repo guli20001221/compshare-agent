@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 
+	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/opscontext"
 )
 
@@ -129,5 +130,6 @@ type InstanceOpsVerdict struct {
 	AgentFailed bool
 	// ErrClass is the runner's bounded SDK/model failure class. Unknown classes
 	// must become a generic activity code, never customer-visible free-form text.
-	ErrClass string
+	ErrClass   string
+	AgentUsage *observability.AgentRunUsage
 }

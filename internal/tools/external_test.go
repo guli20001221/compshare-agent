@@ -319,6 +319,54 @@ func TestExternalExecutor_MonitorUsesJSONBodyForUHostIds(t *testing.T) {
 	}
 }
 
+func TestExternalExecutor_ModelRepositoryPreservesFiltersAsJSON(t *testing.T) {
+	var contentType string
+	var rawBody []byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		contentType = r.Header.Get("Content-Type")
+		rawBody, _ = io.ReadAll(r.Body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"RetCode":0,"Models":[],"TotalCount":0}`))
+	}))
+	defer srv.Close()
+	ext := NewExternalExecutor(config.AgentConfig{
+		CompShareAPIURL: srv.URL,
+		PublicKey:       "pk",
+		PrivateKey:      "sk",
+		Region:          "cn-wlcb",
+		ProjectId:       "org-cfg",
+	})
+	_, err := ext.Execute(context.Background(), "DescribeModelRepositoryModels", map[string]any{
+		"Categories":    []string{"comfyui", "stable-diffusion-webui"},
+		"Tags":          []string{"checkpoints", "Lora"},
+		"Keyword":       "test-model",
+		"Source":        "Internal",
+		"Status":        "Active",
+		"ReplicaStatus": "Ready",
+		"ZoneID":        5001,
+		"Offset":        10,
+		"Limit":         10,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	assert.Equal(t, "application/json", contentType)
+	var body map[string]any
+	if err := json.Unmarshal(rawBody, &body); err != nil {
+		t.Fatalf("model repository request body is not JSON: %v", err)
+	}
+	assert.Equal(t, []any{"comfyui", "stable-diffusion-webui"}, body["Categories"])
+	assert.Equal(t, []any{"checkpoints", "Lora"}, body["Tags"])
+	for key, want := range map[string]any{
+		"Action": "DescribeModelRepositoryModels", "Keyword": "test-model",
+		"Source": "Internal", "Status": "Active", "ReplicaStatus": "Ready",
+		"ZoneID": float64(5001), "Offset": float64(10), "Limit": float64(10),
+		"Region": "cn-wlcb", "ProjectId": "org-cfg",
+	} {
+		assert.Equal(t, want, body[key], key)
+	}
+}
+
 // --- STS / CredentialProvider integration tests ---
 
 // TestExecuteWithSTSCredentials verifies that Execute includes SecurityToken in

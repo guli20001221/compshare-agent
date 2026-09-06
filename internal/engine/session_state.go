@@ -172,15 +172,15 @@ type VerifiedEvidenceTurn struct {
 }
 
 const (
-	// SelectedInstanceSourceObserved marks a current-instance binding recorded
+	// SelectedInstanceSourceObserved marks a current-instance referent recorded
 	// from a tool observation (a read saw it). It is understanding-only — it helps
 	// resolve who "它" is — and is NEVER a selection proof for a write target.
 	SelectedInstanceSourceObserved = "observed"
-	// SelectedInstanceSourceUser marks a binding the user genuinely established
-	// this session — an explicit id they typed, a pick from a shown selection
-	// card, or the sole result of a create they confirmed. A stamped value remains
-	// the conversation's current target until another explicit user selection
-	// replaces it; a client-provided version-0 Context can never mint this source.
+	// SelectedInstanceSourceUser records a confirmed platform operation's target
+	// or the sole instance created by a confirmed operation. Existing sessions may
+	// also contain earlier explicit selections. It is referential context, not
+	// authority for a later operation; client-provided version-0 Context cannot
+	// mint this source.
 	SelectedInstanceSourceUser = "user_selected"
 )
 

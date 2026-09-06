@@ -573,6 +573,29 @@ func TestStockHandle_UpstreamError(t *testing.T) {
 	assert.Equal(t, stockCapabilityLabel+": "+FriendlyReadFailureReply, result.Reply)
 }
 
+func TestStockKeepsInventoryWhenProbeImageQueryFails(t *testing.T) {
+	exec := &stockDualInventoryExec{
+		mapReadExec: &mapReadExec{results: map[string]map[string]any{
+			"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{
+				map[string]any{"Name": "H20", "Zone": "cn-wlcb-01", "Status": "Normal"},
+			}},
+			"DescribeCompShareSupportZone": stockSupportZonesFixture(),
+		}, errs: map[string]error{"DescribeCompShareImages": errors.New("image endpoint unavailable")}},
+		official: map[string]any{"GpuInventory": map[string]any{
+			"Exclusive": map[string]any{"1": map[string]any{"H20": float64(7)}},
+			"Spot":      map[string]any{},
+		}},
+	}
+	result := runStock(t, exec, StockAvailabilityRequest{GPUType: "H20"})
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	require.Contains(t, result.Reply, "H20")
+	require.Contains(t, result.Reply, "独占约 7 张")
+	require.Contains(t, result.Reply, "容量预检未执行")
+	for _, call := range exec.calls {
+		require.NotEqual(t, "CheckCompShareResourceCapacity", call.action)
+	}
+}
+
 // TestSelectCapacityPrecheckImageID_KeywordFree is the F3 gate: the capacity-probe
 // image pick must NOT prefer a name containing ubuntu/nvidia/cuda over the first
 // Available image. The probe only needs SOME valid System image to satisfy the API's

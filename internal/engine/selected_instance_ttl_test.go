@@ -8,10 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestExpireStaleSelectedInstanceRetainsIdentityButRevokesTrustAfterTTL
+// TestExpireStaleSelectedInstanceRetainsIdentityAndOriginAfterTTL
 // verifies that expiry no longer erases conversational identity or its origin,
-// while freshness still revokes automatic execution authority.
-func TestExpireStaleSelectedInstanceRetainsIdentityButRevokesTrustAfterTTL(t *testing.T) {
+// while freshness continues to describe the age of that context.
+func TestExpireStaleSelectedInstanceRetainsIdentityAndOriginAfterTTL(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	base := time.Unix(1_800_000_000, 0)
 	eng.SetSessionState(SessionState{
@@ -29,7 +29,7 @@ func TestExpireStaleSelectedInstanceRetainsIdentityButRevokesTrustAfterTTL(t *te
 	assert.Equal(t, "uhost-a", state.SelectedInstanceID, "expired identity must remain available for understanding")
 	assert.Equal(t, "alpha", state.SelectedInstanceName)
 	assert.Equal(t, SelectedInstanceSourceObserved, state.SelectedInstanceSource,
-		"origin is historical fact; freshness, not deletion, revokes authority")
+		"origin is historical fact; expiry changes freshness rather than deleting it")
 	assert.Equal(t, base.Unix(), state.SelectedInstanceAtUnix, "observation time must remain available")
 	assert.Equal(t, ContinuityFreshnessExpired, state.SelectedInstanceFreshness)
 }
@@ -53,13 +53,12 @@ func TestExpireStaleSelectedInstanceKeepsFreshBinding(t *testing.T) {
 	assert.Equal(t, "uhost-a", state.SelectedInstanceID, "fresh selection must survive")
 	assert.Equal(t, SelectedInstanceSourceObserved, state.SelectedInstanceSource)
 	assert.Equal(t, ContinuityFreshnessStale, state.SelectedInstanceFreshness,
-		"a binding in the second half of its TTL is stale but still within its authorization window")
+		"a referent in the second half of its TTL is marked stale")
 }
 
 // TestExpireStaleSelectedInstanceDowngradesUnstampedLegacyRow verifies rows
 // persisted before the timestamp field existed keep their referent for
-// conversation, but are expired for authorization because their age is
-// unknowable.
+// conversation, but are expired because their age is unknowable.
 func TestExpireStaleSelectedInstanceDowngradesUnstampedLegacyRow(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{
@@ -75,14 +74,12 @@ func TestExpireStaleSelectedInstanceDowngradesUnstampedLegacyRow(t *testing.T) {
 	state, _, _ := eng.SessionStateSnapshot()
 	assert.Equal(t, "uhost-legacy", state.SelectedInstanceID, "legacy referent remains available for understanding")
 	assert.Equal(t, SelectedInstanceSourceObserved, state.SelectedInstanceSource,
-		"origin remains observable, while expired freshness cannot authorize a write")
+		"origin remains observable despite expired freshness")
 	assert.Equal(t, ContinuityFreshnessExpired, state.SelectedInstanceFreshness)
 }
 
-// An old user selection without its timestamp cannot prove that it came through
-// the current server-owned selection path. Same-conversation continuity applies
-// only to stamped user_selected state.
-func TestUnstampedUserSelectionCannotSupplyWorkflowBinding(t *testing.T) {
+// Old selections with no timestamp retain their referent but not a fresh label.
+func TestUnstampedUserSelectionRemainsAnExpiredReferent(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetSessionState(SessionState{
 		SchemaVersion:          SessionStateSchemaCurrent,
@@ -93,14 +90,14 @@ func TestUnstampedUserSelectionCannotSupplyWorkflowBinding(t *testing.T) {
 	preExpiryView := (ContextCompiler{}).CompileForTurn(eng, "继续排查", "turn-legacy-user-pre", time.Now())
 	require.Len(t, preExpiryView.SelectedEntities, 1)
 	require.Equal(t, ContinuityFreshnessExpired, preExpiryView.SelectedEntities[0].Freshness,
-		"a context compiled before turn entry must not present an unstampable selection as fresh or stale authority")
+		"a context compiled before turn entry must not present an unstamped selection as fresh")
 	eng.expireStaleSelectedInstance(time.Now())
 	view := (ContextCompiler{}).CompileForTurn(eng, "继续排查", "turn-legacy-user", time.Now())
 	eng.turnContextViewThisTurn = view
 	eng.turnContextViewReady = true
 
-	binding := eng.bindInstanceTarget(view)
-	require.False(t, binding.bound(), "an unstamped legacy pick is never automatic authority")
+	require.Contains(t, renderAgentContextCard(view), "uhost-legacy-user")
+	require.Equal(t, ContinuityFreshnessExpired, view.SelectedEntities[0].Freshness)
 }
 
 // A passive read must not replace the user's current target, even when it observes
@@ -128,7 +125,7 @@ func TestObservedReadCannotReplaceLongPausedUserSelection(t *testing.T) {
 	assert.Equal(t, ContinuityFreshnessStale, state.SelectedInstanceFreshness)
 }
 
-func TestLongPausedUserSelectionRemainsStaleButBindable(t *testing.T) {
+func TestLongPausedUserSelectionRemainsAVisibleReferent(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	base := time.Now().Add(-(selectedInstanceTTLSeconds + 60) * time.Second)
 	eng.SetSessionState(SessionState{
@@ -142,11 +139,8 @@ func TestLongPausedUserSelectionRemainsStaleButBindable(t *testing.T) {
 
 	eng.expireStaleSelectedInstance(time.Now())
 	view := (ContextCompiler{}).CompileForTurn(eng, "为什么启动不了", "turn-long-pause", time.Now())
-	binding := eng.bindInstanceTarget(view)
-
 	require.Equal(t, ContinuityFreshnessStale, eng.sessionState.SelectedInstanceFreshness)
-	require.Equal(t, "uhost-a", binding.id)
-	require.False(t, binding.explicit)
+	require.Contains(t, renderAgentContextCard(view), "uhost-a")
 }
 
 // The callers that re-record an ALREADY known instance as a user selection — an

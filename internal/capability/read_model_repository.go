@@ -29,6 +29,7 @@ type ModelRepositoryRequest struct {
 	ReplicaStatus string            `json:"replica_status,omitempty"`
 	Zone          string            `json:"zone,omitempty"`
 	Mode          platform.ListMode `json:"mode,omitempty"`
+	Offset        int               `json:"offset,omitempty"`
 }
 
 // MissingFields: none — an unfiltered browse is valid.
@@ -44,14 +45,15 @@ func modelRepositoryReadSpec() ReadCapabilitySpec[ModelRepositoryRequest, ModelR
 		Label:       modelRepositoryCapabilityLabel,
 		Description: "查询公共模型目录、路径和目标可用区的副本状态。目录记录不等于目标实例已预置；只有工具明确返回目标可用区副本健康时，才能判断对应路径可直接使用。它不是可创建的镜像目录，也不能证明平台已支持部署。",
 		Params: objectParam(map[string]schemaNode{
-			"query":          stringParam(),
+			"query":          stringParam().described("模型/仓库名关键词，不查分类。"),
 			"source":         enumParam("Unspecified", "HuggingFace", "ModelScope", "Internal"),
-			"tags":           arrayParam(stringParam()),
-			"categories":     arrayParam(stringParam()),
+			"tags":           arrayParam(stringParam()).described("精确 Tags（大小写敏感），取实时目录原值。"),
+			"categories":     arrayParam(stringParam()).described("精确 Category（大小写敏感），取模型目录原值；未知先浏览。"),
 			"status":         enumParam("Unspecified", "Active", "Offline", "Draft"),
-			"replica_status": enumParam("Unspecified", "Healthy", "Offline", "Incomplete", "Missing").described("副本状态；指定 zone 时按该目标区精确筛选，不指定 zone 时表示任一可用区存在该状态。"),
+			"replica_status": enumParam("Unspecified", "Healthy", "Offline", "Incomplete", "Missing").described("副本状态；指定 zone 时按该区筛选。未指定 zone 时 Healthy 表示上游未发现任何区的副本问题，其余状态表示任一区存在该问题。"),
 			"zone":           stringParam().described("仅在用户明确指定目标可用区，或当前实例事实已给出可用区时填写实时目录中的 Zone；不要猜测。"),
 			"mode":           enumParam(platform.ListModeValues()...),
+			"offset":         integerParam(0).described("分页偏移，默认 0；继续浏览时使用结果给出的下一页偏移。"),
 		}),
 		NeedsZoneCatalog: func(req ModelRepositoryRequest) bool {
 			return strings.TrimSpace(req.Zone) != ""
@@ -95,7 +97,7 @@ func modelRepositoryRender(resp ModelRepositoryResponse) ReadResult {
 }
 
 func modelRepositoryArgs(req ModelRepositoryRequest, tagRaw map[string]any, zoneID uint32) map[string]any {
-	args := map[string]any{"Limit": 100}
+	args := map[string]any{"Limit": imageModelBrowseDisplayCap, "Offset": req.Offset}
 	query := strings.TrimSpace(req.Query)
 	explicitTags := uniqueStrings(req.Tags)
 	tags := explicitTags
@@ -220,25 +222,39 @@ func matchModelRepositoryTags(userText string, tags []string) []string {
 func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, req ModelRepositoryRequest, zoneID uint32, zoneLabel string) (string, bool) {
 	tags := uniqueStrings(stringSliceAt(tagRaw, "Tags"))
 	models := mapSliceAt(modelRaw, "Models")
-	filtered := filterModelRepositoryModels(models, req.Query, req.Mode)
+	filtered := modelRepositoryRows(models)
 	filtered = filterModelRepositoryTargetReplica(filtered, zoneID, req.ReplicaStatus)
 	sections := []string{}
+	if total, known := numericField(modelRaw, "TotalCount"); known {
+		next := req.Offset + len(models)
+		sections = append(sections, fmt.Sprintf("上游筛选共 %d 个模型，本页偏移 %d，返回 %d 个。", int(total), req.Offset, len(models)))
+		if len(models) > 0 && next < int(total) {
+			sections = append(sections, fmt.Sprintf("还有后续目录；继续浏览请使用 offset=%d。", next))
+		}
+	}
 	if len(tags) > 0 {
 		sections = append(sections, "模型仓库标签: "+strings.Join(limitStrings(tags, 20), "、"))
 	}
 	if len(filtered) == 0 {
+		if total, known := numericField(modelRaw, "TotalCount"); known && (total > float64(len(models)) || req.Offset > 0) {
+			sections = append(sections, "本页未找到满足条件的模型；不能据此判断全部目录不存在匹配项。")
+			return strings.Join(sections, "\n"), false
+		}
 		noMatch := "未找到匹配的模型。"
 		if zoneID != 0 && modelRepositoryOptionalEnum(req.ReplicaStatus) != "" {
 			noMatch = fmt.Sprintf("未找到在 %s 副本状态为 %s 的匹配模型。", zoneLabel, modelRepositoryOptionalEnum(req.ReplicaStatus))
+		}
+		if len(req.Categories) > 0 || len(req.Tags) > 0 {
+			sections = append(sections, noMatch,
+				"本次分类/标签精确筛选无匹配，不代表完整目录没有相关模型。这两个字段区分大小写；若尚未核对目录原值，保留其他条件，清空 categories/tags 并从 offset=0 浏览，再用返回的 Category/Tags 原值筛选。")
+			return strings.Join(sections, "\n"), len(tags) == 0
 		}
 		if len(tags) > 0 {
 			sections = append(sections, noMatch, modelRepositoryGuidanceFooter(false))
 			return strings.Join(sections, "\n"), false
 		}
-		if zoneID != 0 && modelRepositoryOptionalEnum(req.ReplicaStatus) != "" {
-			return noMatch, true
-		}
-		return "未获取到模型仓库数据。", true
+		sections = append(sections, noMatch)
+		return strings.Join(sections, "\n"), true
 	}
 	allLines := []string{}
 	for _, entry := range filtered {
@@ -286,7 +302,9 @@ func modelRepositoryGuidanceFooter(found bool, targetZone ...bool) string {
 	}, "\n")
 }
 
-func filterModelRepositoryModels(models []any, query string, mode platform.ListMode) []map[string]any {
+// Query and tags have already been applied by the upstream catalog. Local
+// filtering only handles the legacy Deleted marker and target-zone replicas.
+func modelRepositoryRows(models []any) []map[string]any {
 	out := make([]map[string]any, 0, len(models))
 	for _, item := range models {
 		entry, ok := item.(map[string]any)
@@ -298,27 +316,7 @@ func filterModelRepositoryModels(models []any, query string, mode platform.ListM
 		}
 		out = append(out, entry)
 	}
-	if len(out) == 0 || mode == platform.ListModeAll {
-		return out
-	}
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return out
-	}
-	filtered := make([]map[string]any, 0, len(out))
-	for _, entry := range out {
-		searchable := make(map[string]any, len(entry)+1)
-		for key, value := range entry {
-			searchable[key] = value
-		}
-		searchable["TagList"] = strings.Join(uniqueStrings(stringSliceAt(entry, "Tags")), " ")
-		if entryMatchesSlotQuery(searchable, query, []string{
-			"ModelID", "Name", "RepoName", "Source", "Category", "CanonicalPath", "Path", "Tag", "TagList",
-		}) {
-			filtered = append(filtered, entry)
-		}
-	}
-	return filtered
+	return out
 }
 
 func filterModelRepositoryTargetReplica(models []map[string]any, zoneID uint32, requested string) []map[string]any {

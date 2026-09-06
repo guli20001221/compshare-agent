@@ -243,6 +243,12 @@ func TestBehavioralGate(t *testing.T) {
 	}
 
 	reportBehavioral(t, assertions, records)
+	if len(records) < len(caseIDs) {
+		t.Logf("INCOMPLETE: executed %d/%d requested cases; unrun cases are not passes", len(records), len(caseIDs))
+		if *behavioralMinPass > 0 {
+			t.Errorf("a blocking behavioral run must complete all %d requested cases", len(caseIDs))
+		}
+	}
 }
 
 // runCaseInProcess replicates the HTTP server's fresh-session setup
