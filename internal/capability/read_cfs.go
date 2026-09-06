@@ -398,7 +398,11 @@ func renderCFSInfoReply(raw map[string]any) string {
 		if ids := uniqueStrings(stringSliceAt(row, "MountedUHostIds")); len(ids) > 0 {
 			mountedInstances = "，挂载实例 " + strings.Join(ids, "、")
 		}
-		lines = append(lines, fmt.Sprintf("- %s（%s）%s%s%s%s%s", name, id, sizeText, charge, mountStatus, expiry, mountedInstances))
+		location := ""
+		if zoneID := uint32Field(row, "ZoneId", "ZoneID"); zoneID != 0 {
+			location = fmt.Sprintf("，可用区编号 %d", zoneID)
+		}
+		lines = append(lines, fmt.Sprintf("- %s（%s）%s%s%s%s%s%s", name, id, sizeText, charge, mountStatus, expiry, mountedInstances, location))
 		shown++
 	}
 	if len(rows) > shown {

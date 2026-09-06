@@ -91,10 +91,6 @@ func agentToolObservation(action, raw string) string {
 		return tools.MarshalAgentToolResult(tools.AgentToolChooseAlternative(
 			action, toolObservationData(object), "CAPABILITY_UNAVAILABLE", "当前能力不可用，请选择支持的替代方式。", meta))
 	case "failure_after_tool":
-		if stringField(object, "failure_class") == "actionable_upstream" {
-			return tools.MarshalAgentToolResult(tools.AgentToolChooseAlternative(
-				action, toolObservationData(object), "UPSTREAM_OPTION_REJECTED", "上游拒绝了当前选项，请选择替代项。", meta))
-		}
 		return tools.MarshalAgentToolResult(tools.AgentToolRetryLater(
 			action, toolObservationData(object), "UPSTREAM_READ_FAILED", "上游查询暂时失败，请稍后重试。", meta))
 	case "call_budget_exhausted":

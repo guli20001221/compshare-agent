@@ -231,6 +231,13 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 	}
 	var traceResult map[string]any
 	_ = json.Unmarshal(payload, &traceResult)
+	if result.Err != nil {
+		failure := tools.AgentToolResultFromError(action, result.Err, tools.AgentToolMeta{SourceStatus: string(result.Status)})
+		failure.Data = traceResult
+		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct,
+			Message: "查询未完成", ErrorCode: failure.Error.Code, TraceResult: traceResult})
+		return tools.MarshalAgentToolResult(failure)
+	}
 	onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "查询完成", TraceResult: traceResult})
 	return string(payload)
 }

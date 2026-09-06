@@ -24,10 +24,14 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
   搜索沿用前台命令时限，结构化结果不经过 shell 输出的 16 KiB 展示截断；缺少 Python 时报告失败，
   Agent 仍可使用 `ssh_exec` 调用实例已有的 `grep` / `find`。
 - `endpoint_probe`：只接受服务端从 `Softwares[].URL` / `TcpForwards` 派生的 opaque ID。
-  HTTP 只发一次有界 GET、TCP 只 connect 不发数据；HTTP 可在同一个服务端选定 origin 上指定
+  HTTP 发有界 GET/HEAD、TCP 只 connect 不发数据；HTTP 可在同一个服务端选定 origin 上指定
   绝对 path/query，以验证 `/health`、`/index.html` 等真实入口，但模型仍不能传 URL、主机、端口、
-  header 或 body，平台 URL 中已有的 token 只在 harness 内私有保留。结果也不带真实地址或 token，
+  任意 header 或 body。当前请求有 Authorization 引用时，可选 opaque ref 对比未带该认证和带认证
+  的两次响应；否则只请求一次。平台 URL 中已有的 token 始终私有保留。结果不带真实地址或 token，
   只证明 ssh-ops runner 这一网络视角。
+- `guest_endpoint_probe`：通过 SSH 通道探测 Guest 的 loopback TCP/HTTP，不依赖 Guest 中的
+  curl 等程序；HTTP 返回状态码及有界正文。正文因大小或读取超时不完整时标记 `truncated`，
+  已收到的状态码与连接结果仍保留，不把部分响应误报成网络不可达。
 - `ssh_exec(run_in_background=true)` / `poll_background_job`：将已经诊断清楚、属于已授权任务范围的
   长命令放入私有 job 目录；stdin/stdout/stderr 全部脱离 SSH 会话，PID 带 job marker，完成码原子落盘。
   同时最多一个 active，期间仍可只读排查；轮询终态后可在同一诊断继续下一项修复。轮询只接受当前
@@ -151,10 +155,10 @@ SDK 在 `initialize` 等待 60 秒后超时；harness 会在同一个已选 npm 
    `started` 行只说明「请求过上下文」，把它当送达结果读会高估覆盖率——`Finish` 本身也可能失败
    （日志里是 `ssh-ops: audit finish failed …`），那种行会永远停在 `started`。
 
-   当前值是 **`4`**：除当前用户报告和平台事实外，它还携带按真实角色排列的完整历史问答；历史由
+   当前值是 **`5`**：除当前用户报告和平台事实外，它还携带按真实角色排列的完整历史问答；历史由
    Go 侧按完整 exchange 统一预算，harness 不再用另一个字节上限把整块上下文静默丢成 task-only。
-   新 harness 仍接受 v1/v2/v3；旧 harness 遇到 v4 会安全降级成 task-only（终态行就是 `0`，不是
-   半份上下文）。v3 引入角色完整历史，v4 新增权威 `instance.kind=vm|pod`；这个值按资源 ID 契约判定，
+   新 harness 仍接受 v1/v2/v3/v4；不支持该版本的旧 harness 会降级成 task-only（终态行就是 `0`，不是
+   半份上下文）。v5 增加上游运行形态和平台监控来源，v3 引入角色完整历史，v4 新增权威 `instance.kind=vm|pod`；这个值按资源 ID 契约判定，
    不能从 PID 1、镜像或 `InstanceType=Container` 猜测。v1 用一个 `instance.reported_ports` 同时装 Describe 的
    `Ports` 与 `TcpForwards`，v2 拆成 `platform.instance_port_hints` / `platform.tcp_forwards`，
    并新增 `instance.declared_software`（**只有名字**：同级的 `URL` 里带活的 Jupyter token）和

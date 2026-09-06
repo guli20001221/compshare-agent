@@ -50,7 +50,7 @@ func TestCFSListHandle_AnswersWithoutPolicyBoilerplate(t *testing.T) {
 	exec := &mapReadExec{results: map[string]map[string]any{
 		"DescribeCFS": {"CFSSet": []any{
 			map[string]any{
-				"CfsId": "cfs-test", "Name": "shared-train", "Size": float64(100),
+				"CfsId": "cfs-test", "Name": "shared-train", "Size": float64(100), "ZoneId": float64(5001),
 				"ChargeType": "Month", "MountStatus": "Mounted", "PurchaseValue": float64(2000),
 				"MountedUHostIds": []any{"cpod-1", "cpod-2"},
 			},
@@ -65,6 +65,7 @@ func TestCFSListHandle_AnswersWithoutPolicyBoilerplate(t *testing.T) {
 	assert.Equal(t, "DescribeCFS", exec.calls[0].action)
 	assert.Contains(t, result.Reply, "shared-train")
 	assert.Contains(t, result.Reply, "100GB")
+	assert.Contains(t, result.Reply, "可用区编号 5001")
 	assert.Contains(t, result.Reply, "到期 1970-01-01 08:33")
 	assert.Contains(t, result.Reply, "挂载实例 cpod-1、cpod-2")
 	assert.NotContains(t, result.Reply, "只读", "a listing does not announce its own read-only-ness")

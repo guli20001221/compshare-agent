@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"strconv"
 	"testing"
 
 	"github.com/compshare-agent/internal/actionresolver"
@@ -10,6 +11,37 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
 )
+
+func TestTypedReadPreservesUpstreamFailureDisposition(t *testing.T) {
+	for _, tc := range []struct {
+		code   int
+		status tools.AgentToolStatus
+		next   tools.AgentToolNextStep
+	}{
+		{120, tools.AgentToolStatusRetryLater, tools.AgentToolNextRetryLater},
+		{240, tools.AgentToolStatusFailed, tools.AgentToolNextAnswerUser},
+		{230, tools.AgentToolStatusChooseAlternative, tools.AgentToolNextChooseOption},
+	} {
+		t.Run(strconv.Itoa(tc.code), func(t *testing.T) {
+			upstreamErr := tools.NewUpstreamAPIError(tc.code, "upstream detail")
+			executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
+				require.Equal(t, "DescribeCompShareImageTags", action)
+				return nil, upstreamErr
+			}}
+			eng := NewWithDeps(&mockLLM{}, executor, nil)
+			onStep, steps := collectSteps()
+			const action = "ReadCapability_image_tag_catalog"
+			raw := eng.executeConcreteReadCapability(context.Background(), action, map[string]any{}, onStep)
+			result, ok := tools.ParseAgentToolResult(agentToolObservation(action, raw))
+			require.True(t, ok)
+			require.Equal(t, tc.status, result.Status)
+			require.Equal(t, tc.next, result.NextStep)
+			require.Equal(t, "UPSTREAM_RETCODE_"+strconv.Itoa(tc.code), result.Error.Code)
+			require.Equal(t, upstreamErr.UserMessage(), result.Error.Message)
+			require.Equal(t, result.Error.Code, (*steps)[len(*steps)-1].ErrorCode)
+		})
+	}
+}
 
 func TestAgentToolObservationMapsFiveStableOutcomes(t *testing.T) {
 	cases := []struct {

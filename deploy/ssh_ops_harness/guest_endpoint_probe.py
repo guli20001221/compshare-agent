@@ -121,7 +121,8 @@ def _read_response(channel):
         try:
             chunk = channel.recv(min(8192, _MAX_RESPONSE_BYTES - total))
         except socket.timeout:
-            break
+            # The status and received body remain observations, but the body is incomplete.
+            return b"".join(chunks), True
         if not chunk:
             break
         chunks.append(chunk)
@@ -184,7 +185,7 @@ def probe(conn, args, secrets=(), opener=ssh_transport.open_client):
                    "User-Agent: compshare-ops-probe\r\n%s\r\n" %
                    (method, path, virtual_host, authorization_line)).encode("ascii")
         channel.sendall(request)
-        raw, capped = _read_response(channel)
+        raw, incomplete = _read_response(channel)
         head, separator, body = raw.partition(b"\r\n\r\n")
         auth_parts = authorization.split(None, 1) if authorization else []
         response_secrets = tuple(secrets) + tuple(
@@ -196,7 +197,7 @@ def probe(conn, args, secrets=(), opener=ssh_transport.open_client):
         secret_lengths = [len(item.encode("utf-8")) for item in response_secrets
                           if isinstance(item, str) and len(item) >= 3]
         tail_guard = max(secret_lengths, default=1) - 1
-        if capped and tail_guard and body:
+        if incomplete and tail_guard and body:
             body = body[:-min(tail_guard, len(body))]
         status_complete = bool(separator) or b"\r\n" in head
         raw_status_line = (
@@ -208,7 +209,7 @@ def probe(conn, args, secrets=(), opener=ssh_transport.open_client):
         scrubbed_body = guardrails.scrub_output(
             body.decode("utf-8", "replace"), response_secrets)
         body_text, redacted_body_cut = _utf8_prefix(scrubbed_body, _MAX_BODY_BYTES)
-        body_cut = capped or len(body) > _MAX_BODY_BYTES or redacted_body_cut
+        body_cut = incomplete or len(body) > _MAX_BODY_BYTES or redacted_body_cut
         return {"ok": bool(match), "protocol": "http", "port": port, "probe_completed": True,
                 "connected": True,
                 "method": method, "path": path, "host_header": virtual_host,

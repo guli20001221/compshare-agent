@@ -3,6 +3,7 @@ package capability
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/compshare-agent/internal/envelope"
@@ -101,36 +102,8 @@ func renderGPUSpecsReply(raw map[string]any, gpuType string, detail platform.Det
 
 func buildGPUSpecLines(items []any, filterTo map[string]struct{}, detailed bool) []string {
 	lines := make([]string, 0, len(items))
-	seenNames := map[string]struct{}{}
-	seenDetailed := map[string]struct{}{}
-	for _, item := range items {
-		entry, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
+	for _, entry := range selectGPUSpecEntries(items, filterTo, detailed) {
 		name := safeString(entry, "Name")
-		if name == "" {
-			continue
-		}
-		if len(filterTo) > 0 {
-			if _, ok := filterTo[name]; !ok {
-				continue
-			}
-		}
-		if detailed {
-			key := name + "\x00" + safeString(entry, "Zone") + "\x00" + expandMachineSizes(entry)
-			if _, ok := seenDetailed[key]; ok {
-				continue
-			}
-			seenDetailed[key] = struct{}{}
-		} else {
-			// Dedupe by Name for overview replies so a plain spec question stays
-			// concise even if the API returns the same model in multiple zones.
-			if _, ok := seenNames[name]; ok {
-				continue
-			}
-			seenNames[name] = struct{}{}
-		}
 		parts := []string{"机型=" + name}
 		if detailed {
 			if zone := safeString(entry, "Zone"); zone != "" {
@@ -236,7 +209,7 @@ func buildGPUSpecsEnvelope(raw map[string]any, gpuType string, detail platform.D
 
 func selectGPUSpecEntries(items []any, filterTo map[string]struct{}, detailed bool) []map[string]any {
 	entries := make([]map[string]any, 0, len(items))
-	seenNames := map[string]struct{}{}
+	indexByName := map[string]int{}
 	seenDetailed := map[string]struct{}{}
 	for _, item := range items {
 		entry, ok := item.(map[string]any)
@@ -259,10 +232,15 @@ func selectGPUSpecEntries(items []any, filterTo map[string]struct{}, detailed bo
 			}
 			seenDetailed[key] = struct{}{}
 		} else {
-			if _, ok := seenNames[name]; ok {
+			// Both text and envelope derive the overview maximum from all zones.
+			if index, ok := indexByName[name]; ok {
+				merged := entries[index]
+				merged["MachineSizes"] = append(mapSliceAt(merged, "MachineSizes"), mapSliceAt(entry, "MachineSizes")...)
 				continue
 			}
-			seenNames[name] = struct{}{}
+			indexByName[name] = len(entries)
+			entry = maps.Clone(entry)
+			entry["MachineSizes"] = append([]any(nil), mapSliceAt(entry, "MachineSizes")...)
 		}
 		entries = append(entries, entry)
 	}

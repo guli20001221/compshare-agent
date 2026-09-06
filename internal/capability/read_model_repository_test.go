@@ -153,10 +153,8 @@ func TestModelRepositoryRender_ListAll(t *testing.T) {
 	assert.NotContains(t, reply, "无需重新下载")
 }
 
-func TestModelRepositoryRender_NameFilterNoMatch(t *testing.T) {
-	modelRaw := map[string]any{"Models": []any{
-		map[string]any{"Name": "Qwen2.5-7B", "Path": "/models/qwen", "Tag": "LLM", "Size": "15GB"},
-	}}
+func TestModelRepositoryRender_UpstreamNoMatch(t *testing.T) {
+	modelRaw := map[string]any{"Models": []any{}}
 	tagRaw := map[string]any{"Tags": []any{"LLM"}}
 	reply, _ := renderModelRepositoryReply(modelRaw, tagRaw, ModelRepositoryRequest{Query: "llama", Mode: platform.ListModeFiltered}, 0, "")
 	assert.Contains(t, reply, "未找到匹配的模型")
@@ -164,6 +162,22 @@ func TestModelRepositoryRender_NameFilterNoMatch(t *testing.T) {
 		assert.Contains(t, reply, want, "a repo miss must guide the user to self-pull")
 	}
 	assert.NotContains(t, reply, "无需重新下载", "the pre-download note belongs to a found listing, not a miss")
+}
+
+func TestModelRepositoryPreservesUpstreamTagMatches(t *testing.T) {
+	exec := &mapReadExec{results: map[string]map[string]any{
+		modelRepositoryTagAction: {"Tags": []any{"LLM"}},
+		modelRepositoryModelAction: {"TotalCount": float64(1), "Models": []any{
+			map[string]any{"Name": "Qwen3-8B", "Tags": []any{"LLM"}, "Status": "Active"},
+		}},
+	}}
+	result := runModelRepository(t, exec, ModelRepositoryRequest{Query: "LLM模型", Mode: platform.ListModeFiltered})
+
+	require.Equal(t, platform.ReadStatusHandled, result.Status)
+	assert.Equal(t, []string{"LLM"}, exec.calls[1].args["Tags"])
+	assert.NotContains(t, exec.calls[1].args, "Keyword")
+	assert.Contains(t, result.Reply, "Qwen3-8B")
+	assert.NotContains(t, result.Reply, "未找到匹配")
 }
 
 func TestModelRepositoryRender_CapsDefaultOutputAtTen(t *testing.T) {

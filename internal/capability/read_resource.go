@@ -2,6 +2,7 @@ package capability
 
 import (
 	"context"
+	"strconv"
 
 	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/entity"
@@ -179,12 +180,11 @@ func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime
 		envMeta.Truncated = isTruncated
 	}
 	if len(instances) == 0 {
-		// Query succeeded but nothing is present/matched — a structured Empty read.
-		// The Agent pairs this with CanAssertAbsence to state "you have none".
+		// No matches do not change the account total reported before filtering.
 		env := readprojection.BuildResourceEnvelopeWithMetaAndZoneCatalog(nil, envMeta, rt.ZoneCatalog)
 		if len(ids) == 0 {
 			env.Facts = append(env.Facts, envelope.Fact{
-				Key: "account_instance_count", Label: "当前账号实例数", Value: "0", Source: envelope.FactSourceAPI,
+				Key: "account_instance_count", Label: "当前账号实例数", Value: strconv.Itoa(totalCount), Source: envelope.FactSourceAPI,
 			})
 		} else {
 			for _, id := range ids {

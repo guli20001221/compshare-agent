@@ -65,7 +65,7 @@ func stepQuerySourceInstanceForCustomImage() Step {
 				if sourceCustomImageUnsupportedWithoutGPU(result) {
 					return CheckFailed("该虚机当前处于 2C/4GB 无卡模式；上游仅允许 8C/16GB 无卡虚机制作自制镜像。请先恢复有卡配置或切换到 8C/16GB 无卡档位。")
 				}
-				if sourceCustomImageRequiresRunning(result) && state != "Running" {
+				if sourceCustomImageIsContainer(result) && state != "Running" {
 					return CheckFailed("容器来源实例创建自制镜像需要先开机，请启动实例后再创建。")
 				}
 				return CheckPassed()
@@ -172,11 +172,9 @@ func stepGetCustomImageCreateProgress() Step {
 		Name: "查询镜像制作状态",
 		Type: StepToolCall,
 		ToolFunc: func(wfCtx *Context) string {
-			// Pod custom images are backed by UHub.  Although the platform routes
-			// GetCompShareImageCreateProgress through the shared image handler, that
-			// handler explicitly rejects UHub-backed images.  Read the just-created
-			// catalog row instead; VM images keep the percentage-progress API.
-			if isPodInstanceResult(wfCtx.Result("查询源实例")) {
+			// Container images from both Pod and UHost are UHub-backed; the VM
+			// percentage-progress endpoint rejects them. Use catalog status.
+			if sourceCustomImageIsContainer(wfCtx.Result("查询源实例")) {
 				return "DescribeCompShareCustomImages"
 			}
 			return "GetCompShareImageCreateProgress"
@@ -187,7 +185,7 @@ func stepGetCustomImageCreateProgress() Step {
 			if imageID == "" {
 				return nil, fmt.Errorf("CompShareImageId is empty; skip creation-status query")
 			}
-			if isPodInstanceResult(wfCtx.Result("查询源实例")) {
+			if sourceCustomImageIsContainer(wfCtx.Result("查询源实例")) {
 				return map[string]any{
 					"CompShareImageId": imageID,
 					"Limit":            1,
@@ -207,7 +205,7 @@ func customImageResultData(wfCtx *Context) map[string]any {
 		out["CompShareImageId"] = imageID
 	}
 	if readback := wfCtx.Result("查询镜像制作状态"); len(readback) > 0 {
-		if isPodInstanceResult(wfCtx.Result("查询源实例")) {
+		if sourceCustomImageIsContainer(wfCtx.Result("查询源实例")) {
 			if status := customImageCatalogStatus(readback, imageID); status != "" {
 				out["Status"] = status
 			}
@@ -254,7 +252,7 @@ func sourceCustomImagePlacement(result, supportZones map[string]any) (region, zo
 	return region, zone, err == nil
 }
 
-func sourceCustomImageRequiresRunning(result map[string]any) bool {
+func sourceCustomImageIsContainer(result map[string]any) bool {
 	return isPodInstanceResult(result) || isContainerInstanceResult(result)
 }
 

@@ -50,7 +50,7 @@ func modelRepositoryReadSpec() ReadCapabilitySpec[ModelRepositoryRequest, ModelR
 			"tags":           arrayParam(stringParam()),
 			"categories":     arrayParam(stringParam()),
 			"status":         enumParam("Unspecified", "Active", "Offline", "Draft"),
-			"replica_status": enumParam("Unspecified", "Healthy", "Offline", "Incomplete", "Missing").described("副本状态；指定 zone 时按该目标区精确筛选，不指定 zone 时表示任一可用区存在该状态。"),
+			"replica_status": enumParam("Unspecified", "Healthy", "Offline", "Incomplete", "Missing").described("副本状态；指定 zone 时按该区筛选。未指定 zone 时 Healthy 表示上游未发现任何区的副本问题，其余状态表示任一区存在该问题。"),
 			"zone":           stringParam().described("仅在用户明确指定目标可用区，或当前实例事实已给出可用区时填写实时目录中的 Zone；不要猜测。"),
 			"mode":           enumParam(platform.ListModeValues()...),
 			"offset":         integerParam(0).described("分页偏移，默认 0；继续浏览时使用结果给出的下一页偏移。"),
@@ -222,7 +222,7 @@ func matchModelRepositoryTags(userText string, tags []string) []string {
 func renderModelRepositoryReply(modelRaw, tagRaw map[string]any, req ModelRepositoryRequest, zoneID uint32, zoneLabel string) (string, bool) {
 	tags := uniqueStrings(stringSliceAt(tagRaw, "Tags"))
 	models := mapSliceAt(modelRaw, "Models")
-	filtered := filterModelRepositoryModels(models, req.Query, req.Mode)
+	filtered := modelRepositoryRows(models)
 	filtered = filterModelRepositoryTargetReplica(filtered, zoneID, req.ReplicaStatus)
 	sections := []string{}
 	if total, known := numericField(modelRaw, "TotalCount"); known {
@@ -299,7 +299,9 @@ func modelRepositoryGuidanceFooter(found bool, targetZone ...bool) string {
 	}, "\n")
 }
 
-func filterModelRepositoryModels(models []any, query string, mode platform.ListMode) []map[string]any {
+// Query and tags have already been applied by the upstream catalog. Local
+// filtering only handles the legacy Deleted marker and target-zone replicas.
+func modelRepositoryRows(models []any) []map[string]any {
 	out := make([]map[string]any, 0, len(models))
 	for _, item := range models {
 		entry, ok := item.(map[string]any)
@@ -311,27 +313,7 @@ func filterModelRepositoryModels(models []any, query string, mode platform.ListM
 		}
 		out = append(out, entry)
 	}
-	if len(out) == 0 || mode == platform.ListModeAll {
-		return out
-	}
-	query = strings.TrimSpace(query)
-	if query == "" {
-		return out
-	}
-	filtered := make([]map[string]any, 0, len(out))
-	for _, entry := range out {
-		searchable := make(map[string]any, len(entry)+1)
-		for key, value := range entry {
-			searchable[key] = value
-		}
-		searchable["TagList"] = strings.Join(uniqueStrings(stringSliceAt(entry, "Tags")), " ")
-		if entryMatchesSlotQuery(searchable, query, []string{
-			"ModelID", "Name", "RepoName", "Source", "Category", "CanonicalPath", "Path", "Tag", "TagList",
-		}) {
-			filtered = append(filtered, entry)
-		}
-	}
-	return filtered
+	return out
 }
 
 func filterModelRepositoryTargetReplica(models []map[string]any, zoneID uint32, requested string) []map[string]any {
