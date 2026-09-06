@@ -267,6 +267,8 @@ func internalOnlyAllowedParams(action string) []string {
 // capabilities and workflows. They are never model parameters.
 func backendOnlyAllowedParams(action string) []string {
 	switch action {
+	case "CheckCompShareNetOptimizer":
+		return []string{"Region"}
 	case "DescribeCompShareInstance":
 		return []string{"IncludeShareBandwidth"}
 	case "CheckCompShareResourceCapacity":

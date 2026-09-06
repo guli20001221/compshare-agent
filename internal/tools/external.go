@@ -411,7 +411,7 @@ func httpStatusError(statusCode int, body []byte) error {
 
 func usesJSONBody(action string) bool {
 	switch action {
-	case "GetCompShareInstanceMonitor", "SyncCompShareCustomImage":
+	case "GetCompShareInstanceMonitor", "SyncCompShareCustomImage", "DescribeModelRepositoryModels":
 		return true
 	default:
 		return false

@@ -113,6 +113,18 @@ func TestDescribeCompshareDiskPreservesExplicitAllRegionScope(t *testing.T) {
 	assert.Equal(t, "", inner.args[0]["Region"])
 }
 
+func TestNetAcceleratorPreservesInternalAllRegionScope(t *testing.T) {
+	inner := &spyExecutor{}
+	_, err := NewSafeToolExecutor(inner).ExecuteSafe(context.Background(), SafeToolRequest{
+		Action: "CheckCompShareNetOptimizer",
+		Args:   map[string]any{"Region": ""},
+		Origin: OriginDiagnosisInternal,
+	})
+	require.NoError(t, err)
+	require.Len(t, inner.args, 1)
+	assert.Equal(t, map[string]any{"Region": ""}, inner.args[0])
+}
+
 func TestDescribeCommunityImagesAllowsImageIDFilter(t *testing.T) {
 	safe := NewSafeToolExecutor(&spyExecutor{})
 

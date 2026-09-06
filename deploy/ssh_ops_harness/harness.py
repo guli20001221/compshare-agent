@@ -90,14 +90,14 @@ DISALLOWED_TOOLS = [
 ]
 
 # Keep the CLI's native reasoning prompt. This append describes only the remote
-# execution environment and the response envelope consumed by this product.
+# execution environment and how to report the observed outcome.
 SYSTEM_PROMPT_APPEND = """Work on the remote instance bound to the ssh_ops tools. The CLI's local
 working directory and OS belong to the runner, not the target. The prompt contains the user
 conversation and platform facts; platform knowledge tools are available. Guest-local repair is
 authorized without per-command confirmation; the tools report their execution limits.
 
-Begin the final response with 已修复, 部分修复, 未修复, 无需修复 or 已核实. Summarize the observed
-result, actual changes and remaining unverified work in the user's language."""
+Lead with the observed outcome of the user's task. A diagnosis with no changes is not a repair.
+Summarize actual changes and remaining unverified work in the user's language."""
 
 TOOL_DESC = """Execute a shell command on the bound remote instance and return stdout, stderr and
 exit status. This is a fresh, non-interactive SSH session with a 25 seconds foreground limit.
