@@ -75,6 +75,9 @@ The model chooses read capabilities and knowledge retrieval in the loop.
 Production knowledge retrieval always uses the remote MCP configured at
 `agent.retrieval.mcp_url`. The in-process retriever is for tests and offline
 evaluation only.
+Each `SearchKnowledge` executes the main Agent's query once, without an internal
+planning model call. The Agent can search again within the four-call turn budget;
+weak-candidate inspection, `ReadChunk`, and citation handling remain separate.
 
 There is no keyword topic router or lexical jailbreak/off-topic pre-block in
 front of the Agent. Scope belongs in the system prompt. Natural-language support

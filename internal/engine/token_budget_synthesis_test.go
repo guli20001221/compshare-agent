@@ -33,7 +33,6 @@ func TestChat_TokenBudgetRecoveryAppliesDeliveryBoundary(t *testing.T) {
 			ToolCalls: []openai.ToolCall{toolCall("sk", "SearchKnowledge", `{"query":"vllm 显存不足"}`)},
 			Usage:     llm.TokenUsage{TotalTokens: 60000},
 		},
-		plannerEcho("vllm 显存不足"),
 		vllmGroundedRepairResponse(),
 	}}
 	eng := NewWithDeps(model, &mockExecutor{}, nil)

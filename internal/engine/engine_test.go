@@ -1861,7 +1861,6 @@ func TestChat_InstanceAccessDiagnosisCanUseKnowledgeWithoutRewritingFacts(t *tes
 		{ToolCalls: []openai.ToolCall{
 			toolCall("knowledge", "SearchKnowledge", `{"query":"Pod 添加 TCP 端口映射的方法"}`),
 		}},
-		plannerEcho("Pod 添加 TCP 端口映射的方法"),
 		{Content: "诊断结果：Pod 当前云侧端口配置中没有登记 TCP 8188。\n\n处理建议：按平台文档添加 TCP 8188 映射，然后确认应用监听该端口。[[" + chunkID + "]]"},
 	}}
 	chunk := knowledge.KBChunk{
@@ -1880,11 +1879,8 @@ func TestChat_InstanceAccessDiagnosisCanUseKnowledgeWithoutRewritingFacts(t *tes
 
 	reply, err := eng.Chat(context.Background(), "cpod-diag-001 的 8188 端口打不开，怎么修", noopStep)
 	require.NoError(t, err)
-	// Three Agent turns — diagnose, retrieve guidance, answer — plus the internal
-	// query planner that the SearchKnowledge runs through. The planner is control,
-	// not an Agent turn, so it is named here rather than folded into the count.
-	require.Len(t, mock.calls, 4, "three Agent turns plus one internal planner call")
-	require.Len(t, retriever.calls, 1, "an echoing planner leaves the retrieval the Agent asked for unchanged")
+	require.Len(t, mock.calls, 3, "diagnose, retrieve guidance, answer — all chosen by the central Agent")
+	require.Len(t, retriever.calls, 1, "retrieve the main Agent's query without an internal rewrite")
 	assert.Contains(t, reply, "Pod 当前云侧端口配置中没有登记 TCP 8188")
 	assert.Contains(t, reply, "按平台文档添加 TCP 8188 映射")
 	assert.NotContains(t, reply, "防火墙拒绝")

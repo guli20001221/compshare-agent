@@ -40,10 +40,9 @@ const (
 	maxReActRounds = 20
 	// Expensive reads are separately bounded because one turn may contain many tool results.
 	maxReadExpensiveCallsPerTurn = 30
-	// Search calls and their query variants have independent budgets. At the call cap the
+	// Each SearchKnowledge call makes one retrieval. At the call cap the
 	// tool is withdrawn so a corpus gap cannot become an unbounded re-query loop.
 	maxSearchKnowledgeCallsPerTurn = 4
-	maxRetrievalQueriesPerTurn     = 8
 )
 
 const mutatingToolsDisabledMessage = "当前阶段不直接执行开机、关机、重启、重置密码、创建实例等变更操作。我可以告诉你在控制台怎么操作，具体执行请到控制台完成。"
@@ -252,18 +251,13 @@ type Engine struct {
 	// SearchKnowledge this turn. The ReAct loop withdraws the capability at
 	// maxSearchKnowledgeCallsPerTurn, preventing search thrash.
 	searchKnowledgeCallsThisTurn int
-	// searchKnowledgeQueriesThisTurn counts actual retrievals, including the
-	// bounded query-plan fan-out. It is intentionally separate from the Agent's
-	// call budget so one rewrite cannot hide the availability of later searches.
+	// searchKnowledgeQueriesThisTurn numbers actual retrieval activities. Calls
+	// made with no query/retriever consume the call budget but produce no activity.
 	searchKnowledgeQueriesThisTurn int
 	// searchKnowledgeLedgerThisTurn is the per-turn ChunkID-keyed, deduped
 	// evidence ledger: the union of every SearchKnowledge call's items this turn.
 	// The grounded-answer validator accepts only ChunkIDs present here.
-	searchKnowledgeLedgerThisTurn knowledge.EvidenceLedger
-	// resolvedKnowledgeQuestionThisTurn is the standalone answer target produced
-	// by the query planner. Retrieval queries may be narrower variants, but answer
-	// verification remains anchored to this one user problem.
-	resolvedKnowledgeQuestionThisTurn   string
+	searchKnowledgeLedgerThisTurn       knowledge.EvidenceLedger
 	searchKnowledgeActivitiesThisTurn   []observability.RetrievalActivity
 	searchKnowledgeActivityIDsByChunkID map[string][]string
 	// knowledgeQAAgentLoopThisTurn records that SearchKnowledge ran because the
@@ -1281,7 +1275,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.searchKnowledgeCallsThisTurn = 0
 	e.searchKnowledgeQueriesThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
-	e.resolvedKnowledgeQuestionThisTurn = ""
 	e.searchKnowledgeActivitiesThisTurn = nil
 	e.searchKnowledgeActivityIDsByChunkID = nil
 	e.verifiedInstanceEvidenceThisTurn = map[string]struct{}{}
@@ -2094,8 +2087,7 @@ func strongKnowledgeBodyEligibleIDs(
 			inLedger[id] = struct{}{}
 		}
 	}
-	seen := make(map[string]struct{}, len(inLedger))
-	ids := make([]string, 0, len(inLedger))
+	eligible := make(map[string]struct{}, len(inLedger))
 	for _, hit := range hits {
 		id := strings.TrimSpace(hit.Chunk.ChunkID)
 		if !hit.Kept || id == "" || hit.Score < floor {
@@ -2104,16 +2096,8 @@ func strongKnowledgeBodyEligibleIDs(
 		if _, ok := inLedger[id]; !ok {
 			continue
 		}
-		if _, duplicate := seen[id]; duplicate {
-			continue
-		}
-		seen[id] = struct{}{}
-		ids = append(ids, id)
+		eligible[id] = struct{}{}
 	}
-	return ids
-}
-
-func eligibleKnowledgeIDsInLedgerOrder(ledger knowledge.EvidenceLedger, eligible map[string]struct{}) []string {
 	ids := make([]string, 0, len(eligible))
 	for _, item := range ledger.Items {
 		id := strings.TrimSpace(item.ChunkID)
@@ -2478,100 +2462,50 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 	if query == "" {
 		query = hint
 	}
-	plan := fallbackKnowledgeQueryPlan(query)
-	if e.resolvedKnowledgeQuestionThisTurn == "" {
-		plan = e.planKnowledgeQuery(ctx, query)
-		e.resolvedKnowledgeQuestionThisTurn = plan.AnswerQuestion
-	}
-	resolvedQuestion := e.resolvedKnowledgeQuestionThisTurn
-	if resolvedQuestion == "" {
-		resolvedQuestion = query
-	}
-	if len(plan.SearchQueries) == 0 && query != "" {
-		plan.SearchQueries = []string{query}
-	}
+	answerQuestion := e.knowledgeAnswerQuestion(query)
 	knowledgeSource := e.knowledgeToolSource()
 	onStep(StepEvent{
-		Type:   StepToolCall,
-		Action: "SearchKnowledge",
-		Source: knowledgeSource,
-		Args: map[string]any{
-			"answer_question": resolvedQuestion,
-			"queries":         append([]string(nil), plan.SearchQueries...),
-		},
+		Type: StepToolCall, Action: "SearchKnowledge", Source: knowledgeSource,
+		Args: map[string]any{"answer_question": answerQuestion, "queries": []string{query}},
 	})
 	if e.searchKnowledgeCallsThisTurn >= maxSearchKnowledgeCallsPerTurn {
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: knowledgeSource, Message: "本轮检索次数已达上限"})
-		return `{"EvidenceLedger":{"items":[]},"empty":true,"search_limit_reached":true}`
+		return "{\"EvidenceLedger\":{\"items\":[]},\"empty\":true,\"search_limit_reached\":true}"
 	}
 	e.searchKnowledgeCallsThisTurn++
-	if e.knowledgeRetriever == nil || len(plan.SearchQueries) == 0 {
+	if e.knowledgeRetriever == nil || query == "" {
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: knowledgeSource, Message: "知识库不可用"})
-		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: resolvedQuestion}, "", nil)
+		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: answerQuestion}, "", nil)
 	}
 
-	combined := knowledge.EvidenceLedger{Query: resolvedQuestion}
-	executedQueries := 0
-	droppedQueries := 0
-	unavailableQueries := 0
-	successfulQueries := 0
-	// One call may fan out into several queries. Report "all" only when every
-	// non-empty result was rejected by the relevance floor.
-	floorDroppedCandidates := false
-	nonFlooredCandidates := false
-	belowFloorCandidateGroups := [][]belowFloorKnowledgeCandidate{}
-	strongBodyEligible := map[string]struct{}{}
-	for _, plannedQuery := range plan.SearchQueries {
-		if e.searchKnowledgeQueriesThisTurn >= maxRetrievalQueriesPerTurn {
-			droppedQueries = len(plan.SearchQueries) - executedQueries
-			break
-		}
-		e.searchKnowledgeQueriesThisTurn++
-		executedQueries++
-		activityID := fmt.Sprintf("search_%d", e.searchKnowledgeQueriesThisTurn)
-		retrieved := e.knowledgeRetriever.RetrieveContext(ctx, plannedQuery, hint)
-		e.searchKnowledgeRanThisTurn = true
-		if retrieved.Unavailable {
-			unavailableQueries++
-			e.recordSearchKnowledgeActivity(observability.RetrievalActivity{ID: activityID, Query: plannedQuery}, nil)
-			e.emitSearchKnowledgeRetrievalTrace(resolvedQuestion, plannedQuery, retrieved, nil, false, activityID)
-			continue
-		}
-		successfulQueries++
-		rawHits := retrieved.HitItems
-		hits := rawHits
-		floorDroppedAll := false
-		if isWeakEvidence(rawHits, retrieved.HybridMode, retrieved.RerankerMode != "") {
-			hits = nil
-			floorDroppedAll = len(rawHits) > 0
-		}
-		if floorDroppedAll {
-			floorDroppedCandidates = true
-			belowFloorCandidateGroups = append(belowFloorCandidateGroups,
-				belowFloorKnowledgeCandidates(rawHits, retrieved.SearchID),
-			)
-		} else if len(rawHits) > 0 {
-			nonFlooredCandidates = true
-		}
-		ledger := knowledge.BuildSubstantiveEvidenceLedger(resolvedQuestion, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
-		for _, id := range strongKnowledgeBodyEligibleIDs(rawHits, ledger, retrieved.HybridMode, retrieved.RerankerMode != "") {
-			strongBodyEligible[id] = struct{}{}
-		}
-		combined = knowledge.MergeEvidenceLedgers(combined, ledger, maxKnowledgePlanQueries*knowledge.DefaultEvidenceLedgerMaxItems)
-		e.recordSearchKnowledgeCapabilities(retrieved.SearchID, ledger)
-		e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
-		e.recordSearchKnowledgeActivity(observability.RetrievalActivity{
-			ID:              activityID,
-			Query:           plannedQuery,
-			Hits:            len(retrieved.Hits),
-			FloorDroppedAll: floorDroppedAll,
-		}, hits)
-		e.emitSearchKnowledgeRetrievalTrace(resolvedQuestion, plannedQuery, retrieved, rawHits, floorDroppedAll, activityID)
+	e.searchKnowledgeQueriesThisTurn++
+	activityID := fmt.Sprintf("search_%d", e.searchKnowledgeQueriesThisTurn)
+	retrieved := e.knowledgeRetriever.RetrieveContext(ctx, query, hint)
+	e.searchKnowledgeRanThisTurn = true
+	rawHits := retrieved.HitItems
+	if retrieved.Unavailable {
+		rawHits = nil
 	}
+	hits := rawHits
+	floorDroppedAll := isWeakEvidence(rawHits, retrieved.HybridMode, retrieved.RerankerMode != "") && len(rawHits) > 0
+	if floorDroppedAll {
+		hits = nil
+	}
+	ledger := knowledge.BuildSubstantiveEvidenceLedger(answerQuestion, hits, knowledge.DefaultEvidenceLedgerMaxItems, 0)
+	e.recordSearchKnowledgeCapabilities(retrieved.SearchID, ledger)
+	e.searchKnowledgeHitsThisTurn = append(e.searchKnowledgeHitsThisTurn, hits...)
+	activity := observability.RetrievalActivity{ID: activityID, Query: query, FloorDroppedAll: floorDroppedAll}
+	if !retrieved.Unavailable {
+		activity.Hits = len(retrieved.Hits)
+	}
+	e.recordSearchKnowledgeActivity(activity, hits)
+	e.emitSearchKnowledgeRetrievalTrace(answerQuestion, query, retrieved, rawHits, floorDroppedAll, activityID)
+
 	resultMeta := map[string]any{}
 	var autoExpandedIDs []string
-	if eligibleIDs := eligibleKnowledgeIDsInLedgerOrder(combined, strongBodyEligible); len(eligibleIDs) > 0 {
-		expanded := e.autoMaterializeKnowledgeChunks(ctx, &combined, eligibleIDs)
+	strongBodyIDs := strongKnowledgeBodyEligibleIDs(rawHits, ledger, retrieved.HybridMode, retrieved.RerankerMode != "")
+	if len(strongBodyIDs) > 0 {
+		expanded := e.autoMaterializeKnowledgeChunks(ctx, &ledger, strongBodyIDs)
 		autoExpandedIDs = expanded.ReadIDs
 		if len(expanded.ReadIDs) > 0 {
 			resultMeta["auto_expanded_chunk_ids"] = expanded.ReadIDs
@@ -2583,46 +2517,32 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 			resultMeta["auto_expansion_unavailable"] = true
 		}
 	}
-	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, combined, searchKnowledgeLedgerTurnMaxItems)
-	overwriteEvidenceSnippets(&e.searchKnowledgeLedgerThisTurn, combined, autoExpandedIDs)
+	e.searchKnowledgeLedgerThisTurn = knowledge.MergeEvidenceLedgers(e.searchKnowledgeLedgerThisTurn, ledger, searchKnowledgeLedgerTurnMaxItems)
+	overwriteEvidenceSnippets(&e.searchKnowledgeLedgerThisTurn, ledger, autoExpandedIDs)
 	message := "搜索完成"
-	if successfulQueries == 0 && unavailableQueries > 0 {
+	unavailableQueries := 0
+	if retrieved.Unavailable {
 		message = "知识库服务暂时不可用"
+		unavailableQueries = 1
 	}
 	onStep(StepEvent{
-		Type:    StepToolResult,
-		Action:  "SearchKnowledge",
-		Source:  knowledgeSource,
-		Message: message,
-		TraceResult: map[string]any{
-			"items":               len(combined.Items),
-			"queries":             executedQueries,
-			"planned_queries":     len(plan.SearchQueries),
-			"dropped_queries":     droppedQueries,
-			"unavailable_queries": unavailableQueries,
-		},
+		Type: StepToolResult, Action: "SearchKnowledge", Source: knowledgeSource, Message: message,
+		TraceResult: map[string]any{"items": len(ledger.Items), "queries": 1, "unavailable_queries": unavailableQueries},
 	})
-	if successfulQueries == 0 && unavailableQueries > 0 {
+	if retrieved.Unavailable {
 		resultMeta["knowledge_unavailable"] = true
 		resultMeta["error"] = "知识库服务暂时不可用，请稍后重试。"
-		return searchKnowledgeResultJSON(combined, "", resultMeta)
+		return searchKnowledgeResultJSON(ledger, "", resultMeta)
 	}
-	if unavailableQueries > 0 {
-		resultMeta["knowledge_unavailable"] = true
-		resultMeta["partial"] = true
-		resultMeta["unavailable_queries"] = unavailableQueries
-		resultMeta["error"] = "知识库部分检索暂时不可用，当前证据可能不完整。"
-	}
-	if len(combined.Items) == 0 && floorDroppedCandidates && !nonFlooredCandidates {
-		belowFloorCandidates := roundRobinBelowFloorKnowledgeCandidates(belowFloorCandidateGroups)
-		e.recordBelowFloorKnowledgeCapabilities(belowFloorCandidates)
+	if len(ledger.Items) == 0 && floorDroppedAll {
+		candidates := belowFloorKnowledgeCandidates(rawHits, retrieved.SearchID)
+		e.recordBelowFloorKnowledgeCapabilities(candidates)
 		resultMeta["floor_dropped_all"] = true
-		resultMeta["below_floor_candidates"] = belowFloorCandidates
+		resultMeta["below_floor_candidates"] = candidates
 		resultMeta["note"] = "候选内容均低于相关性门槛，尚未形成可引用证据。可先用 ReadChunk 读取待核验候选全文，或改写后重新检索；" +
 			"读取前不得引用；读取后仍按低置信证据使用，必要时说明不确定性，不得当成高置信证据。"
-		return searchKnowledgeResultJSON(combined, "", resultMeta)
 	}
-	return searchKnowledgeResultJSON(combined, "", resultMeta)
+	return searchKnowledgeResultJSON(ledger, "", resultMeta)
 }
 
 const maxBelowFloorKnowledgeCandidates = 3
@@ -2655,50 +2575,11 @@ func belowFloorKnowledgeCandidates(
 			Strength: "below_floor",
 			searchID: strings.TrimSpace(searchID),
 		})
-	}
-	return candidates
-}
-
-// Scores from separate queries are not necessarily comparable: one query can
-// use a bounded reranker while another falls back to unbounded BM25. Preserve
-// each query's own ranking and give every query's first candidate a chance
-// before considering its second candidate.
-func roundRobinBelowFloorKnowledgeCandidates(groups [][]belowFloorKnowledgeCandidate) []belowFloorKnowledgeCandidate {
-	selected := make([]belowFloorKnowledgeCandidate, 0, maxBelowFloorKnowledgeCandidates)
-	seen := make(map[string]struct{}, maxBelowFloorKnowledgeCandidates)
-	searchIDs := make(map[string]string)
-	for _, group := range groups {
-		for _, candidate := range group {
-			if searchIDs[candidate.ChunkID] == "" && candidate.searchID != "" {
-				searchIDs[candidate.ChunkID] = candidate.searchID
-			}
-		}
-	}
-	for rank := 0; len(selected) < maxBelowFloorKnowledgeCandidates; rank++ {
-		anyAtRank := false
-		for _, group := range groups {
-			if rank >= len(group) {
-				continue
-			}
-			anyAtRank = true
-			candidate := group[rank]
-			if _, exists := seen[candidate.ChunkID]; exists {
-				continue
-			}
-			if candidate.searchID == "" {
-				candidate.searchID = searchIDs[candidate.ChunkID]
-			}
-			seen[candidate.ChunkID] = struct{}{}
-			selected = append(selected, candidate)
-			if len(selected) == maxBelowFloorKnowledgeCandidates {
-				break
-			}
-		}
-		if !anyAtRank {
+		if len(candidates) == maxBelowFloorKnowledgeCandidates {
 			break
 		}
 	}
-	return selected
+	return candidates
 }
 
 func (e *Engine) recordBelowFloorKnowledgeCapabilities(candidates []belowFloorKnowledgeCandidate) {

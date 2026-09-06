@@ -2,108 +2,81 @@ package engine
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
+	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// planningEngineWithConversation builds an engine whose turn already carries
-// prior conversation, which is the ONLY condition under which
-// planKnowledgeQuery actually calls the model (see knowledge_query_planner.go:
-// it returns the single-query fallback when RecentConversation is empty).
-//
-// This is why the sibling budget test in search_knowledge_test.go cannot catch
-// the defect below: its fixture is a first turn, so every plan holds exactly one
-// query and the per-query counter is indistinguishable from a per-call counter.
-func planningEngineWithConversation(t *testing.T, planJSON string, results []knowledge.RetrievalResult) (*Engine, *scriptedKnowledgeRetriever) {
-	t.Helper()
-	retriever := &scriptedKnowledgeRetriever{results: results}
-	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: planJSON}}}, &mockExecutor{}, nil)
+func TestSearchKnowledgeMainAgentOwnsContextAndFollowUpQueries(t *testing.T) {
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("clipboard", "SearchKnowledge", `{"query":"Windows noVNC 剪贴板支持","context_hint":"浏览器连接 Windows 实例"}`)}},
+		{ToolCalls: []openai.ToolCall{toolCall("alternative", "SearchKnowledge", `{"query":"Windows 远程桌面客户端剪贴板"}`)}},
+		{Content: "浏览器和客户端的剪贴板支持分别见资料 [[browser-clipboard]] [[client-clipboard]]。"},
+	}}
+	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
+		{Enabled: true, HitItems: []knowledge.RetrievalHit{{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
+			ChunkID: "browser-clipboard", Title: "浏览器剪贴板", Content: "浏览器连接 Windows 实例的剪贴板说明。",
+		}}}},
+		{Enabled: true, HitItems: []knowledge.RetrievalHit{{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
+			ChunkID: "client-clipboard", Title: "客户端剪贴板", Content: "Windows 远程桌面客户端的剪贴板说明。",
+		}}}},
+	}}
+	eng := NewWithDeps(model, &mockExecutor{}, nil)
+	eng.InitWithContext("test")
 	eng.SetKnowledgeRetriever(retriever)
-	eng.knowledgeQAAgentLoopThisTurn = true
-	eng.turnContextViewThisTurn = AgentContext{
-		CurrentQuestion:    "关机后还收什么费用",
-		RecentConversation: []ConversationPair{{User: "4090 一个月多少钱", Assistant: "按量计费约 ..."}},
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "我是从浏览器打开的 Windows 实例"},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, Content: "你使用的是浏览器 noVNC 连接。"},
+	)
+
+	reply, err := eng.Chat(context.Background(), "粘贴呢", noopStep)
+	require.NoError(t, err)
+	require.Len(t, model.calls, 3, "only the main Agent searches, observes results and answers; no internal planning call")
+	assert.Contains(t, fmt.Sprint(model.calls[0].Messages), "我是从浏览器打开的 Windows 实例")
+	assert.Contains(t, fmt.Sprint(model.calls[0].Messages), "粘贴呢")
+	assert.Contains(t, fmt.Sprint(model.calls[1].Messages), "browser-clipboard", "the next query is chosen with the first result in the canonical transcript")
+	assert.Equal(t, []knowledgeRetrievalCall{
+		{question: "Windows noVNC 剪贴板支持", productArea: "浏览器连接 Windows 实例"},
+		{question: "Windows 远程桌面客户端剪贴板"},
+	}, retriever.calls, "execute exactly the queries the main Agent selected")
+	assert.Equal(t, 2, eng.searchKnowledgeCallsThisTurn)
+	assert.Equal(t, "Windows noVNC 剪贴板支持", eng.searchKnowledgeLedgerThisTurn.Query)
+	assert.Len(t, eng.searchKnowledgeLedgerThisTurn.Items, 2)
+	assert.NotContains(t, reply, "[[", "citation display behavior remains unchanged")
+}
+
+func TestSearchKnowledgeMainAgentBudgetPreservesAllAllowedCalls(t *testing.T) {
+	queries := []string{"实例关机计费", "系统盘关机计费", "数据盘关机计费", "云存储关机计费"}
+	calls := make([]openai.ToolCall, 0, len(queries))
+	for _, query := range queries {
+		calls = append(calls, toolCall(query, "SearchKnowledge", `{"query":"`+query+`"}`))
 	}
-	eng.turnContextViewReady = true
-	return eng, retriever
-}
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: calls},
+		{Content: "以上查询已完成。"},
+	}}
+	retriever := &scriptedKnowledgeRetriever{}
+	eng := NewWithDeps(model, &mockExecutor{}, nil)
+	eng.InitWithContext("test")
+	eng.SetKnowledgeRetriever(retriever)
 
-func twoHitResults() []knowledge.RetrievalResult {
-	hit := func(id string) knowledge.RetrievalResult {
-		return knowledge.RetrievalResult{
-			Enabled:   true,
-			KBVersion: "kb.v1",
-			HitItems: []knowledge.RetrievalHit{{
-				Kept:  true,
-				Score: 90,
-				Chunk: knowledge.KBChunk{ChunkID: id, KBVersion: "kb.v1", Title: id, Content: "evidence " + id},
-			}},
-		}
+	_, err := eng.Chat(context.Background(), "实例关机后，各项资源还会扣费吗", noopStep)
+	require.NoError(t, err)
+	require.Len(t, model.calls, 2)
+	require.Len(t, retriever.calls, maxSearchKnowledgeCallsPerTurn)
+	for i, query := range queries {
+		assert.Equal(t, query, retriever.calls[i].question)
 	}
-	return []knowledge.RetrievalResult{hit("chunk-1"), hit("chunk-2"), hit("chunk-3"), hit("chunk-4")}
-}
+	assert.Contains(t, toolNames(model.calls[0].Tools), "SearchKnowledge")
+	assert.NotContains(t, toolNames(model.calls[1].Tools), "SearchKnowledge", "the exhausted tool is removed from the next main Agent request")
+	assert.Equal(t, maxSearchKnowledgeCallsPerTurn, eng.searchKnowledgeQueriesThisTurn)
 
-// TestSearchKnowledgeBudgetCountsCallsNotPlannedQueries pins the contract that
-// maxSearchKnowledgeCallsPerTurn already documents in its own comment:
-//
-//	"One resolved query is normally sufficient; a second permits a genuine
-//	 follow-up angle without allowing search thrash."
-//
-// The budget exists to stop the agent from re-searching round after round. It
-// is NOT a budget on how many phrasings one resolved question fans out into —
-// that fan-out happens inside a single call, costs one round, and is exactly
-// what the planner was built to produce.
-//
-// Conflating the two makes the documented follow-up hop unreachable: a planner
-// that emits two queries spends the whole turn budget on the FIRST call, and
-// the engine then withdraws SearchKnowledge from the tool window (engine.go,
-// "Once the bounded search budget is exhausted, remove the capability"). The
-// agent loses multi-hop retrieval precisely on the multi-turn questions the
-// planner was added to serve.
-func TestSearchKnowledgeBudgetCountsCallsNotPlannedQueries(t *testing.T) {
-	eng, retriever := planningEngineWithConversation(t,
-		`{"answer_question":"实例关机后还会产生哪些费用","search_queries":["关机后计费规则","数据盘关机是否计费"]}`,
-		twoHitResults())
-
-	first := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "关机后还收什么"}, noopStep)
-
-	// The fan-out itself is desired: both planned angles were retrieved, plus the
-	// Agent's own query, which the planner refines but never replaces.
-	require.Len(t, retriever.calls, 3, "both planned queries and the Agent's own must be retrieved inside the one call")
-	assert.Equal(t, "关机后还收什么", retriever.calls[2].question)
-	assert.NotContains(t, first, `"search_limit_reached":true`)
-
-	// ...but it is ONE SearchKnowledge call, so it must cost ONE unit of the
-	// per-turn call budget, leaving the documented follow-up hop available.
-	assert.Equal(t, 1, eng.searchKnowledgeCallsThisTurn,
-		"one SearchKnowledge call must consume one unit of the per-turn call budget, not one per planned query")
-
-	// The condition the ReAct loop uses to withdraw the tool must NOT be true
-	// after a single call, or the agent can never search a second time.
-	assert.Less(t, eng.searchKnowledgeCallsThisTurn, maxSearchKnowledgeCallsPerTurn,
-		"a single call must not exhaust the turn budget; the follow-up hop is part of the documented contract")
-
-	second := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "数据盘呢"}, noopStep)
-	assert.NotContains(t, second, `"search_limit_reached":true`,
-		"the second hop is the whole point of a budget of two")
-}
-
-// TestSearchKnowledgePlannedQueriesAreNeverSilentlyDropped covers the smaller
-// half of the same defect: the planner prompt asks for up to
-// maxKnowledgePlanQueries queries, but the per-query budget truncates the plan
-// mid-loop, so a planned angle is dropped with nothing surfaced to the model or
-// the trace beyond a reduced count.
-func TestSearchKnowledgePlannedQueriesAreNeverSilentlyDropped(t *testing.T) {
-	eng, retriever := planningEngineWithConversation(t,
-		`{"answer_question":"重装系统会影响什么","search_queries":["重装系统盘会不会清空","重装数据盘是否保留","重装后需要重装驱动吗"]}`,
-		twoHitResults())
-
-	_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "重装会影响什么"}, noopStep)
-
-	require.Len(t, retriever.calls, 3,
-		"every query the planner emitted must be retrieved; a plan that is generated and then truncated is a contract the code does not keep")
+	extra := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "再检索一次"}, noopStep)
+	assert.Contains(t, extra, `"search_limit_reached":true`)
+	assert.Len(t, retriever.calls, maxSearchKnowledgeCallsPerTurn, "a late tool call does not bypass the same budget")
 }

@@ -37,7 +37,6 @@ func TestDirectAnswerRetryLetsTheCentralAgentChooseKnowledge(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{Content: "未查资料就直接回答。"},
 		{ToolCalls: []openai.ToolCall{toolCall("search", "SearchKnowledge", `{"query":"无卡模式启动是什么意思"}`)}},
-		{Content: `{"answer_question":"无卡模式启动是什么意思","search_queries":["无卡模式启动规则"]}`},
 		{Content: "无卡模式启动时不挂载 GPU。[[chunk-no-gpu]]"},
 	}}
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
@@ -61,8 +60,8 @@ func TestDirectAnswerRetryLetsTheCentralAgentChooseKnowledge(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, reply, "不挂载 GPU")
 	assert.NotContains(t, reply, "未查资料")
-	require.Len(t, retriever.calls, 2, "the existing planner keeps its written query plus the user's original wording")
-	require.Len(t, model.calls, 4, "retry, tool selection, query plan, and grounded answer stay in one Agent loop")
+	require.Len(t, retriever.calls, 1, "the main Agent's chosen query is retrieved once")
+	require.Len(t, model.calls, 3, "retry, tool selection, and grounded answer stay in one Agent loop")
 	assert.Contains(t, renderTestMessages(model.calls[1].Messages), directAnswerToolRetryInstruction)
 	assert.Contains(t, toolNames(model.calls[1].Tools), "SearchKnowledge")
 	assert.Equal(t, observability.DirectAnswerRetryOutcomeToolSelected, completion.DirectAnswerRetryOutcome)

@@ -208,7 +208,6 @@ func TestReadChunk_LateSearchRemainsReadableUntilCallBudgetExhausts(t *testing.T
 	}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("search-initial", "SearchKnowledge", `{"query":"文档说明"}`)}},
-		{Content: `{"answer_question":"目标章节有什么说明？","search_queries":["文档说明"]}`},
 		{ToolCalls: []openai.ToolCall{
 			toolCall("read-a", "ReadChunk", `{"chunk_ids":["a"]}`),
 			toolCall("read-b", "ReadChunk", `{"chunk_ids":["b"]}`),
@@ -225,15 +224,15 @@ func TestReadChunk_LateSearchRemainsReadableUntilCallBudgetExhausts(t *testing.T
 
 	_, err := eng.ChatWithOptions(context.Background(), "目标章节有什么说明？", noopStep, ChatOptions{KnowledgeOnly: true})
 	require.NoError(t, err)
-	require.Len(t, mock.calls, 6, "five main-loop rounds plus the first-search planner")
+	require.Len(t, mock.calls, 5, "five main Agent rounds, without a hidden model call")
 	require.Len(t, retriever.calls, 2)
-	assert.Contains(t, toolNames(mock.calls[3].Tools), "ReadChunk", "two reads must not withdraw the tool before the later search")
-	assert.Contains(t, toolNames(mock.calls[4].Tools), "ReadChunk", "the later search's result must still be readable")
-	assert.NotContains(t, renderTestMessages(mock.calls[4].Messages), tail, "the target is not yet visible beyond its search snippet")
+	assert.Contains(t, toolNames(mock.calls[2].Tools), "ReadChunk", "two reads must not withdraw the tool before the later search")
+	assert.Contains(t, toolNames(mock.calls[3].Tools), "ReadChunk", "the later search's result must still be readable")
+	assert.NotContains(t, renderTestMessages(mock.calls[3].Messages), tail, "the target is not yet visible beyond its search snippet")
 	require.Len(t, retriever.reads, 4)
 	assert.Equal(t, remoteChunkRead{searchID: "late-search", chunkIDs: []string{"target"}}, retriever.reads[2])
 	var delivered map[string]any
-	for _, message := range mock.calls[5].Messages {
+	for _, message := range mock.calls[4].Messages {
 		if message.Role == openai.ChatMessageRoleTool && message.ToolCallID == "read-target" {
 			delivered = readChunkResult(t, message.Content)
 		}
@@ -244,7 +243,7 @@ func TestReadChunk_LateSearchRemainsReadableUntilCallBudgetExhausts(t *testing.T
 	assert.Equal(t, readChunkStatusRead, item["status"])
 	assert.Equal(t, target.Content, item["content"])
 	assert.Equal(t, 4, eng.readChunkCallsThisTurn)
-	assert.NotContains(t, toolNames(mock.calls[5].Tools), "ReadChunk", "the fourth read still exhausts the tool window")
+	assert.NotContains(t, toolNames(mock.calls[4].Tools), "ReadChunk", "the fourth read still exhausts the tool window")
 	out := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"target"}}, noopStep))
 	assert.Equal(t, true, out["read_limit_reached"])
 	assert.Len(t, retriever.reads, 4, "a fifth call must not reach the reader")
@@ -534,11 +533,11 @@ func TestReadChunkRemoteCanReviewBelowFloorCandidateAsLowEvidence(t *testing.T) 
 	assert.True(t, eng.searchKnowledgeHitsThisTurn[0].Chunk.ContentTruncated)
 }
 
-func TestBelowFloorCandidatesRoundRobinAcrossScoreScalesAndKeepReadCapabilities(t *testing.T) {
+func TestBelowFloorCandidatesStayReadableAcrossSeparateSearchScoreScales(t *testing.T) {
 	retriever := &remoteChunkStoreRetriever{
 		scriptedKnowledgeRetriever: scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
 			{
-				Enabled: true, HybridMode: "qwen3_rrf", RerankerMode: "qwen3-reranker-8b",
+				Enabled: true, SearchID: "search-exact", HybridMode: "qwen3_rrf", RerankerMode: "qwen3-reranker-8b",
 				HitItems: []knowledge.RetrievalHit{{
 					Kept: true, Score: 0.26,
 					Chunk: knowledge.KBChunk{ChunkID: "workbuddy-exact", Title: "WorkBuddy 精确配置"},
@@ -552,40 +551,31 @@ func TestBelowFloorCandidatesRoundRobinAcrossScoreScalesAndKeepReadCapabilities(
 					{Kept: true, Score: 48, Chunk: knowledge.KBChunk{ChunkID: "generic-3", Title: "通用候选三"}},
 				},
 			},
-			{
-				Enabled: true, SearchID: "search-exact", HybridMode: "qwen3_rrf", RerankerMode: "qwen3-reranker-8b",
-				HitItems: []knowledge.RetrievalHit{{
-					Kept: true, Score: 0.25,
-					Chunk: knowledge.KBChunk{ChunkID: "workbuddy-exact", Title: "WorkBuddy 精确配置"},
-				}},
-			},
 		}},
 		chunks: map[string]knowledge.KBChunk{
 			"workbuddy-exact": {ChunkID: "workbuddy-exact", Title: "WorkBuddy 精确配置", Content: "精确配置正文。"},
 			"generic-1":       {ChunkID: "generic-1", Title: "通用候选一", Content: "通用正文。"},
 		},
 	}
-	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: `{
-		"answer_question":"与 WorkBuddy 连接后还需要设置什么",
-		"search_queries":["WorkBuddy 连接后的配置","连接后的通用配置"]
-	}`}}}, &mockExecutor{}, nil)
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetKnowledgeRetriever(retriever)
 	eng.knowledgeQAAgentLoopThisTurn = true
-	eng.turnContextViewThisTurn = AgentContext{
-		CurrentQuestion:    "与WorkBuddy连接后，还需要手动设置啥",
-		RecentConversation: []ConversationPair{{User: "已经连接好了", Assistant: "可以继续配置。"}},
-	}
-	eng.turnContextViewReady = true
 
 	search := readChunkResult(t, eng.executeSearchKnowledge(context.Background(), map[string]any{
 		"query": "与WorkBuddy连接后，还需要手动设置啥",
 	}, noopStep))
 	candidates := search["below_floor_candidates"].([]any)
-	require.Len(t, candidates, maxBelowFloorKnowledgeCandidates)
+	require.Len(t, candidates, 1)
 	assert.Equal(t, "workbuddy-exact", candidates[0].(map[string]any)["chunk_id"])
-	assert.Equal(t, "generic-1", candidates[1].(map[string]any)["chunk_id"])
-	assert.Equal(t, "generic-2", candidates[2].(map[string]any)["chunk_id"])
-	for _, raw := range candidates {
+	second := readChunkResult(t, eng.executeSearchKnowledge(context.Background(), map[string]any{
+		"query": "连接后的通用配置",
+	}, noopStep))
+	general := second["below_floor_candidates"].([]any)
+	require.Len(t, general, maxBelowFloorKnowledgeCandidates)
+	assert.Equal(t, "generic-1", general[0].(map[string]any)["chunk_id"])
+	assert.Equal(t, "generic-2", general[1].(map[string]any)["chunk_id"])
+	assert.Equal(t, "generic-3", general[2].(map[string]any)["chunk_id"])
+	for _, raw := range append(candidates, general...) {
 		assert.Len(t, raw.(map[string]any), 3, "ranking score stays internal")
 	}
 
