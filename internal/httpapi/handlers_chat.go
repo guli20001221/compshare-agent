@@ -606,6 +606,9 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			TTFTMs:       &ttftMs,
 			LatencyMs:    &latencyMs,
 		})
+	if replyPersistErr == nil {
+		agent.AcknowledgeDeliveredInstanceOpsInterruption()
+	}
 	_ = sw.WriteEvent("done", doneEvent{
 		Content:   reply,
 		Usage:     usageEvent{InputTokens: inputTokens, OutputTokens: outputTokens},

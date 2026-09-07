@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -100,14 +101,33 @@ func (m *rehydratingMessages) Append(_ context.Context, msg store.Message) error
 func (m *rehydratingMessages) ListBySession(_ context.Context, _ string, _ int, _ string) ([]store.Message, string, error) {
 	return append([]store.Message(nil), m.list...), "", nil
 }
-func (m *rehydratingMessages) ListRecentBySession(_ context.Context, _ string, limit int) ([]store.Message, error) {
+func (m *rehydratingMessages) ListRecentBySessionPage(_ context.Context, _ string, limit int, cursor string) ([]store.Message, string, error) {
 	m.recentCalls++
 	m.recentLimit = limit
-	rows := m.list
-	if limit > 0 && len(rows) > limit {
-		rows = rows[len(rows)-limit:]
+	end := len(m.list)
+	if cursor != "" {
+		var err error
+		end, err = strconv.Atoi(cursor)
+		if err != nil {
+			return nil, "", err
+		}
 	}
-	return append([]store.Message(nil), rows...), nil
+	if limit <= 0 {
+		limit = 50
+	}
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+	rows := make([]store.Message, 0, end-start)
+	for i := end - 1; i >= start; i-- {
+		rows = append(rows, m.list[i])
+	}
+	next := ""
+	if start > 0 {
+		next = strconv.Itoa(start)
+	}
+	return rows, next, nil
 }
 
 type captureLLM struct {
@@ -647,8 +667,9 @@ func TestDispatchChatLongSessionRecentHistorySurvivesColdAndHot(t *testing.T) {
 			store.Message{Role: "assistant", Content: fmt.Sprintf("prior answer %02d", i), Status: "ok"},
 		)
 	}
-	// 137 rows puts an orphan assistant at the beginning of the latest 100.
-	// The last request never got an assistant row at all: it must still survive.
+	// 137 rows cross a reverse-page boundary. The last request never got an
+	// assistant row at all: it and every earlier short exchange still fit the
+	// engine's size budget and must survive.
 	const unfinished = "下载目标改为系统盘 /root/models，保留这些参数，不要重新安装系统。"
 	messages.list = append(messages.list, store.Message{Role: "user", Content: unfinished, Status: "ok"})
 	deps := &engine.SharedDeps{
@@ -680,11 +701,11 @@ func TestDispatchChatLongSessionRecentHistorySurvivesColdAndHot(t *testing.T) {
 		}
 		require.Contains(t, rendered.String(), unfinished, "the interrupted user request survives both cold and hot continuation")
 		require.Contains(t, rendered.String(), "prior answer 67", "recent completed conversation survives")
-		require.NotContains(t, rendered.String(), "prior question 00", "cold recovery must not reload the earliest page")
-		require.NotContains(t, rendered.String(), "prior answer 18", "the leading orphan assistant must be discarded")
+		require.Contains(t, rendered.String(), "prior question 00", "short exchanges before the first database page still fit the size budget")
+		require.Contains(t, rendered.String(), "prior answer 18", "a page boundary must not discard a complete exchange")
 	}
-	require.Equal(t, 1, messages.recentCalls, "the second continuation is a hot pool hit")
-	require.Equal(t, 100, messages.recentLimit, "cold loading is bounded at the store")
+	require.Equal(t, 2, messages.recentCalls, "cold loading pages backwards once; the second continuation is a hot pool hit")
+	require.Equal(t, 128, messages.recentLimit, "the page size is an I/O batch, not the history ceiling")
 }
 
 func TestDispatchChatSessionQuotaIsOptionalAndUncapped(t *testing.T) {

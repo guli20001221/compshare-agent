@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestListRecentBySessionReturnsNewestRowsChronologically(t *testing.T) {
+func TestListRecentBySessionPageWalksNewestRowsByReverseKeyset(t *testing.T) {
 	db := openIsolatedMessageTestDB(t)
 	ctx := context.Background()
 	sessionID := uuid.NewString()
@@ -42,25 +42,35 @@ VALUES ($1, $2, 'user', 'unrelated newer session', 'ok', $3)`, uuid.NewString(),
 	require.NoError(t, err)
 
 	messageStore := NewMessageStore(db)
-	rows, err := messageStore.ListRecentBySession(ctx, sessionID, 100)
+	rows, cursor, err := messageStore.ListRecentBySessionPage(ctx, sessionID, 100, "")
 	require.NoError(t, err)
 	require.Len(t, rows, 100)
 	for i, row := range rows {
-		require.Equal(t, fmt.Sprintf("message-%03d", i+43), row.Content)
+		require.Equal(t, fmt.Sprintf("message-%03d", 142-i), row.Content)
 		require.Equal(t, sessionID, row.SessionID)
 		require.JSONEq(t, `{"marker":"retained"}`, string(row.Metadata))
 	}
-	require.Equal(t, "aborted", rows[98].Status)
-	require.Equal(t, "user", rows[99].Role, "the latest unanswered user row is included")
+	require.Equal(t, "user", rows[0].Role, "the latest unanswered user row is included")
+	require.Equal(t, "aborted", rows[1].Status)
+	require.NotEmpty(t, cursor)
+
+	older, done, err := messageStore.ListRecentBySessionPage(ctx, sessionID, 100, cursor)
+	require.NoError(t, err)
+	require.Empty(t, done)
+	require.Len(t, older, 43)
+	for i, row := range older {
+		require.Equal(t, fmt.Sprintf("message-%03d", 42-i), row.Content)
+	}
 
 	// UI pagination is a separate contract and must still start at the oldest row.
-	page, cursor, err := messageStore.ListBySession(ctx, sessionID, 2, "")
+	page, forwardCursor, err := messageStore.ListBySession(ctx, sessionID, 2, "")
 	require.NoError(t, err)
 	require.Len(t, page, 2)
 	require.Equal(t, "message-000", page[0].Content)
 	require.Equal(t, "message-001", page[1].Content)
-	require.NotEmpty(t, cursor)
-	empty, err := messageStore.ListRecentBySession(ctx, uuid.NewString(), 100)
+	require.NotEmpty(t, forwardCursor)
+	empty, emptyCursor, err := messageStore.ListRecentBySessionPage(ctx, uuid.NewString(), 100, "")
 	require.NoError(t, err)
 	require.Empty(t, empty)
+	require.Empty(t, emptyCursor)
 }

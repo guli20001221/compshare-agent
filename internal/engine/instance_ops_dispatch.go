@@ -269,8 +269,13 @@ func (e *Engine) executeInstanceOpsInvocation(ctx context.Context, action string
 		// Honest bounded failure — never supply a root cause the
 		// harness did not reach. The reason class is a constant; the underlying
 		// error (already credential-free) is not surfaced to the user verbatim.
+		errorCode := "SSH_RUN_INTERRUPTED"
+		if errors.Is(err, ErrInstanceOpsTimedOut) {
+			errorCode = "SSH_RUN_TIMEOUT"
+		}
 		msg := "实例内排查未能完成，请稍后重试，或到控制台查看实例状态。"
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal,
+			Message: msg, ErrorCode: errorCode})
 		// Compose from this invocation's callbacks, not the pending notice from
 		// an earlier run. The parent needs settled work now, before deciding its
 		// next action; the same bounded notice is also available after disconnect.
@@ -289,7 +294,7 @@ func (e *Engine) executeInstanceOpsInvocation(ctx context.Context, action string
 		return tools.MarshalAgentToolResult(tools.AgentToolFailureWithLimits(action,
 			map[string]any{"instance_id": instanceID, "run_completed": false,
 				"commands_ran": ran, "commands_refused": refused, "report": report},
-			"SSH_RUN_INTERRUPTED", msg, tools.AgentToolMeta{SourceStatus: "interrupted"}))
+			errorCode, msg, tools.AgentToolMeta{SourceStatus: "interrupted"}))
 	}
 
 	e.recordInstanceOpsReferent(instanceID)
@@ -326,6 +331,12 @@ func (e *Engine) executeInstanceOpsInvocation(ctx context.Context, action string
 			tools.AgentToolMeta{SourceStatus: "interrupted"}))
 	}
 	return tools.MarshalAgentToolResult(tools.AgentToolSuccess(action, data, tools.AgentToolMeta{SourceStatus: "reported"}))
+}
+
+func instanceOpsWallClockTimedOut(raw string) bool {
+	result, ok := tools.ParseAgentToolResult(raw)
+	return ok && result.Meta.Action == "DiagnoseInstanceInternals" &&
+		result.Status == tools.AgentToolStatusFailed && result.Error.Code == "SSH_RUN_TIMEOUT"
 }
 
 func instanceOpsBoundaryObservation(action, instanceID, code, message string) string {

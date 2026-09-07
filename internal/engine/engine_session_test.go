@@ -371,6 +371,9 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// box, so a shared field would show tenant A's half-finished repair to tenant B
 		// as if it were their own. Cleared on delivery, never carried further.
 		"pendingInstanceOpsInterruption": true,
+		// Turn-local proof that the deterministic composer included the pending
+		// report. The HTTP transport consumes it only after durable delivery.
+		"instanceOpsInterruptionIncludedInReplyThisTurn": true,
 		// The opaque guest-job handle now lives inside the already-classified
 		// SessionState field, so it follows the same owner/session hydration boundary
 		// instead of adding a second implicit state source here.
@@ -413,12 +416,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 86, len(perSessionFields); want != got {
+	if want, got := 87, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 92, typ.NumField(); want != got {
+	if want, got := 93, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update this test's whitelists to match.", want, got)
 	}

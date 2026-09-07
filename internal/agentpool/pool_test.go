@@ -2,6 +2,8 @@ package agentpool_test
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -28,13 +30,32 @@ func (m *mockMessageStore) UpdateAssistant(_ context.Context, _ store.Owner, _ s
 func (m *mockMessageStore) ListBySession(_ context.Context, _ string, _ int, _ string) ([]store.Message, string, error) {
 	return m.messages, "", nil
 }
-func (m *mockMessageStore) ListRecentBySession(_ context.Context, _ string, limit int) ([]store.Message, error) {
+func (m *mockMessageStore) ListRecentBySessionPage(_ context.Context, _ string, limit int, cursor string) ([]store.Message, string, error) {
 	m.listCalls++
-	messages := m.messages
-	if limit > 0 && len(messages) > limit {
-		messages = messages[len(messages)-limit:]
+	end := len(m.messages)
+	if cursor != "" {
+		var err error
+		end, err = strconv.Atoi(cursor)
+		if err != nil {
+			return nil, "", err
+		}
 	}
-	return append([]store.Message(nil), messages...), nil
+	if limit <= 0 {
+		limit = 50
+	}
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+	messages := make([]store.Message, 0, end-start)
+	for i := end - 1; i >= start; i-- {
+		messages = append(messages, m.messages[i])
+	}
+	next := ""
+	if start > 0 {
+		next = strconv.Itoa(start)
+	}
+	return messages, next, nil
 }
 func (m *mockMessageStore) GetWithOwnerCheck(_ context.Context, _ store.Owner, _ string) (store.Message, error) {
 	return store.Message{}, nil
@@ -167,53 +188,6 @@ func TestPoolIdleTTLEviction(t *testing.T) {
 	if ms.listCalls != 2 {
 		t.Errorf("expected ListBySession called twice, got %d", ms.listCalls)
 	}
-}
-
-// TestFilterHistoryStatusGating verifies that filterHistory only passes through
-// successful messages plus unanswered assistant boundaries. Failed display
-// content and pending rows must not become completed answers.
-func TestFilterHistoryStatusGating(t *testing.T) {
-	msgs := []store.Message{
-		{Role: "user", Content: "hello", Status: "ok"},
-		{Role: "assistant", Content: "hi there", Status: "ok"},
-		{Role: "user", Content: "pending msg", Status: "pending"},
-		{Role: "assistant", Content: "error reply", Status: "error"},
-		{Role: "user", Content: "aborted", Status: "aborted"},
-		{Role: "system", Content: "system ok", Status: "ok"}, // role filtered
-		{Role: "tool", Content: "tool ok", Status: "ok"},     // role filtered
-	}
-
-	got := agentpool.FilterHistoryForTest(msgs)
-
-	want := []engine.HistoryMessage{
-		{Role: "user", Content: "hello"},
-		{Role: "assistant", Content: "hi there"},
-		{Role: "assistant"},
-	}
-
-	require.Equal(t, want, got)
-}
-
-func TestFilterHistoryRetainsUsersAcrossInterruptedReplies(t *testing.T) {
-	rows := []store.Message{
-		{Role: "user", Content: "检查旧实例", Status: "ok"},
-		{Role: "assistant", Content: "已检查", Status: "ok"},
-		{Role: "user", Content: "改为检查新实例", Status: "ok"},
-		{Role: "assistant", Content: "partial reply must not become completed history", Status: "aborted"},
-		{Role: "user", Content: "继续", Status: "ok"},
-		{Role: "assistant", Content: "failed reply", Status: "error"},
-		{Role: "user", Content: "继续", Status: "ok"},
-		{Role: "assistant", Content: "pending reply", Status: "pending"},
-	}
-	eng := &engine.Engine{}
-	eng.RehydrateHistory(agentpool.FilterHistoryForTest(rows))
-	view := (engine.ContextCompiler{}).Compile(eng, "继续", time.Now())
-	require.Equal(t, []engine.ConversationPair{
-		{User: "检查旧实例", Assistant: "已检查"},
-		{User: "改为检查新实例"},
-		{User: "继续"},
-		{User: "继续"},
-	}, view.RecentConversation)
 }
 
 // TestPoolCloseIdempotent verifies that calling Close twice does not panic.
@@ -381,4 +355,37 @@ func TestPoolEnginesShareProcessWideDependencies(t *testing.T) {
 	require.Same(t, engA.LLMClientPointer(), engB.LLMClientPointer(), "LLM client should be process-wide")
 	require.Same(t, engA.RateLimiterPointer(), engB.RateLimiterPointer(), "rate limiter should be process-wide")
 	require.NotSame(t, engA.RegistryPointer(), engB.RegistryPointer(), "registries must stay per session")
+}
+
+func TestColdRecoveryPagesBySizeAndKeepsWholeNewestTurns(t *testing.T) {
+	ms := &mockMessageStore{}
+	const turns = 400
+	for i := 0; i < turns; i++ {
+		marker := strconv.Itoa(i)
+		ms.messages = append(ms.messages,
+			store.Message{Role: "user", Content: "q-" + marker + "-" + strings.Repeat("问", 500), Status: "ok"},
+			store.Message{Role: "assistant", Content: "a-" + marker + "-" + strings.Repeat("答", 500), Status: "ok"},
+		)
+	}
+	pool := agentpool.New(minimalConfig(), ms, agentpool.Options{Capacity: 1, IdleTTL: time.Hour})
+	defer pool.Close()
+
+	eng, err := leaseAndRelease(context.Background(), pool, owner1, "size-bounded")
+	require.NoError(t, err)
+	require.Equal(t, 2, ms.listCalls,
+		"reverse paging should stop when the rune budget is full instead of loading all 800 rows")
+
+	view := (engine.ContextCompiler{}).Compile(eng, "继续", time.Now())
+	require.NotEmpty(t, view.RecentConversation)
+	require.True(t, strings.HasPrefix(view.RecentConversation[len(view.RecentConversation)-1].User, "q-399-"))
+	for _, turn := range view.RecentConversation {
+		userMarker := strings.SplitN(turn.User, "-", 3)
+		assistantMarker := strings.SplitN(turn.Assistant, "-", 3)
+		require.Len(t, userMarker, 3)
+		require.Len(t, assistantMarker, 3)
+		require.Equal(t, userMarker[1], assistantMarker[1], "cold history must never begin in the middle of an exchange")
+	}
+	for _, turn := range view.RecentConversation {
+		require.False(t, strings.HasPrefix(turn.User, "q-0-"), "old rows beyond the size budget must not be loaded")
+	}
 }

@@ -69,6 +69,86 @@ func TestInstanceOpsReportSurvivesParentFailureWithoutRerunning(t *testing.T) {
 	require.Equal(t, 2, model.calls)
 }
 
+func TestInterruptedInstanceOpsReportSurvivesParentFailureAndCanBeAcknowledged(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{
+		err: errors.New("runner transport failed after command"),
+		progress: []InstanceOpsProgress{{
+			Kind: InstanceOpsProgressCommand, Command: "restart original service",
+			Tier: "mutating", Disposition: "ran",
+		}},
+	}
+	model := &reportThenErrorLLM{}
+	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
+	eng.SetInstanceOps(runner)
+
+	reply, err := eng.Chat(context.Background(), "请修复 uhost-1 的服务", noopStep)
+
+	require.NoError(t, err)
+	require.Contains(t, reply, "restart original service")
+	require.Contains(t, reply, "后续汇总未完成")
+	require.NotNil(t, eng.pendingInstanceOpsInterruption)
+	require.True(t, eng.instanceOpsInterruptionIncludedInReplyThisTurn)
+	eng.AcknowledgeDeliveredInstanceOpsInterruption()
+	require.Nil(t, eng.pendingInstanceOpsInterruption,
+		"a persisted parent-error recovery must not repeat on the next turn")
+}
+
+func TestInstanceOpsWallClockTimeoutDeliversSettledReportWithoutReentry(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{
+		err: ErrInstanceOpsTimedOut,
+		progress: []InstanceOpsProgress{{
+			Kind: InstanceOpsProgressCommand, Command: "restart original service",
+			Tier: "mutating", Disposition: "ran",
+		}},
+	}
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("guest-timeout", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"修复服务"}`)}},
+		{ToolCalls: []openai.ToolCall{toolCall("guest-retry", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"再次修复服务"}`)}},
+	}}
+	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
+	eng.SetInstanceOps(runner)
+
+	reply, err := eng.Chat(context.Background(), "请修复 uhost-1 的服务", noopStep)
+
+	require.NoError(t, err)
+	require.Contains(t, reply, "restart original service")
+	require.Contains(t, reply, "后续汇总未完成")
+	require.Equal(t, 1, runner.calls)
+	require.Len(t, model.calls, 1)
+	require.NotNil(t, eng.pendingInstanceOpsInterruption, "the engine cannot assume its reply crossed the transport boundary")
+	require.True(t, eng.instanceOpsInterruptionIncludedInReplyThisTurn)
+	eng.AcknowledgeDeliveredInstanceOpsInterruption()
+	require.Nil(t, eng.pendingInstanceOpsInterruption, "a durably delivered timeout report must not repeat next turn")
+}
+
+func TestDeterministicToolReplyKeepsEarlierInstanceReport(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{
+		err: errors.New("runner transport failed after command"),
+		progress: []InstanceOpsProgress{{
+			Kind: InstanceOpsProgressCommand, Command: "restart original service",
+			Tier: "mutating", Disposition: "ran",
+		}},
+	}
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("guest-first", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"恢复服务"}`)}},
+		customerSupportToolCall(),
+	}}
+	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
+	eng.SetInstanceOps(runner)
+
+	reply, err := eng.Chat(context.Background(), "先恢复 uhost-1；若不能继续再给我人工入口", noopStep)
+
+	require.NoError(t, err)
+	require.Contains(t, reply, "restart original service")
+	require.Contains(t, reply, "后续汇总未完成")
+	require.Contains(t, reply, "人工")
+	require.Equal(t, 1, runner.calls)
+	require.True(t, eng.instanceOpsInterruptionIncludedInReplyThisTurn,
+		"an already-present canonical report still needs a transport acknowledgement")
+	eng.AcknowledgeDeliveredInstanceOpsInterruption()
+	require.Nil(t, eng.pendingInstanceOpsInterruption)
+}
+
 func TestInstanceOpsDifferentTargetsUseDifferentInvocations(t *testing.T) {
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "已核实"}}
 	eng := newInstanceOpsEngine(runner, nil)

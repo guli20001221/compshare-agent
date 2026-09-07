@@ -51,6 +51,11 @@ const maxReplayedHistoryRunes = 48000
 // detail budget, so a source ceiling cannot silently become the memory policy.
 const maxRawHistoryRunes = 2 * maxReplayedHistoryRunes
 
+// HistorySourceRuneBudget exposes the existing raw-history source budget to the
+// cold persistence reader. It is a single shared policy: the database reader
+// must not replace it with an unrelated row-count ceiling.
+func HistorySourceRuneBudget() int { return maxRawHistoryRunes }
+
 // ContextCompiler owns all conversion from persisted/in-memory state to the
 // model-visible semantic view. It is intentionally stateless; BuildAt is
 // injected by the caller so hot, cold and takeover paths can be compared at the

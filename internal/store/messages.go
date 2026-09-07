@@ -139,31 +139,57 @@ LIMIT $5
 	return messages, nextCursor, nil
 }
 
-// ListRecentBySession bounds cold-session reads at the database while preserving
-// conversational order. ListBySession remains forward pagination for the UI.
-func (s *MySQLMessageStore) ListRecentBySession(ctx context.Context, sessionID string, limit int) ([]Message, error) {
+// ListRecentBySessionPage pages backwards through a session for cold history
+// recovery. Rows are newest-first; ListBySession remains chronological forward
+// pagination for the UI.
+func (s *MySQLMessageStore) ListRecentBySessionPage(ctx context.Context, sessionID string, limit int, cursor string) ([]Message, string, error) {
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := s.db.QueryContext(ctx, `
+	queryLimit := limit + 1
+
+	var rows *sql.Rows
+	var err error
+	if cursor == "" {
+		rows, err = s.db.QueryContext(ctx, `
 SELECT id, session_id, request_uuid, role, content, status, error_code, model, input_tokens, output_tokens, ttft_ms, latency_ms, metadata, created_at
 FROM messages
 WHERE session_id = $1
 ORDER BY created_at DESC, id DESC
 LIMIT $2
-`, sessionID, limit)
+`, sessionID, queryLimit)
+	} else {
+		ts, id, decodeErr := DecodeCursor(cursor)
+		if decodeErr != nil {
+			return nil, "", fmt.Errorf("list recent messages: %w", decodeErr)
+		}
+		rows, err = s.db.QueryContext(ctx, `
+SELECT id, session_id, request_uuid, role, content, status, error_code, model, input_tokens, output_tokens, ttft_ms, latency_ms, metadata, created_at
+FROM messages
+WHERE session_id = $1 AND (created_at < $2 OR (created_at = $3 AND id < $4))
+ORDER BY created_at DESC, id DESC
+LIMIT $5
+`, sessionID, ts, ts, id, queryLimit)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("list recent messages query: %w", err)
+		return nil, "", fmt.Errorf("list recent messages query: %w", err)
 	}
 	defer rows.Close()
 	messages, err := scanMessages(rows)
 	if err != nil {
-		return nil, fmt.Errorf("scan recent messages: %w", err)
+		return nil, "", fmt.Errorf("scan recent messages: %w", err)
 	}
-	for left, right := 0, len(messages)-1; left < right; left, right = left+1, right-1 {
-		messages[left], messages[right] = messages[right], messages[left]
+
+	nextCursor := ""
+	if len(messages) > limit {
+		messages = messages[:limit]
+		last := messages[len(messages)-1]
+		nextCursor, err = EncodeCursor(last.CreatedAt, last.ID)
+		if err != nil {
+			return nil, "", fmt.Errorf("encode recent cursor: %w", err)
+		}
 	}
-	return messages, nil
+	return messages, nextCursor, nil
 }
 
 func (s *MySQLMessageStore) GetWithOwnerCheck(ctx context.Context, owner Owner, msgID string) (Message, error) {

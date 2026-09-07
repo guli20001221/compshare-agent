@@ -40,8 +40,16 @@ def input_schema(authorization_refs=()):
         },
         "method": {"type": "string", "enum": ["GET", "HEAD"], "default": "GET"},
         "path": {"type": "string", "minLength": 1, "maxLength": 512, "default": "/"},
-        "host_header": {"type": "string", "minLength": 1, "maxLength": 253,
-                        "description": "Optional literal virtual host; never an address to dial."},
+        "host_header": {
+            "type": "string",
+            "minLength": 0,
+            "maxLength": 253,
+            "default": "",
+            "description": (
+                "Optional literal virtual host; empty or omitted uses the default "
+                "127.0.0.1:<port> Host header and never changes the address dialed."
+            ),
+        },
         "timeout_seconds": {"type": "integer", "minimum": 1, "maximum": 10, "default": 5},
     }
     refs = [value for value in authorization_refs

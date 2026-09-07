@@ -47,8 +47,8 @@ func (noopMessageStore) UpdateAssistant(context.Context, store.Owner, string, st
 func (noopMessageStore) ListBySession(context.Context, string, int, string) ([]store.Message, string, error) {
 	return nil, "", nil
 }
-func (noopMessageStore) ListRecentBySession(context.Context, string, int) ([]store.Message, error) {
-	return nil, nil
+func (noopMessageStore) ListRecentBySessionPage(context.Context, string, int, string) ([]store.Message, string, error) {
+	return nil, "", nil
 }
 func (noopMessageStore) GetWithOwnerCheck(context.Context, store.Owner, string) (store.Message, error) {
 	return store.Message{}, nil

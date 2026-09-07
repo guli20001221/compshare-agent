@@ -43,6 +43,12 @@ var ErrInstanceOpsAddressUnavailable = errors.New("engine: instance internal add
 // diagnosis attempt never authenticated over SSH or entered the guest.
 var ErrInstanceOpsSSHPreflightUnreachable = errors.New("engine: instance ssh preflight unreachable")
 
+// ErrInstanceOpsTimedOut means the in-instance Agent consumed its complete
+// wall-clock budget. The run may already have changed the Guest, so the outer
+// Agent must deliver the settled report instead of starting another long Guest
+// run in the same user turn.
+var ErrInstanceOpsTimedOut = errors.New("engine: instance operation timed out")
+
 // InstanceOpsRunner executes ONE task-authorized in-instance diagnosis/repair and
 // streams its activity back through onProgress. The engine depends only on this
 // structural interface; the concrete runner (a Python Agent-SDK harness spawned

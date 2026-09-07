@@ -47,6 +47,7 @@ type fakeDiagnoser struct {
 	agentFailed    bool
 	errClass       string
 	agentUsage     *observability.AgentRunUsage
+	timedOut       bool
 	err            error
 	lastOwner      sshops.Owner
 	lastInstanceID string
@@ -65,9 +66,19 @@ func (f *fakeDiagnoser) DiagnoseWithContext(_ context.Context, _ sshops.Describe
 		}
 	}
 	if f.err != nil {
-		return sshops.Result{}, f.err
+		return sshops.Result{TimedOut: f.timedOut}, f.err
 	}
 	return sshops.Result{Output: f.output, Steps: f.steps, AgentFailed: f.agentFailed, ErrClass: f.errClass, AgentUsage: f.agentUsage}, nil
+}
+
+func TestInstanceOpsRunner_TranslatesHarnessTimeout(t *testing.T) {
+	diag := &fakeDiagnoser{timedOut: true, err: context.DeadlineExceeded}
+	r := newInstanceOpsRunner(diag, noopDescriber{}, &fakeLimiter{allow: true})
+
+	_, err := r.Run(userCtx(), engine.InstanceOpsRequest{TurnID: "t", InstanceID: "uhost-timeout", Task: "repair app"},
+		func(engine.InstanceOpsProgress) {})
+
+	require.ErrorIs(t, err, engine.ErrInstanceOpsTimedOut)
 }
 
 // fakeLimiter returns a fixed allow/deny and records the class it was asked about.

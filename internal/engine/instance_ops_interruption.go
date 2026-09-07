@@ -263,6 +263,19 @@ func (e *Engine) InstanceOpsInterruptionSummary() string {
 	return renderInstanceOpsInterruptionSummary(*e.pendingInstanceOpsInterruption, "本轮")
 }
 
+// AcknowledgeDeliveredInstanceOpsInterruption consumes an interrupted-run
+// notice only after the gateway has durably stored a deterministic reply that
+// already contains the same canonical report. A generated reply is not enough:
+// a client cancellation may still win at the transport boundary, in which case
+// the notice remains available for the aborted row and the next hot turn.
+func (e *Engine) AcknowledgeDeliveredInstanceOpsInterruption() {
+	if e == nil || !e.instanceOpsInterruptionIncludedInReplyThisTurn {
+		return
+	}
+	e.pendingInstanceOpsInterruption = nil
+	e.instanceOpsInterruptionIncludedInReplyThisTurn = false
+}
+
 // instanceOpsInterruptionAction is the step frame's Action. It is NOT a tool name — nothing
 // dispatches on it — and it exists so the console can label and style the frame; step_label.go
 // carries its Chinese label.

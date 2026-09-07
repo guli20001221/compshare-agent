@@ -77,6 +77,16 @@ check("http-probe-reports-status-and-body",
       result["ok"] and result["status_code"] == 403 and "Blocked request" in result["body"])
 check("http-probe-closes-channel-and-client", channel.closed and client.closed)
 
+empty_host_client, empty_host_channel, _ = _open(
+    b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+empty_host_result = guest_endpoint_probe.probe(
+    {}, {"protocol": "http", "port": 5173, "host_header": ""},
+    opener=lambda _c: (empty_host_client, None))
+check("explicit-empty-host-header-uses-loopback-default",
+      empty_host_result["ok"]
+      and empty_host_result["host_header"] == "127.0.0.1:5173"
+      and b"Host: 127.0.0.1:5173\r\n" in empty_host_channel.sent)
+
 
 class _StalledChannel(_Channel):
     def recv(self, limit):
@@ -249,6 +259,11 @@ check("schema-makes-protocol-and-integer-port-explicit",
       and "authorization" not in schema["properties"]
       and "authorization_ref" not in schema["properties"]
       and "never pass a URL" in guest_endpoint_probe.TOOL_DESCRIPTION)
+host_header_schema = schema["properties"]["host_header"]
+check("schema-accepts-empty-host-header-as-default",
+      host_header_schema.get("default") == ""
+      and host_header_schema.get("minLength", 0) == 0
+      and "empty or omitted" in host_header_schema["description"].lower())
 authorization_ref = "current-user-authorization-1"
 auth_schema = guest_endpoint_probe.input_schema([authorization_ref, "x" * 65])
 check("schema-exposes-only-an-opaque-current-request-authorization-reference",

@@ -422,6 +422,12 @@ type Engine struct {
 	// is deliberately NOT reset in the per-turn block — resetting it there would clear it on the
 	// very turn that is supposed to show it. See instance_ops_interruption.go.
 	pendingInstanceOpsInterruption *instanceOpsInterruption
+	// instanceOpsInterruptionIncludedInReplyThisTurn is set only when the
+	// deterministic response composer has copied the canonical interrupted-run
+	// report into this turn's final reply. The transport acknowledges delivery
+	// after that reply is durably stored; generating a reply alone is not proof
+	// that a disconnected client received it.
+	instanceOpsInterruptionIncludedInReplyThisTurn bool
 	// lastConfirmationTerminalReason is why the most recent authorization card in
 	// this turn ended, in observability's closed-set spelling. It exists because
 	// ConfirmFunc answers a bool, so every non-approval — the user declining, the
@@ -1271,6 +1277,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.directAnswerToolRetryPending = false
 	e.directAnswerToolRetryOutcomeThisTurn = ""
 	e.instanceOpsResultsThisTurn = nil
+	e.instanceOpsInterruptionIncludedInReplyThisTurn = false
 	// Deliver any notice left by a diagnosis that ended without a verdict. It goes to the USER, on
 	// the activity stream, and is never appended to e.messages — the model must not restate,
 	// summarize or act on it. Drained here, at the top of the turn, so it can never fire on the same
@@ -1347,6 +1354,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	finishCommittedWrite := func() (agentruntime.Result, bool) {
 		reply, ok := e.committedWriteRecoveryReply()
 		if report, available := e.instanceOpsRecoveryReply(); available {
+			if e.pendingInstanceOpsInterruption != nil {
+				e.instanceOpsInterruptionIncludedInReplyThisTurn = true
+			}
 			if ok {
 				reply += "\n\n" + report
 			} else {
@@ -1759,6 +1769,14 @@ func (e *Engine) runToolCallsRound(ctx context.Context, userMsg string, resp *ll
 					committed = append(committed, reply)
 				}
 			}
+			if report, available := e.instanceOpsRecoveryReply(); available {
+				if e.pendingInstanceOpsInterruption != nil {
+					e.instanceOpsInterruptionIncludedInReplyThisTurn = true
+				}
+				if !strings.Contains(finalMsg, report) {
+					committed = append(committed, report)
+				}
+			}
 			finalMsg = strings.Join(append(committed, finalMsg), "\n\n")
 			finalMsg = e.finalizeHostTerminalResponse(userMsg, finalMsg)
 			historyFinalMsg := finalMsg
@@ -1805,6 +1823,44 @@ func (e *Engine) runToolCallsRound(ctx context.Context, userMsg string, resp *ll
 			Content:    toolResult,
 			ToolCallID: tc.ID,
 		})
+		// A wall-clock-expired Guest run has already consumed the lane's complete
+		// budget and may have applied a repair. Deliver its settled report now;
+		// another full run in this user turn can only crowd out the answer. Other
+		// partial Agent failures remain ordinary observations and may use their SDK
+		// cursor when continuing is still useful.
+		if instanceOpsWallClockTimedOut(toolResult) {
+			finalMsg, available := e.instanceOpsRecoveryReply()
+			if !available {
+				finalMsg = "实例内排查达到本轮时间上限，尚未取得可交付的执行报告。"
+			} else {
+				if e.pendingInstanceOpsInterruption != nil {
+					e.instanceOpsInterruptionIncludedInReplyThisTurn = true
+				}
+			}
+			var committed []string
+			for _, reply := range e.committedWriteRepliesThisTurn {
+				if !strings.Contains(finalMsg, reply) {
+					committed = append(committed, reply)
+				}
+			}
+			finalMsg = strings.Join(append(committed, finalMsg), "\n\n")
+			finalMsg = e.finalizeHostTerminalResponse(userMsg, finalMsg)
+			for _, remaining := range resp.ToolCalls[idx+1:] {
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role: openai.ChatMessageRoleTool, Content: "skipped", ToolCallID: remaining.ID,
+				})
+			}
+			e.messages = append(e.messages, openai.ChatCompletionMessage{
+				Role: openai.ChatMessageRoleAssistant, Content: finalMsg,
+			})
+			if emitDelta != nil && finalMsg != "" {
+				if len(e.verbatimBlocksThisTurn) > 0 {
+					emitDelta(verbatimBlockSeparator)
+				}
+				emitDelta(finalMsg)
+			}
+			return agentruntime.Final(finalMsg, agentruntime.FinishDeterministicReply), nil
+		}
 	}
 	return agentruntime.Continue(), nil
 }
