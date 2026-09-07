@@ -11,27 +11,11 @@ const (
 	TargetRefUHostIDUserInput TargetRefType = "uhost_id_user_input"
 )
 
-// TargetSource records whether a reference came from the current user turn or a
-// prior turn. It is a provenance marker, never re-parsed from raw text by a
-// capability handler.
-type TargetSource string
-
-const (
-	SourceUserText  TargetSource = "user_text"
-	SourcePriorTurn TargetSource = "prior_turn"
-)
-
-// TargetSourceValues is the enum's single source of allowed wire values.
-func TargetSourceValues() []string {
-	return []string{string(SourceUserText), string(SourcePriorTurn)}
-}
-
 // TargetRef is a structured pointer to one or more instances. Capabilities read
 // its fields directly; they never receive the user's raw sentence.
 type TargetRef struct {
-	Type   TargetRefType `json:"type"`
-	Value  string        `json:"value"`
-	Source TargetSource  `json:"source,omitempty"`
+	Type  TargetRefType `json:"type"`
+	Value string        `json:"value"`
 }
 
 // Metric is a monitor dimension.
@@ -72,10 +56,6 @@ type TimeWindow struct {
 	Start    string         `json:"start,omitempty"`
 	End      string         `json:"end,omitempty"`
 	Timezone string         `json:"timezone,omitempty"`
-	// SourceSpan is the exact current-user text that expressed the time window.
-	// The engine verifies it before dispatch, so a model cannot turn “昨天” into
-	// an invented absolute date while still producing a schema-valid request.
-	SourceSpan string `json:"source_span"`
 }
 
 // ImageSource selects which image catalog an image-list capability queries.

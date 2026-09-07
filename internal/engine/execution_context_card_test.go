@@ -17,7 +17,6 @@ func fullyPopulatedContext() AgentContext {
 		SelectedEntities: []SelectedEntityHint{
 			{Kind: "instance", ID: "inst-LIVE", Name: "web-01", Source: SelectedInstanceSourceUser, Freshness: ContinuityFreshnessFresh},
 			{Kind: "instance", ID: "inst-SOLE", Name: "only-one", Source: selectionSourceAccountSingle, Freshness: ContinuityFreshnessFresh},
-			{Kind: "instance", ID: "inst-CAND", Name: "candidate-2", Ordinal: 2, Source: selectionSourcePendingCard, Freshness: ContinuityFreshnessFresh},
 			{Kind: "instance", ID: "inst-SEEN", Name: "just-read", Source: SelectedInstanceSourceObserved, Freshness: ContinuityFreshnessFresh},
 			{Kind: "instance", ID: "inst-RECALLED", Name: "not-live", Source: "agent_inference", Freshness: ContinuityFreshnessFresh},
 		},
@@ -36,7 +35,7 @@ func TestContextCardKeepsOnlyLiveExecutionState(t *testing.T) {
 
 	require.Contains(t, card, "【本轮执行上下文（仅用于目标指代）】")
 	assert.NotContains(t, card, "不授权任何写操作")
-	for _, id := range []string{"inst-LIVE", "inst-SOLE", "inst-CAND", "inst-SEEN"} {
+	for _, id := range []string{"inst-LIVE", "inst-SOLE", "inst-SEEN"} {
 		assert.Contains(t, card, id, "live execution state must survive")
 	}
 	assert.NotContains(t, card, "inst-RECALLED", "semantic hints never become a second memory")

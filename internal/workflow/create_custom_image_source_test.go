@@ -44,16 +44,6 @@ func TestCustomImageSourceUsesTenantScopedCatalogQueries(t *testing.T) {
 	assert.Equal(t, maxCustomImageQueryLimit, args["Limit"])
 	assert.NotContains(t, args, "CompShareImageId")
 
-	// Self-made images are an account inventory, not a third public search result
-	// inferred from a user phrase. A user can select the source on the source card,
-	// or the Agent can carry an exact ID it already verified.
-	wfCtx.StepResults[imageCatalogIntentStepName] = map[string]any{
-		"Query":         "训练环境",
-		"InitialSource": imageSourceCustom,
-	}
-	skip, err := stepQueryAlternateImageCatalog().SkipIf(wfCtx)
-	require.NoError(t, err)
-	assert.True(t, skip)
 }
 
 func TestPlainCreateFromCustomImagePreflightsAndCreatesTheSameImage(t *testing.T) {

@@ -17,8 +17,7 @@ func TestImageListContractHasOnlySourceAndFreeQuery(t *testing.T) {
 	for _, query := range []string{"vLLM", ""} {
 		request, err := reg.Decode(map[string]any{"source": "community", "query": query})
 		require.NoError(t, err)
-		require.NoError(t, ValidateCurrentTurnGrounding(request, "推荐一个大模型推理镜像"),
-			"catalog search words are model-owned, not user-literal identity fields")
+		require.Equal(t, query, request.(ImageListRequest).Query)
 	}
 	for _, field := range []string{"mode", "semantic_queries"} {
 		_, err := reg.Decode(map[string]any{field: nil})

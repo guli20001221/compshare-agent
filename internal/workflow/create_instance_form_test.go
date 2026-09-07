@@ -580,8 +580,7 @@ func TestCreateInstanceGuided_ExplicitFullSpecWithImageIntentShowsFinalOnly(t *t
 		"CompShareImageId":  "img-002",
 		"ImageName":         "PyTorch",
 	}, WithReferenceData(ReferenceData{
-		ZoneCatalog:    createZoneCatalog(),
-		ImageSelection: ImageSelectionUserPinned,
+		ZoneCatalog: createZoneCatalog(),
 	}))
 
 	require.NoError(t, err)
@@ -650,8 +649,7 @@ func TestCreateInstanceGuided_IncompatibleSelectedCommunityImageShowsGPUCard(t *
 		"Memory":            float64(65536),
 		"GuidedRecommended": true,
 	}, WithReferenceData(ReferenceData{
-		ZoneCatalog:    createZoneCatalog(),
-		ImageSelection: ImageSelectionUserPinned,
+		ZoneCatalog: createZoneCatalog(),
 	}))
 
 	require.NoError(t, err)
@@ -1224,6 +1222,26 @@ func TestGuidedImageSourceOverrideCommunitySwitchesSource(t *testing.T) {
 	assert.NotContains(t, wfCtx.Params, "ImageName")
 }
 
+func TestGuidedImageSourceSelectionPreservesTheRequestedImageSearch(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "ImageName": "ComfyUI"})
+	skip, err := shouldSkipGuidedImageSourceStep(wfCtx)
+	require.NoError(t, err)
+	require.False(t, skip)
+
+	require.NoError(t, applyGuidedImageSourceOverrides(wfCtx, map[string]string{"ImageSource": "community"}))
+	assert.Equal(t, "ComfyUI", wfCtx.Params["ImageName"])
+	query, err := stepReQuerySelectedSourceImages().BuildArgs(wfCtx)
+	require.NoError(t, err)
+	assert.Equal(t, "ComfyUI", query["FuzzySearch"])
+	wfCtx.StepResults["查询镜像"] = map[string]any{"CompshareImageGroup": []any{
+		map[string]any{"ImageName": "ComfyUI", "Data": []any{map[string]any{"CompShareImageId": "comfy", "Name": "v1", "Status": "Available"}}},
+		map[string]any{"ImageName": "Unrelated", "Data": []any{map[string]any{"CompShareImageId": "other", "Name": "v1", "Status": "Available"}}},
+	}}
+	form, err := buildGuidedImageForm(wfCtx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"comfy"}, optionValues(form.Field("ImageId")))
+}
+
 // TestGuidedImageSourceChangeClearsStaleTypeTag is the F2 gate: an ImageType / ImageTag
 // chosen against the PREVIOUS source's catalog must be cleared when the source changes in
 // the source step, so it cannot filter the new source's candidates against foreign values
@@ -1316,47 +1334,6 @@ func TestSourceReQueryFiresOnBothDirectionSwitches(t *testing.T) {
 	}
 }
 
-// TestCreateInstanceGuided_ReverseSwitchCommunityToPlatformUsesPlatformCatalog is the
-// reverse-direction correctness test the reviewer demanded: an initial community browse
-// switched to platform in the source step must RE-QUERY platform and select from the
-// PLATFORM catalog — never leave the stale community listing in place. This is the exact
-// bug the old asymmetric community-only re-query missed (it skipped the reverse switch).
-func TestCreateInstanceGuided_ReverseSwitchCommunityToPlatformUsesPlatformCatalog(t *testing.T) {
-	executor := formMockExecutor()
-	var finalImageOptions []string
-
-	eng := NewEngine(executor, nil, nil)
-	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
-		require.NotNil(t, form)
-		require.NotNil(t, form.Step)
-		if source := form.Field("ImageSource"); source != nil {
-			assert.Equal(t, "community", source.Value, "initial source is community")
-			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageSource": "platform"}}
-		}
-		if image := form.Field("ImageId"); image != nil && image.Editable {
-			finalImageOptions = optionValues(image)
-			return ConfirmResolution{Confirmed: false}
-		}
-		return ConfirmResolution{Confirmed: true}
-	})
-
-	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090", "ImageSource": "community"})
-	require.NoError(t, err)
-	assert.False(t, result.Success)
-	// The platform catalog after the reverse switch — NOT the stale community images.
-	assert.Contains(t, finalImageOptions, "img-001")
-	assert.NotContains(t, finalImageOptions, "cimg-sd-001", "reverse switch must drop the stale community catalog")
-
-	var calls []string
-	for _, c := range executor.calls {
-		calls = append(calls, c.action)
-	}
-	// Both queries happened: the initial community browse AND the reverse re-query to
-	// platform (the old code skipped this second one on a switch away from community).
-	assert.Contains(t, calls, "DescribeCommunityImages")
-	assert.Contains(t, calls, "DescribeCompShareImages")
-}
-
 func TestCreateInstanceGuided_CommunitySourceQueriesCommunityImages(t *testing.T) {
 	executor := formMockExecutor()
 	var finalImageOptions []string
@@ -1405,45 +1382,6 @@ func TestCreateInstanceGuided_CommunitySourceQueriesCommunityImages(t *testing.T
 	require.NotNil(t, sortCondition)
 	assert.Equal(t, "CreatedCount", sortCondition["Field"])
 	assert.Equal(t, false, sortCondition["ASC"])
-}
-
-func TestCreateInstanceGuided_CommunitySourceOverridesInitialPlatformSource(t *testing.T) {
-	executor := formMockExecutor()
-	var finalImageOptions []string
-
-	eng := NewEngine(executor, nil, nil)
-	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
-		require.NotNil(t, form)
-		require.NotNil(t, form.Step)
-		// Image-first reorder: community source gives the image its own picker step 2
-		// (before the specs); capture the community image options there.
-		switch form.Step.Index {
-		case 1:
-			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageSource": "community"}}
-		case 2:
-			finalImageOptions = optionValues(fieldByKey(t, form, "ImageId"))
-			return ConfirmResolution{Confirmed: false}
-		default:
-			t.Fatalf("unexpected guided form step %d", form.Step.Index)
-			return ConfirmResolution{}
-		}
-	})
-
-	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{
-		"GpuType":     "4090",
-		"ImageSource": "platform",
-	})
-	require.NoError(t, err)
-	assert.False(t, result.Success)
-	assert.Equal(t, []string{"cimg-sd-001", "cimg-ds-r1-32b"}, finalImageOptions)
-
-	var communityCalls int
-	for _, c := range executor.calls {
-		if c.action == "DescribeCommunityImages" {
-			communityCalls++
-		}
-	}
-	assert.Equal(t, 1, communityCalls)
 }
 
 func TestGuidedImageFormOptionsShowsTopTenCommunityGroups(t *testing.T) {

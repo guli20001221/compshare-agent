@@ -7,7 +7,6 @@ import (
 
 	"github.com/compshare-agent/internal/workflow"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 // createFlowExecutor is an arg-capturing executor for the create workflow: it
@@ -97,27 +96,8 @@ func TestExecuteWorkflow_SealedParamsIgnoreContradictoryLastUserMsg(t *testing.T
 	assert.NotContains(t, reply, "5090", "lastUserMsg must not reach the confirmed/executed contract")
 }
 
-// TestExecuteWorkflow_FailureNarrationUsesSealedNotPreEditParams pins P4
-// acceptance #9: after a confirm-form edit changes the GPU, a sold-out is narrated
-// from the edited (sealed) params, not the stale pre-edit args. The stock-shortage
-// reply lists the OTHER available GPUs — it excludes the requested one — so an edit
-// to A100 that is then sold out must exclude A100 (proving the edited value drove
-// the reply); if the stale 4090 drove it, A100 would appear as an alternative.
-//
-// The sold-out is injected at the CAPACITY GATE, not the create call. That is where
-// a sold-out actually offers alternatives: a create-step sold-out comes back as
-// upstream RetCode 226604, which friendlyMessageFromText turns into a generic hint
-// and returns BEFORE the alternatives branch — so it never lists any. The previous
-// version of this test injected the failure at the create step with a bare error
-// string (no RetCode), which no production executor produces; it reached the
-// alternatives branch only because of that fiction. Routing through the capacity
-// gate tests the path a real sold-out takes.
-//
-// The edit to A100 is sold out, so revalidation fails on the edited spec and the
-// second card is never shown — confirmCalls stays 1. That the reply's alternatives
-// are computed from A100 (not 4090) is the whole proof: the record the reply reads
-// carries the re-resolved A100 draft, which only exists because the edit was
-// applied before the failure.
+// An edit to A100 is revalidated against live inventory. If unavailable, return
+// the edited spec's failure to the agent without creating or selecting substitutes.
 func TestExecuteWorkflow_FailureNarrationUsesSealedNotPreEditParams(t *testing.T) {
 	exec := &createFlowExecutor{
 		images:     []any{map[string]any{"CompShareImageId": "img-1", "Name": "PyTorch", "ImageType": "App"}},
@@ -141,11 +121,7 @@ func TestExecuteWorkflow_FailureNarrationUsesSealedNotPreEditParams(t *testing.T
 	assert.Equal(t, 1, confirmCalls, "the edit to a sold-out GPU fails on revalidation, before any second card")
 	assert.NotEqual(t, "A100", exec.createArgs["GpuType"],
 		"a sold-out edit must never reach the create call at all")
-	// Sealed (edited) value is A100, so A100 must NOT be offered back as an
-	// alternative; if the stale 4090 had driven the reply, A100 would appear.
-	assert.Contains(t, reply, "库存不足")
-	require.Contains(t, reply, "当前可创建的其他机型", "the stock-shortage reply must list alternatives")
-	idx := strings.Index(reply, "当前可创建的其他机型")
-	assert.NotContains(t, reply[idx:], "A100",
-		"alternatives must be computed from the edited (sealed) GPU, which excludes A100")
+	assert.Contains(t, reply, "A100 1 卡 / 16C / 64GB 当前库存不足")
+	assert.False(t, strings.HasPrefix(reply, finalReplyPrefix), "the Agent receives the failure on the edited draft")
+	assert.NotContains(t, reply, "当前可创建的其他机型")
 }

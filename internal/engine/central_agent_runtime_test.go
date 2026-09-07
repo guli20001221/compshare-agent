@@ -4,7 +4,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/intent"
@@ -81,21 +80,6 @@ func TestCentralAgentAuthorizesSearchAtExecutionBoundary(t *testing.T) {
 	require.Len(t, retriever.calls, 1)
 }
 
-func TestAgentContextCarriesPendingSelectionOrderWithoutResumingLegacyHandler(t *testing.T) {
-	now := time.Now()
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.SetSessionState(SessionState{
-		PendingSelectionKind: "instance", PendingSelectionProducedAtUnix: now.Unix(), PendingSelectionTTLSeconds: 300,
-		PendingSelectionItems: []PendingSelectionItem{{Index: 1, ID: "uhost-1", Name: "first"}, {Index: 2, ID: "uhost-2", Name: "second"}},
-	}, 1)
-	view := (ContextCompiler{}).CompileForTurn(eng, "第二台呢", "turn-selection", now)
-	card := renderAgentContextCard(view)
-	require.Contains(t, card, "uhost-1")
-	require.Contains(t, card, "序号=1")
-	require.Contains(t, card, "uhost-2")
-	require.Contains(t, card, "序号=2")
-}
-
 func TestCentralSessionUsesCentralPromptInsteadOfLegacyWorkflowCatalog(t *testing.T) {
 	deps := &SharedDeps{LLMClient: &mockLLM{}, ExternalExecutor: &mockExecutor{}}
 	eng := NewSession(deps, SessionOptions{MutatingToolsEnabled: true})
@@ -103,4 +87,32 @@ func TestCentralSessionUsesCentralPromptInsteadOfLegacyWorkflowCatalog(t *testin
 	system := renderTestMessages(eng.MessagesSnapshot())
 	require.Contains(t, system, "本轮唯一的业务判断者")
 	require.NotContains(t, system, "StopInstanceWorkflow")
+}
+
+func TestDisplayedOrderComesFromTranscriptNotTheOriginalCatalogOrder(t *testing.T) {
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("list", "ReadCapability_resource_info", `{}`)}},
+		{Content: "1. candidate-c\n2. candidate-a"},
+		{Content: "第二台是 candidate-a。"},
+	}}
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {"RetCode": 0, "TotalCount": float64(3), "UHostSet": []any{
+			map[string]any{"UHostId": "uhost-a", "Name": "candidate-a", "State": "Running"},
+			map[string]any{"UHostId": "uhost-b", "Name": "candidate-b", "State": "Running"},
+			map[string]any{"UHostId": "uhost-c", "Name": "candidate-c", "State": "Running"},
+		}},
+	}}
+	eng := NewWithDeps(model, executor, nil)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
+	reply, err := eng.Chat(context.Background(), "列出实例，并先展示 C，再展示 A。", noopStep)
+	require.NoError(t, err)
+	require.Equal(t, "1. candidate-c\n2. candidate-a", reply)
+
+	_, err = eng.Chat(context.Background(), "第二台现在是什么状态？", noopStep)
+	require.NoError(t, err)
+	require.Len(t, model.calls, 3)
+	nextRequest := renderTestMessages(model.calls[2].Messages)
+	require.Contains(t, nextRequest, reply)
+	require.NotContains(t, nextRequest, "来源=pending_selection")
+	require.NotContains(t, nextRequest, "序号=2")
 }

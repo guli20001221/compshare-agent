@@ -42,18 +42,12 @@ func TestLegacyInitializingStateIsTranslated(t *testing.T) {
 		"an unknown state shows itself rather than being guessed at")
 }
 
-// TestChargeTypeLabelComesFromTheParsedVocabulary keeps the instance list on the
-// same word list the server parses. `Year` is not a mode the product sells, so
-// it must NOT be given an invented Chinese label.
-func TestChargeTypeLabelComesFromTheParsedVocabulary(t *testing.T) {
-	for _, value := range []string{
-		deployment.ChargeTypePostpay, deployment.ChargeTypeDay,
-		deployment.ChargeTypeMonth, deployment.ChargeTypeSpot,
+func TestChargeTypeLabelsRenderWireValues(t *testing.T) {
+	for value, label := range map[string]string{
+		deployment.ChargeTypePostpay: "按量付费", deployment.ChargeTypeDay: "包日",
+		deployment.ChargeTypeMonth: "包月", deployment.ChargeTypeSpot: "抢占式",
 	} {
-		label := resourceChargeTypeLabel(value)
-		resolved, ok := deployment.ExplicitChargeTypeFromPhrase(label)
-		require.True(t, ok, "%s rendered as %q, which the server cannot parse back", value, label)
-		assert.Equal(t, value, resolved, "%s rendered as %q, which means a different mode", value, label)
+		assert.Equal(t, label, resourceChargeTypeLabel(value))
 	}
 	// The deprecated spelling must not appear as a distinct mode.
 	assert.Equal(t, resourceChargeTypeLabel("Postpay"), resourceChargeTypeLabel("Dynamic"))

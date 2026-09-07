@@ -67,4 +67,3 @@ func SafeValueMap(v map[string]any) map[string]any {
 	}
 	return map[string]any{}
 }
-

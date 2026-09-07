@@ -51,7 +51,7 @@ func TestParseResourceFiltersRejectsDuplicateOrConflictingFields(t *testing.T) {
 			name: "filter with explicit target",
 			refs: []platform.TargetRef{
 				{Type: platform.TargetRefFilter, Value: "state=running"},
-				{Type: platform.TargetRefName, Value: "train-a", Source: platform.SourceUserText},
+				{Type: platform.TargetRefName, Value: "train-a"},
 			},
 		},
 	}

@@ -23,8 +23,7 @@ func createProposalArgs(turnID, gpuType string) map[string]any {
 	return map[string]any{
 		"turn_id": turnID, "operation": "CreateInstanceWorkflow",
 		"slots": []any{map[string]any{
-			"name": "GpuType", "value": gpuType, "source": "user_explicit",
-			"evidence": map[string]any{"quote": gpuType},
+			"name": "GpuType", "value": gpuType,
 		}},
 	}
 }
@@ -88,8 +87,6 @@ func TestProposeActionResolvesGpuTypeAgainstLiveCatalog(t *testing.T) {
 	require.NotNil(t, resolved.action.Confirmation)
 	require.Equal(t, "4090_48G", resolved.action.Confirmation.Arguments["GpuType"],
 		"confirm card and executed args must be the same string")
-	require.Equal(t, eng.lastUserMsg, resolved.referenceData.ImageIntentText,
-		"the exact current turn reaches the image workflow as non-sealed fallback context")
 }
 
 func TestProposeActionRejectsSubstringTarget(t *testing.T) {
@@ -98,7 +95,7 @@ func TestProposeActionRejectsSubstringTarget(t *testing.T) {
 	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-2", time.Now())
 	eng.turnContextViewReady = true
 	out := eng.executeTool(context.Background(), toolCall("proposal", tools.ProposeActionName,
-		`{"turn_id":"turn-2","operation":"StopInstanceWorkflow","slots":[{"name":"UHostId","value":"test","source":"user_explicit","evidence":{"message_id":"turn-2","start":2,"end":6,"quote":"test"}}]}`), noopStep)
+		`{"turn_id":"turn-2","operation":"StopInstanceWorkflow","slots":[{"name":"UHostId","value":"test"}]}`), noopStep)
 	var resolved actionresolver.ResolvedAction
 	require.NoError(t, json.Unmarshal([]byte(out), &resolved))
 	require.False(t, resolved.ReadyForConfirmation)
@@ -238,7 +235,7 @@ func TestProposeActionNeverEchoesSensitiveValues(t *testing.T) {
 	eng.turnContextViewReady = true
 	var events []StepEvent
 	out := eng.executeTool(context.Background(), toolCall("proposal", tools.ProposeActionName,
-		`{"turn_id":"turn-secret","operation":"ResetPasswordWorkflow","slots":[{"name":"UHostId","value":"uhost-1","source":"verified_context","evidence":{"context_field":"selected_entities"}},{"name":"Password","value":"SecurePass123!","source":"agent_inference"}]}`), func(event StepEvent) { events = append(events, event) })
+		`{"turn_id":"turn-secret","operation":"ResetPasswordWorkflow","slots":[{"name":"UHostId","value":"uhost-1"},{"name":"Password","value":"SecurePass123!"}]}`), func(event StepEvent) { events = append(events, event) })
 	require.NotContains(t, out, "SecurePass123!")
 	for _, event := range events {
 		payload, _ := json.Marshal(event.TraceResult)
@@ -270,7 +267,7 @@ func TestCentralAgentProposalExecutesOnlyThroughExistingWorkflowGate(t *testing.
 	eng.turnContextViewReady = true
 
 	out := eng.executeTool(context.Background(), toolCall("proposal", tools.ProposeActionName,
-		`{"turn_id":"turn-write","operation":"StopInstanceWorkflow","slots":[{"name":"UHostId","value":"uhost-1","source":"user_explicit","evidence":{"message_id":"turn-write","start":3,"end":10,"quote":"uhost-1"}}]}`), noopStep)
+		`{"turn_id":"turn-write","operation":"StopInstanceWorkflow","slots":[{"name":"UHostId","value":"uhost-1"}]}`), noopStep)
 
 	require.Contains(t, out, "提交关机请求")
 	require.Equal(t, 1, confirmCalls)
@@ -293,7 +290,7 @@ func TestNonexistentProposedTargetIsRefusedBeforeConfirmation(t *testing.T) {
 	eng.turnContextViewReady = true
 
 	out := eng.executeTool(context.Background(), toolCall("proposal", tools.ProposeActionName,
-		`{"turn_id":"turn-unverified","operation":"StopInstanceWorkflow","slots":[{"name":"UHostId","value":"uhost-invented","source":"agent_inference"}]}`), noopStep)
+		`{"turn_id":"turn-unverified","operation":"StopInstanceWorkflow","slots":[{"name":"UHostId","value":"uhost-invented"}]}`), noopStep)
 
 	require.Contains(t, out, "target existence could not be confirmed")
 	require.NotContains(t, executor.calls, "StopCompShareInstance", "a nonexistent target must not mutate")
@@ -312,7 +309,7 @@ func TestInferredTargetPointQueriedRefusedWhenResponseDoesNotEcho(t *testing.T) 
 
 	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
 		"turn_id": "turn-read-only", "operation": "StopInstanceWorkflow",
-		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-1", "source": "agent_inference"}},
+		"slots": []any{map[string]any{"name": "UHostId", "value": "uhost-1"}},
 	})
 
 	require.NoError(t, err)
@@ -665,7 +662,7 @@ func TestConfirmedFollowUpUsesTheAgentsTargetAfterLongPause(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
 	require.Equal(t, "uhost-1", resolved.action.Arguments["UHostId"])
-	require.Equal(t, actionresolver.SourceAgentInference, resolved.action.Provenance["UHostId"].Source)
+
 }
 
 func TestConfirmedFollowUpExecutesThroughResolvedTargetAuthority(t *testing.T) {
@@ -722,7 +719,6 @@ func TestCarriedReferentDoesNotOverrideTheAgentsChosenTarget(t *testing.T) {
 			require.NoError(t, err)
 			require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
 			require.Equal(t, "uhost-b", resolved.action.Arguments["UHostId"])
-			require.Equal(t, actionresolver.SourceAgentInference, resolved.action.Provenance["UHostId"].Source)
 		})
 	}
 }
@@ -778,47 +774,6 @@ func TestAnUncommittedProposalDoesNotConsumeTheTurnWriteSlot(t *testing.T) {
 		require.NotContains(t, reply, "随后提出")
 		require.Equal(t, "rejected:_op=unknown_operation", eng.actionProposalDispositionThisTurn)
 	}
-}
-
-func TestCurrentTurnCapacityQuoteIsVerifiedAndConvertedBySharedCodec(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.lastUserMsg = "给 uhost-1 加200G数据盘"
-	require.NoError(t, eng.registry.SyncFromDescribe(map[string]any{"TotalCount": float64(1), "UHostSet": []any{map[string]any{"UHostId": "uhost-1"}}}, "test"))
-	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-capacity", time.Now())
-	eng.turnContextViewReady = true
-
-	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
-		"operation": "CreateDiskWorkflow",
-		"slots": []any{
-			map[string]any{"name": "UHostId", "value": "uhost-1", "source": "user_explicit", "evidence": map[string]any{"quote": "uhost-1"}},
-			map[string]any{"name": "Size", "value": "200G", "source": "user_explicit", "evidence": map[string]any{"quote": "200G"}},
-		},
-	})
-	require.NoError(t, err)
-	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
-	require.Equal(t, float64(200), resolved.action.Arguments["Size"])
-}
-
-func TestCompleteCurrentTurnEvidenceAcceptsExactCustomImageName(t *testing.T) {
-	catalog, err := actionresolver.BuildCatalog()
-	require.NoError(t, err)
-	spec, ok := catalog.Lookup("CreateCustomImageWorkflow")
-	require.True(t, ok)
-	name := "codex-agent-fixed-1784566477"
-	question := "请立即调用 ProposeAction_CreateCustomImageWorkflow，把实例 uhost-1szs4kk4wmjj 制作为自制镜像，镜像名称 " + name + "。不要用文字模拟确认，必须发出真实确认卡。"
-	proposal := actionresolver.ActionProposal{
-		TurnID:    "turn-custom-image",
-		Operation: "CreateCustomImageWorkflow",
-		Slots: []actionresolver.SlotCandidate{{
-			Name: "Name", Value: name, Source: actionresolver.SourceUserExplicit,
-		}},
-	}
-	view := AgentContext{TurnID: "turn-custom-image", CurrentQuestion: question}
-
-	completed := completeCurrentTurnEvidence(proposal, view, spec)
-	require.NotNil(t, completed.Slots[0].Evidence)
-	require.Equal(t, name, completed.Slots[0].Evidence.Quote)
-	require.True(t, verifyCurrentQuestionEvidence(view, completed.Slots[0], spec.Fields["Name"].Codec))
 }
 
 func TestProposalRejectsDifferentTurnEvidence(t *testing.T) {
@@ -901,7 +856,7 @@ func TestBlankWriteTargetStillBlocksTheCard(t *testing.T) {
 	eng.turnContextViewReady = true
 
 	out := eng.executeTool(context.Background(), toolCall("proposal", tools.ProposeActionName,
-		`{"turn_id":"turn-blank-target","operation":"StopInstanceWorkflow","slots":[{"name":"UHostId","value":"","source":"user_explicit"}]}`), noopStep)
+		`{"turn_id":"turn-blank-target","operation":"StopInstanceWorkflow","slots":[{"name":"UHostId","value":""}]}`), noopStep)
 
 	var resolved actionresolver.ResolvedAction
 	require.NoError(t, json.Unmarshal([]byte(out), &resolved))
@@ -925,9 +880,8 @@ func TestBlankOptionalSlotDoesNotSuppressTheCreateCard(t *testing.T) {
 	resolved, err := eng.resolveActionProposal(context.Background(), map[string]any{
 		"turn_id": "turn-blank-optional", "operation": "CreateInstanceWorkflow",
 		"slots": []any{
-			map[string]any{"name": "GpuType", "value": "4090", "source": "user_explicit",
-				"evidence": map[string]any{"quote": "4090"}},
-			map[string]any{"name": "CompShareImageId", "value": nil, "source": "agent_inference"},
+			map[string]any{"name": "GpuType", "value": "4090"},
+			map[string]any{"name": "CompShareImageId", "value": nil},
 		},
 	})
 
@@ -938,32 +892,7 @@ func TestBlankOptionalSlotDoesNotSuppressTheCreateCard(t *testing.T) {
 	require.NotContains(t, resolved.action.Arguments, "CompShareImageId")
 }
 
-func TestModelPlaceholdersDoNotOverrideCreateDefaults(t *testing.T) {
-	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeAvailableCompShareInstanceTypes": {
-			"AvailableInstanceTypes": []any{map[string]any{"Name": "H20"}},
-		},
-	}}
-	eng := NewWithDeps(&mockLLM{}, executor, nil)
-	eng.lastUserMsg = "帮我开台 H20"
-	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
-		eng, eng.lastUserMsg, "turn-model-placeholders", time.Now(),
-	)
-	eng.turnContextViewReady = true
-
-	resolved, err := eng.resolveActionProposal(context.Background(), proposalArgsForOperation(
-		"CreateInstanceWorkflow", map[string]any{
-			"GpuType":        "H20",
-			"SystemDiskSize": float64(1),
-		},
-	))
-
-	require.NoError(t, err)
-	require.Empty(t, resolved.action.Rejected)
-	require.NotContains(t, resolved.action.Arguments, "SystemDiskSize")
-}
-
-func TestUserSpecifiedSystemDiskCapacityIsGroundedAndPreserved(t *testing.T) {
+func TestAgentSpecifiedSystemDiskCapacityIsPreserved(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {
 			"AvailableInstanceTypes": []any{map[string]any{"Name": "H20"}},
@@ -985,8 +914,7 @@ func TestUserSpecifiedSystemDiskCapacityIsGroundedAndPreserved(t *testing.T) {
 
 	require.NoError(t, err)
 	require.Equal(t, float64(190), resolved.action.Arguments["SystemDiskSize"])
-	require.Equal(t, actionresolver.SourceUserExplicit,
-		resolved.action.Provenance["SystemDiskSize"].Source)
+
 }
 
 func TestClarificationTurnKeepsTheUsersRecentDiskCapacities(t *testing.T) {
@@ -1017,38 +945,7 @@ func TestClarificationTurnKeepsTheUsersRecentDiskCapacities(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, float64(100), resolved.action.Arguments["SystemDiskSize"])
 	require.Equal(t, float64(50), resolved.action.Arguments["DataDiskSize"])
-	require.Equal(t, actionresolver.SourceVerifiedContext,
-		resolved.action.Provenance["SystemDiskSize"].Source)
-	require.Equal(t, actionresolver.SourceVerifiedContext,
-		resolved.action.Provenance["DataDiskSize"].Source)
-}
 
-func TestCurrentCapacityDoesNotFallBackToAnOlderDifferentValue(t *testing.T) {
-	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeAvailableCompShareInstanceTypes": {
-			"AvailableInstanceTypes": []any{map[string]any{"Name": "H20"}},
-		},
-	}}
-	eng := NewWithDeps(&mockLLM{}, executor, nil)
-	eng.lastUserMsg = "H20 不变，系统盘改成 120GB"
-	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
-		eng, eng.lastUserMsg, "turn-create-capacity-update", time.Now(),
-	)
-	eng.turnContextViewThisTurn.RecentConversation = []ConversationPair{{
-		User:      "帮我创建一台 H20，系统盘 100GB",
-		Assistant: "请确认磁盘容量。",
-	}}
-	eng.turnContextViewReady = true
-
-	resolved, err := eng.resolveActionProposal(context.Background(), proposalArgsForOperation(
-		"CreateInstanceWorkflow", map[string]any{
-			"GpuType":        "H20",
-			"SystemDiskSize": "100GB",
-		},
-	))
-
-	require.NoError(t, err)
-	require.NotContains(t, resolved.action.Arguments, "SystemDiskSize")
 }
 
 func TestCreateDiskCapacitiesAcceptEquivalentUserUnits(t *testing.T) {
@@ -1081,13 +978,6 @@ func TestCreateDiskCapacitiesAcceptEquivalentUserUnits(t *testing.T) {
 	}
 }
 
-func TestEquivalentCapacityMustIdentifyOneUserLiteral(t *testing.T) {
-	start, end, ok := uniqueEquivalentCapacityLiteral([]rune("系统盘200g，另一个也是200GB"), "200GiB")
-	require.False(t, ok)
-	require.Zero(t, start)
-	require.Zero(t, end)
-}
-
 // The prune is deliberately narrow: only JSON null and whitespace-only strings.
 // Zero, false and empty collections are real values for their codecs and must
 // keep reaching adjudication — silently dropping a 0 would turn "no GPUs" into
@@ -1107,200 +997,6 @@ func TestPruneBlankSlotsKeepsMeaningfulZeroValues(t *testing.T) {
 		names = append(names, candidate.Name)
 	}
 	require.Equal(t, []string{"Zero", "False", "EmptyList", "Text"}, names)
-}
-
-func TestNormalizedEnumQuotePinsTheUsersChargeType(t *testing.T) {
-	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeAvailableCompShareInstanceTypes": {
-			"AvailableInstanceTypes": []any{map[string]any{"Name": "4090"}},
-		},
-	}}
-	eng := NewWithDeps(&mockLLM{}, executor, nil)
-	eng.lastUserMsg = "帮我按量创建一台 4090 实例"
-	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
-		eng, eng.lastUserMsg, "turn-normalized-charge", time.Now(),
-	)
-	eng.turnContextViewReady = true
-
-	args := proposalArgsForOperation("CreateInstanceWorkflow", map[string]any{
-		"GpuType":                        "4090",
-		"ChargeType":                     "Postpay",
-		proposalChargeTypeUserQuoteField: "按量",
-	})
-	resolved, err := eng.resolveActionProposal(context.Background(), args)
-
-	require.NoError(t, err)
-	require.True(t, resolved.referenceData.ChargeTypeUserPinned)
-	slot := resolved.action.Provenance["ChargeType"]
-	require.Equal(t, actionresolver.SourceUserExplicit, slot.Source)
-	require.Equal(t, "Postpay", slot.Value)
-}
-
-func TestNormalizedEnumQuoteMustExistInTheCurrentQuestion(t *testing.T) {
-	executor := &mockExecutor{results: map[string]map[string]any{
-		"DescribeAvailableCompShareInstanceTypes": {
-			"AvailableInstanceTypes": []any{map[string]any{"Name": "4090"}},
-		},
-	}}
-	eng := NewWithDeps(&mockLLM{}, executor, nil)
-	eng.lastUserMsg = "帮我创建一台 4090 实例"
-	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
-		eng, eng.lastUserMsg, "turn-false-charge-quote", time.Now(),
-	)
-	eng.turnContextViewReady = true
-
-	args := proposalArgsForOperation("CreateInstanceWorkflow", map[string]any{
-		"GpuType":                        "4090",
-		"ChargeType":                     "Month",
-		proposalChargeTypeUserQuoteField: "包月",
-	})
-	resolved, err := eng.resolveActionProposal(context.Background(), args)
-
-	require.NoError(t, err)
-	require.False(t, resolved.referenceData.ChargeTypeUserPinned)
-	require.Equal(t, actionresolver.SourceAgentInference, resolved.action.Provenance["ChargeType"].Source)
-}
-
-func TestChargeTypeQuoteCannotPromoteAMismatchedOrMeaninglessValue(t *testing.T) {
-	tests := []struct {
-		name     string
-		question string
-		value    string
-		quote    string
-	}{
-		{name: "wrong mapping", question: "帮我按量创建一台 4090 实例", value: "Month", quote: "按量"},
-		{name: "unrelated span", question: "帮我创建一台 4090 实例", value: "Month", quote: "帮我"},
-		{name: "ambiguous character", question: "帮我跑一个月", value: "Month", quote: "月"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			executor := &mockExecutor{results: map[string]map[string]any{
-				"DescribeAvailableCompShareInstanceTypes": {
-					"AvailableInstanceTypes": []any{map[string]any{"Name": "4090"}},
-				},
-			}}
-			eng := NewWithDeps(&mockLLM{}, executor, nil)
-			eng.lastUserMsg = tt.question
-			eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(
-				eng, eng.lastUserMsg, "turn-rejected-charge-quote", time.Now(),
-			)
-			eng.turnContextViewReady = true
-
-			args := proposalArgsForOperation("CreateInstanceWorkflow", map[string]any{
-				"GpuType":                        "4090",
-				"ChargeType":                     tt.value,
-				proposalChargeTypeUserQuoteField: tt.quote,
-			})
-			resolved, err := eng.resolveActionProposal(context.Background(), args)
-
-			require.NoError(t, err)
-			require.False(t, resolved.referenceData.ChargeTypeUserPinned)
-			require.Equal(t, actionresolver.SourceAgentInference, resolved.action.Provenance["ChargeType"].Source)
-		})
-	}
-}
-
-func TestImageSourceQuoteNeedsUniqueCurrentMatchingEvidence(t *testing.T) {
-	catalog, err := defaultActionCatalog()
-	require.NoError(t, err)
-	spec, ok := catalog.Lookup("CreateInstanceWorkflow")
-	require.True(t, ok)
-
-	tests := []struct {
-		name     string
-		question string
-		value    string
-		quote    string
-	}{
-		{name: "missing quote", question: "请用社区镜像创建", value: "community"},
-		{name: "canonical negated without quote", question: "不要 community，用刚才那个", value: "community"},
-		{name: "not in current question", question: "请用该镜像创建", value: "community", quote: "社区镜像"},
-		{name: "duplicate quote", question: "社区镜像和社区镜像都可以", value: "community", quote: "社区镜像"},
-		{name: "mapping mismatch", question: "请用社区镜像创建", value: "platform", quote: "社区镜像"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var evidence *actionresolver.SourceEvidence
-			if tt.quote != "" {
-				evidence = &actionresolver.SourceEvidence{Quote: tt.quote}
-			}
-			proposal := actionresolver.ActionProposal{
-				Operation: "CreateInstanceWorkflow",
-				Slots: []actionresolver.SlotCandidate{{
-					Name: "ImageSource", Value: tt.value,
-					Source: actionresolver.SourceAgentInference, Evidence: evidence,
-				}},
-			}
-			view := AgentContext{TurnID: "turn-image-source-quote", CurrentQuestion: tt.question}
-
-			got := (&Engine{}).deriveProposalProvenance(proposal, view, spec)
-
-			require.Len(t, got.Slots, 1)
-			require.Equal(t, actionresolver.SourceAgentInference, got.Slots[0].Source)
-			require.Nil(t, got.Slots[0].Evidence)
-		})
-	}
-}
-
-func TestCanonicalImageSourceNeedsAffirmativeQuote(t *testing.T) {
-	catalog, err := defaultActionCatalog()
-	require.NoError(t, err)
-	spec, ok := catalog.Lookup("CreateInstanceWorkflow")
-	require.True(t, ok)
-	proposal := actionresolver.ActionProposal{
-		Operation: "CreateInstanceWorkflow",
-		Slots: []actionresolver.SlotCandidate{{
-			Name: "ImageSource", Value: "community", Source: actionresolver.SourceAgentInference,
-			Evidence: &actionresolver.SourceEvidence{Quote: "community"},
-		}},
-	}
-	view := AgentContext{
-		TurnID:          "turn-canonical-image-source",
-		CurrentQuestion: "请使用 community 镜像创建",
-	}
-
-	got := (&Engine{}).deriveProposalProvenance(proposal, view, spec)
-
-	require.Len(t, got.Slots, 1)
-	require.Equal(t, actionresolver.SourceUserExplicit, got.Slots[0].Source)
-	require.Equal(t, "community", got.Slots[0].Evidence.Quote)
-}
-
-func TestLegacySharedImageSourceQuoteMatchesCanonicalSharing(t *testing.T) {
-	catalog, err := defaultActionCatalog()
-	require.NoError(t, err)
-	spec, ok := catalog.Lookup("ReinstallInstanceWorkflow")
-	require.True(t, ok)
-	proposal := actionresolver.ActionProposal{
-		Operation: "ReinstallInstanceWorkflow",
-		Slots: []actionresolver.SlotCandidate{{
-			Name: "ImageSource", Value: "shared", Source: actionresolver.SourceAgentInference,
-			Evidence: &actionresolver.SourceEvidence{Quote: "shared"},
-		}},
-	}
-	view := AgentContext{
-		TurnID:          "turn-shared-image-source",
-		CurrentQuestion: "请使用 shared 镜像重装",
-	}
-
-	got := (&Engine{}).deriveProposalProvenance(proposal, view, spec)
-
-	require.Len(t, got.Slots, 1)
-	require.Equal(t, actionresolver.SourceUserExplicit, got.Slots[0].Source)
-}
-
-func TestImageSourceQuoteNeverSettlesAnAgentSuggestedImage(t *testing.T) {
-	state := deriveImageSelection(map[string]actionresolver.ResolvedSlot{
-		"ImageSource": {
-			Value: "community", Source: actionresolver.SourceUserExplicit,
-		},
-		"CompShareImageId": {
-			Value: "compshareImage-suggested", Source: actionresolver.SourceAgentInference,
-		},
-	})
-
-	require.Equal(t, workflow.ImageSelectionSuggested, state,
-		"即使来源原话被误判为肯定选择，历史镜像 ID 仍必须经过可编辑确认卡")
 }
 
 func TestResolvedProposalDisposition(t *testing.T) {

@@ -35,35 +35,12 @@ type mockLLM struct {
 
 func (m *mockLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
 	m.calls = append(m.calls, req)
-	if isCreatePreferenceMockRequest(req) && !nextMockResponseLooksLikeCreatePreference(m) {
-		return &llm.ChatResponse{Content: `{"workload_pref":"","image_pref":"","image_source":"","gpu_pref":"","zone_pref":"","purpose":""}`}, nil
-	}
 	if m.callIdx >= len(m.responses) {
 		return &llm.ChatResponse{Content: "no more mock responses"}, nil
 	}
 	resp := m.responses[m.callIdx]
 	m.callIdx++
 	return &resp, nil
-}
-
-func isCreatePreferenceMockRequest(req llm.ChatRequest) bool {
-	if len(req.Messages) == 0 {
-		return false
-	}
-	return strings.Contains(req.Messages[0].Content, "创建/部署偏好抽取器")
-}
-
-func nextMockResponseLooksLikeCreatePreference(m *mockLLM) bool {
-	if m == nil || m.callIdx >= len(m.responses) {
-		return false
-	}
-	content := m.responses[m.callIdx].Content
-	return strings.Contains(content, "workload_pref") ||
-		strings.Contains(content, "image_pref") ||
-		strings.Contains(content, "image_source") ||
-		strings.Contains(content, "gpu_pref") ||
-		strings.Contains(content, "zone_pref") ||
-		strings.Contains(content, "purpose")
 }
 
 // mockLLMWithError always returns an error.
@@ -277,7 +254,7 @@ func TestChat_ExternalTool_L0(t *testing.T) {
 	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
 }
 
-func TestChat_ReActDisplayedInstanceListRecordsPendingSelection(t *testing.T) {
+func TestChatDisplayedInstanceListRemainsInCanonicalTranscript(t *testing.T) {
 	var monitorIDs []string
 	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
 		switch action {
@@ -303,7 +280,7 @@ func TestChat_ReActDisplayedInstanceListRecordsPendingSelection(t *testing.T) {
 		}},
 		{Content: "1. visible-one\n2. visible-two"},
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc2", "ReadCapability_monitor_query", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-visible-1","source":"user_text"}]}`),
+			toolCall("tc2", "ReadCapability_monitor_query", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-visible-1"}]}`),
 		}},
 		{Content: "第 1 台 GPU 当前空闲。"},
 	}}
@@ -317,51 +294,12 @@ func TestChat_ReActDisplayedInstanceListRecordsPendingSelection(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Contains(t, reply, "visible-one")
-	state, _, _ := eng.SessionStateSnapshot()
-	require.Len(t, state.PendingSelectionItems, 2)
-	assert.Equal(t, "uhost-visible-1", state.PendingSelectionItems[0].ID)
-	assert.Equal(t, "uhost-visible-2", state.PendingSelectionItems[1].ID)
 
 	followup, err := eng.Chat(context.Background(), "第1台 GPU 忙不忙", noopStep)
 	require.NoError(t, err)
 	require.Equal(t, []string{"uhost-visible-1"}, monitorIDs)
 	assert.NotContains(t, followup, "请选择")
-}
-
-func TestChat_ReActHiddenInstanceLookupDoesNotRecordPendingSelection(t *testing.T) {
-	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
-		switch action {
-		case "DescribeCompShareInstance":
-			return map[string]any{
-				"UHostSet": []any{
-					map[string]any{"UHostId": "uhost-hidden-1", "Name": "hidden-one", "State": "Running", "GpuType": "4090", "GPU": float64(1), "CPU": float64(16), "Memory": float64(65536), "Zone": "cn-wlcb-01"},
-					map[string]any{"UHostId": "uhost-hidden-2", "Name": "hidden-two", "State": "Running", "GpuType": "4090", "GPU": float64(1), "CPU": float64(16), "Memory": float64(65536), "Zone": "cn-wlcb-01"},
-				},
-				"TotalCount": float64(2),
-				"RetCode":    0,
-			}, nil
-		default:
-			return map[string]any{"Action": action, "RetCode": 0}, nil
-		}
-	}}
-	mock := &mockLLM{responses: []llm.ChatResponse{
-		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "ReadCapability_resource_info", `{}`),
-		}},
-		{Content: "hidden-one 和 hidden-two 都已检查，未发现异常。"},
-	}}
-	eng := NewWithDeps(mock, executor, nil)
-	eng.messages = []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "test"},
-	}
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
-
-	reply, err := eng.Chat(context.Background(), "帮我检查实例", noopStep)
-
-	require.NoError(t, err)
-	assert.Contains(t, reply, "未发现异常")
-	state, _, _ := eng.SessionStateSnapshot()
-	assert.Empty(t, state.PendingSelectionItems)
+	require.Contains(t, renderTestMessages(mock.calls[2].Messages), reply)
 }
 
 func TestChat_ExternalToolEventsCarryTraceMetadata(t *testing.T) {
@@ -447,7 +385,7 @@ func TestChat_ExternalToolReadRetriesTransientError(t *testing.T) {
 func TestChat_HistoricalMonitorToolCallExecutesWithTemporalGuard(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{{
 		ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "ReadCapability_monitor_history", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-1","source":"user_text"}],"time_window":{"type":"preset","preset":"yesterday","source_span":"昨天"}}`),
+			toolCall("tc1", "ReadCapability_monitor_history", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-1"}],"time_window":{"type":"preset","preset":"yesterday"}}`),
 		},
 	}, {Content: "没有返回有效监控数据"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -464,30 +402,11 @@ func TestChat_HistoricalMonitorToolCallExecutesWithTemporalGuard(t *testing.T) {
 	assert.Equal(t, []string{"DescribeCompShareInstance", "GetCompShareInstanceMonitor"}, executor.calls)
 }
 
-// The historical-monitor guard no longer rewrites the model's prose: the correct
-// window now ships deterministically from the structured render (see
-// RenderHistoricalMonitorSummary), not a post-hoc regex. When data is present the
-// guard is a pure passthrough, so a window the model stated — and every unrelated
-// date — survive verbatim (the old code rewrote them). The only remaining behavior
-// is the all-no-data whole-answer override, covered by the Chat-level tests above.
-func TestGuardMonitorNoDataFinalReplyPassthroughWhenDataPresent(t *testing.T) {
-	eng := NewWithDeps(nil, nil, nil)
-	eng.currentMonitorWindow = true
-	eng.currentMonitorStart = 1777442400
-	eng.currentMonitorEnd = 1777444200
-	// currentMonitorTargets is empty → not all-no-data → the override does not fire.
-
-	answer := "该实例创建于 2026-01-15，到期时间 2027-03-20。历史监控显示 2025-06-30 13:00 ~ 13:30 CPU 42%"
-	reply := eng.guardMonitorNoDataFinalReply(answer)
-
-	assert.Equal(t, answer, reply, "with data present the guard is a passthrough; it no longer rewrites windows, dates, or phrases")
-}
-
 func TestChat_ClearHistoricalMonitorQuestionMayUseReActHistoryTool(t *testing.T) {
 	msg := "过去一小时 uhost-1 的 CPU 监控"
 	mock := &mockLLM{responses: []llm.ChatResponse{{
 		ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "ReadCapability_monitor_history", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-1","source":"user_text"}],"metrics":["cpu"],"time_window":{"type":"relative","amount":1,"unit":"hour","source_span":"过去一小时"}}`),
+			toolCall("tc1", "ReadCapability_monitor_history", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-1"}],"metrics":["cpu"],"time_window":{"type":"relative","amount":1,"unit":"hour"}}`),
 		},
 	}, {Content: "没有返回有效监控数据"}}}
 	executor := &mockExecutor{results: map[string]map[string]any{
@@ -666,10 +585,10 @@ func TestChat_MaxRoundsExceeded(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "test", noopStep)
 	assert.NoError(t, err)
 	assert.Contains(t, reply, "轮次超限")
-	// No SearchKnowledge ran (plain reads only) → empty ledger → the loop-ceiling
-	// recovery must NOT fire and the canned message stays byte-identical. Pins the
-	// no-fabrication contract that gates synthesizeOnBudgetExceeded at this exit.
-	assert.Empty(t, eng.searchKnowledgeHitsThisTurn, "no evidence gathered → recovery must not fabricate over the ceiling refusal")
+	// Even the tool-free closing call returned tool calls, so use the terminal
+	// fallback rather than starting another execution round.
+	assert.Len(t, mock.calls, maxReActRounds+1)
+	assert.Empty(t, mock.calls[len(mock.calls)-1].Tools)
 }
 
 // Knowledge-route tools run locally and never reach the API executor.
@@ -1095,7 +1014,7 @@ func TestChat_ReadExpensiveTargetCapBecomesToolResult(t *testing.T) {
 	}
 	targets := make([]map[string]any, 0, len(ids))
 	for _, id := range ids {
-		targets = append(targets, map[string]any{"type": "uhost_id_user_input", "value": id, "source": "user_text"})
+		targets = append(targets, map[string]any{"type": "uhost_id_user_input", "value": id})
 	}
 	rawArgs, err := json.Marshal(map[string]any{"targets": targets})
 	require.NoError(t, err)
@@ -1465,7 +1384,7 @@ func TestVerbatimBlockSurvivesALaterModelFailure(t *testing.T) {
 	assert.Equal(t, eng.verbatimBlocksThisTurn[0], reply)
 	assert.Equal(t, reply, strings.Join(deltas, ""),
 		"the persisted reply must remain byte-identical to the block already streamed")
-	assert.Equal(t, 2, model.calls)
+	assert.Equal(t, 3, model.calls, "a final no-tools attempt may fail without losing the delivered block")
 	require.NotEmpty(t, eng.messages)
 	assert.Equal(t, verbatimBillingHistoryCompletion, eng.messages[len(eng.messages)-1].Content,
 		"model history keeps only the amount-free completion marker")
@@ -1809,7 +1728,7 @@ func TestChat_InstanceAccessTool_SSHStopped(t *testing.T) {
 	}}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "ReadCapability_instance_access", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-diag-001","source":"user_text"}],"access_type":"ssh"}`),
+			toolCall("tc1", "ReadCapability_instance_access", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-diag-001"}],"access_type":"ssh"}`),
 		}},
 		{Content: "诊断结果：实例已关机，需要先开机"},
 	}}
@@ -1856,7 +1775,7 @@ func TestChat_InstanceAccessDiagnosisCanUseKnowledgeWithoutRewritingFacts(t *tes
 	}}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("access", "ReadCapability_instance_access", `{"targets":[{"type":"uhost_id_user_input","value":"cpod-diag-001","source":"user_text"}],"access_type":"custom_port","protocol":"tcp","port":8188}`),
+			toolCall("access", "ReadCapability_instance_access", `{"targets":[{"type":"uhost_id_user_input","value":"cpod-diag-001"}],"access_type":"custom_port","protocol":"tcp","port":8188}`),
 		}},
 		{ToolCalls: []openai.ToolCall{
 			toolCall("knowledge", "SearchKnowledge", `{"query":"Pod 添加 TCP 端口映射的方法"}`),
@@ -1902,7 +1821,7 @@ func TestChat_InstanceAccessTokenReturnsThroughTheCentralAgent(t *testing.T) {
 	}}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("token", "ReadCapability_instance_access", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-token-001","source":"user_text"}],"access_type":"jupyter_token"}`),
+			toolCall("token", "ReadCapability_instance_access", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-token-001"}],"access_type":"jupyter_token"}`),
 		}},
 		{Content: "Token 已获取。"},
 	}}
@@ -1931,7 +1850,7 @@ func TestChat_InstanceAccessTool_UnknownArgsRejectedBeforeUpstream(t *testing.T)
 	}}
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{
-			toolCall("tc1", "ReadCapability_instance_access", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-diag-002","source":"user_text"}],"access_type":"ssh","evil":"injection"}`),
+			toolCall("tc1", "ReadCapability_instance_access", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-diag-002"}],"access_type":"ssh","evil":"injection"}`),
 		}},
 		{Content: "done"},
 	}}
@@ -2091,41 +2010,21 @@ func TestNormalizeMsg(t *testing.T) {
 	}
 }
 
-// TestChat_TokenBudgetExceeded_BreaksAtIterationBoundary — verifies the
-// per-turn token cap fires at the TOP of a ReAct iteration, AFTER the
-// previous iteration's tool_call/tool_result pair has fully completed.
-//
-// Setup: round 0 LLM returns one tool_call + reports 60000 tokens used,
-// which is over the 50000 cap. The engine MUST:
-//  1. Still execute that tool_call and append its tool_result (so the WS
-//     client never sees an orphan tool_call frame — protocol invariant).
-//  2. NOT make a second LLM call (round 1 budget check trips first).
-//  3. Return tokenBudgetExceededMessage with status mapped to "blocked"
-//     via the hard-block observer (Category="token_budget_exceeded").
-//
-// WHY: the (c) constraint from 2026-05-21 review — a token cap that
-// breaks mid-tool would leave the client framing broken. Encode the
-// boundary placement as a test so future refactors can't silently move
-// the check inside the tool_call inner loop.
-func TestChat_TokenBudgetExceeded_BreaksAtIterationBoundary(t *testing.T) {
+// A budget limit closes the tool loop after the completed call/result pair.
+// The final answer uses that same conversation, without any further tools.
+func TestChatTokenBudgetClosesToolsAfterTheCompletedObservation(t *testing.T) {
 	const sensitiveReply = "Jupyter Token：server-owned-token"
+	const finalAnswer = "实例查询暂时失败，当前无法确认配置。"
 	mock := &mockLLM{responses: []llm.ChatResponse{
-		// Round 0: emits a tool_call AND reports 60k tokens (over the
-		// 50k cap). Second response would be returned if round 1 ran.
 		{
 			ToolCalls: []openai.ToolCall{
-				toolCall("tc1", "ReadCapability_resource_info", `{}`),
+				toolCall("tc1", "ReadCapability_resource_info", "{}"),
 			},
 			Usage: llm.TokenUsage{TotalTokens: 60000},
 		},
-		{Content: "this must never be returned — budget should trip first"},
+		{Content: finalAnswer},
 	}}
 	onStep, events := collectSteps()
-	var hardBlockHits []observability.EngineHardBlockTrace
-
-	// This test is about the iteration boundary, not evidence-based recovery.
-	// Keep the tool call non-evidentiary so a successful read cannot legitimately
-	// trigger the separate one-call synthesis path.
 	eng := NewWithDeps(mock, &mockExecutorFn{fn: func(string, map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("test upstream failure")
 	}}, nil)
@@ -2135,44 +2034,33 @@ func TestChat_TokenBudgetExceeded_BreaksAtIterationBoundary(t *testing.T) {
 	}
 	eng.rateLimiter = limiter
 	eng.maxTokensPerTurn = 50000
-	eng.SetHardBlockObserver(func(t observability.EngineHardBlockTrace) {
-		hardBlockHits = append(hardBlockHits, t)
-	})
-	eng.messages = []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "test"},
-	}
 
 	reply, err := eng.Chat(context.Background(), "4090什么配置", onStep)
 	require.NoError(t, err)
-	assert.Equal(t, sensitiveReply+"\n\n"+tokenBudgetExceededMessage, reply,
-		"budget exceeded should short-circuit to the canned reply, not the round-1 LLM response")
+	assert.Equal(t, sensitiveReply+"\n\n"+finalAnswer, reply)
+	require.Len(t, mock.calls, 2)
+	require.Empty(t, mock.calls[1].Tools)
+	require.Contains(t, renderTestMessages(mock.calls[1].Messages), "4090什么配置")
 
-	// Exactly one LLM call: round 0 happens, round 1 hits the gate.
-	assert.Len(t, mock.calls, 1,
-		"second LLM call must not happen once budget is exceeded; got %d calls", len(mock.calls))
+	var toolObservation bool
+	for _, message := range mock.calls[1].Messages {
+		if message.Role == openai.ChatMessageRoleTool && message.ToolCallID == "tc1" {
+			toolObservation = true
+		}
+	}
+	require.True(t, toolObservation, "the final request must retain the actual completed tool result")
 
-	// The tool_call from round 0 must have run to completion — the test
-	// asserts BOTH the tool_call and tool_result events fired, proving
-	// the pair stays atomic across the budget break.
 	var sawToolCall, sawToolResult bool
-	for _, ev := range *events {
-		if ev.Type == StepToolCall && ev.Action == "ReadCapability_resource_info" {
+	for _, event := range *events {
+		if event.Type == StepToolCall && event.Action == "ReadCapability_resource_info" {
 			sawToolCall = true
 		}
-		if ev.Type == StepToolResult && ev.Action == "ReadCapability_resource_info" {
+		if event.Type == StepToolResult && event.Action == "ReadCapability_resource_info" {
 			sawToolResult = true
 		}
 	}
-	assert.True(t, sawToolCall, "round 0 tool_call must be emitted before the budget break")
-	assert.True(t, sawToolResult, "round 0 tool_result must be emitted before the budget break (protocol invariant)")
-
-	// Hard-block observer fired with the expected category, so downstream
-	// status mapping in trace_recorder produces status="blocked".
-	require.Len(t, hardBlockHits, 1, "expected exactly one hard-block emission")
-	assert.True(t, hardBlockHits[0].Hit)
-	assert.Equal(t, "token_budget_exceeded", hardBlockHits[0].Category)
-	// PR #61: single-source attribution — token budget is its own trigger class
-	assert.Equal(t, observability.HardBlockTriggerTokenBudget, hardBlockHits[0].TriggeredBy)
+	assert.True(t, sawToolCall)
+	assert.True(t, sawToolResult)
 }
 
 // TestChat_TokenBudget_DisabledByDefault — sanity check that

@@ -5,7 +5,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/compshare-agent/internal/actionresolver"
 	"github.com/compshare-agent/internal/llm"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
@@ -79,7 +78,7 @@ func TestASecondTypedIDAlsoOutranksCarriedContextForWriteWorkflows(t *testing.T)
 	require.NoError(t, err)
 	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
 	require.Equal(t, second, resolved.action.Arguments["UHostId"])
-	require.Equal(t, actionresolver.SourceUserExplicit, resolved.action.Provenance["UHostId"].Source)
+
 }
 
 // Names, ordinals and pronouns are resolved by the Agent. A verified concrete

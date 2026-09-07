@@ -62,7 +62,7 @@ func zoneOnlySpecResolver(zoneCatalog *deployment.ZoneCatalogSnapshot) *Resolver
 			},
 		},
 	}
-	r := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
+	r := New(catalog, TargetAdjudicatorFunc(func(SlotCandidate) TargetVerdict { return TargetAccept }), MachineTypeCatalog{})
 	if zoneCatalog != nil {
 		r = r.WithZoneCatalog(zoneCatalog)
 	}
@@ -73,8 +73,7 @@ func zoneProposal(zone string) ActionProposal {
 	return ActionProposal{
 		TurnID: "turn-1", Operation: "CreateInstanceWorkflow",
 		Slots: []SlotCandidate{{
-			Name: "Zone", Value: zone, Source: SourceUserExplicit,
-			Evidence: &SourceEvidence{MessageID: "turn-1", Quote: zone},
+			Name: "Zone", Value: zone,
 		}},
 	}
 }
@@ -167,11 +166,11 @@ func TestResolveReportsZoneAmbiguityAsConflict(t *testing.T) {
 func TestResolveValidChineseZoneKeptOpensIntakeForm(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
-	r := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{}).
+	r := New(catalog, TargetAdjudicatorFunc(func(SlotCandidate) TargetVerdict { return TargetAccept }), MachineTypeCatalog{}).
 		WithZoneCatalog(twoZoneCatalog())
 
 	resolved := r.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
-		{Name: "Zone", Value: "华北一C", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "华北一C"}},
+		{Name: "Zone", Value: "华北一C"},
 	}})
 
 	require.False(t, resolved.ReadyForConfirmation, "GpuType is still missing")
@@ -185,18 +184,18 @@ func TestResolveValidChineseZoneKeptOpensIntakeForm(t *testing.T) {
 func TestResolveInvalidChineseZoneEntersIntakeForm(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
-	r := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{Names: []string{"4090"}, Available: true}).
+	r := New(catalog, TargetAdjudicatorFunc(func(SlotCandidate) TargetVerdict { return TargetAccept }), MachineTypeCatalog{Names: []string{"4090"}, Available: true}).
 		WithZoneCatalog(twoZoneCatalog())
 
 	resolved := r.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
-		{Name: "GpuType", Value: "4090", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "4090"}},
-		{Name: "Zone", Value: "华北一区", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "华北一区"}},
+		{Name: "GpuType", Value: "4090"},
+		{Name: "Zone", Value: "华北一区"},
 	}})
 
 	require.False(t, resolved.ReadyForConfirmation)
 	require.True(t, resolved.ReadyForIntake, "a truly-invalid zone is form-correctable — the form re-collects it")
 	require.NotContains(t, resolved.Arguments, "Zone", "the invalid zone value is discarded, never carried forward")
-	require.Equal(t, []RejectedProblem{{Slot: "Zone", Kind: RejectInvalidValue, Actor: RejectionActorUser}}, resolved.RejectedProblems,
+	require.Equal(t, []RejectedProblem{{Slot: "Zone", Kind: RejectInvalidValue, Actor: RejectionActorModel}}, resolved.RejectedProblems,
 		"华北一区 is a partial name (an invalid value), not a live zone")
 }
 

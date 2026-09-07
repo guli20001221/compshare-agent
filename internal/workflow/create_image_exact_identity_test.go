@@ -43,11 +43,10 @@ func unrelatedCommunityPage() map[string]any {
 	}}
 }
 
-func exactRecommendedReference(selection ImageSelectionState) ReferenceData {
+func exactRecommendedReference() ReferenceData {
 	return ReferenceData{
-		ZoneCatalog:    createZoneCatalog(),
-		ImageCatalog:   exactRecommendedImageSnapshot(),
-		ImageSelection: selection,
+		ZoneCatalog:  createZoneCatalog(),
+		ImageCatalog: exactRecommendedImageSnapshot(),
 	}
 }
 
@@ -58,7 +57,7 @@ func TestCreateImageResultMergesOnlyTheVerifiedExactImage(t *testing.T) {
 		"CompShareImageId": exactRecommendedImageID,
 		"ImageName":        "陈旧的错误名称",
 	})
-	wfCtx.referenceData = exactRecommendedReference(ImageSelectionSuggested)
+	wfCtx.referenceData = exactRecommendedReference()
 	wfCtx.StepResults["查询镜像"] = raw
 
 	merged := createImageResult(wfCtx)
@@ -103,7 +102,7 @@ func TestPlainCreateUsesTheExactGroupedCommunityPointResult(t *testing.T) {
 		"CompShareImageId":  exactRecommendedImageID,
 		"ChargeType":        "Postpay",
 		"GuidedRecommended": true,
-	}, WithReferenceData(exactRecommendedReference(ImageSelectionSuggested)))
+	}, WithReferenceData(exactRecommendedReference()))
 
 	require.NoError(t, err)
 	require.True(t, result.Success, result.Message)
@@ -137,7 +136,6 @@ func TestPlainCreateUsesPlatformPointResultEvenWhenTotalCountIsZero(t *testing.T
 			ID: imageID, Name: imageName, Source: "platform", ImageType: "System",
 			Status: "Available", SupportedGPUTypes: []string{"4090"}, SizeMB: 40960,
 		}}),
-		ImageSelection: ImageSelectionSuggested,
 	}
 	eng := NewEngine(executor, func(_ string, _ map[string]any) bool { return true }, nil)
 
@@ -160,29 +158,25 @@ func TestPlainCreateUsesPlatformPointResultEvenWhenTotalCountIsZero(t *testing.T
 	assert.Equal(t, imageID, createCall.args["CompShareImageId"])
 }
 
-func TestGuidedCreatePreselectsAndCreatesTheExactRecommendedImageOutsideBrowsePage(t *testing.T) {
+func TestGuidedCreateConfirmsAndCreatesTheExactImageOutsideBrowsePage(t *testing.T) {
 	executor := formMockExecutor()
 	executor.results["DescribeCommunityImages"] = unrelatedCommunityPage()
 	var (
-		imageCards   int
-		imageValue   string
-		imageOptions []ConfirmFormOption
+		imageCards int
+		finalImage string
 	)
 	eng := NewEngine(executor, nil, nil)
 	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
 		require.NotNil(t, form)
 		if field := form.Field("ImageId"); field != nil && field.Editable {
 			imageCards++
-			imageValue = field.Value
-			require.NotEmpty(t, field.Options)
-			imageOptions = append([]ConfirmFormOption(nil), field.Options...)
-			require.Equal(t, exactRecommendedImageID, field.Options[0].Value,
-				"推荐镜像必须是该系列确认卡的默认项")
+		}
+		if form.Step != nil && form.Step.Final {
+			finalImage = fieldByKey(t, form, "ImageId").Value
 		}
 		return ConfirmResolution{Confirmed: true}
 	})
-	ref := exactRecommendedReference(ImageSelectionSuggested)
-	ref.ChargeTypeUserPinned = true
+	ref := exactRecommendedReference()
 
 	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{
 		"GpuType":           "4090",
@@ -200,11 +194,8 @@ func TestGuidedCreatePreselectsAndCreatesTheExactRecommendedImageOutsideBrowsePa
 
 	require.NoError(t, err)
 	require.True(t, result.Success, result.Message)
-	assert.Equal(t, 1, imageCards)
-	assert.Equal(t, exactRecommendedImageID, imageValue)
-	require.Len(t, imageOptions, 1,
-		"when the family lookup cannot return siblings, the exact verified recommendation is the only safe option")
-	assert.Equal(t, exactRecommendedImageID, imageOptions[0].Value)
+	assert.Zero(t, imageCards, "an exact requested image does not require another picker")
+	assert.Equal(t, exactRecommendedImageID, finalImage, "the priced final card must still confirm the exact image")
 	createCall, ok := findExecutorCall(executor.calls, "CreateCompShareInstance")
 	require.True(t, ok)
 	assert.Equal(t, exactRecommendedImageID, createCall.args["CompShareImageId"])
@@ -246,8 +237,7 @@ func TestGuidedCreateShowsAllMatchingVersionsWhenUserCopiesOnlyTheName(t *testin
 		}
 		return ConfirmResolution{Confirmed: true}
 	})
-	ref := exactRecommendedReference(ImageSelectionSuggested)
-	ref.ChargeTypeUserPinned = true
+	ref := exactRecommendedReference()
 
 	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{
 		"GpuType":           "4090",
@@ -260,7 +250,6 @@ func TestGuidedCreateShowsAllMatchingVersionsWhenUserCopiesOnlyTheName(t *testin
 		"GuidedRecommended": true,
 		"ImageSource":       "community",
 		"ImageName":         "FaceFusion",
-		"CompShareImageId":  exactRecommendedImageID,
 		"ChargeType":        "Postpay",
 	}, WithReferenceData(ref))
 

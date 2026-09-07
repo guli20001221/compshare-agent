@@ -84,21 +84,13 @@ type capacitySpec struct {
 // has to come back as a limit rather than an estimate.
 const stockCapabilityDescription = "查询 GPU 机型在各可用区的实时库存，并在可能时做配置样本预检。库存数量来自本轮实时快照，仅作当前参考，接口不提供补货或到货时间；最终可创建性结合配置预检判断。规格参数查询使用 GPU 规格能力。"
 
-// The first call preserves the user's wording. If it does not match the live
-// catalog, the result gives the Agent that catalog and asks it to correct its own
-// call; a later call may therefore carry an exact catalog value instead.
-const stockZoneMentionsDescription = "首次调用填写用户本轮明确提到的可用区原文；工具返回实时目录后，语义唯一时可改用目录中的完整名称或 ZoneID 重试，存在多个合理候选时再请用户选择。不得默认区域或使用目录外的值。"
+const stockZoneMentionsDescription = "目标可用区名称或 ZoneID；未限定区域时省略。未匹配时返回实时目录，语义唯一时使用目录中的完整名称或 ZoneID 重试，存在多个合理候选时再请用户选择。"
 
 func stockReadSpec() ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabilityResponse] {
 	return ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabilityResponse]{
 		Label:       stockCapabilityLabel,
 		Description: stockCapabilityDescription,
 		Params: objectParam(map[string]schemaNode{
-			// Deliberately undescribed. A description telling the model to carry the
-			// card forward when the user elides it would be the natural companion to
-			// deleting the server-side carry — but it costs ~200 bytes on EVERY
-			// Canonical transcript replay gives the model the earlier stock call;
-			// keep the schema concise and let it carry the referenced GPU explicitly.
 			"gpu_type":       stringParam(),
 			"zone_mentions":  arrayParam(stringParam()).described(stockZoneMentionsDescription),
 			"inventory_pool": enumParam(stockInventoryPoolUnspecified, deployment.GPUInventoryPoolExclusive, deployment.GPUInventoryPoolSpot).described("用户明确询问独占库存时填 Exclusive，明确询问抢占式库存时填 Spot；未限定时填 Unspecified。"),

@@ -65,11 +65,8 @@ const (
 	// separate path and is surfaced as such; this only substitutes for a
 	// genuinely empty successful turn.
 	emptyReplyFallbackMessage = "抱歉，本次没有生成有效回复，请重试，或换一种方式描述您的问题。"
-	// reactCeilingRefusal is the last resort when the ReAct loop burned all
-	// maxReActRounds without producing an answer AND neither recovery path
-	// (evidence ledger / resolved-instance context) had anything to synthesize
-	// from. Named rather than inlined so the history-parity test can pin the
-	// exact text the user is told.
+	// reactCeilingRefusal is the last resort when neither the Agent nor the
+	// committed-result fallback can close the turn.
 	reactCeilingRefusal = "抱歉，处理轮次超限，请重新描述您的需求。"
 	// outputTruncatedRefusal is distinct from an empty reply: the provider
 	// confirmed that it stopped generation at its output limit, so the partial
@@ -309,18 +306,9 @@ type Engine struct {
 	// confirmEditsFn is the per-turn editable-form HITL gate.
 	confirmEditsFn workflow.ConfirmEditsFunc
 	// guidedCreate is a per-turn client capability.
-	guidedCreate                       bool
-	messages                           []openai.ChatCompletionMessage // conversation history
-	userTurn                           int                            // incremented at start of each Chat() call
-	lastInstanceQueryTurn              int                            // set to userTurn on successful DescribeCompShareInstance
-	lastMonitorTurn                    int                            // set to userTurn on successful GetCompShareInstanceMonitor
-	currentMonitorTargets              []string                       // historical monitor targets queried in the current turn
-	currentMonitorNoData               []string                       // current-turn historical monitor targets with no data samples
-	currentMonitorStart                int64                          // start of the current historical monitor window, if any
-	currentMonitorEnd                  int64                          // end of the current historical monitor window, if any
-	currentMonitorWindow               bool                           // true when currentMonitorStart/End are known
-	pendingResourceSelection           *pendingResourceSelection
-	displayedResourceSelectionThisTurn *pendingResourceSelection
+	guidedCreate bool
+	messages     []openai.ChatCompletionMessage // conversation history
+	userTurn     int                            // incremented at start of each Chat() call
 	// lastTurnTranscript holds the canonical agent_transcript_v1 document for
 	// persistence on the assistant row.
 	lastTurnTranscript      json.RawMessage
@@ -528,16 +516,11 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 		maxTokensPerTurn:   deps.MaxTokensPerTurn,
 
 		// ── per-session (fresh instance every call) ──
-		confirmFn:             opts.ConfirmFn,
-		registry:              entity.NewRegistry(),
-		rateLimitSubject:      opts.Subject,
-		mutatingToolsEnabled:  opts.MutatingToolsEnabled,
-		userTurn:              0,
-		lastInstanceQueryTurn: -1,
-		lastMonitorTurn:       -1,
-		// messages, userTurn, lastUserMsg, currentMonitor*, pendingResourceSelection,
-		// readExpensiveCallsThisTurn,
-		// *Observer fields all start at zero values which is correct.
+		confirmFn:            opts.ConfirmFn,
+		registry:             entity.NewRegistry(),
+		rateLimitSubject:     opts.Subject,
+		mutatingToolsEnabled: opts.MutatingToolsEnabled,
+		userTurn:             0,
 	}
 	eng.safeExecutor = newSafeToolExecutor(deps.ExternalExecutor, opts.ConfirmFn)
 	eng.safeExecutor.SetMutatingToolsEnabled(opts.MutatingToolsEnabled)
@@ -549,13 +532,11 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 // NewWithDeps creates an Engine with injected dependencies (for testing).
 func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn ConfirmFunc) *Engine {
 	eng := &Engine{
-		llmClient:             client,
-		confirmFn:             confirmFn,
-		registry:              entity.NewRegistry(),
-		rateLimitSubject:      governance.AnonymousSubjectKey,
-		lastInstanceQueryTurn: -1,
-		lastMonitorTurn:       -1,
-		mutatingToolsEnabled:  true,
+		llmClient:            client,
+		confirmFn:            confirmFn,
+		registry:             entity.NewRegistry(),
+		rateLimitSubject:     governance.AnonymousSubjectKey,
+		mutatingToolsEnabled: true,
 	}
 	eng.safeExecutor = newSafeToolExecutor(executor, confirmFn)
 	eng.externalExecutor = executor
@@ -1053,10 +1034,6 @@ func (e *Engine) SetSessionState(state SessionState, version int) {
 		state.SelectedInstanceSource = ""
 		state.SelectedInstanceAtUnix = 0
 		state.SelectedInstanceFreshness = ""
-		state.PendingSelectionKind = ""
-		state.PendingSelectionProducedAtUnix = 0
-		state.PendingSelectionTTLSeconds = 0
-		state.PendingSelectionItems = nil
 	}
 	e.sessionState = state
 	e.sessionStateVersion = version
@@ -1076,7 +1053,6 @@ func (e *Engine) ClearSessionState() {
 	e.sessionState = SessionState{}
 	e.sessionStateVersion = 0
 	e.sessionStateHydrated = false
-	e.pendingResourceSelection = nil
 }
 
 // SessionStateSnapshot returns the current SessionState plus the version
@@ -1306,17 +1282,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	}()
 	continuityNow := time.Now()
 	e.expireStaleSelectedInstance(continuityNow)
-	// Every turn must carry a non-empty server-side identity. A caller may supply
-	// one; otherwise the engine derives one before compiling current-turn evidence.
-	// Without one,
-	// deriveProposalProvenance stamps this turn's current-turn evidence with an
-	// empty MessageID that verifyCurrentQuestionEvidence then rejects — the server
-	// disowning its own evidence — which surfaces as a bogus unverified_source
-	// rejection on any standalone user_explicit field (ImageName/GpuType/Zone/…)
-	// and dead-ends the create card.
-	//
-	// The fallback happens once at turn entry. It grants no execution authority;
-	// it only binds this turn's evidence and trace to the same identity.
+	// Tool proposals, confirmations and trace share this server-side turn ID.
 	opts.TurnID = turnID
 	e.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(e, userMsg, turnID, continuityNow)
 	e.turnContextViewReady = true
@@ -1355,13 +1321,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		Content: llmUserMsg,
 	})
 
-	e.currentMonitorTargets = nil
-	e.currentMonitorNoData = nil
-	e.currentMonitorStart = 0
-	e.currentMonitorEnd = 0
-	e.currentMonitorWindow = false
-	e.displayedResourceSelectionThisTurn = nil
-
 	// A length-stopped provider response is not part of semantic history. Keep
 	// only this tiny local recovery state; it is neither persisted nor a second
 	// memory representation.
@@ -1395,7 +1354,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		}
 		e.directAnswerToolRetryOutcomeThisTurn = observability.DirectAnswerRetryOutcomeFallbackDraft
 		content := e.finalizeResponse(ctx, userMsg, directAnswerToolRetryDraft)
-		e.commitDisplayedResourceSelectionIfVisible(content)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role: openai.ChatMessageRoleAssistant, Content: content,
 		})
@@ -1436,15 +1394,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			if result, ok := finishDirectAnswerToolRetryDraft(); ok {
 				return result, nil
 			}
-			// If a prior round's SearchKnowledge already
-			// gathered evidence this turn, write the final answer from it
-			// (disciplined cited synthesis) instead of discarding the turn for
-			// a bare "请简化问题". Only fall back to the budget refusal when
-			// nothing groundable was retrieved (the "no evidence → refuse,
-			// never fabricate" guard). Round 0 has no tool evidence and therefore
-			// takes the refusal path.
-			if synth, ok := e.synthesizeOnBudgetExceeded(ctx, llmCurrentUserMsg); ok {
-				synth = e.finalizeRecoveryResponse(llmCurrentUserMsg, synth)
+			// Close the existing conversation using the tool results already obtained.
+			if synth, ok := e.finishAgentTurn(ctx); ok {
+				synth = e.finalizeResponse(ctx, llmCurrentUserMsg, synth)
 				e.messages = append(e.messages, openai.ChatCompletionMessage{
 					Role:    openai.ChatMessageRoleAssistant,
 					Content: synth,
@@ -1554,17 +1506,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 					return result, nil
 				}
 			}
-			// A per-call LLM error would otherwise discard the turn. If a prior round
-			// already gathered groundable
-			// evidence AND the outer ctx is still live, deliver a cited answer from it
-			// (same recovery as the budget/ceiling exits) instead of a bare error. The
-			// ctx.Err()==nil gate never spends a recovery LLM call on an already
-			// cancelled/deadline-exceeded ctx — it would just fail again and mask the
-			// cancellation. Empty ledger → synthesizeOnBudgetExceeded returns false →
-			// the original error still propagates (TestChat_LLMError stays green).
+			// A live turn with completed tools can still deliver their results.
 			if ctx.Err() == nil {
-				if synth, ok := e.synthesizeOnBudgetExceeded(ctx, llmCurrentUserMsg); ok {
-					synth = e.finalizeRecoveryResponse(llmCurrentUserMsg, synth)
+				if synth, ok := e.finishAgentTurn(ctx); ok {
+					synth = e.finalizeResponse(ctx, llmCurrentUserMsg, synth)
 					e.messages = append(e.messages, openai.ChatCompletionMessage{
 						Role:    openai.ChatMessageRoleAssistant,
 						Content: synth,
@@ -1644,7 +1589,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			directAnswerToolRetryDraft = ""
 			draft := rawContent
 			content := e.finalizeResponse(ctx, userMsg, draft)
-			e.commitDisplayedResourceSelectionIfVisible(content)
 			// Replay buffered streaming deltas when the LLM content was returned
 			// verbatim. If an engine guard overwrote content, emit the canonical
 			// override as a single chunk so the SSE stream matches the persisted
@@ -1727,16 +1671,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	if result, ok := finishCommittedWrite(); ok {
 		return result.Reply, nil
 	}
-	// If a prior round's SearchKnowledge already gathered groundable evidence this
-	// turn, deliver the final cited answer from it instead of discarding the whole
-	// turn for a bare 请重新描述 — the same recovery the token-budget gate uses at the
-	// top of this loop. synthesizeOnBudgetExceeded returns ("",false) on an empty
-	// ledger, so a no-evidence thrash (plain reads only, or a corpus-gap query the
-	// relevance floor emptied) keeps the canned message byte-identical and never
-	// fabricates. Final text is always buffered through the delivery boundary, so
-	// emitTerminalText(synth) is the sole emission for this recovery as well.
-	if synth, ok := e.synthesizeOnBudgetExceeded(ctx, llmCurrentUserMsg); ok {
-		synth = e.finalizeRecoveryResponse(llmCurrentUserMsg, synth)
+	// Keep the full task and transcript when closing at the round limit.
+	if synth, ok := e.finishAgentTurn(ctx); ok {
+		synth = e.finalizeResponse(ctx, llmCurrentUserMsg, synth)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
 			Content: synth,
@@ -1744,8 +1681,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		emitTerminalText(synth)
 		return synth, nil
 	}
-	// Neither recovery had evidence to synthesize. Record the refusal so hot and
-	// rebuilt histories contain the same completed exchange.
+	// Record the terminal fallback so hot and rebuilt histories agree.
 	content := e.finalizeHostTerminalResponse(llmCurrentUserMsg, reactCeilingRefusal)
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleAssistant,
@@ -3006,7 +2942,6 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	// Bound full-account list dumps before they enter model context.
 	if action == "DescribeCompShareInstance" {
 		truncateDescribeResultForReAct(args, result.LLMResult)
-		e.recordPendingSelectionFromDisplayedDescribeResult(result.LLMResult)
 	}
 	projected := projectToolResultForReAct(action, result.LLMResult)
 
@@ -3078,15 +3013,6 @@ func (e *Engine) executeSafeTool(ctx context.Context, req tools.SafeToolRequest)
 		return nil, err
 	}
 	result, err := e.safeExecutor.ExecuteSafe(ctx, req)
-	if err == nil && req.Action == "DescribeCompShareInstance" {
-		e.lastInstanceQueryTurn = e.userTurn
-	}
-	if err == nil && req.Action == "GetCompShareInstanceMonitor" {
-		e.lastMonitorTurn = e.userTurn
-	}
-	if err == nil {
-		e.trackMonitorResult(result)
-	}
 	if err == nil && req.Origin == tools.OriginDirectLLM {
 		e.markRegistryInvalidated(req.Action)
 		e.recordObservedInstanceFromTool(req.Action, result)
@@ -3171,100 +3097,6 @@ func (e *Engine) recordObservedInstanceFromDescribe(raw map[string]any) {
 			e.recordObservedInstanceID(snap.UHostId, snap.Name)
 		}
 	}
-}
-
-func (e *Engine) recordPendingSelectionFromDisplayedDescribeResult(raw map[string]any) {
-	if e == nil || !e.sessionStateHydrated || raw == nil {
-		return
-	}
-	hosts, _ := raw["UHostSet"].([]any)
-	if len(hosts) <= 1 {
-		return
-	}
-	instanceSnapshots := make([]entity.InstanceSnapshot, 0, len(hosts))
-	for _, item := range hosts {
-		row, _ := item.(map[string]any)
-		if row == nil {
-			continue
-		}
-		snap := entity.InstanceFromMap(row)
-		if snap.UHostId != "" {
-			instanceSnapshots = append(instanceSnapshots, snap)
-		}
-	}
-	if len(instanceSnapshots) <= 1 {
-		return
-	}
-	e.displayedResourceSelectionThisTurn = &pendingResourceSelection{
-		candidates: instanceSnapshots,
-	}
-}
-
-func (e *Engine) commitDisplayedResourceSelectionIfVisible(reply string) {
-	if e == nil || e.displayedResourceSelectionThisTurn == nil {
-		return
-	}
-	pending := e.displayedResourceSelectionThisTurn
-	if !resourceSelectionCandidatesVisibleInReply(reply, pending.candidates) {
-		return
-	}
-	e.recordPendingInstanceSelection(pending.candidates)
-}
-
-func resourceSelectionCandidatesVisibleInReply(reply string, candidates []entity.InstanceSnapshot) bool {
-	text := strings.ToLower(reply)
-	lines := strings.Split(reply, "\n")
-	seen := 0
-	for _, inst := range candidates {
-		id := strings.ToLower(strings.TrimSpace(inst.UHostId))
-		name := strings.ToLower(strings.TrimSpace(inst.Name))
-		if id != "" && strings.Contains(text, id) {
-			seen++
-		} else if name != "" && resourceSelectionNameVisibleInReplyLines(lines, name) {
-			seen++
-		}
-		if seen >= 2 {
-			return true
-		}
-	}
-	return false
-}
-
-func resourceSelectionNameVisibleInReplyLines(lines []string, name string) bool {
-	for _, line := range lines {
-		if resourceSelectionNameVisibleInTableLine(line, name) || resourceSelectionNameVisibleInNumberedLine(line, name) {
-			return true
-		}
-	}
-	return false
-}
-
-func resourceSelectionNameVisibleInTableLine(line, name string) bool {
-	if !strings.Contains(line, "|") {
-		return false
-	}
-	for _, cell := range strings.Split(line, "|") {
-		if strings.ToLower(strings.TrimSpace(cell)) == name {
-			return true
-		}
-	}
-	return false
-}
-
-func resourceSelectionNameVisibleInNumberedLine(line, name string) bool {
-	s := strings.TrimSpace(strings.ToLower(line))
-	if s == "" {
-		return false
-	}
-	original := s
-	for len(s) > 0 && s[0] >= '0' && s[0] <= '9' {
-		s = s[1:]
-	}
-	s = strings.TrimLeft(s, ".、)） \t-")
-	if s == "" || s == original {
-		return false
-	}
-	return s == name || strings.HasPrefix(s, name+" ") || strings.HasPrefix(s, name+"(") || strings.HasPrefix(s, name+"（")
 }
 
 func (e *Engine) recordObservedInstanceFromMonitor(raw map[string]any) {
@@ -3450,140 +3282,6 @@ func (x engineToolExecutor) Execute(ctx context.Context, action string, args map
 	return x.engine.executeRawTool(ctx, action, args, x.origin)
 }
 
-// guardMonitorNoDataFinalReply enforces the never-0%/healthy invariant for
-// historical monitoring as a STRUCTURAL status check, not a prose rewrite: when
-// every historical monitor target queried this turn returned
-// NO_DATA_IN_REQUESTED_WINDOW, the whole answer is replaced with the window-scoped
-// no-data reply so the model cannot narrate a value or health for a window that has
-// none. The correct window and historical framing now come from the structured
-// render (RenderHistoricalMonitorSummary states the window; the envelope marks each
-// fact as a range). This guard only fires on all-no-data.
-func (e *Engine) guardMonitorNoDataFinalReply(content string) string {
-	if !e.currentMonitorWindow || content == "" {
-		return content
-	}
-	if e.allCurrentHistoricalMonitorResultsNoData() {
-		return formatHistoricalMonitorNoDataReply(e.currentMonitorStart, e.currentMonitorEnd, e.currentMonitorNoData)
-	}
-	return content
-}
-
-// trackMonitorResult records historical monitor query metadata so no-data and
-// final-answer correction logic can describe the exact queried window.
-func (e *Engine) trackMonitorResult(result *tools.SafeToolResult) {
-	if result == nil || result.Action != "GetCompShareInstanceMonitor" || !hasMonitorTimeRangeArgs(result.Args) {
-		return
-	}
-	targets := extractMonitorTargets(result.Args)
-	e.currentMonitorTargets = append(e.currentMonitorTargets, targets...)
-	if start, end, ok := monitorTimeWindow(result.Args); ok {
-		if !e.currentMonitorWindow {
-			e.currentMonitorStart = start
-			e.currentMonitorEnd = end
-			e.currentMonitorWindow = true
-		} else {
-			if start < e.currentMonitorStart {
-				e.currentMonitorStart = start
-			}
-			if end > e.currentMonitorEnd {
-				e.currentMonitorEnd = end
-			}
-		}
-	}
-	if status, _ := result.LLMResult["MonitorDataStatus"].(string); status == "NO_DATA_IN_REQUESTED_WINDOW" {
-		e.currentMonitorNoData = append(e.currentMonitorNoData, targets...)
-	}
-}
-
-func (e *Engine) allCurrentHistoricalMonitorResultsNoData() bool {
-	if len(e.currentMonitorTargets) == 0 {
-		return false
-	}
-	noData := make(map[string]bool, len(e.currentMonitorNoData))
-	for _, target := range e.currentMonitorNoData {
-		noData[target] = true
-	}
-	for _, target := range e.currentMonitorTargets {
-		if !noData[target] {
-			return false
-		}
-	}
-	return true
-}
-
-func formatHistoricalMonitorNoDataReply(start, end int64, targets []string) string {
-	startText := time.Unix(start, 0).In(beijingZone).Format("2006-01-02 15:04")
-	endText := time.Unix(end, 0).In(beijingZone).Format("2006-01-02 15:04")
-	targetText := strings.Join(uniqueStrings(targets), "、")
-	if targetText == "" {
-		targetText = "所查实例"
-	}
-	return fmt.Sprintf("北京时间 %s ~ %s，%s 没有返回有效监控数据。不能判断该时间窗内的 CPU、内存、GPU 或显存占用，也不会用其他时间的数据替代。", startText, endText, targetText)
-}
-
-func hasMonitorTimeRangeArgs(args map[string]any) bool {
-	if args == nil {
-		return false
-	}
-	_, hasStart := args["StartTime"]
-	_, hasEnd := args["EndTime"]
-	return hasStart || hasEnd
-}
-
-func monitorTimeWindow(args map[string]any) (int64, int64, bool) {
-	start, okStart := int64Arg(args["StartTime"])
-	end, okEnd := int64Arg(args["EndTime"])
-	if !okStart || !okEnd {
-		return 0, 0, false
-	}
-	if end < start {
-		return 0, 0, false
-	}
-	return start, end, true
-}
-
-func int64Arg(v any) (int64, bool) {
-	switch x := v.(type) {
-	case int:
-		return int64(x), true
-	case int64:
-		return x, true
-	case float64:
-		return int64(x), true
-	case json.Number:
-		n, err := x.Int64()
-		return n, err == nil
-	default:
-		return 0, false
-	}
-}
-
-func extractMonitorTargets(args map[string]any) []string {
-	if args == nil {
-		return nil
-	}
-	var targets []string
-	switch v := args["UHostIds"].(type) {
-	case []any:
-		for _, item := range v {
-			if s, ok := item.(string); ok && s != "" {
-				targets = append(targets, s)
-			}
-		}
-	case []string:
-		for _, s := range v {
-			if s != "" {
-				targets = append(targets, s)
-			}
-		}
-	case string:
-		if v != "" {
-			targets = append(targets, v)
-		}
-	}
-	return targets
-}
-
 func uniqueStrings(values []string) []string {
 	seen := make(map[string]bool, len(values))
 	var out []string
@@ -3633,23 +3331,9 @@ func newConfirmableAction(rp resolvedProposal) (confirmableAction, bool) {
 	}, true
 }
 
-// executeResolvedWorkflow runs a predefined workflow whose action the Resolver
-// has already verified — including, for any write TARGET, the dual proof of
-// selection AND existence — and returns the result as a JSON string for the LLM
-// to narrate. It is the SINGLE workflow-execution entry: there is no second
-// target-authorization here. The Resolver is the sole authority for WHICH
-// instance a write acts on, and the account's single-instance completion happens
-// on the Resolver path (ContextCompiler's account_registry_single hint +
-// deriveProposalProvenance), never in this layer. Its only parameter carrying the
-// action is a confirmableAction, so a bare action name + args cannot reach here.
-//
-// refData (act.refData) is the turn's zone/image catalog, supplied by the caller —
-// this function never builds one itself. The action-proposal path builds exactly
-// one snapshot per turn (zoneCatalogSnapshotForSpec) and threads it here, so the
-// resolver and the workflow can never see different zone lists (gate 1). A nil
-// snapshot is the honest "this operation has no zone" signal; a zone-needing
-// workflow handed nil (or an unavailable snapshot) fails closed rather than
-// guessing.
+// executeResolvedWorkflow runs an Agent-proposed action whose parameters and
+// exact account target have been verified. The workflow confirms and executes
+// those parameters, using the same live catalog snapshot as the resolver.
 func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAction, onStep func(StepEvent)) string {
 	action, args, refData := act.operation, act.args, act.refData
 	e.lastConfirmationAcceptedThisCall = false
@@ -3694,20 +3378,7 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		wfConfirm = workflow.ConfirmFunc(e.confirmFn)
 	}
 
-	// Captured from the create saga's capacity step so the create-zone image
-	// recovery (after Run) can re-resolve an available image in the SAME zone
-	// the saga used, and know which image already 230'd.
-	var capacityZone, attemptedImageID string
-
 	wfEngine := workflow.NewEngine(e.toolExecutorFor(tools.OriginWorkflowInternal), wfConfirm, func(ev workflow.StepEvent) {
-		if ev.Tool == "CheckCompShareResourceCapacity" && ev.Status == "running" && ev.Args != nil {
-			if z, _ := ev.Args["Zone"].(string); z != "" {
-				capacityZone = z
-			}
-			if iid, _ := ev.Args["CompShareImageId"].(string); iid != "" {
-				attemptedImageID = iid
-			}
-		}
 		// A workflow resolve step calls no tool, and this vocabulary has no term
 		// for an internal computation: eventType below defaults to StepToolCall
 		// and only a workflow.StepToolCall is promoted to StepToolResult on
@@ -3789,14 +3460,8 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 	// A user-named availability zone is already resolved against the live catalog;
 	// the workflow validates that canonical value against the same snapshot.
 
-	// refData is the caller-supplied reference data for the turn. The resolver uses
-	// it to verify typed zone and image identifiers. During guided create, a catalog
-	// re-query after changing image source remains authoritative over the proposal-time
-	// snapshot. The ZONE catalog is the single snapshot shared by the
-	// initial run, the 230 image-recovery re-run and recovery's stock check, so the
-	// create's zone can never disagree with the resolver's. The image-recovery re-run
-	// does NOT reuse an image snapshot — it re-queries a broad catalog and re-ranks
-	// through the same deployment.ResolveImage (see resolveAvailableCreateImage).
+	// Share the live proposal catalogs with guided validation. A source change
+	// inside the form still reloads the corresponding catalog.
 	wfRunOpts := []workflow.RunOption{workflow.WithReferenceData(refData)}
 
 	result, err := wfEngine.Run(ctx, wf, args, wfRunOpts...)
@@ -3809,42 +3474,12 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 		return msg
 	}
-	// Create-zone recovery: a named platform image that isn't available in the
-	// resolved zone fails capacity with RetCode=230 ("Params [CompShareImageId]
-	// not available") — DescribeCompShareImages is zone-blind, so a name match
-	// can pick an image absent from where the GPU lives. Re-resolve to an
-	// available same-intent image in that zone and re-run ONCE, so the user
-	// reaches a confirm card (with a FallbackNote) for a working image instead
-	// of a cryptic API error. Bounded to a single attempt; only fires on the
-	// 230-image signature, so success / sold-out / balance paths are unchanged.
-	if action == "CreateInstanceWorkflow" && createImageUnavailable(result) && capacityZone != "" {
-		if newID, newName, ok := e.resolveAvailableCreateImage(ctx, args, capacityZone, attemptedImageID, refData.ZoneCatalog); ok {
-			// Build a NEW draft with the substituted image and re-run: the re-run
-			// re-enters the confirmation gate, so the user confirms the available
-			// image (a fresh seal) — never the unavailable one. The image swap is a
-			// new confirmed contract, not a silent edit of the first attempt.
-			args["CompShareImageId"] = newID
-			args["ImageName"] = newName
-			args["FallbackNote"] = fmt.Sprintf("原指定镜像在可用区 %s 暂不可用，已自动为你选择可用镜像「%s」。", capacityZone, newName)
-			result, _ = wfEngine.Run(ctx, wf, args, wfRunOpts...)
-		}
-	}
 
-	// Record whether the user's target selection was AUTHORIZED this call — the
-	// confirmation gate is the SelectionProof, so acceptance (not full workflow
-	// success) is what gates recordUserSelectedTargets. Computed from the FINAL
-	// result (after any image-recovery re-run) at this single post-Run choke point,
-	// which runs on every path that reaches narration — unlike a set inside the
-	// `if result.Success` block below, which the cancelled / create-fail / cfs-fail
-	// early returns skip. A post-confirmation execution failure therefore still
-	// remembers the confirmed target (a later "关掉它" resolves to it), while a
-	// cancel / decline / timeout / pre-confirm stop remembers nothing. The Run
-	// Go-error early return above stays before this line, so an infrastructure
-	// error leaves the flag false (fail-closed).
+	// Remember a confirmed target even if execution failed, but not one whose
+	// authorization was cancelled or never reached.
 	e.lastConfirmationAcceptedThisCall = result.ConfirmationAccepted()
 
-	// After Run (and any image-recovery re-run), narrate and recover from the
-	// exact contract the user confirmed.
+	// Read back and describe the exact contract the user confirmed.
 	finalParams := workflowFinalParams(result, args)
 
 	if !result.Success {
@@ -3866,6 +3501,17 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, result.Err))
 			return finalReplyPrefix + reply
 		}
+		if action == "CreateInstanceWorkflow" && !result.ConfirmationAccepted() && result.Message != "用户取消了操作" {
+			// No creation was authorized. Return the actual validation failure to
+			// the Agent; it can inspect alternatives or ask the user without a
+			// second, server-owned image/GPU selection loop.
+			if msg, ok := friendlyMessageFromText(result.Message); ok {
+				result.Message = msg
+			}
+			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, result.Message, result.Err))
+			payload, _ := json.Marshal(result)
+			return string(payload)
+		}
 		if msg, ok := friendlyMessageFromText(result.Message); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, result.Err))
 			return finalReplyPrefix + msg
@@ -3878,14 +3524,11 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		return finalReplyPrefix + fmt.Sprintf("好的，%s操作未执行。如需继续，请重新发送指令并确认。", friendlyActionName(action))
 	}
 
-	// Create failures must NOT be handed to the LLM narration round. When given a
-	// raw failure result, model narration has fabricated availability claims
-	// ("V100 下架") and invented GPU lists. The workflow's own message is already
-	// grounded — on a no-match it lists the REAL available types, and on sold-out it
-	// names the exact spec — so return it deterministically and skip narration.
+	// An authorized create failure may have affected the instance. Keep its
+	// outcome explicit instead of selecting replacements or retrying here.
 	if !result.Success && action == "CreateInstanceWorkflow" {
-		reply := e.createFailureReplyWithAlternatives(ctx, result.Message, result.Err, result.Failure)
-		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, nil))
+		reply := createWorkflowFailureReply(result.Message, result.Err)
+		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, result.Err))
 		return finalReplyPrefix + reply
 	}
 	if !result.Success && action == "CreateCFSWorkflow" {
@@ -4329,20 +3972,9 @@ func workflowSecretValues(args map[string]any) []string {
 // (available types, sold-out spec, etc.).
 var workflowStepPrefixRE = regexp.MustCompile(`^步骤「[^」]*」(?:参数构建失败|执行失败)[：:]\s*`)
 
-// createWorkflowFailureReply turns a failed CreateInstanceWorkflow result into a
-// deterministic, user-facing reply. It is deliberately NOT run through the LLM
-// (see the call site): the workflow message is already grounded, and narration
-// has been observed to fabricate availability/下架 claims.
-//
-// err is the workflow's typed cause (Result.Err), nil for failures we raise
-// ourselves from a successful upstream response. message stays the source for
-// our own grounded sentences; err is what classifies upstream rejections.
+// createWorkflowFailureReply explains a failed authorized create without
+// choosing a replacement or submitting another write.
 func createWorkflowFailureReply(message string, err error) string {
-	// When the chosen image isn't available in the resolved zone, the raw
-	// upstream error ("API error (RetCode=230): Params [CompShareImageId] not
-	// available") is cryptic. The recovery above already tried to swap in an
-	// available image; reaching here means none was creatable, so give honest,
-	// actionable guidance rather than leaking the error code.
 	if isImageUnavailableError(err) {
 		return "抱歉，创建实例没有成功：您指定的镜像在当前可用区暂不可用。请更换镜像名称重试，或在控制台创建页选择该可用区支持的镜像。"
 	}
@@ -4355,95 +3987,6 @@ func createWorkflowFailureReply(message string, err error) string {
 		msg = "未能创建实例，请稍后重试或更换机型/配置。"
 	}
 	return "抱歉，创建实例没有成功：" + msg
-}
-
-// isCreateStockShortage trusts the workflow's typed capacity verdict, never user-facing text.
-func isCreateStockShortage(failure *workflow.StepFailure) bool {
-	return failure != nil && failure.Reason == workflow.ReasonCapacitySoldOut
-}
-
-// createFailureReplyWithAlternatives wraps createWorkflowFailureReply. On a real
-// sold-out it re-queries availability and appends the machine types still on
-// offer that the user can switch to — deterministic and LLM-free, mirroring the
-// deploy saga's deployStopReplyWithAlternatives. A bare hardware create carries
-// no model/image constraint, so it lists the currently-offered cards
-// (strongest-first, excluding the sold-out one). Falls back to the plain reply
-// when nothing else is offered or the availability query fails.
-//
-// It reads the spec off the workflow's failure record rather than off params.
-// Params could not answer: a sold-out is the capacity gate's verdict, and the
-// zone it checked was resolved from the catalog inside the workflow, so on a
-// create where the user named no zone there was no zone in params to find —
-// alternatives were then searched across EVERY zone and offered cards that do
-// not exist where the user is buying.
-func (e *Engine) createFailureReplyWithAlternatives(ctx context.Context, message string, err error, failure *workflow.StepFailure) string {
-	reply := createWorkflowFailureReply(message, err)
-	if !isCreateStockShortage(failure) {
-		return reply
-	}
-	gpuType, zone, chargeType := createFailureTarget(failure)
-	// Spot draws from its own resource pool, so the FIRST thing to suggest is the
-	// pool that is not empty — a different GPU model in the same empty Spot pool is
-	// a worse bet than the same model on demand. This also stops the reply from
-	// implying the shortage is about the hardware when it is about the pool.
-	if strings.EqualFold(chargeType, deployment.ChargeTypeSpot) {
-		reply += "\n抢占式用的是独立的资源池，通常比按量付费更紧张。可以回复「用按量付费」用同样的配置再试一次。"
-	}
-	if gpuType == "" || zone == "" {
-		// No suggestion beats a wrong one. ParseAvailableGPUs reads an empty zone as
-		// "every zone" (gpu_live.go:63), so improvising here does not degrade to a
-		// vaguer answer — it degrades to a confident recommendation drawn from
-		// regions the user is not buying in. The failure itself is still explained;
-		// only the "try this instead" is withheld, and only when the workflow could
-		// not say what it was actually trying to build.
-		return reply
-	}
-	// Do not scope this machine catalog call to Spot; upstream returns an empty
-	// list. Spot eligibility is applied from GPU inventory below.
-	avail := e.querySafeRead(ctx, "DescribeAvailableCompShareInstanceTypes", nil)
-	alts := knowledge.FittingGPUAlternatives("", "", nil, knowledge.ParseAvailableGPUs(avail, zone), gpuType, 3)
-	if strings.EqualFold(chargeType, deployment.ChargeTypeSpot) {
-		// …so Spot eligibility is applied afterwards, from the source that does
-		// carry it. Offering a card that cannot be bought on Spot at all is worse
-		// than offering nothing: the user retries, hits the same wall, and the
-		// second failure still reads as a shortage.
-		alts = knowledge.WithoutGPUTypes(alts, e.spotUnsupportedGPUTypes(ctx))
-	}
-	if len(alts) == 0 {
-		return reply
-	}
-	names := make([]string, 0, len(alts))
-	for _, a := range alts {
-		names = append(names, fmt.Sprintf("%s(%dGB)", a.Name, a.VRAMGB))
-	}
-	return reply + fmt.Sprintf("\n当前可创建的其他机型：%s。回复机型名（如「用 %s」）我帮你换一个重建（实际是否有货以创建结果为准）。",
-		strings.Join(names, " / "), alts[0].Name)
-}
-
-// spotUnsupportedGPUTypes asks the platform which cards it does not sell on Spot
-// at all. The answer rides on the GPU-inventory call, which takes no charge type
-// and no zone — so this is the one availability fact about Spot that can be read
-// without having already committed to Spot.
-//
-// It is the difference between "sold out" and "not offered". A 4090_48G Spot
-// create fails the capacity gate exactly like a genuine shortage, and the sold-out
-// reply then invites the user to retry, which cannot ever work.
-//
-// Returns nil when the query fails or omits the field. Callers must treat nil as
-// "unknown", never as "everything is eligible".
-func (e *Engine) spotUnsupportedGPUTypes(ctx context.Context) []string {
-	inv := e.querySafeRead(ctx, "DescribeCompShareGpuInventory", nil)
-	if inv == nil {
-		return nil
-	}
-	raw, _ := inv["SpotUnsupportedGpuTypes"].([]any)
-	out := make([]string, 0, len(raw))
-	for _, v := range raw {
-		if s, _ := v.(string); strings.TrimSpace(s) != "" {
-			out = append(out, s)
-		}
-	}
-	return out
 }
 
 // workflowFinalParams uses sealed params only after execution was actually authorized.
@@ -4459,35 +4002,6 @@ func workflowFinalParams(result *workflow.Result, args map[string]any) map[strin
 		return result.Contract.BusinessParams
 	}
 	return args
-}
-
-// createFailureTarget reads the GPU and zone the failed step was actually working
-// from, out of the candidate draft the workflow recorded with its failure.
-//
-// The draft, not the failure's Args: those are the request as sent, and
-// ApplyCapacityPlacementArgs strips Zone/Region/az_group for a pod zone, so the
-// capacity call that reported the shortage can carry no zone at all while the
-// draft behind it names one. The draft is the decision; the args are one wire
-// shape of it.
-//
-// Returning "" is the honest outcome when no draft was resolved (a failure before
-// 形成执行草稿) or the draft will not decode. The caller must then offer no
-// alternatives at all: an empty zone is not a weaker filter, it is no filter, and
-// the caller treating it as one is what produced cross-zone recommendations in the
-// first place. This function reports what it knows; it does not fill gaps.
-// createFailureTarget reads what the failed create was actually trying to build.
-// ChargeType joins the GPU and the zone because availability is scoped by it:
-// Spot and on-demand are different resource pools, so a remedy computed without
-// it answers about the wrong one.
-func createFailureTarget(failure *workflow.StepFailure) (gpuType, zone, chargeType string) {
-	if failure == nil || len(failure.Draft) == 0 {
-		return "", "", ""
-	}
-	draft, err := workflow.ParseCreateExecutionDraft(failure.Draft)
-	if err != nil {
-		return "", "", ""
-	}
-	return draft.Args.GpuType, draft.Args.Zone, draft.Args.ChargeType
 }
 
 func cfsWorkflowFailureReply(message string) string {

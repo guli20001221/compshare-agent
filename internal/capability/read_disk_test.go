@@ -30,7 +30,7 @@ func TestDiskInfoByInstanceUsesResolvedHostAndProjectsFacts(t *testing.T) {
 	exec := &fakeReadExec{result: diskFixture()}
 	reg := NewReadCapability(resourceReadSpec())
 	result := reg.Run(context.Background(), ResourceInfoRequest{ResourceType: resourceTypeDisks, Targets: []platform.TargetRef{{
-		Type: platform.TargetRefUHostIDUserInput, Value: "uhost-1", Source: platform.SourceUserText,
+		Type: platform.TargetRefUHostIDUserInput, Value: "uhost-1",
 	}}}, ReadRuntime{Executor: exec, Resolver: entity.RegistrySnapshot{}})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
@@ -98,8 +98,8 @@ func TestDiskInfoRejectsMultipleInstanceFiltersBeforeCallingUpstream(t *testing.
 		"uhost-2": {UHostId: "uhost-2"},
 	}}
 	result := NewReadCapability(resourceReadSpec()).Run(context.Background(), ResourceInfoRequest{ResourceType: resourceTypeDisks, Targets: []platform.TargetRef{
-		{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-1", Source: platform.SourceUserText},
-		{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-2", Source: platform.SourceUserText},
+		{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-1"},
+		{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-2"},
 	}}, ReadRuntime{Executor: exec, Resolver: resolver})
 
 	assert.Equal(t, platform.ReadStatusConflict, result.Status)

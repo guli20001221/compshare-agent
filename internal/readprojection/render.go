@@ -253,8 +253,15 @@ func spotFactValue(isSpot bool) string {
 }
 
 func resourceChargeTypeLabel(chargeType string) string {
-	if phrase, ok := deployment.ExplicitChargeTypePhrase(canonicalChargeType(chargeType)); ok {
-		return phrase
+	switch canonicalChargeType(chargeType) {
+	case deployment.ChargeTypePostpay:
+		return "按量付费"
+	case deployment.ChargeTypeDay:
+		return "包日"
+	case deployment.ChargeTypeMonth:
+		return "包月"
+	case deployment.ChargeTypeSpot:
+		return "抢占式"
 	}
 	return cleanResourceText(chargeType)
 }

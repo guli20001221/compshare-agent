@@ -12,8 +12,7 @@ func createProposal(gpuType string) ActionProposal {
 		TurnID:    "turn-1",
 		Operation: "CreateInstanceWorkflow",
 		Slots: []SlotCandidate{{
-			Name: "GpuType", Value: gpuType, Source: SourceUserExplicit,
-			Evidence: &SourceEvidence{MessageID: "turn-1", Quote: gpuType},
+			Name: "GpuType", Value: gpuType,
 		}},
 	}
 }
@@ -22,7 +21,7 @@ func createResolver(t *testing.T, machineTypes MachineTypeCatalog) *Resolver {
 	t.Helper()
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
-	return New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), machineTypes)
+	return New(catalog, TargetAdjudicatorFunc(func(SlotCandidate) TargetVerdict { return TargetAccept }), machineTypes)
 }
 
 // TestResolveCanonicalizesGpuTypeBeforeConfirmation is the contract the whole

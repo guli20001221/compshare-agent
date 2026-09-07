@@ -227,14 +227,6 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"messages":                         true,
 		"userTurn":                         true,
 		"lastUserMsg":                      true,
-		"lastInstanceQueryTurn":            true,
-		"lastMonitorTurn":                  true,
-		"currentMonitorTargets":            true,
-		"currentMonitorNoData":             true,
-		"currentMonitorStart":              true,
-		"currentMonitorEnd":                true,
-		"currentMonitorWindow":             true,
-		"pendingResourceSelection":         true,
 		"readExpensiveCallsThisTurn":       true,
 		"lastConfirmationAcceptedThisCall": true,
 		// Per-turn agentic SearchKnowledge state (P3): whether the tool ran this
@@ -362,7 +354,6 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"actionProposalDispositionThisTurn":   true,
 		"imageContextThisTurn":                true,
 		"baseUserContext":                     true,
-		"displayedResourceSelectionThisTurn":  true,
 		// In-instance SSH diagnosis lane (INV-9/INV-11). instanceOps is copied from
 		// SharedDeps but is per-session-overridable via SetInstanceOps for tests,
 		// so a session can hold a different runner than its siblings — classified
@@ -422,12 +413,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 95, len(perSessionFields); want != got {
+	if want, got := 86, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 101, typ.NumField(); want != got {
+	if want, got := 92, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update this test's whitelists to match.", want, got)
 	}
@@ -471,14 +462,6 @@ func TestNewWithDeps_FieldSetMatchesNewSession(t *testing.T) {
 	if withDeps.mutatingToolsEnabled != session.mutatingToolsEnabled {
 		t.Errorf("mutatingToolsEnabled differs: NewWithDeps=%v NewSession=%v",
 			withDeps.mutatingToolsEnabled, session.mutatingToolsEnabled)
-	}
-	if withDeps.lastInstanceQueryTurn != session.lastInstanceQueryTurn {
-		t.Errorf("lastInstanceQueryTurn differs: NewWithDeps=%d NewSession=%d",
-			withDeps.lastInstanceQueryTurn, session.lastInstanceQueryTurn)
-	}
-	if withDeps.lastMonitorTurn != session.lastMonitorTurn {
-		t.Errorf("lastMonitorTurn differs: NewWithDeps=%d NewSession=%d",
-			withDeps.lastMonitorTurn, session.lastMonitorTurn)
 	}
 	if withDeps.registry == nil {
 		t.Errorf("NewWithDeps did not init registry")

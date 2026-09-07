@@ -38,9 +38,7 @@ func TestWorkflowRequiresInstanceTarget(t *testing.T) {
 // Write targets are existence-verified before the operation's confirmation card.
 // The Agent resolves conversation references and supplies the exact target.
 
-// stopInstanceProposal is a minimal StopInstanceWorkflow proposal naming a target
-// by id, with no source label — the server re-derives provenance, so the model's
-// label is irrelevant to authority.
+// stopInstanceProposal names the exact target to verify before confirmation.
 func stopInstanceProposal(turnID, uHostID string) map[string]any {
 	return map[string]any{
 		"turn_id": turnID, "operation": "StopInstanceWorkflow",
@@ -122,27 +120,12 @@ func TestProposalAuthorizesExplicitIDTarget(t *testing.T) {
 	require.True(t, resolved.action.ReadyForConfirmation, resolved.action.Rejected)
 }
 
-// primeOrdinalSelection sets up a two-candidate pending list ([1]uhost-a alpha,
-// [2]uhost-b beta) plus a matching fresh registry, so ordinal / name references
-// resolve deterministically.
-func primeOrdinalSelection(t *testing.T, eng *Engine, userMsg, turnID string) {
-	t.Helper()
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
-	eng.lastUserMsg = userMsg
-	eng.recordPendingInstanceSelection([]entity.InstanceSnapshot{
-		testInstance("uhost-a", "alpha", "Running"),
-		testInstance("uhost-b", "beta", "Running"),
-	})
-	syncTwoInstances(t, eng)
-	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, userMsg, turnID, time.Now())
-	eng.turnContextViewReady = true
-}
-
-// Positive control — an ordinal against the displayed list, with the model
-// submitting the matching id, authorizes that exact instance.
-func TestCorrectOrdinalAuthorizesChosenCandidate(t *testing.T) {
+func TestAgentSuppliedOrdinalTargetReachesConfirmation(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	primeOrdinalSelection(t, eng, "帮我关机第2台", "turn-ord-right")
+	eng.lastUserMsg = "帮我关机第2台"
+	syncTwoInstances(t, eng)
+	eng.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(eng, eng.lastUserMsg, "turn-ord-right", time.Now())
+	eng.turnContextViewReady = true
 
 	resolved, err := eng.resolveActionProposal(context.Background(), stopInstanceProposal("turn-ord-right", "uhost-b"))
 

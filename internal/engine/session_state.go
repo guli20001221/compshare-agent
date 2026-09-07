@@ -105,19 +105,15 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 // Older rows can contain retired semantic fields. Normal JSON decoding ignores
 // them, and a later write omits them without a migration.
 type SessionState struct {
-	SchemaVersion                  string                           `json:"schema_version"`
-	SelectedInstanceID             string                           `json:"selected_instance_id,omitempty"`
-	SelectedInstanceName           string                           `json:"selected_instance_name,omitempty"`
-	SelectedInstanceSource         string                           `json:"selected_instance_source,omitempty"`
-	SelectedInstanceAtUnix         int64                            `json:"selected_instance_at_unix,omitempty"`
-	SelectedInstanceFreshness      string                           `json:"selected_instance_freshness,omitempty"`
-	PendingSelectionKind           string                           `json:"pending_selection_kind,omitempty"`
-	PendingSelectionProducedAtUnix int64                            `json:"pending_selection_produced_at_unix,omitempty"`
-	PendingSelectionTTLSeconds     int                              `json:"pending_selection_ttl_seconds,omitempty"`
-	PendingSelectionItems          []PendingSelectionItem           `json:"pending_selection_items,omitempty"`
-	VerifiedEvidence               []VerifiedEvidenceTurn           `json:"verified_knowledge,omitempty"`
-	PersistedInstanceOpsJob        PersistedInstanceOpsJob          `json:"persisted_instance_ops_job,omitzero"`
-	PersistedInstanceOpsAgent      PersistedInstanceOpsAgentSession `json:"persisted_instance_ops_agent,omitzero"`
+	SchemaVersion             string                           `json:"schema_version"`
+	SelectedInstanceID        string                           `json:"selected_instance_id,omitempty"`
+	SelectedInstanceName      string                           `json:"selected_instance_name,omitempty"`
+	SelectedInstanceSource    string                           `json:"selected_instance_source,omitempty"`
+	SelectedInstanceAtUnix    int64                            `json:"selected_instance_at_unix,omitempty"`
+	SelectedInstanceFreshness string                           `json:"selected_instance_freshness,omitempty"`
+	VerifiedEvidence          []VerifiedEvidenceTurn           `json:"verified_knowledge,omitempty"`
+	PersistedInstanceOpsJob   PersistedInstanceOpsJob          `json:"persisted_instance_ops_job,omitzero"`
+	PersistedInstanceOpsAgent PersistedInstanceOpsAgentSession `json:"persisted_instance_ops_agent,omitzero"`
 }
 
 // PersistedInstanceOpsJob is the single durable observation cursor for a
@@ -183,23 +179,6 @@ const (
 	// mint this source.
 	SelectedInstanceSourceUser = "user_selected"
 )
-
-// PendingSelectionItem is one option from the most recent structured candidate
-// list shown or implied by the agent. It is intentionally a compact subset of
-// entity.InstanceSnapshot so it can be safely persisted in session context.
-type PendingSelectionItem struct {
-	Index      int    `json:"index,omitempty"`
-	ID         string `json:"id,omitempty"`
-	Name       string `json:"name,omitempty"`
-	State      string `json:"state,omitempty"`
-	GPU        int    `json:"gpu,omitempty"`
-	GpuType    string `json:"gpu_type,omitempty"`
-	CPU        int    `json:"cpu,omitempty"`
-	Memory     int    `json:"memory,omitempty"`
-	Zone       string `json:"zone,omitempty"`
-	Region     string `json:"region,omitempty"`
-	ChargeType string `json:"charge_type,omitempty"`
-}
 
 // MarshalJSON ensures SchemaVersion is always present on the wire even if
 // a caller zeroed the struct.

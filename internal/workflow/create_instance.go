@@ -53,16 +53,6 @@ const (
 )
 
 const (
-	// These are workflow-internal evidence steps. The first freezes the image
-	// phrase derived from the initial live catalog before a source choice can
-	// replace 查询镜像; the second checks only the opposite live catalog. Keeping
-	// them separate lets later cards distinguish "not found there" from "we never
-	// checked there" without writing an inferred source or image into Params.
-	imageCatalogIntentStepName    = "识别镜像意图"
-	alternateImageCatalogStepName = "核验另一镜像目录"
-)
-
-const (
 	imageSourcePlatform  = "platform"
 	imageSourceCommunity = "community"
 	imageSourceCustom    = "custom"
@@ -353,13 +343,6 @@ func CreateInstanceDef() *Definition {
 		// The exact fields the guided form collects/corrects (GPU / zone / count /
 		// CPU-memory / image source+selection / charge type).
 		GuidedIntakeFields: []string{"GpuType", "Zone", "Gpu", "Cpu", "Memory", "ImageSource", "ImageName", "ChargeType"},
-		// Disk sizes have no guided-form controls. Keep them only when grounded in
-		// the current message or recent completed user input; otherwise the live image/machine catalog
-		// derives the boot disk and no data disk is added.
-		// CompShareImageId is intentionally not user-supplied-only: once a
-		// request names an exact image, silently replacing a stale/wrong-source id
-		// with an unrelated browse result changes the requested object.
-		UserSuppliedOptionalFields: []string{"DataDiskSize", "Name", "SystemDiskSize"},
 	}
 }
 
@@ -373,8 +356,6 @@ func CreateInstanceGuidedDef() *Definition {
 		Name: "CreateInstanceWorkflow",
 		Steps: []Step{
 			stepQueryImages(true),
-			stepResolveImageCatalogIntent(),
-			stepQueryAlternateImageCatalog(),
 			// The legal machine catalog is not charge-type scoped. It may therefore be
 			// fetched in the background before the user chooses billing; the capacity
 			// calls that actually depend on billing remain below the charge-type card.
@@ -444,14 +425,7 @@ func stepQueryImages(allowCommunityBrowse bool) Step {
 			switch normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", imageSourcePlatform)) {
 			case imageSourceCommunity:
 				if id := strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")); id != "" {
-					// A user-pinned id and every plain-flow id need one exact row. An
-					// Agent-suggested community id is different: the picker remains a
-					// real confirmation, but its alternatives are the upstream-declared
-					// versions of THIS image family, never an unrelated catalog page.
-					if imageUserSettled(wfCtx) || !allowCommunityBrowse {
-						return communityImageExactArgs(id), nil
-					}
-					return suggestedCommunityImageQueryArgs(wfCtx, id), nil
+					return communityImageExactArgs(id), nil
 				}
 				name := paramStr(wfCtx.Params, "ImageName", "")
 				if name == "" {
@@ -459,9 +433,6 @@ func stepQueryImages(allowCommunityBrowse bool) Step {
 						return communityImageBrowseArgs(""), nil
 					}
 					return nil, fmt.Errorf("使用社区镜像创建实例时必须指定镜像名称（ImageName），请告诉我您想使用哪个社区镜像")
-				}
-				if allowCommunityBrowse && wfCtx.ImageSelection() == ImageSelectionSuggested {
-					return communityImageBrowseArgs(""), nil
 				}
 				return map[string]any{"FuzzySearch": name}, nil
 			case imageSourceCustom:
@@ -480,34 +451,11 @@ func stepQueryImages(allowCommunityBrowse bool) Step {
 			args := map[string]any{
 				"Limit": maxPlatformImageQueryLimit,
 			}
-			// Narrow the query ONLY when the user settled the image. A settled id
-			// skips the picker, so the by-id row is all capacity/price needs; a
-			// settled name narrows a browse the user asked for. An Agent SUGGESTION
-			// the user has not chosen must NOT narrow the catalog — the picker still
-			// runs and needs the whole catalog to offer alternatives, with the
-			// suggested id preselected from within it (a one-row "choice" card,
-			// narrowed by the Agent's own id, was the bug).
-			if imageUserSettled(wfCtx) || !allowCommunityBrowse {
-				if id := paramStr(wfCtx.Params, "CompShareImageId", ""); id != "" {
-					args["CompShareImageId"] = id
-					return args, nil
-				}
+			if id := paramStr(wfCtx.Params, "CompShareImageId", ""); id != "" {
+				args["CompShareImageId"] = id
 			}
-			// A settled NAME deliberately does not narrow the query, although an id
-			// does. Upstream matches Name case-sensitively — measured live on the
-			// platform catalog: no Name = 75 rows, "pytorch" = 7, "PyTorch" = 1,
-			// "Pytorch" = 0. And the Agent cannot spell it any other way than the
-			// user did: a slot only earns SourceUserExplicit by being a verbatim span
-			// of the user's message, so "用最新Pytorch镜像" can only ever produce
-			// Name="Pytorch". Narrowing on it returned an empty catalog and the
-			// picker died with 未找到可选镜像 — the more faithfully the Agent quoted
-			// the user, the more certainly the query found nothing.
-			//
-			// The whole catalog costs one larger response and is what the ranker was
-			// written for: nameSimilarity lowercases both sides, and rankRecommendations
-			// tiebreaks the same framework by its structured version (using the
-			// upstream index when populated), so "最新pytorch" lands the newest
-			// PyTorch at the top of the picker.
+			// Platform Name filtering is case-sensitive; the local catalog ranker
+			// applies the supplied name without changing its intent.
 			return args, nil
 		},
 	}
@@ -559,282 +507,6 @@ func customImageBrowseArgs() map[string]any {
 	return map[string]any{"Limit": maxCustomImageQueryLimit}
 }
 
-// suggestedCommunityImageQueryArgs collects only the family corpus that can
-// legitimately appear beside an Agent's exact recommendation. DescribeCommunityImages
-// has no GroupId request parameter, so it searches the source-provided family label;
-// recommendedCommunityImageScope then checks the returned GroupId locally before any
-// card reads it. A missing family label deliberately falls back to the exact row — it
-// must never widen to arbitrary same-name or unrelated community images.
-func suggestedCommunityImageQueryArgs(wfCtx *Context, id string) map[string]any {
-	scope, ok := currentRecommendedCommunityImageScope(wfCtx)
-	if !ok || !scope.hasFamily || strings.TrimSpace(scope.familyQuery) == "" {
-		return communityImageExactArgs(id)
-	}
-	return communityImageBrowseArgs(scope.familyQuery)
-}
-
-// imageCatalogIntentSeed is the evidence captured from the FIRST live catalog
-// before the source card can replace 查询镜像 with the other source. Query is the
-// catalog-derived/user-named phrase used to check the opposite catalog; Request is
-// the structured request that ranks the initial source without turning the phrase
-// into a concrete image selection.
-type imageCatalogIntentSeed struct {
-	Query          string
-	InitialSource  string
-	Request        deployment.ImageRequest
-	InitialMatches int
-	// Structured is true only when Query came from a framework/tag literally
-	// present in both the user's text and the live initial catalog. False means
-	// Query is free-form ImageName text proposed by the model or copied by the
-	// user; a community FuzzySearch miss for that wording is never absence proof.
-	Structured bool
-}
-
-// stepResolveImageCatalogIntent freezes the current turn's image phrase as a
-// read-only candidate. It writes only StepResults: no source, name or id is added
-// to Params, so a catalog match cannot silently become user authorization.
-func stepResolveImageCatalogIntent() Step {
-	return Step{
-		Name: imageCatalogIntentStepName,
-		Type: StepResolve,
-		SkipIf: func(wfCtx *Context) (bool, error) {
-			_, ok := deriveImageCatalogIntentSeed(wfCtx)
-			return !ok, nil
-		},
-		Resolve: func(wfCtx *Context) (map[string]any, error) {
-			seed, ok := deriveImageCatalogIntentSeed(wfCtx)
-			if !ok {
-				return map[string]any{}, nil
-			}
-			return encodeImageCatalogIntentSeed(seed), nil
-		},
-	}
-}
-
-// stepQueryAlternateImageCatalog asks the public counterpart catalog whether the
-// same image phrase exists there. It runs solely while source is unresolved and
-// only when the initial catalog produced a bounded query. Custom is intentionally
-// not a semantic fallback: it is the caller's tenant-scoped artifact inventory,
-// not a public alternative catalog to infer from a free-text phrase. A failure is
-// optional enrichment, but absence of its StepResult means UNKNOWN and therefore
-// keeps the source card — a failed check can never be interpreted as "no match".
-func stepQueryAlternateImageCatalog() Step {
-	return Step{
-		Name:     alternateImageCatalogStepName,
-		Type:     StepToolCall,
-		Optional: true,
-		SkipIf: func(wfCtx *Context) (bool, error) {
-			if wfCtx == nil || wfCtx.ImageSourceUserPinned() ||
-				strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "" ||
-				guidedStepWasReached(wfCtx, guidedStepImageSource) {
-				return true, nil
-			}
-			seed, ok := storedImageCatalogIntentSeed(wfCtx)
-			if !ok {
-				return true, nil
-			}
-			_, hasAlternate := alternateImageSource(seed.InitialSource)
-			return !hasAlternate, nil
-		},
-		ToolFunc: func(wfCtx *Context) string {
-			seed, _ := storedImageCatalogIntentSeed(wfCtx)
-			source, _ := alternateImageSource(seed.InitialSource)
-			return imageCatalogToolForSource(source)
-		},
-		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
-			seed, ok := storedImageCatalogIntentSeed(wfCtx)
-			if !ok {
-				return nil, fmt.Errorf("缺少可核验的镜像意图")
-			}
-			source, hasAlternate := alternateImageSource(seed.InitialSource)
-			if !hasAlternate {
-				return nil, fmt.Errorf("自制镜像不参与跨目录语义探测")
-			}
-			if source == imageSourceCommunity {
-				return communityImageBrowseArgs(seed.Query), nil
-			}
-			// Platform Name filtering is case-sensitive and can turn a valid user
-			// spelling into an empty response. Its catalog fits in one 100-row call,
-			// so fetch it whole and apply the same local generic matcher as the picker.
-			return map[string]any{"Limit": maxPlatformImageQueryLimit}, nil
-		},
-	}
-}
-
-func deriveImageCatalogIntentSeed(wfCtx *Context) (imageCatalogIntentSeed, bool) {
-	if wfCtx == nil ||
-		strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "" {
-		return imageCatalogIntentSeed{}, false
-	}
-	source := normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", "platform"))
-	snap := formImageCatalog(wfCtx.Result("查询镜像"), source)
-	if !snap.Available() {
-		return imageCatalogIntentSeed{}, false
-	}
-
-	name := strings.TrimSpace(paramStr(wfCtx.Params, "ImageName", ""))
-	request, inferred := deployment.InferImageCatalogRequest(snap, wfCtx.ImageIntentText(), source)
-	if inferred && wfCtx.ImageSelection() == ImageSelectionUserPinned && name != "" {
-		// A specific name such as "Acme PyTorch Workbench" must be checked as that
-		// image, not broadened to every PyTorch row merely because it contains the
-		// framework word. An exact bare catalog fact ("PyTorch") remains structured.
-		exactCatalogFact := (request.Framework != "" && strings.EqualFold(name, strings.TrimSpace(request.Framework))) ||
-			(request.Tag != "" && strings.EqualFold(name, strings.TrimSpace(request.Tag)))
-		if !exactCatalogFact {
-			inferred = false
-		}
-	}
-
-	query := ""
-	if inferred {
-		query = strings.TrimSpace(request.Framework)
-		if query == "" {
-			query = strings.TrimSpace(request.Tag)
-		}
-	} else if name != "" {
-		request = deployment.ImageRequest{Name: name, Source: source}
-		query = name
-	}
-	if query == "" {
-		return imageCatalogIntentSeed{}, false
-	}
-	request.Source = source
-	return imageCatalogIntentSeed{
-		Query:          query,
-		InitialSource:  source,
-		Request:        request,
-		InitialMatches: len(deployment.RankImages(snap, request)),
-		Structured:     inferred,
-	}, true
-}
-
-func encodeImageCatalogIntentSeed(seed imageCatalogIntentSeed) map[string]any {
-	return map[string]any{
-		"Query":          seed.Query,
-		"InitialSource":  seed.InitialSource,
-		"Name":           seed.Request.Name,
-		"Framework":      seed.Request.Framework,
-		"Tag":            seed.Request.Tag,
-		"InitialMatches": seed.InitialMatches,
-		"Structured":     seed.Structured,
-	}
-}
-
-func storedImageCatalogIntentSeed(wfCtx *Context) (imageCatalogIntentSeed, bool) {
-	if wfCtx == nil {
-		return imageCatalogIntentSeed{}, false
-	}
-	result := wfCtx.Result(imageCatalogIntentStepName)
-	query := strings.TrimSpace(paramStr(result, "Query", ""))
-	source := normalizedImageSource(paramStr(result, "InitialSource", "platform"))
-	if query == "" {
-		return imageCatalogIntentSeed{}, false
-	}
-	return imageCatalogIntentSeed{
-		Query:         query,
-		InitialSource: source,
-		Request: deployment.ImageRequest{
-			Name:      paramStr(result, "Name", ""),
-			Framework: paramStr(result, "Framework", ""),
-			Tag:       paramStr(result, "Tag", ""),
-			Source:    source,
-		},
-		InitialMatches: int(paramNum(result, "InitialMatches", 0)),
-		Structured:     paramBool(result, "Structured", false),
-	}, true
-}
-
-// currentImageCatalogIntentSeed prefers the frozen initial evidence but remains
-// usable in focused unit/plain contexts that have a catalog and no resolve step.
-func currentImageCatalogIntentSeed(wfCtx *Context) (imageCatalogIntentSeed, bool) {
-	if seed, ok := storedImageCatalogIntentSeed(wfCtx); ok {
-		return seed, true
-	}
-	return deriveImageCatalogIntentSeed(wfCtx)
-}
-
-// alternateImageSource returns the only public catalog that can be compared by a
-// user phrase. Custom images are private account artifacts and deliberately have
-// no inferred alternate; users select that source explicitly or carry a verified
-// exact custom image ID.
-func alternateImageSource(source string) (string, bool) {
-	switch normalizedImageSource(source) {
-	case imageSourceCommunity:
-		return imageSourcePlatform, true
-	case imageSourcePlatform:
-		return imageSourceCommunity, true
-	default:
-		return "", false
-	}
-}
-
-// alternateImageCatalogMatchCount returns checked=false when the optional probe
-// did not produce a result, or when a free-form phrase produced a community
-// FuzzySearch zero. Both states are unknown and keep the source choice visible.
-// A literal framework/tag recovered from the live initial catalog is structured
-// source evidence and may remain settled after its opposite literal probe misses.
-func alternateImageCatalogMatchCount(wfCtx *Context, seed imageCatalogIntentSeed) (count int, checked bool) {
-	if wfCtx == nil {
-		return 0, false
-	}
-	result, checked := wfCtx.StepResults[alternateImageCatalogStepName]
-	if !checked {
-		return 0, false
-	}
-	source, hasAlternate := alternateImageSource(seed.InitialSource)
-	if !hasAlternate {
-		return 0, false
-	}
-	snap := formImageCatalog(result, source)
-	request := deployment.ImageRequest{Name: seed.Query, Source: source}
-	if matches := len(deployment.RankImages(snap, request)); matches > 0 {
-		// A positive FuzzySearch result is enough to keep the source choice visible.
-		return matches, true
-	}
-	if source != "community" {
-		// Platform alternate checks fetch the whole (currently sub-100 row)
-		// catalog, so a successful zero is a real local-ranking zero.
-		return 0, true
-	}
-
-	if !seed.Structured {
-		// The upstream community "fuzzy" filter is whole-phrase containment.
-		// A verbose free-form name can miss a related family solely because of
-		// wording, so its zero is unknown and must keep the source choice visible.
-		return 0, false
-	}
-	// A structured query is a literal framework/tag recovered from the user's
-	// words and the live initial catalog, not model-authored prose. A successful
-	// opposite-source probe with no same literal name leaves that typed catalog
-	// intent on its initial source without scanning the entire community catalog.
-	return 0, true
-}
-
-// catalogIntentUniquelySettlesCurrentSource is true only after the initial source
-// has matching live evidence and the opposite-source check found no conflict it
-// can support. A match in both catalogs is a source choice, not permission to keep
-// whichever default the Agent happened to emit; a free-form community miss stays
-// unknown rather than being promoted to a directory-level absence claim.
-func catalogIntentUniquelySettlesCurrentSource(wfCtx *Context) bool {
-	seed, ok := currentImageCatalogIntentSeed(wfCtx)
-	if !ok || seed.InitialMatches == 0 ||
-		normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", "platform")) != seed.InitialSource {
-		return false
-	}
-	alternateMatches, checked := alternateImageCatalogMatchCount(wfCtx, seed)
-	return checked && alternateMatches == 0
-}
-
-func imageCatalogIntentQuery(wfCtx *Context) string {
-	if name := strings.TrimSpace(paramStr(wfCtx.Params, "ImageName", "")); name != "" {
-		return name
-	}
-	if seed, ok := currentImageCatalogIntentSeed(wfCtx); ok {
-		return seed.Query
-	}
-	return ""
-}
-
 // stepReQuerySelectedSourceImages re-fetches the image catalog for the source the user
 // chose in the guided source step, into the SAME "查询镜像" result the whole image
 // selection reads. Any source switch replaces the initial catalog with the chosen
@@ -852,7 +524,7 @@ func stepReQuerySelectedSourceImages() Step {
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			switch normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", imageSourcePlatform)) {
 			case imageSourceCommunity:
-				return communityImageBrowseArgs(imageCatalogIntentQuery(wfCtx)), nil
+				return communityImageBrowseArgs(paramStr(wfCtx.Params, "ImageName", "")), nil
 			case imageSourceCustom:
 				return customImageBrowseArgs(), nil
 			case imageSourceSharing:
@@ -878,7 +550,7 @@ func stepBrowseCommunityWhenNameMatchedNothing() Step {
 			if normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", "platform")) != "community" {
 				return true, nil
 			}
-			if strings.TrimSpace(imageCatalogIntentQuery(wfCtx)) == "" {
+			if strings.TrimSpace(paramStr(wfCtx.Params, "ImageName", "")) == "" {
 				return true, nil // already browsing the whole catalog
 			}
 			// Rescue ONLY an empty catalog — parsed exactly the way the picker parses
@@ -1556,7 +1228,7 @@ func stepQueryImageTagCatalog() Step {
 		Tool:     "DescribeCompShareImageTags",
 		Optional: true,
 		SkipIf: func(wfCtx *Context) (bool, error) {
-			return imageUserSettled(wfCtx) || tenantImageInventorySelected(wfCtx), nil
+			return hasExplicitImageSelection(wfCtx.Params) || tenantImageInventorySelected(wfCtx), nil
 		},
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
 			args := map[string]any{}
@@ -1586,69 +1258,6 @@ type imageCandidateSet struct {
 	final []deployment.ImageSelection
 }
 
-// recommendedCommunityImageScope is a derived view of an Agent-proposed exact
-// community image. It is not workflow state and is never written to Params: every
-// invocation recomputes it from this turn's verified CompShareImageId and the
-// upstream family facts attached to that exact catalog row.
-//
-// A family key is used only when upstream actually supplied a group identity. A
-// community endpoint can occasionally omit group metadata; in that case exactID is
-// the honest scope. We never infer family membership from overlapping display names.
-type recommendedCommunityImageScope struct {
-	exactID     string
-	familyKey   string
-	familyQuery string
-	hasFamily   bool
-}
-
-// recommendedCommunityImageScope returns the candidate boundary for the single
-// concrete image the Agent chose to carry into THIS create proposal. The Agent remains
-// the conversation interpreter: when the user rejects or changes a prior
-// recommendation, it simply omits that id (or supplies a different verified one) in
-// the new proposal and this scope does not exist.
-func currentRecommendedCommunityImageScope(wfCtx *Context) (recommendedCommunityImageScope, bool) {
-	if wfCtx == nil || imageUserSettled(wfCtx) ||
-		wfCtx.ImageSelection() != ImageSelectionSuggested ||
-		normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", "platform")) != "community" {
-		return recommendedCommunityImageScope{}, false
-	}
-	id := strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", ""))
-	if id == "" {
-		return recommendedCommunityImageScope{}, false
-	}
-	entry, ok := wfCtx.ImageCatalog().ByID(id)
-	if !ok || normalizedImageSource(entry.Source) != "community" {
-		return recommendedCommunityImageScope{}, false
-	}
-
-	scope := recommendedCommunityImageScope{exactID: entry.ID}
-	if strings.TrimSpace(entry.FamilyID) == "" && strings.TrimSpace(entry.FamilyName) == "" {
-		return scope, true
-	}
-	scope.familyKey = entry.FamilyKey()
-	scope.familyQuery = entry.FamilyLabel()
-	scope.hasFamily = scope.familyKey != "" && scope.familyQuery != ""
-	return scope, true
-}
-
-func (scope recommendedCommunityImageScope) contains(snap *deployment.ImageCatalogSnapshot, id string) bool {
-	if scope.familyKey == "" {
-		return strings.EqualFold(strings.TrimSpace(scope.exactID), strings.TrimSpace(id))
-	}
-	entry, ok := snap.ByID(id)
-	return ok && entry.FamilyKey() == scope.familyKey
-}
-
-func scopeImageCandidateSet(set imageCandidateSet, scope recommendedCommunityImageScope) imageCandidateSet {
-	keep := func(sel deployment.ImageSelection) bool {
-		return scope.contains(set.snap, sel.ID)
-	}
-	set.base = filterSelections(set.base, keep)
-	set.afterType = filterSelections(set.afterType, keep)
-	set.final = filterSelections(set.final, keep)
-	return set
-}
-
 // buildImageCandidateSet takes zoneIsPod as an EXPLICIT argument rather than
 // reading the ZoneIsPod param, which was the bug. ZoneIsPod is a denormalized cache
 // that syncGuidedZoneMeta only writes at the zone card — and under the image-first
@@ -1666,10 +1275,8 @@ func buildImageCandidateSet(params map[string]any, images map[string]any, gpuTyp
 	})
 }
 
-// buildImageCandidateSetForRequest is the shared implementation for the ordinary
-// proposal path and the current-turn catalog fallback. The latter supplies a
-// structured Framework/Tag read from the live catalog instead of fabricating an
-// ImageName; both paths still rank through deployment.RankImages.
+// buildImageCandidateSetForRequest ranks the supplied structured request against
+// the live catalog and applies the selected form facets.
 func buildImageCandidateSetForRequest(params map[string]any, images map[string]any, taxonomy *deployment.ImageTaxonomy, request deployment.ImageRequest) imageCandidateSet {
 	snap := formImageCatalog(images, paramStr(params, "ImageSource", "platform"))
 	base := deployment.RankImages(snap, request)
@@ -1718,35 +1325,9 @@ func createImageCandidates(wfCtx *Context) imageCandidateSet {
 			IsPod: createZoneIsPod(wfCtx),
 		},
 	}
-	scope, hasRecommendedCommunityScope := currentRecommendedCommunityImageScope(wfCtx)
-	if hasRecommendedCommunityScope {
-		// The exact recommendation already determines the family boundary. Keeping
-		// the Agent's display-name text as a second rank filter can drop older
-		// versions whose upstream row names differ, turning a family picker back
-		// into a one-row card. Rank the viable rows without a free-text request,
-		// then apply the verified GroupId boundary below.
-		request.Name = ""
-	}
-	if inferred, ok := currentTurnImageCatalogRequest(wfCtx); ok {
-		// The catalog fact is the grounded interpretation of this turn. Do not also
-		// score the Agent's free-text ImageName (for example "最新pytorch"): a row
-		// whose display name happens to contain "pytorch" would receive an extra
-		// vote and could outrank a newer runtime-named row from the same framework.
-		// When the user chose the OTHER source, inferred.Name is deliberately the
-		// frozen catalog phrase (for example "ComfyUI") and must remain: the other
-		// source does not inherit the initial catalog's SoftwareFacts/Tags.
-		request.Name = inferred.Name
-		request.Framework = inferred.Framework
-		request.Tag = inferred.Tag
-		request.Source = inferred.Source
-	}
-	set := buildImageCandidateSetForRequest(
+	return buildImageCandidateSetForRequest(
 		wfCtx.Params, images, createImageTaxonomy(wfCtx), request,
 	)
-	if hasRecommendedCommunityScope {
-		return scopeImageCandidateSet(set, scope)
-	}
-	return set
 }
 
 // createImageFamilies projects the current, already-filtered candidate set into
@@ -2612,12 +2193,6 @@ func buildCreateConfirmArgs(wfCtx *Context) (map[string]any, error) {
 		// at the gate above. Kept additive (always present) for the renderers, which
 		// still skip it when empty.
 		"PriceNote": priceNote,
-		// FallbackNote is set by the deploy_model handler when it switched the
-		// create-zone (sold-out primary). Empty before a create-zone is selected.
-		// Surfaced in the confirm card so the user sees the zone switch before
-		// approving. The key is always present (value "" when unset); the
-		// renderer (cli.go printCreateConfirmCard) skips it when empty.
-		"FallbackNote": paramStr(wfCtx.Params, "FallbackNote", ""),
 	}
 	if name := strings.TrimSpace(draft.Args.Name); name != "" {
 		summary["Name"] = name
@@ -3654,92 +3229,22 @@ func shouldSkipGuidedCPUMemoryStep(wfCtx *Context) (bool, error) {
 	return selected == current && enabledOptionExists(opts, current), nil
 }
 
-// shouldSkipGuidedImageSourceStep and shouldSkipGuidedImageFacetsStep gate the two-stage
-// image flow on imageUserSettled (the USER settled a concrete image), NOT on
-// hasExplicitImageIntent — so BOTH steps show for community BROWSING (source chosen, no
-// concrete image yet), which is exactly the case the two-stage flow serves. An Agent
-// SUGGESTION is not settlement, so these steps show for it too — the user still chooses.
-//
-// A name alone no longer settles SOURCE: ComfyUI/SD-WebUI can exist in both live
-// catalogs. Source is skipped only when the user explicitly chose it, a concrete
-// verified id already owns it, a prior recommendation supplied id+source, or the
-// alternate live-catalog probe proved the current source is the only match. The
-// concrete image picker remains independently confirm-gated in every case.
+// Image and source parameters come from the Agent or a form submission. They
+// constrain selection; the final priced contract remains independently confirmed.
 func shouldSkipGuidedImageSourceStep(wfCtx *Context) (bool, error) {
 	if wfCtx == nil {
 		return false, nil
 	}
-	concreteUserImage := imageUserSettled(wfCtx) &&
-		strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != ""
-	return wfCtx.ImageSourceUserPinned() ||
-		guidedStepWasReached(wfCtx, guidedStepImageSource) ||
-		concreteUserImage ||
-		imageSuggestionSettlesAxis(wfCtx) ||
-		catalogIntentUniquelySettlesCurrentSource(wfCtx), nil
-}
-
-// currentTurnImageCatalogRequest is the deterministic fallback for an Agent
-// proposal that omitted ImageName or supplied only a free-text suggestion even
-// though the current user turn named a live catalog fact.
-//
-// It is intentionally narrow:
-//   - a concrete id keeps its ordinary path;
-//   - the frozen initial request is structured and literal; if the user chooses
-//     the other source, only its same catalog-derived phrase is carried across;
-//   - a user-pinned specific name stays a name and is never broadened to a
-//     framework merely because one word overlaps.
-//
-// The returned request only ranks the picker. It never writes Params, never marks
-// the image user-settled, and never skips the concrete-image confirmation.
-func currentTurnImageCatalogRequest(wfCtx *Context) (deployment.ImageRequest, bool) {
-	if wfCtx == nil ||
-		strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "" {
-		return deployment.ImageRequest{}, false
-	}
-	seed, ok := currentImageCatalogIntentSeed(wfCtx)
-	if !ok {
-		return deployment.ImageRequest{}, false
-	}
-	source := normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", "platform"))
-	request := seed.Request
-	if source == seed.InitialSource && strings.TrimSpace(request.Name) != "" {
-		// A name already present in Params has the ordinary name-guided picker
-		// path. The seed records it only so the opposite source can be checked and,
-		// if the user switches, the same ask survives clearing source-local fields.
-		return deployment.ImageRequest{}, false
-	}
-	if source != seed.InitialSource {
-		// SoftwareFacts/Tags are source-local evidence. Carry only the phrase to
-		// the other catalog and let its real display/family names establish the
-		// candidates; do not pretend community rows inherited platform metadata.
-		request = deployment.ImageRequest{Name: seed.Query}
-	}
-	request.Source = source
-	if len(deployment.RankImages(createImageCatalog(wfCtx), request)) == 0 {
-		return deployment.ImageRequest{}, false
-	}
-	return request, true
-}
-
-// imageSuggestionSettlesAxis skips source/purpose questions already fixed by an
-// exact suggested image. The user still sees and confirms the image itself. The
-// proposal must explicitly name its source; a defaulted source is insufficient.
-func imageSuggestionSettlesAxis(wfCtx *Context) bool {
-	if wfCtx == nil || wfCtx.ImageSelection() != ImageSelectionSuggested {
-		return false
-	}
-	if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) == "" {
-		return false
-	}
-	return initialParamSet(wfCtx, "ImageSource")
+	return strings.TrimSpace(paramStr(wfCtx.Params, "ImageSource", "")) != "" ||
+		strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "" ||
+		guidedStepWasReached(wfCtx, guidedStepImageSource), nil
 }
 
 func shouldSkipGuidedImageFacetsStep(wfCtx *Context) (bool, error) {
 	if tenantImageInventorySelected(wfCtx) {
 		return true, nil
 	}
-	if _, catalogIntent := currentTurnImageCatalogRequest(wfCtx); imageUserSettled(wfCtx) ||
-		imageSuggestionSettlesAxis(wfCtx) || catalogIntent {
+	if hasExplicitImageSelection(wfCtx.Params) {
 		return true, nil
 	}
 	// No empty card: the facets step earns its place only when the chosen source's
@@ -3764,8 +3269,7 @@ func shouldSkipGuidedImageTagStep(wfCtx *Context) (bool, error) {
 	if tenantImageInventorySelected(wfCtx) {
 		return true, nil
 	}
-	if _, catalogIntent := currentTurnImageCatalogRequest(wfCtx); imageUserSettled(wfCtx) ||
-		imageSuggestionSettlesAxis(wfCtx) || catalogIntent {
+	if hasExplicitImageSelection(wfCtx.Params) {
 		return true, nil
 	}
 	set := createImageCandidates(wfCtx)
@@ -3784,10 +3288,7 @@ func shouldSkipGuidedImageFamilyStep(wfCtx *Context) (bool, error) {
 	if wfCtx == nil {
 		return true, nil
 	}
-	if imageUserSettled(wfCtx) || imageSuggestionSettlesAxis(wfCtx) {
-		return true, nil
-	}
-	if _, catalogIntent := currentTurnImageCatalogRequest(wfCtx); catalogIntent {
+	if hasExplicitImageSelection(wfCtx.Params) {
 		return true, nil
 	}
 	if strings.TrimSpace(paramStr(wfCtx.Params, "ImageFamily", "")) != "" ||
@@ -3808,31 +3309,7 @@ func shouldSkipGuidedImageFamilyStep(wfCtx *Context) (bool, error) {
 }
 
 func shouldSkipGuidedImageStep(wfCtx *Context) (bool, error) {
-	// The picker RESOLVES a concrete image, so skip it only when one is already
-	// settled and needs no resolution: the user settled the image (imageUserSettled —
-	// their text pinned it, or they picked on the card, which also sets a concrete id)
-	// AND a concrete id exists. A bare user NAME is not a concrete id, so the picker
-	// still runs (ranked, preselected). An Agent SUGGESTION is not settlement
-	// (imageUserSettled is false for it), so the picker runs preselected on the
-	// suggestion rather than sealing it unseen — an Agent-pinned id skipping this card
-	// entirely (CompShareImageId != "" alone meant "settled") was the bug this closes.
-	if !imageUserSettled(wfCtx) {
-		return false, nil
-	}
-	return strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "", nil
-}
-
-// imageUserSettled reports positive user authorization instead of inferring it
-// from a non-empty id/name. Only engine-verified user provenance or an explicit
-// picker submission settles the image; Agent-supplied values remain suggestions.
-func imageUserSettled(wfCtx *Context) bool {
-	if wfCtx == nil || !hasExplicitImageSelection(wfCtx.Params) {
-		return false
-	}
-	if paramBool(wfCtx.Params, "GuidedImageLocked", false) {
-		return true
-	}
-	return wfCtx.ImageSelection() == ImageSelectionUserPinned
+	return wfCtx != nil && strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "", nil
 }
 
 // tenantImageInventorySelected keeps tenant-scoped custom/shared catalogs out of
@@ -3926,8 +3403,7 @@ func createDataDiskSetObserved(row map[string]any, expected []map[string]any) bo
 // the re-query replaces the stale initial catalog with the chosen source's, so the
 // facets/picker/resolve steps never read a foreign-source listing.
 func shouldSkipSourceReQuery(wfCtx *Context) (bool, error) {
-	if imageUserSettled(wfCtx) &&
-		strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "" {
+	if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "" {
 		return true, nil
 	}
 	return normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", "platform")) ==
@@ -3968,15 +3444,7 @@ func guidedChargeTypeOptions(wfCtx *Context) []ConfirmFormOption {
 }
 
 func shouldSkipGuidedChargeTypeStep(wfCtx *Context) (bool, error) {
-	// The USER already said it ("用抢占式创建一台…"), so asking again is asking them to
-	// repeat themselves. Same rule the GPU and zone cards use for an explicit value.
-	//
-	// This reads the provenance-derived flag, not the presence of ChargeType in
-	// Params. The two are not the same question: the create tool's schema says
-	// "默认 Postpay", so the Agent fills the field in on requests that never
-	// mentioned billing, and key-presence therefore skipped the card for precisely
-	// the users who had chosen nothing. See ReferenceData.ChargeTypeUserPinned.
-	if wfCtx != nil && wfCtx.referenceData.ChargeTypeUserPinned {
+	if wfCtx != nil && strings.TrimSpace(paramStr(wfCtx.Params, "ChargeType", "")) != "" {
 		return true, nil
 	}
 	// Nothing to choose between: one selectable mode is an answer, not a question.
@@ -3999,50 +3467,12 @@ func shouldSkipGuidedChargeTypeStep(wfCtx *Context) (bool, error) {
 // chargeTypeChangeHint says where the purchase mode can be changed. The final
 // card deliberately cannot change it — a late switch would desync the resource
 // pool every earlier step queried against — so the honest answer depends on
-// whether this run showed the purchase-mode card. Alternatives always exclude
-// the mode currently in force.
+// whether this run showed the purchase-mode card.
 func chargeTypeChangeHint(wfCtx *Context) string {
-	if !guidedStepSkipped(wfCtx, guidedStepChargeType) {
+	if guidedStepWasReached(wfCtx, guidedStepChargeType) {
 		return "需要改用其他计费方式，请返回上面的「购买方式」一步重新选择。"
 	}
-	others := chargeTypeAlternativeLabels(createChargeType(wfCtx.Params))
-	example, ok := chargeTypeAlternativeExample(createChargeType(wfCtx.Params))
-	if len(others) == 0 || !ok {
-		return "需要改用其他计费方式，请重新发起创建并直接说明。"
-	}
-	return fmt.Sprintf("需要改用%s，请重新发起创建并直接说明（例如「用%s创建一台…」）。",
-		strings.Join(others, "、"), example)
-}
-
-// chargeTypeAlternativeLabels names the purchase modes OTHER than the one in
-// force, reusing the option labels so the card cannot call a mode something the
-// purchase-mode card does not.
-func chargeTypeAlternativeLabels(current string) []string {
-	out := make([]string, 0, len(createFormChargeTypes))
-	for _, opt := range createFormChargeTypes {
-		if strings.EqualFold(opt.Value, current) {
-			continue
-		}
-		out = append(out, opt.Label)
-	}
-	return out
-}
-
-// chargeTypeAlternativeExample picks the phrase for the "例如「用X创建一台…」" hint.
-// It comes from deployment's parsing vocabulary rather than from the display
-// label: the label may carry a parenthetical ("按量付费（按小时计费）") that reads
-// wrong inside a quoted sentence and, more importantly, the point of the example
-// is that retyping it works — so it has to be a phrase the server resolves.
-func chargeTypeAlternativeExample(current string) (string, bool) {
-	for _, opt := range createFormChargeTypes {
-		if strings.EqualFold(opt.Value, current) {
-			continue
-		}
-		if phrase, ok := deployment.ExplicitChargeTypePhrase(opt.Value); ok {
-			return phrase, true
-		}
-	}
-	return "", false
+	return "需要改用其他计费方式，请重新发起创建并说明要使用的计费方式。"
 }
 
 func guidedChargeTypeIsTheOnlyCard(wfCtx *Context) bool {
@@ -4730,19 +4160,6 @@ func buildGuidedImageTagForm(wfCtx *Context) (*ConfirmForm, error) {
 func buildGuidedImageSourceForm(wfCtx *Context) (*ConfirmForm, error) {
 	index, total := guidedStepPosition(wfCtx, guidedStepImageSource)
 	source := normalizedImageSource(paramStr(wfCtx.Params, "ImageSource", imageSourcePlatform))
-	// When the Agent/default started in a catalog with no related row and the
-	// successfully checked opposite catalog has matches, recommend that real
-	// source on the card. This remains only the form value: Params changes after
-	// the user submits, never from the probe itself.
-	if !wfCtx.ImageSourceUserPinned() {
-		if seed, ok := currentImageCatalogIntentSeed(wfCtx); ok && seed.InitialMatches == 0 {
-			if matches, checked := alternateImageCatalogMatchCount(wfCtx, seed); checked && matches > 0 {
-				if alternate, ok := alternateImageSource(seed.InitialSource); ok {
-					source = alternate
-				}
-			}
-		}
-	}
 	return &ConfirmForm{
 		Version: 2,
 		Step: &ConfirmFormStep{
@@ -5070,8 +4487,12 @@ func clearGuidedConcreteImageSelection(wfCtx *Context) {
 	if wfCtx == nil || wfCtx.Params == nil {
 		return
 	}
+	// A name without an ID is still the requested search, not metadata from a
+	// previously selected image. Keep that query when changing catalog facets.
+	if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "" {
+		delete(wfCtx.Params, "ImageName")
+	}
 	delete(wfCtx.Params, "CompShareImageId")
-	delete(wfCtx.Params, "ImageName")
 	delete(wfCtx.Params, "GuidedImageLocked")
 }
 
@@ -5187,11 +4608,7 @@ func applyGuidedImageOverrides(wfCtx *Context, overrides map[string]string) erro
 	if err := applyCreateOverrides(wfCtx, overrides); err != nil {
 		return err
 	}
-	// The user picked on the picker: the image is now user-settled. Subsequent
-	// re-runs (a later-card edit re-runs the flow) read this and skip the image
-	// cards, instead of seeing state==Suggested and re-opening the picker as if the
-	// pick were a fresh Agent suggestion. Cleared by the source/type/tag/GPU edits
-	// that invalidate the pinned image, so a re-browse starts clean.
+	// A real picker submission locks its exact image until an edit invalidates it.
 	wfCtx.Params["GuidedImageLocked"] = true
 	markGuidedStepReached(wfCtx, guidedStepImage)
 	return nil
@@ -6285,14 +5702,6 @@ func selectedImageFamily(wfCtx *Context) (deployment.ImageFamily, bool) {
 	}
 	key := strings.TrimSpace(paramStr(wfCtx.Params, "ImageFamily", ""))
 	if key == "" {
-		// A recommended exact community image already names its family through the
-		// verified catalog row. It does not need (and must not synthesize) a prior
-		// family-card submission merely to render a version picker honestly.
-		if scope, ok := currentRecommendedCommunityImageScope(wfCtx); ok {
-			key = scope.familyKey
-		}
-	}
-	if key == "" {
 		return deployment.ImageFamily{}, false
 	}
 	for _, family := range createImageFamilies(wfCtx) {
@@ -6308,15 +5717,11 @@ func guidedImageFormOptions(params map[string]any, images map[string]any, gpuTyp
 		return "", nil, 0
 	}
 	set := buildImageCandidateSet(params, images, gpuType, taxonomy, zoneIsPod)
-	return guidedImageFormOptionsFromSet(params, images, gpuType, set, false)
+	return guidedImageFormOptionsFromSet(params, images, gpuType, set)
 }
 
-// guidedImageFormOptionsForContext is the context-aware picker path. When the
-// Agent omitted ImageName (or supplied only a free-text suggestion) but the current
-// turn literally matches one framework or tag in the live catalog,
-// createImageCandidates supplies that structured request and the generic catalog
-// default is suppressed. The ranked catalog candidates therefore lead; no concrete
-// id is treated as current until the user submits this picker.
+// guidedImageFormOptionsForContext reads the same structured request and selected
+// facets as the other image cards.
 func guidedImageFormOptionsForContext(wfCtx *Context, gpuType string) (string, []ConfirmFormOption, int) {
 	if wfCtx == nil {
 		return "", nil, 0
@@ -6325,17 +5730,15 @@ func guidedImageFormOptionsForContext(wfCtx *Context, gpuType string) (string, [
 	if images == nil {
 		return "", nil, 0
 	}
-	_, catalogFallback := currentTurnImageCatalogRequest(wfCtx)
 	return guidedImageFormOptionsFromSet(
 		wfCtx.Params,
 		images,
 		gpuType,
 		createImageCandidates(wfCtx),
-		catalogFallback,
 	)
 }
 
-func guidedImageFormOptionsFromSet(params map[string]any, images map[string]any, gpuType string, set imageCandidateSet, suppressCatalogDefault bool) (string, []ConfirmFormOption, int) {
+func guidedImageFormOptionsFromSet(params map[string]any, images map[string]any, gpuType string, set imageCandidateSet) (string, []ConfirmFormOption, int) {
 	snap := set.snap
 	ranked := set.final
 	wantType := strings.TrimSpace(paramStr(params, "ImageType", ""))
@@ -6392,10 +5795,7 @@ func guidedImageFormOptionsFromSet(params map[string]any, images map[string]any,
 	// facets AND the hard filters. A selection dropped by a facet is re-picked from
 	// the facet-scoped candidates below; a selection dropped by the pod/status gate
 	// is not a valid candidate at all and must not lead (or appear).
-	current := ""
-	if !suppressCatalogDefault {
-		current = pickImageId(params, images)
-	}
+	current := pickImageId(params, images)
 	if current != "" && imageSelectionMatchesFacets(snap, current, wantType, wantTag) {
 		if entry, ok := snap.ByID(current); ok {
 			if inCandidates[current] {

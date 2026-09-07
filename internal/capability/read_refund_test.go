@@ -58,7 +58,7 @@ func TestRefundHandle_EmptyEstimate(t *testing.T) {
 	exec := &fakeReadExec{result: map[string]any{"RefundPriceSet": []any{}}}
 
 	result := runRefund(t, exec, resolver, RefundEstimateRequest{
-		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-a", Source: platform.SourceUserText}},
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-a"}},
 	})
 
 	require.Equal(t, platform.ReadStatusEmpty, result.Status)
@@ -109,7 +109,7 @@ func TestRefundHandle_StructuredIDResolves(t *testing.T) {
 	resolver := refundResolver(t, [2]string{"cpod-known", "pod-known"})
 
 	result := runRefund(t, exec, resolver, RefundEstimateRequest{
-		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "cpod-known", Source: platform.SourceUserText}},
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "cpod-known"}},
 	})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
@@ -125,7 +125,7 @@ func TestRefundHandle_StructuredIDWithoutResolverFallsBack(t *testing.T) {
 	exec := &fakeReadExec{result: refundPriceFixture("uhost-a", 0, 7.77)}
 
 	result := runRefund(t, exec, nil, RefundEstimateRequest{
-		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-a", Source: platform.SourceUserText}},
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-a"}},
 	})
 
 	require.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)
@@ -133,22 +133,17 @@ func TestRefundHandle_StructuredIDWithoutResolverFallsBack(t *testing.T) {
 	assert.Empty(t, exec.calls)
 }
 
-// TestRefundHandle_StalePriorTurnSelectionAnswersInsteadOfRetrying mirrors the
-// legacy TestRefundEstimateRouteStaleFallbackDoesNotCallTool: a single
-// prior-turn reference that no longer resolves is answered (handled) with the
-// stale-selection message, and no refund call is made.
-func TestRefundHandle_StalePriorTurnSelectionAnswersInsteadOfRetrying(t *testing.T) {
+func TestRefundHandleMissingInstanceReturnsTheActualLookupFailure(t *testing.T) {
 	exec := &fakeReadExec{}
 	resolver := refundResolver(t, [2]string{"uhost-a", "train-a"})
 
 	result := runRefund(t, exec, resolver, RefundEstimateRequest{
-		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-deleted-long-ago", Source: platform.SourcePriorTurn}},
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-deleted-long-ago"}},
 	})
 
-	require.Equal(t, platform.ReadStatusHandled, result.Status)
-	assert.Equal(t, "GetCompShareRefundPrice", result.ToolAction)
+	require.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)
+	assert.Equal(t, platform.ReadFallbackUnresolvedTarget, result.FallbackReason)
 	assert.Empty(t, exec.calls)
-	assert.Contains(t, result.Reply, "未找到")
 }
 
 func TestRefundHandle_UpstreamFailure(t *testing.T) {

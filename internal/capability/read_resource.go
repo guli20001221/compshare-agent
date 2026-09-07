@@ -232,9 +232,6 @@ func resourceObserve(resp ResourceInfoResponse) []ReadEffect {
 	if len(resp.VerifiedInstanceIDs) > 0 {
 		effects = append(effects, RememberVerifiedInstances{IDs: append([]string(nil), resp.VerifiedInstanceIDs...)})
 	}
-	if len(resp.Instances) > 1 {
-		effects = append(effects, RememberDisplayedInstances{Instances: append([]entity.InstanceSnapshot(nil), resp.Instances...)})
-	}
 	return effects
 }
 

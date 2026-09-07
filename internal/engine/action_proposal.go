@@ -5,15 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 
 	"github.com/compshare-agent/internal/actionresolver"
-	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/platform"
@@ -33,11 +30,7 @@ func defaultActionCatalog() (*actionresolver.Catalog, error) {
 	return actionCatalog, actionCatalogErr
 }
 
-// operationSupportsGuidedIntake reports whether the catalog declares guided
-// intake for an operation. It is the declarative replacement for the engine
-// hardcoding "CreateInstanceWorkflow" as the guided-card trigger: both the
-// complete-proposal guided swap and the incomplete-proposal intake route ask
-// this instead of naming the workflow.
+// operationSupportsGuidedIntake reads the operation's declared guided intake.
 func operationSupportsGuidedIntake(action string) bool {
 	catalog, err := defaultActionCatalog()
 	if err != nil {
@@ -47,9 +40,8 @@ func operationSupportsGuidedIntake(action string) bool {
 	return ok && spec.Intake.Mode == actionresolver.IntakeGuided
 }
 
-type agentContextEvidenceVerifier struct {
-	context AgentContext
-	spec    actionresolver.OperationSpec
+type proposalTargetVerifier struct {
+	spec actionresolver.OperationSpec
 	// targetEvidence is the engine-produced existence verdict for each proposed
 	// write target, keyed by (field, kind, id) — never a bare id, so an instance's
 	// proof cannot authorize a same-id disk/CFS. It is built BEFORE Resolve (the
@@ -58,31 +50,10 @@ type agentContextEvidenceVerifier struct {
 	targetEvidence map[targetEvidenceKey]targetEvidence
 }
 
-// VerifyCandidate is the trust boundary for NON-target fields (a current-turn
-// literal span is their only verifiable provenance). Write TARGETS are decided by
-// AdjudicateTarget instead, so account-existence failures are reported separately
-// from non-target argument errors.
-func (v agentContextEvidenceVerifier) VerifyCandidate(candidate actionresolver.SlotCandidate) bool {
-	field, known := v.spec.Fields[candidate.Name]
-	if !known {
-		return false
-	}
-	if field.Target {
-		return v.AdjudicateTarget(candidate) == actionresolver.TargetAccept
-	}
-	if candidate.Evidence == nil {
-		return false
-	}
-	if candidate.Source == actionresolver.SourceUserExplicit {
-		return verifyCurrentQuestionEvidence(v.context, candidate, field.Codec)
-	}
-	return false
-}
-
 // AdjudicateTarget checks the exact target proposed for this operation. The
 // Agent resolves conversational references; account existence and the operation's
 // confirmation card remain server-owned.
-func (v agentContextEvidenceVerifier) AdjudicateTarget(candidate actionresolver.SlotCandidate) actionresolver.TargetVerdict {
+func (v proposalTargetVerifier) AdjudicateTarget(candidate actionresolver.SlotCandidate) actionresolver.TargetVerdict {
 	value, ok := candidate.Value.(string)
 	if !ok || strings.TrimSpace(value) == "" {
 		return actionresolver.TargetReject
@@ -109,97 +80,6 @@ func (v agentContextEvidenceVerifier) AdjudicateTarget(candidate actionresolver.
 	}
 }
 
-func verifyCurrentQuestionEvidence(context AgentContext, candidate actionresolver.SlotCandidate, codec actionresolver.SlotCodecKind) bool {
-	evidence := candidate.Evidence
-	if evidence.MessageID == "" || evidence.MessageID != context.TurnID || evidence.Start < 0 || evidence.End <= evidence.Start {
-		return false
-	}
-	question := []rune(context.CurrentQuestion)
-	if evidence.End > len(question) || string(question[evidence.Start:evidence.End]) != evidence.Quote {
-		return false
-	}
-	value, ok := candidate.Value.(string)
-	if !ok {
-		return false
-	}
-	if value != evidence.Quote {
-		normalized, ok := normalizedEnumValueFromPhrase(candidate.Name, evidence.Quote)
-		if codec != actionresolver.CodecEnum || !ok ||
-			!normalizedEnumValuesEqual(candidate.Name, normalized, value) {
-			return false
-		}
-		return normalizedEnumQuoteSpan(question, evidence.Start, evidence.End)
-	}
-	return evidenceSpanForCodec(question, evidence.Start, evidence.End, codec)
-}
-
-func normalizedEnumValueFromPhrase(name, phrase string) (string, bool) {
-	switch name {
-	case "ChargeType":
-		return deployment.ExplicitChargeTypeFromPhrase(phrase)
-	case "ImageSource":
-		switch strings.ToLower(strings.TrimSpace(phrase)) {
-		case "platform", "平台", "平台镜像":
-			return "platform", true
-		case "community", "社区", "社区镜像":
-			return "community", true
-		case "custom", "自制", "自制镜像", "自定义镜像":
-			return "custom", true
-		case "sharing", "shared", "共享", "共享镜像":
-			return "sharing", true
-		}
-	}
-	return "", false
-}
-
-func normalizedEnumValuesEqual(name, left, right string) bool {
-	if name == "ImageSource" {
-		leftCanonical, leftOK := normalizedEnumValueFromPhrase(name, left)
-		rightCanonical, rightOK := normalizedEnumValueFromPhrase(name, right)
-		return leftOK && rightOK && leftCanonical == rightCanonical
-	}
-	return left == right
-}
-
-func normalizedEnumQuoteSpan(text []rune, start, end int) bool {
-	for _, r := range text[start:end] {
-		if r > unicode.MaxASCII {
-			// CJK selections normally sit directly inside a sentence ("按量创建").
-			// Exact-span uniqueness is the meaningful boundary; treating adjacent
-			// Chinese characters as one identifier would reject every such quote.
-			return true
-		}
-	}
-	return standaloneSpan(text, start, end)
-}
-
-func evidenceSpanForCodec(text []rune, start, end int, codec actionresolver.SlotCodecKind) bool {
-	if codec == actionresolver.CodecImage {
-		return opaqueIdentifierSpan(text, start, end)
-	}
-	if codec != actionresolver.CodecCapacity {
-		return standaloneSpan(text, start, end)
-	}
-	// Capacities are normally embedded in Chinese prose ("加200G数据盘").
-	// Only ASCII token neighbours can make the quote a substring of another
-	// number/unit; surrounding CJK characters are grammatical separators here.
-	isASCIIValuePart := func(r rune) bool {
-		return r <= unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' || r == '.')
-	}
-	if start > 0 && isASCIIValuePart(text[start-1]) {
-		return false
-	}
-	return end >= len(text) || !isASCIIValuePart(text[end])
-}
-
-func standaloneSpan(text []rune, start, end int) bool {
-	isPart := func(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-' }
-	if start > 0 && isPart(text[start-1]) {
-		return false
-	}
-	return end >= len(text) || !isPart(text[end])
-}
-
 func decodeActionProposal(args map[string]any) (actionresolver.ActionProposal, error) {
 	payload, err := json.Marshal(args)
 	if err != nil {
@@ -218,18 +98,8 @@ func decodeActionProposal(args map[string]any) (actionresolver.ActionProposal, e
 	return proposal, nil
 }
 
-// pruneBlankSlots drops slots the Agent left blank. A null or empty value is not
-// a bad value the user supplied — it is the Agent saying nothing, which the
-// system prompt explicitly asks for ("带上此刻已明确的值、其余留空"). Carried into
-// Resolve, such a slot fails its codec and lands in Rejected, and a rejection
-// blocks the guided form outright: one blank optional Name was enough to kill a
-// whole create card while the model narrated that it had submitted a draft.
-//
-// This cannot let a new value reach a workflow. Every codec already refuses nil
-// and blank strings (normalizeValue), and no declared enum has an empty member,
-// so the only values pruned here are ones Resolve was certain to reject. What
-// changes is the CHANNEL: a value nobody supplied is reported as absent (or
-// Missing when the field is required), not as one the user got wrong.
+// pruneBlankSlots treats null and blank strings as omitted arguments, allowing
+// the guided form to collect missing values. Zero and false remain real values.
 func pruneBlankSlots(slots []actionresolver.SlotCandidate) []actionresolver.SlotCandidate {
 	kept := slots[:0:0]
 	for _, candidate := range slots {
@@ -290,80 +160,29 @@ func (e *Engine) resolveActionProposal(ctx context.Context, args map[string]any)
 	}
 	spec, ok := catalog.Lookup(proposal.Operation)
 	if !ok {
-		resolved := actionresolver.New(catalog, agentContextEvidenceVerifier{context: view}, actionresolver.MachineTypeCatalog{}).Resolve(proposal)
+		resolved := actionresolver.New(catalog, nil, actionresolver.MachineTypeCatalog{}).Resolve(proposal)
 		return resolvedProposal{action: resolved}, nil
 	}
-	proposal = e.deriveProposalProvenance(proposal, view, spec)
-	// A current-turn opaque image id is a literal user choice, not an Agent
-	// recommendation. The model should carry it in its proposal, but dropping a
-	// syntactically complete id must not turn an exact create request into image
-	// browsing. Complete only the unambiguous, schema-declared image field here;
-	// source ownership is still discovered from the live catalogs below.
-	proposal = completeCurrentTurnImageID(proposal, view, spec)
-	proposal = completeCurrentTurnEvidence(proposal, view, spec)
-	proposal = e.constrainCarriedImageCandidate(proposal, view)
 	targetEvidence := e.targetEvidenceForProposal(ctx, proposal, spec)
 	machineTypes := e.machineTypeCatalogSnapshot(ctx, spec)
 	zoneCatalog := e.zoneCatalogSnapshotForSpec(ctx, spec)
-	// An exact image id is verified with a point query before Resolve. A
-	// user-explicit source is a constraint; an omitted or Agent-inferred source is
-	// only a hint, so an exact match may canonicalize it to the source that actually
-	// owns the id. This prevents a community id from falling through the historical
-	// empty-source => platform default.
 	imageSource := proposalImageCatalogSource(proposal, spec)
-	imageSourceSlot, imageSourcePresent := proposalSlotCandidate(proposal, "ImageSource")
-	strictImageSource := strings.TrimSpace(spec.ImageCatalogSource) != "" ||
-		(imageSourcePresent && imageSourceSlot.Source == actionresolver.SourceUserExplicit)
+	// An explicit source constrains the exact lookup; when omitted, the catalogs
+	// establish which source owns the ID.
 	imageCatalog, detectedImageSource := e.resolveImageCatalogSnapshotForSpec(
-		ctx, spec, imageSource, proposalSlotString(proposal, "CompShareImageId"), strictImageSource,
+		ctx, spec, imageSource, proposalSlotString(proposal, "CompShareImageId"), imageSource != "",
 	)
-	if hasExplicitName, matches := carriedImageMatchesExplicitName(proposal, imageCatalog); hasExplicitName && !matches {
-		// The user named an image this turn, so a stale, unavailable, or unrelated
-		// historical id cannot override that newer instruction. Fall back to the
-		// ordinary name-guided picker instead of rejecting the whole create.
-		proposal = discardCarriedImageCandidate(proposal)
-		imageCatalog = nil
-		detectedImageSource = ""
+	if imageSource == "" && detectedImageSource != "" {
+		proposal.Slots = append(proposal.Slots, actionresolver.SlotCandidate{Name: "ImageSource", Value: detectedImageSource})
 	}
-	if detectedImageSource != "" && strings.TrimSpace(spec.ImageCatalogSource) == "" &&
-		(!imageSourcePresent || imageSourceSlot.Source != actionresolver.SourceUserExplicit) {
-		proposal = upsertVerifiedImageSource(proposal, detectedImageSource)
-	}
-	resolved := actionresolver.New(catalog, agentContextEvidenceVerifier{context: view, spec: spec, targetEvidence: targetEvidence}, machineTypes).
+	resolved := actionresolver.New(catalog, proposalTargetVerifier{spec: spec, targetEvidence: targetEvidence}, machineTypes).
 		WithZoneCatalog(zoneCatalog).
 		WithImageCatalog(imageCatalog).
 		Resolve(proposal)
-	imageIntentText := ""
-	if _, carriesImageName := spec.Fields["ImageName"]; carriesImageName {
-		imageIntentText = view.CurrentQuestion
-	}
 	return resolvedProposal{action: resolved, referenceData: workflow.ReferenceData{
-		ZoneCatalog:           zoneCatalog,
-		ImageCatalog:          imageCatalog,
-		ImageSelection:        deriveImageSelection(resolved.Provenance),
-		ImageSourceUserPinned: imageSourceUserPinned(resolved.Provenance),
-		ChargeTypeUserPinned:  chargeTypeUserPinned(resolved.Provenance),
-		ImageIntentText:       imageIntentText,
+		ZoneCatalog:  zoneCatalog,
+		ImageCatalog: imageCatalog,
 	}, targetEvidence: targetEvidence}, nil
-}
-
-// imageSourceUserPinned reports whether the image source came from the user's own
-// words. A model/default source is only a search starting point: a named image can
-// exist in more than one live catalog and must not become source consent by key
-// presence alone.
-func imageSourceUserPinned(provenance map[string]actionresolver.ResolvedSlot) bool {
-	slot, ok := provenance["ImageSource"]
-	return ok && slot.Source == actionresolver.SourceUserExplicit
-}
-
-// chargeTypeUserPinned reports whether the purchase mode came from the user's own
-// words rather than the Agent's default. Only SourceUserExplicit counts. A
-// canonical wire value is literal current-turn text, or the server has
-// deterministically mapped an exact current-turn billing phrase to that value;
-// the Agent cannot promote an unrelated quote to the user's choice.
-func chargeTypeUserPinned(provenance map[string]actionresolver.ResolvedSlot) bool {
-	slot, ok := provenance["ChargeType"]
-	return ok && slot.Source == actionresolver.SourceUserExplicit
 }
 
 func proposalImageCatalogSource(proposal actionresolver.ActionProposal, spec actionresolver.OperationSpec) string {
@@ -371,55 +190,6 @@ func proposalImageCatalogSource(proposal actionresolver.ActionProposal, spec act
 		return source
 	}
 	return spec.ImageCatalogSource
-}
-
-// upsertVerifiedImageSource records source as catalog-derived metadata. It does
-// not promote the image to a user choice: deriveImageSelection still classifies a
-// non-user id as Suggested, and the confirmation path remains mandatory.
-func upsertVerifiedImageSource(proposal actionresolver.ActionProposal, source string) actionresolver.ActionProposal {
-	for index := range proposal.Slots {
-		if proposal.Slots[index].Name != "ImageSource" {
-			continue
-		}
-		proposal.Slots[index].Value = source
-		proposal.Slots[index].Source = actionresolver.SourceVerifiedContext
-		proposal.Slots[index].Evidence = &actionresolver.SourceEvidence{ContextField: "image_catalog_exact_match"}
-		return proposal
-	}
-	proposal.Slots = append(proposal.Slots, actionresolver.SlotCandidate{
-		Name: "ImageSource", Value: source, Source: actionresolver.SourceVerifiedContext,
-		Evidence: &actionresolver.SourceEvidence{ContextField: "image_catalog_exact_match"},
-	})
-	return proposal
-}
-
-// deriveImageSelection classifies who settled the create's image from the resolved
-// provenance, so the guided image flow offers an Agent suggestion on the picker
-// instead of sealing it silently. A concrete id takes precedence over a name: when
-// the id is not user-explicit, it remains Suggested even if the user supplied a
-// related bare name, because the Agent still chose the exact version. Without an
-// id, a user-explicit name is UserPinned but still opens the picker to resolve a
-// concrete version. Any other non-empty image candidate is Suggested. Nothing is
-// Unset.
-//
-// Only the guided create flow reads this; for reinstall/clone (which carry a
-// CompShareImageId but never open the picker) it is computed and harmlessly unread.
-func deriveImageSelection(provenance map[string]actionresolver.ResolvedSlot) workflow.ImageSelectionState {
-	idSlot, hasID := provenance["CompShareImageId"]
-	nameSlot, hasName := provenance["ImageName"]
-	if hasID && strings.TrimSpace(fmt.Sprint(idSlot.Value)) != "" {
-		if idSlot.Source == actionresolver.SourceUserExplicit {
-			return workflow.ImageSelectionUserPinned
-		}
-		return workflow.ImageSelectionSuggested
-	}
-	if hasName && strings.TrimSpace(fmt.Sprint(nameSlot.Value)) != "" {
-		if nameSlot.Source == actionresolver.SourceUserExplicit {
-			return workflow.ImageSelectionUserPinned
-		}
-		return workflow.ImageSelectionSuggested
-	}
-	return workflow.ImageSelectionUnset
 }
 
 // targetEvidenceForProposal builds an existence verdict for every distinct
@@ -502,112 +272,6 @@ func (e *Engine) recordUserSelectedTargets(resolved actionresolver.ResolvedActio
 	}
 }
 
-// deriveProposalProvenance keeps write authority out of model-authored
-// arguments. The Agent proposes semantic field values; the server decides
-// whether each value is present in the current user text, a verified entity, or
-// a current/recent read observation. A model cannot promote its own inference
-// into a trusted write target by choosing a source label.
-func (e *Engine) deriveProposalProvenance(proposal actionresolver.ActionProposal, view AgentContext, spec actionresolver.OperationSpec) actionresolver.ActionProposal {
-	for index := range proposal.Slots {
-		candidate := &proposal.Slots[index]
-		claimedQuote := ""
-		if candidate.Evidence != nil {
-			claimedQuote = strings.TrimSpace(candidate.Evidence.Quote)
-		}
-		candidate.Source = actionresolver.SourceAgentInference
-		candidate.Evidence = nil
-		candidate.UserAuthored = false
-
-		field, known := spec.Fields[candidate.Name]
-		if !known {
-			continue
-		}
-		value, isString := candidate.Value.(string)
-		// Attribution is intentionally weaker than provenance. An invalid literal
-		// can be visibly user-authored even though it cannot pass the field codec
-		// and therefore must never gain SourceUserExplicit. Remember that fact only
-		// so the outer Agent asks the user to correct it instead of retrying its own
-		// call. This bit is not serialized and cannot authorize a write.
-		if isString && uniqueUserAuthoredLiteral([]rune(view.CurrentQuestion), []rune(value)) {
-			candidate.UserAuthored = true
-		}
-		// ImageSource always uses the explicit quote protocol below, even when the
-		// canonical wire value itself appears in the sentence. Otherwise a negated
-		// or comparative mention such as "不要 community" would bypass the model's
-		// required positive-selection quote and be promoted automatically.
-		if candidate.Name != "ImageSource" && isString && strings.TrimSpace(value) != "" {
-			question := []rune(view.CurrentQuestion)
-			if start, end, ok := uniqueQuoteForCodec(question, []rune(value), field.Codec); ok {
-				candidate.Source = actionresolver.SourceUserExplicit
-				candidate.Evidence = &actionresolver.SourceEvidence{
-					MessageID: view.TurnID,
-					Start:     start,
-					End:       end,
-					Quote:     value,
-				}
-				continue
-			}
-			// Guided forms cannot re-confirm user-only optional capacities. The
-			// Agent may normalize a literal such as "200g" to "200GB" before it
-			// reaches this boundary, so accept the normalization only when exactly
-			// one capacity literal in the current message has the same GB value.
-			// The actual user span is restored before the ordinary verifier runs.
-			if field.Codec == actionresolver.CodecCapacity &&
-				slices.Contains(spec.Intake.UserSuppliedOptionalFields, candidate.Name) {
-				if start, end, ok := uniqueEquivalentCapacityLiteral(question, value); ok {
-					actual := string(question[start:end])
-					candidate.Value = actual
-					candidate.Source = actionresolver.SourceUserExplicit
-					candidate.Evidence = &actionresolver.SourceEvidence{
-						MessageID: view.TurnID,
-						Start:     start,
-						End:       end,
-						Quote:     actual,
-					}
-					continue
-				}
-				// A clarification turn need not repeat a capacity the user just
-				// supplied. Keep a recent user-authored capacity when it
-				// uniquely matches the Agent's normalized value; the final create
-				// card still shows the resulting disk contract before execution.
-				if recentUserCapacityMatches(view, value) {
-					candidate.Source = actionresolver.SourceVerifiedContext
-					candidate.Evidence = &actionresolver.SourceEvidence{ContextField: "recent_user_capacity"}
-					continue
-				}
-			}
-		}
-		// Some enum fields accept localized user phrases that differ from their
-		// canonical wire values. The Agent points at a current-message quote; the
-		// server independently maps it and grants user-explicit provenance only
-		// when the deterministic mapping equals the proposed value.
-		if field.Codec == actionresolver.CodecEnum && claimedQuote != "" {
-			normalized, mapped := normalizedEnumValueFromPhrase(candidate.Name, claimedQuote)
-			if !mapped || !normalizedEnumValuesEqual(candidate.Name, normalized, value) {
-				continue
-			}
-			if start, end, ok := uniqueNormalizedEnumQuote(
-				[]rune(view.CurrentQuestion), []rune(claimedQuote),
-			); ok {
-				candidate.Source = actionresolver.SourceUserExplicit
-				candidate.Evidence = &actionresolver.SourceEvidence{
-					MessageID: view.TurnID,
-					Start:     start,
-					End:       end,
-					Quote:     claimedQuote,
-				}
-				continue
-			}
-		}
-		// A concrete target the user did not reference deterministically this turn is
-		// left as the Agent's honest inference. The server does NOT canonicalize it
-		// against SelectedEntities or override it with the sole selected entity.
-		// Existence is proven uniformly by ExactTargetVerifier and the confirmation
-		// card is the SelectionProof — neither reads this source label.
-	}
-	return proposal
-}
-
 // machineTypeCatalogSnapshot fetches the live machine-type names and hands them
 // to the resolver as data. This function is the boundary the design turns on:
 // the network call, its failure mode and any future caching live HERE, in the
@@ -637,354 +301,6 @@ func (e *Engine) machineTypeCatalogSnapshot(ctx context.Context, spec actionreso
 		return actionresolver.MachineTypeCatalog{Available: false}
 	}
 	return actionresolver.MachineTypeCatalog{Names: names, Available: true}
-}
-
-// completeCurrentTurnImageID preserves an unambiguous opaque image id that the
-// current user literally supplied. It is deliberately schema-driven: only an
-// operation with exactly one CodecImage field may receive the value, and this
-// helper never guesses the image source from the id. The resolver below verifies
-// it against the live platform/community/custom/sharing catalogs before it can enter a
-// create contract.
-//
-// The Agent remains the conversation interpreter. When the turn contains two
-// different ids (for example a comparison or a replacement request), this
-// helper leaves the choice to the Agent and the normal confirmation flow.
-func completeCurrentTurnImageID(proposal actionresolver.ActionProposal, view AgentContext, spec actionresolver.OperationSpec) actionresolver.ActionProposal {
-	if strings.TrimSpace(view.TurnID) == "" {
-		return proposal
-	}
-	fieldName, ok := onlyImageIDField(spec)
-	if !ok {
-		return proposal
-	}
-	id, start, end, ok := uniqueCurrentTurnImageID(view.CurrentQuestion)
-	if !ok {
-		return proposal
-	}
-
-	canonical := actionresolver.SlotCandidate{
-		Name:   fieldName,
-		Value:  id,
-		Source: actionresolver.SourceUserExplicit,
-		Evidence: &actionresolver.SourceEvidence{
-			MessageID: view.TurnID,
-			Start:     start,
-			End:       end,
-			Quote:     id,
-		},
-	}
-	out := proposal
-	out.Slots = make([]actionresolver.SlotCandidate, 0, len(proposal.Slots)+1)
-	replaced := false
-	for _, candidate := range proposal.Slots {
-		if candidate.Name != fieldName {
-			out.Slots = append(out.Slots, candidate)
-			continue
-		}
-		if !replaced {
-			out.Slots = append(out.Slots, canonical)
-			replaced = true
-		}
-	}
-	if !replaced {
-		out.Slots = append(out.Slots, canonical)
-	}
-	return out
-}
-
-func onlyImageIDField(spec actionresolver.OperationSpec) (string, bool) {
-	fieldName := ""
-	for name, field := range spec.Fields {
-		if field.Codec != actionresolver.CodecImage {
-			continue
-		}
-		if fieldName != "" {
-			return "", false
-		}
-		fieldName = name
-	}
-	return fieldName, fieldName != ""
-}
-
-const compshareImageIDPrefix = "compshareimage-"
-
-// uniqueCurrentTurnImageID recognizes the opaque CompShare image-id grammar
-// without assigning it a source. It accepts natural Chinese adjacency on either
-// side of the ASCII id while retaining ASCII token boundaries, so an id cannot
-// be read as a substring of a longer identifier.
-func uniqueCurrentTurnImageID(question string) (id string, start, end int, ok bool) {
-	text := []rune(question)
-	seen := map[string]struct{}{}
-	var firstID string
-	firstStart, firstEnd := 0, 0
-	for offset := 0; offset+len(compshareImageIDPrefix) < len(text); offset++ {
-		prefixEnd := offset + len(compshareImageIDPrefix)
-		if !strings.EqualFold(string(text[offset:prefixEnd]), compshareImageIDPrefix) ||
-			(offset > 0 && opaqueIdentifierPart(text[offset-1])) ||
-			prefixEnd >= len(text) || !asciiAlphaNumeric(text[prefixEnd]) {
-			continue
-		}
-		candidateEnd := prefixEnd
-		for candidateEnd < len(text) && opaqueIdentifierPart(text[candidateEnd]) {
-			candidateEnd++
-		}
-		candidate := string(text[offset:candidateEnd])
-		key := strings.ToLower(candidate)
-		if _, exists := seen[key]; exists {
-			offset = candidateEnd - 1
-			continue
-		}
-		seen[key] = struct{}{}
-		if len(seen) > 1 {
-			return "", 0, 0, false
-		}
-		firstID, firstStart, firstEnd = candidate, offset, candidateEnd
-		offset = candidateEnd - 1
-	}
-	if len(seen) != 1 {
-		return "", 0, 0, false
-	}
-	return firstID, firstStart, firstEnd, true
-}
-
-func opaqueIdentifierPart(r rune) bool {
-	return r <= unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-')
-}
-
-func asciiAlphaNumeric(r rune) bool {
-	return r <= unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r))
-}
-
-// completeCurrentTurnEvidence fills protocol metadata that the runtime already
-// owns. The model identifies the quoted value; it does not need to copy an
-// opaque turn id or count Unicode offsets. Ambiguous or non-standalone quotes
-// remain unresolved and therefore cannot become trusted write targets.
-func completeCurrentTurnEvidence(proposal actionresolver.ActionProposal, view AgentContext, spec actionresolver.OperationSpec) actionresolver.ActionProposal {
-	question := []rune(view.CurrentQuestion)
-	for index := range proposal.Slots {
-		candidate := &proposal.Slots[index]
-		if candidate.Source != actionresolver.SourceUserExplicit {
-			continue
-		}
-		value, ok := candidate.Value.(string)
-		if !ok || strings.TrimSpace(value) == "" {
-			continue
-		}
-		if candidate.Evidence == nil {
-			candidate.Evidence = &actionresolver.SourceEvidence{Quote: value}
-		}
-		if candidate.Evidence.Quote == "" {
-			candidate.Evidence.Quote = value
-		}
-		if candidate.Evidence.Quote != value {
-			continue
-		}
-		field, known := spec.Fields[candidate.Name]
-		if !known {
-			continue
-		}
-		start, end, ok := uniqueQuoteForCodec(question, []rune(candidate.Evidence.Quote), field.Codec)
-		if !ok {
-			continue
-		}
-		candidate.Evidence.MessageID = view.TurnID
-		candidate.Evidence.Start = start
-		candidate.Evidence.End = end
-	}
-	return proposal
-}
-
-func uniqueQuoteForCodec(text, quote []rune, codec actionresolver.SlotCodecKind) (int, int, bool) {
-	if codec == actionresolver.CodecImage {
-		return uniqueOpaqueIdentifierQuote(text, quote)
-	}
-	if codec != actionresolver.CodecCapacity {
-		return uniqueStandaloneQuote(text, quote)
-	}
-	if len(quote) == 0 || len(quote) > len(text) {
-		return 0, 0, false
-	}
-	start := -1
-	for offset := 0; offset+len(quote) <= len(text); offset++ {
-		if string(text[offset:offset+len(quote)]) != string(quote) || !evidenceSpanForCodec(text, offset, offset+len(quote), codec) {
-			continue
-		}
-		if start >= 0 {
-			return 0, 0, false
-		}
-		start = offset
-	}
-	if start < 0 {
-		return 0, 0, false
-	}
-	return start, start + len(quote), true
-}
-
-// uniqueUserAuthoredLiteral answers only whether a proposed string visibly came
-// from the current user message. It does not validate the value or grant trusted
-// provenance. CJK text may be adjacent to prose; ASCII identifiers retain their
-// ASCII token boundary so a shortened value cannot borrow a longer token's text.
-func uniqueUserAuthoredLiteral(text, literal []rune) bool {
-	if len(literal) == 0 || len(literal) > len(text) {
-		return false
-	}
-	start := -1
-	for offset := 0; offset+len(literal) <= len(text); offset++ {
-		if string(text[offset:offset+len(literal)]) != string(literal) {
-			continue
-		}
-		if isASCIIOnly(literal) && !opaqueIdentifierSpan(text, offset, offset+len(literal)) {
-			continue
-		}
-		if start >= 0 {
-			return false
-		}
-		start = offset
-	}
-	return start >= 0
-}
-
-func isASCIIOnly(value []rune) bool {
-	for _, r := range value {
-		if r > unicode.MaxASCII {
-			return false
-		}
-	}
-	return true
-}
-
-// uniqueEquivalentCapacityLiteral finds the one current-message capacity whose
-// normalized GB value equals proposed. It does not decide whether that capacity
-// is a system disk, data disk, or another business field; the Agent owns that
-// semantic choice and the confirmation card remains the final contract.
-func uniqueEquivalentCapacityLiteral(text []rune, proposed string) (int, int, bool) {
-	want, ok := actionresolver.NormalizeCapacityGB(proposed)
-	if !ok {
-		return 0, 0, false
-	}
-	start := -1
-	end := -1
-	for _, literal := range actionresolver.CapacityLiterals(string(text)) {
-		if !evidenceSpanForCodec(text, literal.Start, literal.End, actionresolver.CodecCapacity) {
-			continue
-		}
-		got, parsed := actionresolver.NormalizeCapacityGB(literal.Text)
-		if !parsed || got != want {
-			continue
-		}
-		if start >= 0 {
-			return 0, 0, false
-		}
-		start, end = literal.Start, literal.End
-	}
-	if start < 0 {
-		return 0, 0, false
-	}
-	return start, end, true
-}
-
-func recentUserCapacityMatches(view AgentContext, proposed string) bool {
-	want, ok := actionresolver.NormalizeCapacityGB(proposed)
-	if !ok {
-		return false
-	}
-	// This fallback is only for a clarification turn that did not mention a
-	// capacity. If the current message changes a size, a mismatching proposal
-	// must not be rescued by an older value from history.
-	if len(actionresolver.CapacityLiterals(view.CurrentQuestion)) > 0 {
-		return false
-	}
-	for index := len(view.RecentConversation) - 1; index >= 0; index-- {
-		literals := actionresolver.CapacityLiterals(view.RecentConversation[index].User)
-		matches := 0
-		for _, literal := range literals {
-			got, parsed := actionresolver.NormalizeCapacityGB(literal.Text)
-			if parsed && got == want {
-				matches++
-			}
-		}
-		if matches > 0 {
-			return matches == 1
-		}
-	}
-	return false
-}
-
-func uniqueStandaloneQuote(text, quote []rune) (int, int, bool) {
-	if len(quote) == 0 || len(quote) > len(text) {
-		return 0, 0, false
-	}
-	start := -1
-	for offset := 0; offset+len(quote) <= len(text); offset++ {
-		if string(text[offset:offset+len(quote)]) != string(quote) || !standaloneSpan(text, offset, offset+len(quote)) {
-			continue
-		}
-		if start >= 0 {
-			return 0, 0, false
-		}
-		start = offset
-	}
-	if start < 0 {
-		return 0, 0, false
-	}
-	return start, start + len(quote), true
-}
-
-// opaqueIdentifierSpan gives opaque ASCII resource ids their natural boundary:
-// neighbouring Chinese prose is grammatical context ("用compshareImage-...创建"),
-// not part of the identifier. ASCII letters, digits, '_' and '-' remain token
-// characters so a shorter id can never borrow evidence from a longer id.
-func opaqueIdentifierSpan(text []rune, start, end int) bool {
-	isPart := func(r rune) bool {
-		return r <= unicode.MaxASCII && (unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '-')
-	}
-	if start > 0 && isPart(text[start-1]) {
-		return false
-	}
-	return end >= len(text) || !isPart(text[end])
-}
-
-func uniqueOpaqueIdentifierQuote(text, quote []rune) (int, int, bool) {
-	if len(quote) == 0 || len(quote) > len(text) {
-		return 0, 0, false
-	}
-	start := -1
-	for offset := 0; offset+len(quote) <= len(text); offset++ {
-		end := offset + len(quote)
-		if string(text[offset:end]) != string(quote) || !opaqueIdentifierSpan(text, offset, end) {
-			continue
-		}
-		if start >= 0 {
-			return 0, 0, false
-		}
-		start = offset
-	}
-	if start < 0 {
-		return 0, 0, false
-	}
-	return start, start + len(quote), true
-}
-
-func uniqueNormalizedEnumQuote(text, quote []rune) (int, int, bool) {
-	if len(quote) == 0 || len(quote) > len(text) {
-		return 0, 0, false
-	}
-	start := -1
-	for offset := 0; offset+len(quote) <= len(text); offset++ {
-		end := offset + len(quote)
-		if string(text[offset:end]) != string(quote) ||
-			!normalizedEnumQuoteSpan(text, offset, end) {
-			continue
-		}
-		if start >= 0 {
-			return 0, 0, false
-		}
-		start = offset
-	}
-	if start < 0 {
-		return 0, 0, false
-	}
-	return start, start + len(quote), true
 }
 
 func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any, onStep func(StepEvent)) string {

@@ -14,7 +14,6 @@ import (
 // These source labels remain readable in existing session context.
 const (
 	selectionSourceAccountSingle = "account_registry_single"
-	selectionSourcePendingCard   = "pending_selection"
 )
 
 func cloneAgentContext(in AgentContext) AgentContext {
@@ -100,7 +99,7 @@ func historyConversationText(role, value string) string {
 // source labels. These are referents for the Agent, not write authorization.
 func isLiveSelectionHint(hint SelectedEntityHint) bool {
 	switch hint.Source {
-	case selectionSourceAccountSingle, selectionSourcePendingCard,
+	case selectionSourceAccountSingle,
 		SelectedInstanceSourceUser, SelectedInstanceSourceObserved, "":
 		return true
 	}
@@ -108,7 +107,7 @@ func isLiveSelectionHint(hint SelectedEntityHint) bool {
 }
 
 // renderAgentContextCard serializes only the context a transcript cannot carry:
-// live execution state (current selection and pending selection card). Complete
+// live execution state (the current instance referent). Complete
 // prior exchanges live only in the canonical transcript.
 func renderAgentContextCard(view AgentContext) string {
 	var lines []string
@@ -119,11 +118,7 @@ func renderAgentContextCard(view AgentContext) string {
 		}
 		label := strings.TrimSpace(entity.Name + " " + entity.ID)
 		if label != "" {
-			ordinal := ""
-			if entity.Ordinal > 0 {
-				ordinal = fmt.Sprintf("，序号=%d", entity.Ordinal)
-			}
-			lines = append(lines, fmt.Sprintf("相关对象：%s（类型=%s，来源=%s，新鲜度=%s%s）", safeContextText(label), safeContextText(entity.Kind), safeContextText(entity.Source), safeContextText(entity.Freshness), ordinal))
+			lines = append(lines, fmt.Sprintf("相关对象：%s（类型=%s，来源=%s，新鲜度=%s）", safeContextText(label), safeContextText(entity.Kind), safeContextText(entity.Source), safeContextText(entity.Freshness)))
 		}
 	}
 	if len(lines) == 1 {

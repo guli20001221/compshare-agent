@@ -27,9 +27,7 @@ import (
 // comparisons are resolved by the Agent, not by a turn-wide target parser.
 //
 // Existence and the network to establish it live HERE, in the engine, so the
-// actionresolver stays a pure, replayable function of its inputs. The model-supplied
-// source label is advisory (trace only) and never authorizes: deriveProposalProvenance
-// recomputes provenance server-side.
+// actionresolver stays a pure, replayable function of its inputs.
 
 // targetEvidence is the bound existence snapshot the engine produces for a write
 // target BEFORE the pure resolver runs. It binds the account, the observation time

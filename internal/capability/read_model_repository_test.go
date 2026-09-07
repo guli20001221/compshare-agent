@@ -61,7 +61,7 @@ func TestModelRepositoryHandle_EmptyFilter(t *testing.T) {
 		modelRepositoryModelAction: {"TotalCount": float64(0), "Models": []any{}},
 	}}
 	result := runModelRepository(t, exec, ModelRepositoryRequest{
-		Categories: []string{"ComfyUI"}, Source: "Internal", Mode: platform.ListModeFiltered,
+		Categories: []string{"ComfyUI"}, Source: "Internal",
 	})
 	require.Equal(t, platform.ReadStatusEmpty, result.Status)
 	require.Len(t, exec.calls, 2)
@@ -91,7 +91,7 @@ func TestModelRepositoryPageDoesNotClaimTheWholeCatalogIsEmpty(t *testing.T) {
 			map[string]any{"Name": "older-model", "Status": "Active", "MissingZoneIDs": []any{float64(5002)}},
 		}},
 	}}
-	args := modelRepositoryArgs(ModelRepositoryRequest{Offset: 100}, nil, 0)
+	args := modelRepositoryArgs(ModelRepositoryRequest{Offset: 100}, 0)
 	assert.Equal(t, 100, args["Offset"])
 	assert.Equal(t, imageModelBrowseDisplayCap, args["Limit"], "a page must not fetch more candidates than the renderer exposes")
 	reply, empty := renderModelRepositoryReply(exec.results[modelRepositoryModelAction], nil,
@@ -106,26 +106,32 @@ func TestModelRepositoryPageDoesNotClaimTheWholeCatalogIsEmpty(t *testing.T) {
 	assert.Contains(t, result.Reply, "older-model")
 }
 
-func TestModelRepositoryArgs_MatchesTag(t *testing.T) {
-	req := ModelRepositoryRequest{Query: "LLM", Mode: platform.ListModeFiltered}
-	args := modelRepositoryArgs(req, map[string]any{"Tags": []any{"LLM", "图像生成"}}, 0)
-	require.Equal(t, []string{"LLM"}, args["Tags"])
-	_, hasKeyword := args["Keyword"]
-	require.False(t, hasKeyword, "derived tag match should not also set Keyword: %#v", args)
+func TestModelRepositoryQueryIsNotConvertedToACatalogTag(t *testing.T) {
+	for _, query := range []string{"LLM", "Qwen-LLM-14B"} {
+		t.Run(query, func(t *testing.T) {
+			exec := &mapReadExec{results: map[string]map[string]any{
+				modelRepositoryTagAction: {"Tags": []any{"LLM", "图像生成"}},
+			}}
+			runModelRepository(t, exec, ModelRepositoryRequest{Query: query})
+			require.Len(t, exec.calls, 2)
+			require.Equal(t, query, exec.calls[1].args["Keyword"])
+			require.NotContains(t, exec.calls[1].args, "Tags")
+		})
+	}
 }
 
 func TestModelRepositoryArgs_UsesQuery(t *testing.T) {
-	req := ModelRepositoryRequest{Query: "Qwen", Mode: platform.ListModeFiltered}
-	args := modelRepositoryArgs(req, map[string]any{"Tags": []any{"LLM"}}, 0)
+	req := ModelRepositoryRequest{Query: "Qwen"}
+	args := modelRepositoryArgs(req, 0)
 	require.Equal(t, "Qwen", args["Keyword"])
 }
 
 func TestModelRepositoryArgs_ForwardsCurrentUpstreamFilters(t *testing.T) {
 	req := ModelRepositoryRequest{
 		Query: "Qwen", Source: "ModelScope", Tags: []string{"LLM"}, Categories: []string{"NLP"},
-		Status: "Active", ReplicaStatus: "Healthy", Mode: platform.ListModeFiltered,
+		Status: "Active", ReplicaStatus: "Healthy",
 	}
-	args := modelRepositoryArgs(req, map[string]any{}, 42)
+	args := modelRepositoryArgs(req, 42)
 	assert.Equal(t, "Qwen", args["Keyword"])
 	assert.Equal(t, "ModelScope", args["Source"])
 	assert.Equal(t, []string{"LLM"}, args["Tags"])
@@ -137,7 +143,7 @@ func TestModelRepositoryArgs_ForwardsCurrentUpstreamFilters(t *testing.T) {
 
 func TestModelRepositoryArgs_IssueStatusUsesGlobalPrefilterWithoutAvailableZoneFilter(t *testing.T) {
 	req := ModelRepositoryRequest{ReplicaStatus: "Offline"}
-	args := modelRepositoryArgs(req, map[string]any{}, 42)
+	args := modelRepositoryArgs(req, 42)
 	assert.Equal(t, "Offline", args["ReplicaStatus"])
 	assert.NotContains(t, args, "ZoneID", "ZoneID only matches AvailableZoneIDs upstream and would erase offline results")
 }
@@ -150,7 +156,7 @@ func TestModelRepositoryRender_ListAll(t *testing.T) {
 		map[string]any{"Name": "DeletedModel", "Path": "/models/deleted", "Tag": "LLM", "Size": "1GB", "Deleted": float64(1)},
 	}}
 	tagRaw := map[string]any{"Tags": []any{"LLM", "图像生成", "LLM"}}
-	reply, _ := renderModelRepositoryReply(modelRaw, tagRaw, ModelRepositoryRequest{Mode: platform.ListModeAll}, 0, "")
+	reply, _ := renderModelRepositoryReply(modelRaw, tagRaw, ModelRepositoryRequest{}, 0, "")
 	for _, want := range []string{"模型仓库标签", "LLM", "模型仓库列表", "Qwen2.5-7B", "/models/qwen"} {
 		assert.Contains(t, reply, want)
 	}
@@ -165,7 +171,7 @@ func TestModelRepositoryRender_ListAll(t *testing.T) {
 func TestModelRepositoryRender_UpstreamNoMatch(t *testing.T) {
 	modelRaw := map[string]any{"Models": []any{}}
 	tagRaw := map[string]any{"Tags": []any{"LLM"}}
-	reply, _ := renderModelRepositoryReply(modelRaw, tagRaw, ModelRepositoryRequest{Query: "llama", Mode: platform.ListModeFiltered}, 0, "")
+	reply, _ := renderModelRepositoryReply(modelRaw, tagRaw, ModelRepositoryRequest{Query: "llama"}, 0, "")
 	assert.Contains(t, reply, "未找到匹配的模型")
 	for _, want := range []string{"自行拉取", "ollama pull"} {
 		assert.Contains(t, reply, want, "a repo miss must guide the user to self-pull")
@@ -180,7 +186,7 @@ func TestModelRepositoryPreservesUpstreamTagMatches(t *testing.T) {
 			map[string]any{"Name": "Qwen3-8B", "Tags": []any{"LLM"}, "Status": "Active"},
 		}},
 	}}
-	result := runModelRepository(t, exec, ModelRepositoryRequest{Query: "LLM模型", Mode: platform.ListModeFiltered})
+	result := runModelRepository(t, exec, ModelRepositoryRequest{Tags: []string{"LLM"}})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
 	assert.Equal(t, []string{"LLM"}, exec.calls[1].args["Tags"])
@@ -194,7 +200,7 @@ func TestModelRepositoryRender_CapsDefaultOutputAtTen(t *testing.T) {
 	for i := 0; i < imageModelBrowseDisplayCap+3; i++ {
 		models = append(models, map[string]any{"Name": fmt.Sprintf("Qwen-%d", i), "Path": "/m", "Size": "1GB"})
 	}
-	reply, _ := renderModelRepositoryReply(map[string]any{"Models": models}, map[string]any{}, ModelRepositoryRequest{Mode: platform.ListModeAll}, 0, "")
+	reply, _ := renderModelRepositoryReply(map[string]any{"Models": models}, map[string]any{}, ModelRepositoryRequest{}, 0, "")
 	require.Equal(t, imageModelBrowseDisplayCap, strings.Count(reply, "Name=Qwen-"),
 		"reply should cap the model list at the browse display cap: %s", reply)
 	assert.Contains(t, reply, fmt.Sprintf("共 %d 个", imageModelBrowseDisplayCap+3))
@@ -236,7 +242,7 @@ func TestModelRepositoryHandle_TwoCallsAndRenders(t *testing.T) {
 		"DescribeModelRepositoryModels": {"Models": []any{map[string]any{"Name": "Qwen2.5-7B", "Path": "/models/qwen", "Size": "15GB"}}},
 	}}
 
-	result := runModelRepository(t, exec, ModelRepositoryRequest{Mode: platform.ListModeAll})
+	result := runModelRepository(t, exec, ModelRepositoryRequest{})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
 	assert.Equal(t, "DescribeModelRepositoryModels", result.ToolAction)

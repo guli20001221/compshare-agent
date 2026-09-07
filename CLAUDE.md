@@ -49,10 +49,10 @@ bounded `agent_transcript_v1` containing the model-visible user, assistant,
 tool-call and tool-result messages. A later turn replays that transcript; it
 does not reconstruct semantic history from summaries.
 
-The model-visible context card contains only current execution context such as
-a selected instance or a pending candidate. It is not a second memory, and
-semantic summaries or fact caches must not be injected beside the transcript.
-The answer verifier keeps a model-invisible evidence ledger. Workflow forms,
+The model-visible context card contains only the current instance referent.
+Do not reconstruct candidate order or semantic memory from the Agent's prose;
+the actual conversation and tool transcript own that history. The citation
+ledger is model-invisible and does not decide the final answer. Workflow forms,
 confirmations and idempotency records are transaction/authorization state, not
 semantic memory, and remain deterministic. Selected-instance provenance describes
 the current referent; it does not authorize or overwrite a tool's target.
@@ -106,8 +106,15 @@ own authorization.
 The Agent resolves names, ordinals and conversational references separately for
 each operation and supplies its target ID. The server does not derive a single
 target from the whole turn, substitute a historical selection, or infer ambiguity
-from the number of instances read. Candidate lists and the current referent remain
-visible context; each write still verifies its own target and receives its own card.
+from the number of instances read. Each write still verifies its own target and
+receives its own card.
+
+The Agent also supplies image choice, capacities, names, time windows and query
+filters. Validate scalar types/units and live platform facts, not whether the
+same value appears in the current user message. Do not require source labels or
+quotation spans, silently drop optional fields, or replace the Agent's image/GPU
+choice. An exact image ID uses the live catalog; an unresolved choice uses the
+existing guided form. Pre-creation validation failures return to the same Agent.
 
 Editable confirmation forms and guided creation are stable protocol features.
 The server advertises `confirm_form_v1` and `guided_create_v1`; a client must opt
@@ -120,12 +127,18 @@ incomplete readback is reported deterministically rather than narrated as a
 successful delivery; a sole returned instance becomes the existing current
 instance referent without bypassing later confirmation gates.
 
-Model-owned read-tool arguments rejected by schema, grounding, or live-catalog
+Model-owned read-tool arguments rejected by schema or live-catalog
 validation use
 `status=needs_input,next_step=correct_tool_call` only with
 `INVALID_TOOL_ARGUMENTS`. They must not be converted into a question to the
 user. Incomplete provider output (`finish_reason` truncation or partial tool
 calls) is never persisted or executed as a normal answer.
+
+When the tool budget or loop ends after obtaining results, one tool-free closing
+call retains the ordinary prompt, full task and bounded transcript. Do not build
+a separate question/evidence-only answering task or replace a mixed answer with
+one tool's no-data status. If the model cannot finish, report committed outcomes
+through the existing terminal fallback.
 
 ## In-instance diagnosis
 

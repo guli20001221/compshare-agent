@@ -78,14 +78,6 @@ func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt
 	if e == nil || !e.sessionStateHydrated {
 		return cloneAgentContext(view)
 	}
-	if !isPersistedSelectionExpired(buildAt.Unix(), e.sessionState) {
-		for _, item := range e.sessionState.PendingSelectionItems {
-			view.SelectedEntities = append(view.SelectedEntities, SelectedEntityHint{
-				Kind: "instance", ID: item.ID, Name: item.Name, Ordinal: item.Index,
-				Source: "pending_selection", Freshness: ContinuityFreshnessFresh,
-			})
-		}
-	}
 	if id := strings.TrimSpace(e.sessionState.SelectedInstanceID); id != "" {
 		// Retain where and when this referent was recorded; the Agent decides
 		// whether it is the target of the current operation.

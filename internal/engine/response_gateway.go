@@ -34,19 +34,6 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 	return e.finishResponseDelivery(userMsg, draft, content)
 }
 
-// finalizeRecoveryResponse applies the ordinary model-text and delivery
-// boundary to an exceptional synthesis whose citation bookkeeping already ran
-// inside synthesizeOnBudgetExceeded. It performs no semantic review and starts
-// no second Agent; it only keeps private markers, credentials, sensitive
-// replies and signed-URL handling consistent with the normal final exit.
-func (e *Engine) finalizeRecoveryResponse(userMsg, draft string) string {
-	content, ok := e.prepareResponseDraft(draft)
-	if !ok {
-		return content
-	}
-	return e.finishResponseDelivery(userMsg, draft, content)
-}
-
 func (e *Engine) prepareResponseDraft(draft string) (string, bool) {
 	if security.ContainsToolProtocolMarkup(draft) {
 		return malformedToolProtocolReply, false
@@ -61,7 +48,7 @@ func (e *Engine) prepareResponseDraft(draft string) (string, bool) {
 	if !e.feishuConsoleHandoffThisTurn {
 		draft = strings.ReplaceAll(draft, agentprotocol.FeishuConsoleHandoffMarker, "")
 	}
-	content := e.guardMonitorNoDataFinalReply(draft)
+	content := draft
 	content = security.RedactOperationalTokensInText(content)
 	return content, true
 }
