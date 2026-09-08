@@ -585,8 +585,7 @@ func TestLiveCreateOpsCanary(t *testing.T) {
 	}
 	result, err := engine.Run(ctx, workflow.CreateInstanceDef(), params,
 		workflow.WithReferenceData(workflow.ReferenceData{
-			ZoneCatalog:    deployment.NewZoneCatalogSnapshot(true, zoneEntries),
-			ImageSelection: workflow.ImageSelectionUserPinned,
+			ZoneCatalog: deployment.NewZoneCatalogSnapshot(true, zoneEntries),
 		}))
 	if err != nil {
 		t.Fatalf("create workflow error: %v", err)

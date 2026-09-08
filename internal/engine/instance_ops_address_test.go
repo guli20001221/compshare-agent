@@ -130,7 +130,7 @@ func TestInstanceOps_NoSSHTargetCanContinueWithPlatformRead(t *testing.T) {
 	}}
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("guest", "DiagnoseInstanceInternals", `{"UHostId":"`+instanceID+`","Task":"排查远程登录失败","Mode":"inspect"}`)}},
-		{ToolCalls: []openai.ToolCall{toolCall("platform", "ReadCapability_instance_access", `{"targets":[{"type":"uhost_id_user_input","value":"`+instanceID+`","source":"user_text"}],"access_type":"ssh"}`)}},
+		{ToolCalls: []openai.ToolCall{toolCall("platform", "ReadCapability_instance_access", `{"targets":[{"type":"uhost_id_user_input","value":"`+instanceID+`"}],"access_type":"ssh"}`)}},
 		{Content: "实例当前为 Running，但平台没有提供 SSH 登录入口；本轮没有进入 Guest，也没有执行 Guest 命令。请改用平台支持的远程入口继续排查。"},
 	}}
 	eng := NewWithDeps(model, executor, alwaysConfirm)

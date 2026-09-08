@@ -13,7 +13,7 @@ import (
 func TestResolveMarksIncompleteCreateReadyForIntake(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
-	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
+	resolver := New(catalog, TargetAdjudicatorFunc(func(SlotCandidate) TargetVerdict { return TargetAccept }), MachineTypeCatalog{})
 
 	resolved := resolver.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow"})
 
@@ -28,10 +28,10 @@ func TestResolveMarksIncompleteCreateReadyForIntake(t *testing.T) {
 func TestResolveCompleteCreateIsConfirmationNotIntake(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
-	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{Names: []string{"4090"}, Available: true})
+	resolver := New(catalog, TargetAdjudicatorFunc(func(SlotCandidate) TargetVerdict { return TargetAccept }), MachineTypeCatalog{Names: []string{"4090"}, Available: true})
 
 	resolved := resolver.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
-		{Name: "GpuType", Value: "4090", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "4090"}},
+		{Name: "GpuType", Value: "4090"},
 	}})
 
 	require.True(t, resolved.ReadyForConfirmation)
@@ -45,26 +45,26 @@ func TestResolveCompleteCreateIsConfirmationNotIntake(t *testing.T) {
 func TestResolveCorrectableInvalidValueOpensIntake(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
-	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
+	resolver := New(catalog, TargetAdjudicatorFunc(func(SlotCandidate) TargetVerdict { return TargetAccept }), MachineTypeCatalog{})
 
 	resolved := resolver.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
-		{Name: "Cpu", Value: "not-a-number", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "not-a-number"}},
+		{Name: "Cpu", Value: "not-a-number"},
 	}})
 
 	require.NotEmpty(t, resolved.Rejected)
 	require.False(t, resolved.ReadyForConfirmation)
 	require.True(t, resolved.ReadyForIntake, "an invalid value on a collectable field opens the form to re-collect it")
 	require.NotContains(t, resolved.Arguments, "Cpu", "the invalid value is discarded, never carried forward")
-	require.Equal(t, []RejectedProblem{{Slot: "Cpu", Kind: RejectInvalidValue, Actor: RejectionActorUser}}, resolved.RejectedProblems)
+	require.Equal(t, []RejectedProblem{{Slot: "Cpu", Kind: RejectInvalidValue, Actor: RejectionActorModel}}, resolved.RejectedProblems)
 }
 
 func TestInvalidValueRecordsWhoCanCorrectIt(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
-	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
+	resolver := New(catalog, TargetAdjudicatorFunc(func(SlotCandidate) TargetVerdict { return TargetAccept }), MachineTypeCatalog{})
 
 	resolved := resolver.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
-		{Name: "Cpu", Value: "not-a-number", Source: SourceAgentInference},
+		{Name: "Cpu", Value: "not-a-number"},
 	}})
 
 	require.Equal(t, []RejectedProblem{{
@@ -79,29 +79,19 @@ func TestResolveNonCorrectableRejectionBlocksIntake(t *testing.T) {
 	require.NoError(t, err)
 
 	t.Run("unknown field", func(t *testing.T) {
-		r := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
+		r := New(catalog, TargetAdjudicatorFunc(func(SlotCandidate) TargetVerdict { return TargetAccept }), MachineTypeCatalog{})
 		resolved := r.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
-			{Name: "Bogus", Value: "x", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "x"}},
+			{Name: "Bogus", Value: "x"},
 		}})
 		require.False(t, resolved.ReadyForIntake, "an unknown field is not a form input")
-	})
-
-	t.Run("unverified source on a collectable field", func(t *testing.T) {
-		// Zone IS collectable, but a failed span verification is a trust-boundary
-		// failure — never a "let the user re-pick" case, even for a form field.
-		r := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return false }), MachineTypeCatalog{})
-		resolved := r.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
-			{Name: "Zone", Value: "cn-wlcb-01", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "cn-wlcb-01"}},
-		}})
-		require.False(t, resolved.ReadyForIntake, "an unverified source blocks the form")
 	})
 
 	t.Run("dependency failure blocks the form", func(t *testing.T) {
 		// Verified source, but no zone catalog attached → the SERVER could not
 		// adjudicate the value (outage). Never the user's fault to re-pick.
-		r := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
+		r := New(catalog, TargetAdjudicatorFunc(func(SlotCandidate) TargetVerdict { return TargetAccept }), MachineTypeCatalog{})
 		resolved := r.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
-			{Name: "Zone", Value: "cn-wlcb-01", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "cn-wlcb-01"}},
+			{Name: "Zone", Value: "cn-wlcb-01"},
 		}})
 		require.NotEmpty(t, resolved.DependencyFailures)
 		require.False(t, resolved.ReadyForIntake, "a dependency failure blocks the form")
@@ -120,8 +110,7 @@ func TestCreateCollectableFieldsAreDeclaredNotDerived(t *testing.T) {
 		[]string{"GpuType", "Zone", "Gpu", "Cpu", "Memory", "ImageSource", "ImageName", "ChargeType"},
 		spec.Intake.CollectableFields)
 	require.Contains(t, spec.Fields, "Name")
-	require.Contains(t, spec.Intake.UserSuppliedOptionalFields, "Name",
-		"the guided form has no name control, so only a user-authored name may enter the sealed create contract")
+
 }
 
 // intakeSpecForOperation rejects a misdeclared collectable set at build time — a
@@ -135,139 +124,61 @@ func TestIntakeSpecForOperationValidatesDeclaration(t *testing.T) {
 		"Password": {Name: "Password", Codec: CodecSensitiveText},
 	}
 	t.Run("valid", func(t *testing.T) {
-		spec, err := intakeSpecForOperation(true, []string{"Zone"}, nil, fields)
+		spec, err := intakeSpecForOperation(true, []string{"Zone"}, fields)
 		require.NoError(t, err)
 		require.Equal(t, IntakeGuided, spec.Mode)
 	})
 	t.Run("unknown field errors", func(t *testing.T) {
-		_, err := intakeSpecForOperation(true, []string{"Nope"}, nil, fields)
+		_, err := intakeSpecForOperation(true, []string{"Nope"}, fields)
 		require.Error(t, err)
 	})
 	t.Run("target field errors", func(t *testing.T) {
-		_, err := intakeSpecForOperation(true, []string{"UHostId"}, nil, fields)
+		_, err := intakeSpecForOperation(true, []string{"UHostId"}, fields)
 		require.Error(t, err)
 	})
 	t.Run("secret field errors", func(t *testing.T) {
-		_, err := intakeSpecForOperation(true, []string{"Password"}, nil, fields)
+		_, err := intakeSpecForOperation(true, []string{"Password"}, fields)
 		require.Error(t, err)
 	})
 	t.Run("guided with no fields errors", func(t *testing.T) {
-		_, err := intakeSpecForOperation(true, nil, nil, fields)
+		_, err := intakeSpecForOperation(true, nil, fields)
 		require.Error(t, err)
 	})
 	t.Run("non-guided is inert", func(t *testing.T) {
-		spec, err := intakeSpecForOperation(false, nil, nil, fields)
+		spec, err := intakeSpecForOperation(false, nil, fields)
 		require.NoError(t, err)
 		require.Equal(t, IntakeNone, spec.Mode)
 	})
 }
 
-// The user-supplied declaration is explicit: deriving it from all optional
-// fields would silently omit meaningful Agent-assisted values elsewhere.
-func TestIntakeSpecRejectsUnsafeUserSuppliedDeclarations(t *testing.T) {
-	fields := map[string]FieldSpec{
-		"Zone":     {Name: "Zone", Codec: CodecZone},
-		"Name":     {Name: "Name", Codec: CodecConstrainedText},
-		"GpuType":  {Name: "GpuType", Codec: CodecMachineType, Required: true},
-		"UHostId":  {Name: "UHostId", Codec: CodecResourceRef, Target: true},
-		"Password": {Name: "Password", Codec: CodecSensitiveText},
-	}
-	t.Run("valid optional field", func(t *testing.T) {
-		spec, err := intakeSpecForOperation(true, []string{"Zone"}, []string{"Name"}, fields)
-		require.NoError(t, err)
-		require.Equal(t, []string{"Name"}, spec.UserSuppliedOptionalFields)
-	})
-	t.Run("unknown field errors", func(t *testing.T) {
-		_, err := intakeSpecForOperation(true, []string{"Zone"}, []string{"Nope"}, fields)
-		require.Error(t, err)
-	})
-	t.Run("required field errors", func(t *testing.T) {
-		// A rejected slot is adjudicated, so it never lands in Missing — discarding
-		// a required value would run the operation without it.
-		_, err := intakeSpecForOperation(true, []string{"Zone"}, []string{"GpuType"}, fields)
-		require.Error(t, err)
-	})
-	t.Run("target field errors", func(t *testing.T) {
-		_, err := intakeSpecForOperation(true, []string{"Zone"}, []string{"UHostId"}, fields)
-		require.Error(t, err)
-	})
-	t.Run("secret field errors", func(t *testing.T) {
-		// The reinstall password is the field the derived rule would have silenced.
-		_, err := intakeSpecForOperation(true, []string{"Zone"}, []string{"Password"}, fields)
-		require.Error(t, err)
-	})
-	t.Run("user-supplied field without guided intake errors", func(t *testing.T) {
-		_, err := intakeSpecForOperation(false, nil, []string{"Name"}, fields)
-		require.Error(t, err)
-	})
-}
-
-func TestWorkflowFieldSourcePoliciesAreDeclared(t *testing.T) {
-	catalog, err := BuildCatalog()
-	require.NoError(t, err)
-	for _, operation := range catalog.Operations() {
-		spec, ok := catalog.Lookup(operation)
-		require.True(t, ok)
-		if operation == "CreateInstanceWorkflow" {
-			require.Equal(t, []string{"DataDiskSize", "Name", "SystemDiskSize"}, spec.Intake.UserSuppliedOptionalFields)
-		} else {
-			require.Empty(t, spec.Intake.UserSuppliedOptionalFields)
-		}
-		if operation == "StartInstanceWorkflow" {
-			field, exists := spec.Fields["StartMode"]
-			require.True(t, exists)
-			require.True(t, field.Required)
-			require.Equal(t, []string{"normal", "cpu_only_2c4g", "cpu_only_8c16g"}, field.Enum)
-			require.NotContains(t, spec.Fields, "WithoutGpuSpec")
-		}
-	}
-}
-
 func TestStartModeIsAnAgentSemanticChoice(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
-	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
+	resolver := New(catalog, TargetAdjudicatorFunc(func(SlotCandidate) TargetVerdict { return TargetAccept }), MachineTypeCatalog{})
 
 	ordinary := resolver.Resolve(ActionProposal{Operation: "StartInstanceWorkflow", Slots: []SlotCandidate{
-		{Name: "StartMode", Value: "normal", Source: SourceAgentInference},
+		{Name: "StartMode", Value: "normal"},
 	}})
 	require.Equal(t, "normal", ordinary.Arguments["StartMode"])
 	require.Empty(t, ordinary.Rejected)
 
 	cpuOnly := resolver.Resolve(ActionProposal{Operation: "StartInstanceWorkflow", Slots: []SlotCandidate{
-		{Name: "StartMode", Value: "cpu_only_8c16g", Source: SourceAgentInference},
+		{Name: "StartMode", Value: "cpu_only_8c16g"},
 	}})
 	require.Equal(t, "cpu_only_8c16g", cpuOnly.Arguments["StartMode"])
 	require.Empty(t, cpuOnly.Rejected)
 }
 
-func TestUngroundedOptionalCreateFieldsDoNotBecomeContractValues(t *testing.T) {
+func TestValidOptionalCreateFieldsRemainInTheContract(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
-	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }),
+	resolver := New(catalog, TargetAdjudicatorFunc(func(SlotCandidate) TargetVerdict { return TargetAccept }),
 		MachineTypeCatalog{Names: []string{"H20"}, Available: true})
 
 	resolved := resolver.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
-		{Name: "GpuType", Value: "H20", Source: SourceAgentInference},
-		{Name: "SystemDiskSize", Value: float64(1), Source: SourceAgentInference},
-	}})
-
-	require.True(t, resolved.ReadyForConfirmation)
-	require.Empty(t, resolved.Rejected)
-	require.NotContains(t, resolved.Arguments, "SystemDiskSize")
-	require.Equal(t, "H20", resolved.Arguments["GpuType"])
-}
-
-func TestGroundedOptionalCreateFieldsRemainInTheContract(t *testing.T) {
-	catalog, err := BuildCatalog()
-	require.NoError(t, err)
-	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }),
-		MachineTypeCatalog{Names: []string{"H20"}, Available: true})
-
-	resolved := resolver.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
-		{Name: "GpuType", Value: "H20", Source: SourceAgentInference},
-		{Name: "SystemDiskSize", Value: "190GB", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "190GB"}},
-		{Name: "Name", Value: "codex-e2e", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "codex-e2e"}},
+		{Name: "GpuType", Value: "H20"},
+		{Name: "SystemDiskSize", Value: "190GB"},
+		{Name: "Name", Value: "codex-e2e"},
 	}})
 
 	require.True(t, resolved.ReadyForConfirmation)
@@ -275,17 +186,17 @@ func TestGroundedOptionalCreateFieldsRemainInTheContract(t *testing.T) {
 	require.Equal(t, "codex-e2e", resolved.Arguments["Name"])
 }
 
-func TestInvalidUserSuppliedOptionalFieldBlocksIntake(t *testing.T) {
+func TestInvalidOptionalFieldWithoutAFormControlBlocksIntake(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
-	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{Names: []string{"4090"}, Available: true})
+	resolver := New(catalog, TargetAdjudicatorFunc(func(SlotCandidate) TargetVerdict { return TargetAccept }), MachineTypeCatalog{Names: []string{"4090"}, Available: true})
 
 	resolved := resolver.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
-		{Name: "GpuType", Value: "4090", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "4090"}},
-		{Name: "SystemDiskSize", Value: "not-a-size", Source: SourceUserExplicit, Evidence: &SourceEvidence{Quote: "not-a-size"}},
+		{Name: "GpuType", Value: "4090"},
+		{Name: "SystemDiskSize", Value: "not-a-size"},
 	}})
 
-	require.Equal(t, []RejectedProblem{{Slot: "SystemDiskSize", Kind: RejectInvalidValue, Actor: RejectionActorUser}}, resolved.RejectedProblems)
+	require.Equal(t, []RejectedProblem{{Slot: "SystemDiskSize", Kind: RejectInvalidValue, Actor: RejectionActorModel}}, resolved.RejectedProblems)
 	require.False(t, resolved.ReadyForConfirmation, "a rejected value never confirms straight through")
 	require.False(t, resolved.ReadyForIntake, "the form cannot recollect an invalid disk size")
 	require.NotContains(t, resolved.Arguments, "SystemDiskSize", "the bad value is dropped, never carried into the create")
@@ -296,13 +207,13 @@ func TestInvalidExactImageIDCannotBeDiscardedIntoAnUnrelatedPicker(t *testing.T)
 	require.NoError(t, err)
 	resolver := New(
 		catalog,
-		EvidenceVerifierFunc(func(SlotCandidate) bool { return true }),
+		TargetAdjudicatorFunc(func(SlotCandidate) TargetVerdict { return TargetAccept }),
 		MachineTypeCatalog{Names: []string{"4090"}, Available: true},
 	).WithImageCatalog(deployment.NewImageCatalogSnapshot(true, nil))
 
 	resolved := resolver.Resolve(ActionProposal{Operation: "CreateInstanceWorkflow", Slots: []SlotCandidate{
-		{Name: "GpuType", Value: "4090", Source: SourceAgentInference},
-		{Name: "CompShareImageId", Value: "img-stale", Source: SourceAgentInference},
+		{Name: "GpuType", Value: "4090"},
+		{Name: "CompShareImageId", Value: "img-stale"},
 	}})
 
 	require.Contains(t, resolved.RejectedProblems,
@@ -316,11 +227,11 @@ func TestInvalidExactImageIDCannotBeDiscardedIntoAnUnrelatedPicker(t *testing.T)
 func TestNonCollectableInvalidValueStillBlocksIntake(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
-	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{Names: []string{"4090"}, Available: true})
+	resolver := New(catalog, TargetAdjudicatorFunc(func(SlotCandidate) TargetVerdict { return TargetAccept }), MachineTypeCatalog{Names: []string{"4090"}, Available: true})
 
 	resolved := resolver.Resolve(ActionProposal{Operation: "ResetPasswordWorkflow", Slots: []SlotCandidate{
-		{Name: "UHostId", Value: "uhost-1", Source: SourceUserConfirmation},
-		{Name: "Password", Value: 12345, Source: SourceAgentInference},
+		{Name: "UHostId", Value: "uhost-1"},
+		{Name: "Password", Value: 12345},
 	}})
 
 	require.False(t, resolved.ReadyForConfirmation)
@@ -334,7 +245,7 @@ func TestNonCollectableInvalidValueStillBlocksIntake(t *testing.T) {
 func TestResolveNonGuidedOperationIsNeverReadyForIntake(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)
-	resolver := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
+	resolver := New(catalog, TargetAdjudicatorFunc(func(SlotCandidate) TargetVerdict { return TargetAccept }), MachineTypeCatalog{})
 
 	resolved := resolver.Resolve(ActionProposal{Operation: "StopInstanceWorkflow"})
 
@@ -351,8 +262,6 @@ func TestRejectionKindString(t *testing.T) {
 		RejectInvalidValue:      "invalid_value",
 		RejectUnknownOperation:  "unknown_operation",
 		RejectUnknownField:      "unknown_field",
-		RejectUnknownSource:     "unknown_source",
-		RejectUnverifiedSource:  "unverified_source",
 		RejectTargetNotExist:    "target_not_exist",
 		RejectOperationContract: "operation_contract",
 	}

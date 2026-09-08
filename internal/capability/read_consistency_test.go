@@ -116,6 +116,7 @@ func TestReadTargetSchemaOnlyDeclaresImplementedForms(t *testing.T) {
 			}
 			require.ElementsMatch(t, want, schemaEnum(fields["type"].(map[string]any)))
 			require.NotContains(t, fields, "source_span")
+			require.NotContains(t, fields, "source")
 		})
 	}
 }
@@ -127,16 +128,12 @@ func TestReadTargetSchemaOnlyDeclaresImplementedForms(t *testing.T) {
 // cannot list different members.
 func enumValuesForType(typ reflect.Type) ([]string, bool) {
 	switch typ {
-	case reflect.TypeOf(platform.TargetSource("")):
-		return platform.TargetSourceValues(), true
 	case reflect.TypeOf(platform.Metric("")):
 		return platform.MetricValues(), true
 	case reflect.TypeOf(platform.TimeWindowType("")):
 		return platform.TimeWindowTypeValues(), true
 	case reflect.TypeOf(platform.ImageSource("")):
 		return platform.ImageSourceValues(), true
-	case reflect.TypeOf(platform.ListMode("")):
-		return platform.ListModeValues(), true
 	case reflect.TypeOf(platform.PriceKind("")):
 		return platform.PriceKindValues(), true
 	case reflect.TypeOf(platform.DetailLevel("")):
@@ -227,10 +224,10 @@ func TestReadRuntimeValidation_RejectsOutOfContractValues(t *testing.T) {
 		{"gpu specs unknown detail_level", ReadToolName(intent.IntentGPUSpecsQuery), map[string]any{"detail_level": "bogus"}},
 		{"monitor unknown metric element", ReadToolName(intent.IntentMonitorQuery), map[string]any{"metrics": []any{"bogus"}}},
 		{"monitor typed unknown metric element", ReadToolName(intent.IntentMonitorQuery), map[string]any{"metrics": []string{"bogus"}}},
-		{"monitor unknown nested target type", ReadToolName(intent.IntentMonitorQuery), map[string]any{"targets": []any{map[string]any{"type": "bogus", "value": "x", "source": "user_text"}}}},
+		{"monitor unknown nested target type", ReadToolName(intent.IntentMonitorQuery), map[string]any{"targets": []any{map[string]any{"type": "bogus", "value": "x"}}}},
 		{"cfs create target_size_gb below minimum", namedReadToolName(readCFSCreatePrice), map[string]any{"zone": "cn-wlcb-01", "target_size_gb": -5}},
 		{"instance access port above maximum", namedReadToolName(instanceAccessCapabilityLabel), map[string]any{
-			"targets":     []any{map[string]any{"type": "uhost_id_user_input", "value": "uhost-a", "source": "user_text"}},
+			"targets":     []any{map[string]any{"type": "uhost_id_user_input", "value": "uhost-a"}},
 			"access_type": "custom_port", "protocol": "tcp", "port": 65536,
 		}},
 	}
@@ -258,7 +255,7 @@ func TestReadRuntimeValidation_AcceptsInContractValues(t *testing.T) {
 		{"image list valid source and query", ReadToolName(intent.IntentImageList), map[string]any{"source": "community", "query": "LiveTalking"}},
 		{"image list empty (default platform)", ReadToolName(intent.IntentImageList), map[string]any{}},
 		{"gpu specs valid detail_level", ReadToolName(intent.IntentGPUSpecsQuery), map[string]any{"detail_level": "full"}},
-		{"monitor valid metrics + target", ReadToolName(intent.IntentMonitorQuery), map[string]any{"metrics": []any{"gpu", "vram"}, "targets": []any{map[string]any{"type": "name", "value": "train-a", "source": "user_text"}}}},
+		{"monitor valid metrics + target", ReadToolName(intent.IntentMonitorQuery), map[string]any{"metrics": []any{"gpu", "vram"}, "targets": []any{map[string]any{"type": "name", "value": "train-a"}}}},
 		{"cfs create valid", namedReadToolName(readCFSCreatePrice), map[string]any{"zone": "cn-wlcb-01", "target_size_gb": 50}},
 	}
 	for _, tc := range cases {

@@ -14,7 +14,7 @@ import (
 
 type Resolver struct {
 	catalog      *Catalog
-	verifier     EvidenceVerifier
+	verifier     TargetAdjudicator
 	machineTypes MachineTypeCatalog
 	// zoneCatalog is the live zone snapshot for a CodecZone field, attached via
 	// WithZoneCatalog. nil (the default) reports every zone as catalog-unavailable
@@ -31,7 +31,7 @@ type Resolver struct {
 // package performs no I/O, so a Resolve is replayable from its inputs alone.
 // Pass the zero MachineTypeCatalog for operations with no machine-type field —
 // SpecNeedsMachineTypeCatalog reports which those are.
-func New(catalog *Catalog, verifier EvidenceVerifier, machineTypes MachineTypeCatalog) *Resolver {
+func New(catalog *Catalog, verifier TargetAdjudicator, machineTypes MachineTypeCatalog) *Resolver {
 	return &Resolver{catalog: catalog, verifier: verifier, machineTypes: machineTypes}
 }
 
@@ -50,7 +50,7 @@ type ambiguityError struct {
 func (e ambiguityError) Error() string { return e.detail }
 
 func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
-	result := ResolvedAction{TurnID: proposal.TurnID, Operation: proposal.Operation, Arguments: map[string]any{}, Provenance: map[string]ResolvedSlot{}}
+	result := ResolvedAction{TurnID: proposal.TurnID, Operation: proposal.Operation, Arguments: map[string]any{}}
 	// reject records a rejection in BOTH the human-readable Rejected[] and the
 	// typed RejectedProblems[] in lockstep, so the guided-intake decision can
 	// classify the rejection by Kind without parsing the message string.
@@ -76,32 +76,9 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 	adjudicated := map[string]struct{}{}
 	for _, candidate := range proposal.Slots {
 		name := normalizeName(candidate.Name)
-		if !knownSource(candidate.Source) {
-			reject(name, RejectUnknownSource, RejectionActorModel, fmt.Sprintf("%s: unknown candidate source", name))
-			adjudicated[name] = struct{}{}
-			continue
-		}
 		field, exists := spec.Fields[name]
 		if !exists {
 			reject(name, RejectUnknownField, RejectionActorModel, fmt.Sprintf("unknown slot %s", name))
-			continue
-		}
-		// Guided forms cannot re-confirm fields outside their controls. For the
-		// explicitly declared optional exceptions, keep a value only when it came
-		// from verified current or recent user-authored evidence; otherwise let the workflow
-		// derive its live platform default. This prevents model placeholder values
-		// from silently becoming part of a sealed create contract.
-		if candidate.Source == SourceAgentInference &&
-			containsField(spec.Intake.UserSuppliedOptionalFields, name) {
-			continue
-		}
-		// Non-target user_explicit fields are span-verified here; TARGET fields defer
-		// entirely to the target adjudicator below, which checks account existence
-		// and routes an outage / conflict to the right channel rather than
-		// a blanket "not verified".
-		if !field.Target && candidate.Source == SourceUserExplicit && (candidate.Evidence == nil || r.verifier == nil || !r.verifier.VerifyCandidate(candidate)) {
-			reject(name, RejectUnverifiedSource, RejectionActorModel, fmt.Sprintf("%s: user-explicit source is not verified", name))
-			adjudicated[name] = struct{}{}
 			continue
 		}
 		value, err := r.normalizeValue(field, candidate.Value)
@@ -114,7 +91,7 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 					Slot: name, CatalogCandidates: typed.candidates, Reason: typed.Error(),
 				})
 			default:
-				reject(name, RejectInvalidValue, rejectionActorForCandidate(candidate), fmt.Sprintf("%s: %v", name, err))
+				reject(name, RejectInvalidValue, RejectionActorModel, fmt.Sprintf("%s: %v", name, err))
 			}
 			adjudicated[name] = struct{}{}
 			continue
@@ -124,20 +101,13 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 			switch r.adjudicateTarget(candidate) {
 			case TargetAccept:
 				// exists this turn, no conflict — may reach the confirmation card.
-			case TargetConflict:
-				result.Conflicts = append(result.Conflicts, Conflict{Slot: name, Reason: "目标引用不唯一，请明确指定要操作的实例"})
-				adjudicated[name] = struct{}{}
-				continue
 			case TargetDependencyFailure:
 				result.DependencyFailures = append(result.DependencyFailures, fmt.Sprintf("%s: 目标存在性暂时无法验证，请稍后再试", name))
 				adjudicated[name] = struct{}{}
 				continue
 			default: // TargetReject
-				// Under the uniform model a target is rejected when the server could
-				// not confirm it EXISTS (a point-query that echoed no matching id, or a
-				// fresh+complete registry that authoritatively lacks it) — not a source
-				// problem: the confirmation card, not a source label, is the SelectionProof.
-				reject(name, RejectTargetNotExist, rejectionActorForCandidate(candidate), fmt.Sprintf("%s: target existence could not be confirmed", name))
+				// The exact target must exist in the account before confirmation.
+				reject(name, RejectTargetNotExist, RejectionActorModel, fmt.Sprintf("%s: target existence could not be confirmed", name))
 				adjudicated[name] = struct{}{}
 				continue
 			}
@@ -151,9 +121,7 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 			adjudicated[name] = struct{}{}
 			continue
 		}
-		field := spec.Fields[name]
 		result.Arguments[name] = winner.Value
-		result.Provenance[name] = ResolvedSlot{Value: winner.Value, Source: winner.Source, Codec: field.Codec}
 	}
 	for name, field := range spec.Fields {
 		if !field.Required {
@@ -169,10 +137,9 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 	}
 	if len(result.Missing) == 0 && len(result.Conflicts) == 0 && len(result.Rejected) == 0 && len(result.DependencyFailures) == 0 && spec.ValidateResolved != nil {
 		if err := spec.ValidateResolved(result.Arguments); err != nil {
-			// A cross-field contract error means the requested operation is not
-			// fully specified. The resolver cannot know which business choice the
-			// user intended, so the Agent must ask instead of inventing a value.
-			reject("", RejectOperationContract, RejectionActorUser, err.Error())
+			// The Agent uses the validation reason and conversation to repair its
+			// arguments or ask for a genuinely missing business choice.
+			reject("", RejectOperationContract, RejectionActorModel, err.Error())
 		}
 	}
 	sort.Strings(result.Missing)
@@ -196,7 +163,7 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 	//   - Rejected/InvalidValue  → the resolver already dropped the bad value from
 	//     Arguments; the form re-collects a valid one (never silently swapped).
 	// A DependencyFailure (server outage) or any STRUCTURAL rejection — unknown
-	// field/source, unverified source, target-not-exist, operation contract — is
+	// field, target-not-exist, operation contract — is
 	// NOT form-correctable and blocks the form (falls through to prose). Mutually
 	// exclusive with ReadyForConfirmation. The engine still decides whether a guided
 	// form is actually available this turn.
@@ -219,27 +186,6 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 		result.Confirmation = &ConfirmationPreview{Operation: result.Operation, Arguments: arguments}
 	}
 	return result
-}
-
-func rejectionActorForCandidate(candidate SlotCandidate) RejectionActor {
-	if candidate.UserAuthored {
-		return RejectionActorUser
-	}
-	switch candidate.Source {
-	case SourceUserExplicit, SourceUserConfirmation:
-		return RejectionActorUser
-	default:
-		return RejectionActorModel
-	}
-}
-
-func containsField(fields []string, name string) bool {
-	for _, field := range fields {
-		if field == name {
-			return true
-		}
-	}
-	return false
 }
 
 func collectableSet(collectable []string) map[string]struct{} {
@@ -295,75 +241,21 @@ func everyConflictCollectable(conflicts []Conflict, collectable []string) bool {
 	return true
 }
 
-func knownSource(source CandidateSource) bool {
-	switch source {
-	case SourceUserExplicit, SourceVerifiedContext, SourceToolObservation, SourceUserConfirmation, SourceAgentInference:
-		return true
-	default:
-		return false
-	}
-}
-
-// adjudicateTarget decides a write target's disposition. It prefers the verifier's
-// TargetAdjudicator (the engine, which owns the selection binding and existence
-// network); a verifier that implements only the plain bool verify keeps the prior
-// accept/reject behaviour.
 func (r *Resolver) adjudicateTarget(candidate SlotCandidate) TargetVerdict {
-	if adj, ok := r.verifier.(TargetAdjudicator); ok {
-		return adj.AdjudicateTarget(candidate)
+	if r.verifier == nil {
+		return TargetReject
 	}
-	if r.trustedTarget(candidate) {
-		return TargetAccept
-	}
-	return TargetReject
-}
-
-func (r *Resolver) trustedTarget(candidate SlotCandidate) bool {
-	switch candidate.Source {
-	case SourceUserConfirmation, SourceToolObservation:
-		return r.verifier != nil && r.verifier.VerifyCandidate(candidate)
-	case SourceUserExplicit, SourceVerifiedContext:
-		return candidate.Evidence != nil && r.verifier != nil && r.verifier.VerifyCandidate(candidate)
-	default:
-		return false
-	}
+	return r.verifier.AdjudicateTarget(candidate)
 }
 
 func resolveCandidates(candidates []SlotCandidate) (SlotCandidate, bool) {
-	best := -1
-	winners := []SlotCandidate{}
-	for _, candidate := range candidates {
-		rank := sourceRank(candidate.Source)
-		if rank > best {
-			best, winners = rank, []SlotCandidate{candidate}
-		} else if rank == best {
-			winners = append(winners, candidate)
-		}
-	}
-	first := winners[0]
-	for _, candidate := range winners[1:] {
+	first := candidates[0]
+	for _, candidate := range candidates[1:] {
 		if !sameValue(first.Value, candidate.Value) {
 			return SlotCandidate{}, true
 		}
 	}
 	return first, false
-}
-
-func sourceRank(source CandidateSource) int {
-	switch source {
-	case SourceUserConfirmation:
-		return 5
-	case SourceUserExplicit:
-		return 4
-	case SourceVerifiedContext:
-		return 3
-	case SourceToolObservation:
-		return 2
-	case SourceAgentInference:
-		return 1
-	default:
-		return 0
-	}
 }
 
 func (r *Resolver) normalizeValue(field FieldSpec, value any) (any, error) {
@@ -497,58 +389,6 @@ func NormalizeCapacityGB(value any) (float64, bool) {
 		}
 	}
 	return 0, false
-}
-
-// CapacityLiteral is one explicit G/GB/GiB value in user text. Offsets are rune
-// offsets so they can be copied directly into SourceEvidence.
-type CapacityLiteral struct {
-	Text       string
-	Start, End int
-}
-
-// CapacityLiterals tokenizes capacity values without assigning them to a
-// business field. The Agent decides whether a value describes a system disk or
-// a data disk; the resolver only supplies the same unit grammar used by
-// NormalizeCapacityGB so provenance and validation cannot disagree.
-func CapacityLiterals(text string) []CapacityLiteral {
-	runes := []rune(text)
-	var out []CapacityLiteral
-	for start := 0; start < len(runes); start++ {
-		if !unicode.IsDigit(runes[start]) {
-			continue
-		}
-		end := start
-		for end < len(runes) && unicode.IsDigit(runes[end]) {
-			end++
-		}
-		if end < len(runes) && runes[end] == '.' {
-			fraction := end + 1
-			for fraction < len(runes) && unicode.IsDigit(runes[fraction]) {
-				fraction++
-			}
-			if fraction > end+1 {
-				end = fraction
-			}
-		}
-		for end < len(runes) && (runes[end] == ' ' || runes[end] == '\t') {
-			end++
-		}
-		if end >= len(runes) || unicode.ToLower(runes[end]) != 'g' {
-			continue
-		}
-		end++
-		if end < len(runes) && unicode.ToLower(runes[end]) == 'i' {
-			if end+1 >= len(runes) || unicode.ToLower(runes[end+1]) != 'b' {
-				continue
-			}
-			end += 2
-		} else if end < len(runes) && unicode.ToLower(runes[end]) == 'b' {
-			end++
-		}
-		out = append(out, CapacityLiteral{Text: string(runes[start:end]), Start: start, End: end})
-		start = end - 1
-	}
-	return out
 }
 
 func sameValue(left, right any) bool {

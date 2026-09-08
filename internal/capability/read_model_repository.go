@@ -21,15 +21,14 @@ const (
 
 // ModelRepositoryRequest is the capability's own request contract.
 type ModelRepositoryRequest struct {
-	Query         string            `json:"query,omitempty"`
-	Source        string            `json:"source,omitempty"`
-	Tags          []string          `json:"tags,omitempty"`
-	Categories    []string          `json:"categories,omitempty"`
-	Status        string            `json:"status,omitempty"`
-	ReplicaStatus string            `json:"replica_status,omitempty"`
-	Zone          string            `json:"zone,omitempty"`
-	Mode          platform.ListMode `json:"mode,omitempty"`
-	Offset        int               `json:"offset,omitempty"`
+	Query         string   `json:"query,omitempty"`
+	Source        string   `json:"source,omitempty"`
+	Tags          []string `json:"tags,omitempty"`
+	Categories    []string `json:"categories,omitempty"`
+	Status        string   `json:"status,omitempty"`
+	ReplicaStatus string   `json:"replica_status,omitempty"`
+	Zone          string   `json:"zone,omitempty"`
+	Offset        int      `json:"offset,omitempty"`
 }
 
 // MissingFields: none — an unfiltered browse is valid.
@@ -52,7 +51,6 @@ func modelRepositoryReadSpec() ReadCapabilitySpec[ModelRepositoryRequest, ModelR
 			"status":         enumParam("Unspecified", "Active", "Offline", "Draft"),
 			"replica_status": enumParam("Unspecified", "Healthy", "Offline", "Incomplete", "Missing").described("副本状态；指定 zone 时按该区筛选。未指定 zone 时 Healthy 表示上游未发现任何区的副本问题，其余状态表示任一区存在该问题。"),
 			"zone":           stringParam().described("仅在用户明确指定目标可用区，或当前实例事实已给出可用区时填写实时目录中的 Zone；不要猜测。"),
-			"mode":           enumParam(platform.ListModeValues()...),
 			"offset":         integerParam(0).described("分页偏移，默认 0；继续浏览时使用结果给出的下一页偏移。"),
 		}),
 		NeedsZoneCatalog: func(req ModelRepositoryRequest) bool {
@@ -75,7 +73,7 @@ func modelRepositoryHandle(ctx context.Context, req ModelRepositoryRequest, rt R
 	if terminal.Status != "" {
 		return ModelRepositoryResponse{}, terminal
 	}
-	args := modelRepositoryArgs(req, tagRaw, zoneID)
+	args := modelRepositoryArgs(req, zoneID)
 	modelRaw, err := rt.Executor.Execute(ctx, modelRepositoryModelAction, args)
 	if err != nil {
 		return ModelRepositoryResponse{}, ReadFailureAfterTool(modelRepositoryModelAction, modelRepositoryCapabilityLabel, err)
@@ -96,24 +94,13 @@ func modelRepositoryRender(resp ModelRepositoryResponse) ReadResult {
 	return r
 }
 
-func modelRepositoryArgs(req ModelRepositoryRequest, tagRaw map[string]any, zoneID uint32) map[string]any {
+func modelRepositoryArgs(req ModelRepositoryRequest, zoneID uint32) map[string]any {
 	args := map[string]any{"Limit": imageModelBrowseDisplayCap, "Offset": req.Offset}
 	query := strings.TrimSpace(req.Query)
-	explicitTags := uniqueStrings(req.Tags)
-	tags := explicitTags
-	derivedTags := false
-	if len(tags) == 0 {
-		tags = matchModelRepositoryTags(query, uniqueStrings(stringSliceAt(tagRaw, "Tags")))
-		derivedTags = len(tags) > 0
-	}
-	// An automatically recognised catalog tag replaces the free-text keyword;
-	// sending both makes the upstream apply two filters and can turn a valid tag
-	// browse into an empty result. Explicit tags plus an explicit query, however,
-	// are intentionally conjunctive and both are preserved.
-	if query != "" && req.Mode != platform.ListModeAll && !derivedTags {
+	if query != "" {
 		args["Keyword"] = query
 	}
-	if len(tags) > 0 {
+	if tags := uniqueStrings(req.Tags); len(tags) > 0 {
 		args["Tags"] = limitStrings(tags, 10)
 	}
 	if categories := uniqueStrings(req.Categories); len(categories) > 0 {
@@ -189,31 +176,6 @@ func resolveModelRepositoryZone(query string, catalog *deployment.ZoneCatalogSna
 		label = entry.Placement.Zone
 	}
 	return entry.Placement.ZoneID, label + "（" + entry.Placement.Zone + "）", ReadResult{}
-}
-
-func matchModelRepositoryTags(userText string, tags []string) []string {
-	if strings.TrimSpace(userText) == "" || len(tags) == 0 {
-		return nil
-	}
-	lowerText := strings.ToLower(userText)
-	matched := []string{}
-	seen := map[string]struct{}{}
-	for _, tag := range tags {
-		clean := strings.TrimSpace(tag)
-		if clean == "" {
-			continue
-		}
-		if !strings.Contains(lowerText, strings.ToLower(clean)) {
-			continue
-		}
-		key := strings.ToLower(clean)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		matched = append(matched, clean)
-	}
-	return matched
 }
 
 // renderModelRepositoryReply returns the reply and whether the repository is

@@ -33,7 +33,7 @@ const coldNameProbeID = "uhost-1t09vtnm0qyj"
 const coldNameProbeName = "host-不要删除验证七天回收"
 
 func coldNameTarget(name string) []platform.TargetRef {
-	return []platform.TargetRef{{Type: platform.TargetRefName, Value: name, Source: platform.SourceUserText}}
+	return []platform.TargetRef{{Type: platform.TargetRefName, Value: name}}
 }
 
 // warmRegistrySnapshot is a complete, freshly-synced registry: it HAS standing
@@ -98,7 +98,7 @@ func TestColdRegistryWrappedInstanceIDMislabelledStillResolves(t *testing.T) {
 			exec := &mapReadExec{results: map[string]map[string]any{resourceInfoAction: listing}}
 			result := runResource(t, exec, coldRegistrySnapshot(), ResourceInfoRequest{
 				Targets: []platform.TargetRef{{
-					Type: tc.refType, Value: tc.value, Source: platform.SourceUserText,
+					Type: tc.refType, Value: tc.value,
 				}},
 			})
 
@@ -123,8 +123,8 @@ func TestInvalidFilterRecoveryRejectsMixedTargets(t *testing.T) {
 	)
 
 	result := runResource(t, exec, resolver, ResourceInfoRequest{Targets: []platform.TargetRef{
-		{Type: platform.TargetRefFilter, Value: "8188-" + id + "-s1.pod.compshare.cn", Source: platform.SourceUserText},
-		{Type: platform.TargetRefName, Value: "train-b", Source: platform.SourceUserText},
+		{Type: platform.TargetRefFilter, Value: "8188-" + id + "-s1.pod.compshare.cn"},
+		{Type: platform.TargetRefName, Value: "train-b"},
 	}})
 
 	assert.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)
@@ -142,7 +142,7 @@ func TestInvalidFilterRecoveryRejectsDisplayNameOnlyMatch(t *testing.T) {
 	)
 
 	result := runResource(t, exec, resolver, ResourceInfoRequest{Targets: []platform.TargetRef{
-		{Type: platform.TargetRefFilter, Value: "not-filter-syntax", Source: platform.SourceUserText},
+		{Type: platform.TargetRefFilter, Value: "not-filter-syntax"},
 	}})
 
 	assert.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)

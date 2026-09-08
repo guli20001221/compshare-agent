@@ -15,7 +15,7 @@ import (
 // import the tools package.
 type actionableUpstreamErr struct{ msg string }
 
-func (actionableUpstreamErr) Error() string        { return "upstream failed" }
+func (actionableUpstreamErr) Error() string         { return "upstream failed" }
 func (e actionableUpstreamErr) UserMessage() string { return e.msg }
 
 // TestReadFailureAfterTool_SurfacesActionableUpstreamMessage locks the behavior

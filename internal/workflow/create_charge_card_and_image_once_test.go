@@ -25,74 +25,37 @@ func TestChargeTypeCardIsOfferedWhenTheUserDidNotSayIt(t *testing.T) {
 	assert.Equal(t, "Postpay", field.Value, "the existing default stays the default")
 	assert.Len(t, field.Options, len(createFormChargeTypes))
 	assert.NotEmpty(t, form.Step.Description, "a card without guidance text is a bare card")
-}
 
-// Two ways of already knowing the answer, neither of which should produce a
-// question. The second is the one that matters for the request that pinned
-// everything: adding a card there would interrogate the only user who asked for
-// nothing.
-func TestChargeTypeCardIsNotAskedWhenThereIsNothingToAsk(t *testing.T) {
-	explicit := formWfCtx(t, map[string]any{"GpuType": "4090", "ChargeType": "Spot"})
-	// "The user said Spot" is a fact about PROVENANCE, not about the params map.
-	// This setup used to express it as key-presence, which is the same conflation
-	// the flag removes — the Agent's own default lands in Params identically.
-	explicit.referenceData.ChargeTypeUserPinned = true
-	skip, err := shouldSkipGuidedChargeTypeStep(explicit)
-	require.NoError(t, err)
-	assert.True(t, skip, "the user already said Spot; asking again asks them to repeat themselves")
-
+	// Prefilling the machine does not remove the purchase choice.
 	fullySpecified := formWfCtx(t, map[string]any{
 		"GpuType": "A800", "GuidedGpuLocked": true, "Zone": "cn-wlcb-01",
 		"Gpu": float64(1), "Cpu": float64(32), "Memory": float64(131072),
 		"GuidedRecommended": true, "CompShareImageId": "img-002", "ImageName": "PyTorch 2.4",
 	})
-	fullySpecified.referenceData.ImageSelection = ImageSelectionUserPinned
 	skip, err = shouldSkipGuidedChargeTypeStep(fullySpecified)
 	require.NoError(t, err)
-	assert.True(t, skip, "every other card is skipped; do not turn a card-free flow into a one-card flow")
+	assert.False(t, skip, "nothing here is the user's billing choice; still ask")
 }
 
-// The regression this pins, observed in live 联调: "在上海二A替我开一台4090" never
-// showed the purchase-mode card. The create tool's schema says "默认 Postpay", so
-// the Agent puts ChargeType in the params on a request that said nothing about
-// billing — and the skip used to read key-presence as the user's answer. The card
-// then vanished for exactly the users it exists for, and the final card told them
-// to "重新发起创建" to change something they were never offered.
-//
-// Red on the old key-presence rule: it returns skip=true here.
-func TestAgentSuppliedChargeTypeDefaultStillAsksTheUser(t *testing.T) {
-	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "ChargeType": "Postpay"})
-	// ChargeTypeUserPinned stays false: nothing in the user's words named a mode.
-
-	skip, err := shouldSkipGuidedChargeTypeStep(wfCtx)
-	require.NoError(t, err)
-	require.False(t, skip, "the Agent's default is not the user's choice; still ask")
-
-	form, err := buildGuidedChargeTypeForm(wfCtx)
-	require.NoError(t, err)
-	field := fieldByKey(t, form, "ChargeType")
-	assert.True(t, field.Editable)
-	assert.Equal(t, "Postpay", field.Value, "the value the Agent supplied is preselected, not sealed")
-	assert.Len(t, field.Options, len(createFormChargeTypes),
-		"all four purchase modes remain选-able")
+func TestChargeTypeCardKeepsPrefilledModesEditable(t *testing.T) {
+	for _, charge := range []string{"Postpay", "Spot", "Day", "Month"} {
+		t.Run(charge, func(t *testing.T) {
+			wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "ChargeType": charge})
+			skip, err := shouldSkipGuidedChargeTypeStep(wfCtx)
+			require.NoError(t, err)
+			require.False(t, skip, "a prefilled mode must not suppress the purchase choice")
+			form, err := buildGuidedChargeTypeForm(wfCtx)
+			require.NoError(t, err)
+			field := fieldByKey(t, form, "ChargeType")
+			assert.Equal(t, charge, field.Value)
+			assert.True(t, field.Editable)
+			assert.Greater(t, len(field.Options), 1)
+		})
+	}
 }
 
-// What the user asked for: say "最新pytorch" — in whatever casing — and the picker
-// offers the PyTorch images to choose from, not a dead end and not all 75 rows.
-//
-// The casing is the whole point and is not incidental: a slot only earns
-// SourceUserExplicit by being a verbatim span of the user's message, so the Agent
-// sends the user's own spelling. Upstream's Name filter is case-sensitive
-// ("Pytorch" = 0 rows live), which is why the query no longer narrows and this
-// client-side ranking is now what does the filtering — nameSimilarity lowercases
-// both sides, so every casing lands the same candidate set.
-//
-// NOT asserted: newest-first. rankRecommendations has a same-framework tiebreak on
-// Software.FrameworkVersionIndex, but the live catalog sends that field as 0 on
-// EVERY image (measured 2026-07-28: Framework="PyTorch", FrameworkVersion="2.13.0",
-// FrameworkVersionIndex=0). Populating it in a fixture would test a value upstream
-// never produces. Order is therefore the catalog's own, which the fixture pins
-// verbatim.
+// The supplied framework name should rank the same live candidates regardless of
+// case. With no version index, candidates retain the catalog order.
 func TestImagePickerOffersTheNamedFrameworkWhateverTheCasing(t *testing.T) {
 	images := map[string]any{"ImageSet": []any{
 		map[string]any{"CompShareImageId": "img-u", "Name": "Ubuntu 22.04 CUDA 12", "Size": float64(102400)},
@@ -120,11 +83,8 @@ func TestImagePickerOffersTheNamedFrameworkWhateverTheCasing(t *testing.T) {
 	}
 }
 
-// The community path picks a concrete image version on its own card. The final
-// card then re-opened the same choice, asking the same question twice. The
-// platform path has no such card by design (shouldSkipGuidedImageStep: the
-// concrete image step IS the community picker), so there the final card is the
-// only selector and must stay editable.
+// Both image sources settle the concrete image before hardware. The final card
+// states that choice without reopening an edit that would invalidate hardware.
 func TestFinalCardNeverReopensTheResolvedImage(t *testing.T) {
 	params := map[string]any{
 		"GpuType": "4090", "Zone": "cn-wlcb-01", "Gpu": float64(1),

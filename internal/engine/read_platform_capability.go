@@ -7,12 +7,10 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/capability"
-	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/tools"
-	openai "github.com/sashabaranov/go-openai"
 )
 
 // ReadCapabilityObservation is the only result shape exposed by the read
@@ -56,26 +54,6 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: err.Error(), ErrorCode: agentResult.Error.Code})
 		return tools.MarshalAgentToolResult(agentResult)
 	}
-	if err := e.validateCurrentTurnReadGrounding(request); err != nil {
-		if agentResult, ok := modelOwnedInstanceIDCompletion(action, err); ok {
-			onStep(StepEvent{
-				Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct,
-				Message: "正在按用户原文修正完整实例 ID", ErrorCode: agentResult.Error.Code,
-				TraceResult: map[string]any{"status": "correct_tool_call", "source_status": agentResult.Meta.SourceStatus},
-			})
-			return tools.MarshalAgentToolResult(agentResult)
-		}
-		// These are local argument checks, including literal grounding, limits
-		// and incompatible fields, not upstream errors. Preserve the actual
-		// reason so the model can repair its own call before any read runs.
-		agentResult := modelOwnedReadArgumentError(
-			action,
-			"read_argument_grounding",
-			"工具参数校验失败："+err.Error()+"。请依据工具 schema 和用户已明确表达的条件修正参数后，重发同一次调用；不要向用户重复提问。",
-		)
-		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: err.Error(), ErrorCode: agentResult.Error.Code})
-		return tools.MarshalAgentToolResult(agentResult)
-	}
 	if missing := request.MissingFields(); len(missing) > 0 {
 		observation := ReadCapabilityObservation{Capability: string(readIntent), Status: platform.ReadStatusNeedsInput, MissingFields: missing}
 		payload, _ := json.Marshal(observation)
@@ -89,30 +67,6 @@ func (e *Engine) executeConcreteReadCapability(ctx context.Context, action strin
 		return tools.MarshalAgentToolResult(agentResult)
 	}
 	return e.executeTypedReadCapability(ctx, action, string(readIntent), reg, request, args, onStep)
-}
-
-func (e *Engine) recentPriorUserTexts(limit int) []string {
-	if e == nil || limit <= 0 {
-		return nil
-	}
-	out := make([]string, 0, limit)
-	skippedCurrent := false
-	current := strings.TrimSpace(e.lastUserMsg)
-	for index := len(e.messages) - 1; index >= 0 && len(out) < limit; index-- {
-		message := e.messages[index]
-		if message.Role != openai.ChatMessageRoleUser {
-			continue
-		}
-		text := userAuthoredText(message.Content)
-		if !skippedCurrent && current != "" && text == current {
-			skippedCurrent = true
-			continue
-		}
-		if text != "" {
-			out = append(out, text)
-		}
-	}
-	return out
 }
 
 // executeTypedReadCapability dispatches a typed read vertical.
@@ -245,9 +199,8 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 // buildModelOwnedReadCorrection uses the existing correct_tool_call control
 // plane when a typed read has enough live evidence for the model to repair a
 // dynamic argument itself. The user has already supplied the intent, so this
-// must not degrade into ask_user. The evidence is also recorded in the existing
-// turn-local ledger so the corrected call can cite only an exact value returned
-// by the live catalog.
+// must not degrade into ask_user. The live catalog remains evidence for the
+// next Agent decision.
 func (e *Engine) buildModelOwnedReadCorrection(action, capabilityLabel string, result capability.ReadResult, onStep func(StepEvent)) string {
 	e.recordPlatformReadEvidence(capabilityLabel, result)
 	data := map[string]any{
@@ -289,53 +242,6 @@ func (e *Engine) recordPlatformReadEvidence(capabilityLabel string, result capab
 	})
 }
 
-func (e *Engine) validateCurrentTurnReadGrounding(request platform.ReadRequest) error {
-	if stock, ok := request.(capability.StockAvailabilityRequest); ok &&
-		e.stockZonesGroundedByCurrentTurnCatalog(stock.ZoneMentions) {
-		// Only the zone field gains proof from the live catalog. Clear that field
-		// and leave every other present or future grounding rule intact.
-		stock.ZoneMentions = nil
-		request = stock
-	}
-	return capability.ValidateCurrentTurnGrounding(request, e.lastUserMsg, e.recentPriorUserTexts(4)...)
-}
-
-// stockZonesGroundedByCurrentTurnCatalog is the narrow bridge between a live
-// catalog observation and the corrected stock call that follows it. It accepts
-// only exact zone subjects from evidence produced this turn; it does not infer
-// aliases, persist a mapping, or relax grounding for any other argument.
-func (e *Engine) stockZonesGroundedByCurrentTurnCatalog(mentions []string) bool {
-	if len(mentions) == 0 {
-		return false
-	}
-	allowed := map[string]struct{}{}
-	for _, evidence := range e.platformReadEvidenceThisTurn {
-		if evidence.Envelope.Kind != envelope.KindZoneCatalog {
-			continue
-		}
-		for _, subject := range evidence.Envelope.Subjects {
-			if subject.Type != envelope.SubjectZone {
-				continue
-			}
-			if value := platform.FoldLiteralSpan(subject.ID); value != "" {
-				allowed[value] = struct{}{}
-			}
-			if value := platform.FoldLiteralSpan(subject.Name); value != "" {
-				allowed[value] = struct{}{}
-			}
-		}
-	}
-	if len(allowed) == 0 {
-		return false
-	}
-	for _, mention := range mentions {
-		if _, ok := allowed[platform.FoldLiteralSpan(mention)]; !ok {
-			return false
-		}
-	}
-	return true
-}
-
 // applyReadEffects applies the typed context side-effects a read capability
 // declared. The engine consumes only the effect types it recognizes; an
 // unrecognized effect is ignored rather than silently reinterpreted.
@@ -352,13 +258,6 @@ func (e *Engine) applyReadEffects(effects []capability.ReadEffect) {
 			for _, id := range eff.IDs {
 				if id != "" {
 					e.verifiedInstanceEvidenceThisTurn[id] = struct{}{}
-				}
-			}
-		case capability.RememberDisplayedInstances:
-			if len(eff.Instances) > 1 {
-				candidates := append([]entity.InstanceSnapshot(nil), eff.Instances...)
-				e.displayedResourceSelectionThisTurn = &pendingResourceSelection{
-					candidates: candidates,
 				}
 			}
 		}

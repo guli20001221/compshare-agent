@@ -5,33 +5,9 @@ import (
 	"github.com/compshare-agent/internal/workflow"
 )
 
-type CandidateSource string
-
-const (
-	SourceUserExplicit     CandidateSource = "user_explicit"
-	SourceVerifiedContext  CandidateSource = "verified_context"
-	SourceToolObservation  CandidateSource = "tool_observation"
-	SourceUserConfirmation CandidateSource = "user_confirmation"
-	SourceAgentInference   CandidateSource = "agent_inference"
-)
-
-type SourceEvidence struct {
-	MessageID    string `json:"message_id,omitempty"`
-	ContextField string `json:"context_field,omitempty"`
-	Start        int    `json:"start,omitempty"`
-	End          int    `json:"end,omitempty"`
-	Quote        string `json:"quote,omitempty"`
-}
-
 type SlotCandidate struct {
-	Name     string          `json:"name"`
-	Value    any             `json:"value"`
-	Source   CandidateSource `json:"source"`
-	Evidence *SourceEvidence `json:"evidence,omitempty"`
-	// UserAuthored is an engine-derived attribution hint used only to decide who
-	// can repair an invalid proposal. It grants no provenance or write authority
-	// and is deliberately absent from the model-facing wire shape.
-	UserAuthored bool `json:"-"`
+	Name  string `json:"name"`
+	Value any    `json:"value"`
 }
 
 type ActionProposal struct {
@@ -101,12 +77,6 @@ const (
 type IntakeSpec struct {
 	Mode              IntakeMode
 	CollectableFields []string
-	// UserSuppliedOptionalFields are optional fields the form does NOT collect and
-	// therefore accepts only with verified current or recent user-authored evidence. Agent-inferred
-	// values are omitted so the workflow can derive its platform default. See
-	// workflow.Definition.UserSuppliedOptionalFields for why this is a separate
-	// list from CollectableFields and never derived from the schema.
-	UserSuppliedOptionalFields []string
 }
 
 type OperationSpec struct {
@@ -156,11 +126,6 @@ const (
 	// RejectUnknownField: a slot names a field the operation does not have. Never
 	// correctable (the form has no such input).
 	RejectUnknownField
-	// RejectUnknownSource: the candidate's source label is not a known source.
-	RejectUnknownSource
-	// RejectUnverifiedSource: a user_explicit non-target slot failed span
-	// verification — a trust-boundary failure, never a "let the user re-pick" case.
-	RejectUnverifiedSource
 	// RejectTargetNotExist: a write target's existence could not be confirmed.
 	RejectTargetNotExist
 	// RejectOperationContract: the whole resolved argument set failed the
@@ -179,10 +144,6 @@ func (k RejectionKind) String() string {
 		return "unknown_operation"
 	case RejectUnknownField:
 		return "unknown_field"
-	case RejectUnknownSource:
-		return "unknown_source"
-	case RejectUnverifiedSource:
-		return "unverified_source"
 	case RejectTargetNotExist:
 		return "target_not_exist"
 	case RejectOperationContract:
@@ -213,7 +174,7 @@ type RejectedProblem struct {
 }
 
 // Conflict is a slot the resolver refuses to decide. Two shapes reach it:
-// Candidates is set when sources disagree on a value; CatalogCandidates is set
+// Candidates is set when duplicate fields disagree on a value; CatalogCandidates is set
 // when the value matched several live catalog entries. Both mean the same thing
 // to the caller — the agent must ask, the server must not guess.
 type Conflict struct {
@@ -223,27 +184,20 @@ type Conflict struct {
 	Reason            string          `json:"reason,omitempty"`
 }
 
-type ResolvedSlot struct {
-	Value  any             `json:"value"`
-	Source CandidateSource `json:"source"`
-	Codec  SlotCodecKind   `json:"codec"`
-}
-
 // ResolvedAction is the adjudicated proposal. The four refusal channels are
-// distinct on purpose and must not be collapsed: Missing means the user has not
-// said it yet, Conflicts means several readings are defensible, Rejected means
+// distinct on purpose and must not be collapsed: Missing means the argument was
+// omitted, Conflicts means several catalog matches or values remain, Rejected means
 // the value is invalid, and DependencyFailures means the SERVER could not obtain
 // a fact it needs to decide (e.g. the live machine-type catalog). Only the last
 // is a server-side outage — reporting it as a rejection would blame the user for
 // our own failed query, and reporting it as success would mean guessing.
 type ResolvedAction struct {
-	TurnID     string                  `json:"turn_id"`
-	Operation  string                  `json:"operation"`
-	Arguments  map[string]any          `json:"arguments,omitempty"`
-	Provenance map[string]ResolvedSlot `json:"provenance,omitempty"`
-	Missing    []string                `json:"missing,omitempty"`
-	Conflicts  []Conflict              `json:"conflicts,omitempty"`
-	Rejected   []string                `json:"rejected,omitempty"`
+	TurnID    string         `json:"turn_id"`
+	Operation string         `json:"operation"`
+	Arguments map[string]any `json:"arguments,omitempty"`
+	Missing   []string       `json:"missing,omitempty"`
+	Conflicts []Conflict     `json:"conflicts,omitempty"`
+	Rejected  []string       `json:"rejected,omitempty"`
 	// RejectedProblems is the typed twin of Rejected (same entries, with a Kind),
 	// used only by the guided-intake decision. json:"-" — the model already gets
 	// the human-readable Rejected[]; this is an internal classification.
@@ -257,22 +211,10 @@ type ResolvedAction struct {
 	Execution            []workflow.ExecutionStepContract `json:"execution"`
 }
 
-// EvidenceVerifier is the trust boundary between model-authored provenance and
-// server-owned context. A candidate cannot make itself trusted by labelling its
-// own source as user_explicit.
-type EvidenceVerifier interface {
-	VerifyCandidate(SlotCandidate) bool
-}
-
-type EvidenceVerifierFunc func(SlotCandidate) bool
-
-func (f EvidenceVerifierFunc) VerifyCandidate(candidate SlotCandidate) bool { return f(candidate) }
-
 // TargetVerdict is the disposition of a write TARGET, decided by the engine (which
 // owns account-scoped existence checks) and consumed by the pure
 // resolver. It keeps the resolver's four refusal channels honest: a target that
-// cannot be verified is not uniformly "rejected" — an outage is a DependencyFailure
-// and a genuine ambiguity is a Conflict.
+// cannot be verified is not uniformly "rejected" — an outage is a DependencyFailure.
 type TargetVerdict int
 
 const (
@@ -281,17 +223,19 @@ const (
 	// TargetAccept: exists in the account this turn, no conflict — the target may
 	// reach the confirmation card (the user-confirm event authorizes execution).
 	TargetAccept
-	// TargetConflict: the user's own references disagree — the agent must ask.
-	TargetConflict
 	// TargetDependencyFailure: existence could not be verified (upstream outage) —
 	// a server-side failure, never the user's target being invalid.
 	TargetDependencyFailure
 )
 
-// TargetAdjudicator, when implemented by the resolver's verifier, decides a write
-// target's disposition. The resolver uses it INSTEAD of the plain bool verify for
-// target fields, so existence outages and reference conflicts land in the right
-// channel. A verifier that does not implement it falls back to VerifyCandidate.
+// TargetAdjudicator verifies the exact proposed target against account-scoped
+// facts obtained by the engine before parameter resolution.
 type TargetAdjudicator interface {
 	AdjudicateTarget(SlotCandidate) TargetVerdict
+}
+
+type TargetAdjudicatorFunc func(SlotCandidate) TargetVerdict
+
+func (f TargetAdjudicatorFunc) AdjudicateTarget(candidate SlotCandidate) TargetVerdict {
+	return f(candidate)
 }

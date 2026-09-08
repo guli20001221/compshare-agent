@@ -122,7 +122,7 @@ func TestColdNameResolutionFindsAnInstanceOnALaterDescribePage(t *testing.T) {
 
 	result := runResource(t, exec, coldRegistrySnapshot(), ResourceInfoRequest{
 		Targets: []platform.TargetRef{{
-			Type: platform.TargetRefName, Value: "only-on-second-page", Source: platform.SourceUserText,
+			Type: platform.TargetRefName, Value: "only-on-second-page",
 		}},
 	})
 

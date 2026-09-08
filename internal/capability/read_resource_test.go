@@ -145,7 +145,7 @@ func TestResourceHandle_PinnedTargetDoesNotReplaceTheSessionResolver(t *testing.
 	reg := NewReadCapability(resourceReadSpec())
 
 	result := reg.Run(context.Background(), ResourceInfoRequest{Targets: []platform.TargetRef{{
-		Type: platform.TargetRefUHostIDUserInput, Value: "uhost-only", Source: platform.SourceUserText,
+		Type: platform.TargetRefUHostIDUserInput, Value: "uhost-only",
 	}}}, ReadRuntime{
 		Executor: exec,
 		Resolver: coldRegistrySnapshot(),
@@ -168,7 +168,7 @@ func TestResourceHandle_AppliesStateFilter(t *testing.T) {
 	)}
 
 	result := runResource(t, exec, nil, ResourceInfoRequest{
-		Targets: []platform.TargetRef{{Type: platform.TargetRefFilter, Value: "state=running", Source: platform.SourceUserText}},
+		Targets: []platform.TargetRef{{Type: platform.TargetRefFilter, Value: "state=running"}},
 	})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
@@ -207,7 +207,7 @@ func TestResourceHandle_ExplicitIDPinsTargetAndDoesNotTruncate(t *testing.T) {
 	resolver := refundResolver(t, [2]string{"uhost-a", "train-a"}, [2]string{"uhost-b", "train-b"})
 
 	result := runResource(t, exec, resolver, ResourceInfoRequest{
-		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-a", Source: platform.SourceUserText}},
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-a"}},
 	})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
@@ -238,7 +238,7 @@ func TestResourceHandle_AmbiguousNameIsConflict(t *testing.T) {
 	resolver := refundResolver(t, [2]string{"uhost-a", "dup"}, [2]string{"uhost-b", "dup"})
 
 	result := runResource(t, &fakeReadExec{result: describeFixture()}, resolver, ResourceInfoRequest{
-		Targets: []platform.TargetRef{{Type: platform.TargetRefName, Value: "dup", Source: platform.SourceUserText}},
+		Targets: []platform.TargetRef{{Type: platform.TargetRefName, Value: "dup"}},
 	})
 
 	require.Equal(t, platform.ReadStatusConflict, result.Status)
@@ -251,7 +251,7 @@ func TestResourceHandle_UnresolvedTargetFallsBack(t *testing.T) {
 	resolver := refundResolver(t, [2]string{"uhost-a", "train-a"})
 
 	result := runResource(t, exec, resolver, ResourceInfoRequest{
-		Targets: []platform.TargetRef{{Type: platform.TargetRefName, Value: "ghost", Source: platform.SourceUserText}},
+		Targets: []platform.TargetRef{{Type: platform.TargetRefName, Value: "ghost"}},
 	})
 
 	require.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)
@@ -268,7 +268,7 @@ func TestResourceHandle_ColdRegistryExactIDPointQueries(t *testing.T) {
 	exec := &fakeReadExec{result: describeFixture(instanceRowMap("uhost-cold", "train-cold", "Running"))}
 
 	result := runResource(t, exec, coldRegistrySnapshot(), ResourceInfoRequest{
-		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-cold", Source: platform.SourceUserText}},
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-cold"}},
 	})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
@@ -287,7 +287,7 @@ func TestResourceHandle_FreshCompleteAbsentExactIDFallsBack(t *testing.T) {
 	resolver := refundResolver(t, [2]string{"uhost-a", "train-a"})
 
 	result := runResource(t, exec, resolver, ResourceInfoRequest{
-		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-ghost", Source: platform.SourceUserText}},
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-ghost"}},
 	})
 
 	require.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)
@@ -312,7 +312,7 @@ func TestResourceHandle_StaleCompleteExactIDPointQueries(t *testing.T) {
 
 	reg := NewReadCapability(resourceReadSpec())
 	result := reg.Run(context.Background(), ResourceInfoRequest{
-		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-new", Source: platform.SourceUserText}},
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-new"}},
 	}, ReadRuntime{Executor: exec, Resolver: resolver, Now: staleNow})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
@@ -331,7 +331,7 @@ func TestResourceHandle_ColdIDResponseMismatchIsEmpty(t *testing.T) {
 	exec := &fakeReadExec{result: describeFixture(instanceRowMap("uhost-other", "someone-else", "Running"))}
 
 	result := runResource(t, exec, coldRegistrySnapshot(), ResourceInfoRequest{
-		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-requested", Source: platform.SourceUserText}},
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-requested"}},
 	})
 
 	require.Equal(t, platform.ReadStatusEmpty, result.Status,
@@ -341,9 +341,11 @@ func TestResourceHandle_ColdIDResponseMismatchIsEmpty(t *testing.T) {
 	require.NotNil(t, result.Envelope)
 	foundAbsent := false
 	for _, fact := range result.Envelope.Facts {
-		foundAbsent = foundAbsent || (fact.SubjectID == "uhost-requested" && fact.Key == "exists" && fact.Value == "false")
+		foundAbsent = foundAbsent || (fact.SubjectID == "uhost-requested" && fact.Key == "query_matched" && fact.Value == "false")
 	}
 	assert.True(t, foundAbsent, "the exact point-query absence must keep its queried instance scope")
+	assert.Contains(t, result.Reply, "uhost-requested")
+	assert.Contains(t, result.Reply, "未匹配到结果")
 }
 
 // TestResourceHandle_EmitsVerifiedInstancesEffect: a same-id-verified response
@@ -354,7 +356,7 @@ func TestResourceHandle_EmitsVerifiedInstancesEffect(t *testing.T) {
 	resolver := refundResolver(t, [2]string{"uhost-a", "train-a"}, [2]string{"uhost-b", "train-b"})
 
 	result := runResource(t, exec, resolver, ResourceInfoRequest{
-		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-a", Source: platform.SourceUserText}},
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-a"}},
 	})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)

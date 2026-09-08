@@ -112,7 +112,7 @@ func TestMonitorCurrentHandle_ColdExactIDIsPointVerified(t *testing.T) {
 	}}
 
 	result := runMonitorCurrent(t, exec, coldRegistrySnapshot(), "", MonitorCurrentRequest{
-		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-cold", Source: platform.SourceUserText}},
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-cold"}},
 	})
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
@@ -130,7 +130,7 @@ func TestMonitorCurrentHandle_ColdExactIDAbsentStopsBeforeMonitor(t *testing.T) 
 		resourceInfoAction: describeFixture(),
 	}}
 	result := runMonitorCurrent(t, exec, coldRegistrySnapshot(), "", MonitorCurrentRequest{
-		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-missing", Source: platform.SourceUserText}},
+		Targets: []platform.TargetRef{{Type: platform.TargetRefUHostIDUserInput, Value: "uhost-missing"}},
 	})
 	require.Equal(t, platform.ReadStatusFallbackBeforeTool, result.Status)
 	assert.Equal(t, platform.ReadFallbackUnresolvedTarget, result.FallbackReason)

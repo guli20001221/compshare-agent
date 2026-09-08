@@ -25,12 +25,9 @@ func (e *Engine) imageCatalogSnapshotForSpec(ctx context.Context, spec actionres
 // resolveImageCatalogSnapshotForSpec verifies one proposed image id with an
 // upstream point query and returns the source that actually contained it.
 //
-// A caller-provided source is strict only when the user explicitly supplied it
-// (or the operation fixes it). For an Agent-inferred or omitted source, candidates
-// are tried in deterministic order and the first exact id match supplies the
-// canonical source. This keeps a community id from silently falling through the
-// historical empty-source => platform default while still refusing to guess from
-// a name.
+// A supplied source (or the operation's fixed source) constrains the lookup.
+// When omitted, try the catalogs in order and use the source containing the exact
+// ID; no name-based guess or conversation-source classification is involved.
 func (e *Engine) resolveImageCatalogSnapshotForSpec(
 	ctx context.Context,
 	spec actionresolver.OperationSpec,

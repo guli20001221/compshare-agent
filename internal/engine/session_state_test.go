@@ -186,10 +186,6 @@ func TestSetSessionStateVersionZeroCannotMintInstanceSelectionAuthority(t *testi
 		SelectedInstanceSource:    SelectedInstanceSourceUser,
 		SelectedInstanceAtUnix:    time.Now().Unix(),
 		SelectedInstanceFreshness: ContinuityFreshnessFresh,
-		PendingSelectionKind:      "instance",
-		PendingSelectionItems: []PendingSelectionItem{{
-			Index: 1, ID: "uhost-client-seeded", Name: "forged",
-		}},
 	}, 0)
 
 	state, version, hydrated := e.SessionStateSnapshot()
@@ -201,25 +197,6 @@ func TestSetSessionStateVersionZeroCannotMintInstanceSelectionAuthority(t *testi
 	require.Empty(t, state.SelectedInstanceSource)
 	require.Zero(t, state.SelectedInstanceAtUnix)
 	require.Empty(t, state.SelectedInstanceFreshness)
-	require.Empty(t, state.PendingSelectionKind)
-	require.Empty(t, state.PendingSelectionItems)
-}
-
-func TestPendingSelectionRoundTripsAsExecutionState(t *testing.T) {
-	state := SessionState{
-		SchemaVersion:                  SessionStateSchemaCurrent,
-		PendingSelectionKind:           "instance",
-		PendingSelectionProducedAtUnix: 1716530001,
-		PendingSelectionTTLSeconds:     pendingSelectionTTLSeconds,
-		PendingSelectionItems: []PendingSelectionItem{{
-			Index: 1, ID: "uhost-list-1", Name: "list-one", State: "Running", GPU: 1, GpuType: "4090", Zone: "cn-wlcb-01",
-		}},
-	}
-	raw, err := json.Marshal(PersistedContext{AgentSessionState: state})
-	require.NoError(t, err)
-	parsed, err := ParsePersistedContext(raw)
-	require.NoError(t, err)
-	assert.Equal(t, state, parsed.AgentSessionState)
 }
 
 func TestPersistedInstanceOpsJobRoundTripsWithoutExecutablePayload(t *testing.T) {
@@ -240,6 +217,24 @@ func TestPersistedInstanceOpsJobRoundTripsWithoutExecutablePayload(t *testing.T)
 	parsed, err := ParsePersistedContext(raw)
 	require.NoError(t, err)
 	assert.Equal(t, state, parsed.AgentSessionState)
+}
+
+func TestRetiredPendingSelectionIsIgnoredWhenLoadingExistingSessions(t *testing.T) {
+	raw := []byte(`{"agent_session_state":{"schema_version":"10.0","selected_instance_id":"uhost-current","pending_selection_kind":"instance","pending_selection_produced_at_unix":1716530001,"pending_selection_ttl_seconds":300,"pending_selection_items":[{"index":1,"id":"uhost-old-a"},{"index":2,"id":"uhost-old-b"}]}}`)
+	parsed, err := ParsePersistedContext(raw)
+	require.NoError(t, err)
+	require.Equal(t, "uhost-current", parsed.AgentSessionState.SelectedInstanceID)
+	roundtrip, err := json.Marshal(parsed)
+	require.NoError(t, err)
+	require.NotContains(t, string(roundtrip), "pending_selection")
+
+	eng := newEngineForSessionStateTest(t)
+	eng.SetSessionState(parsed.AgentSessionState, 1)
+	view := (ContextCompiler{}).CompileForTurn(eng, "第二台呢", "turn-legacy-selection", time.Now())
+	card := renderAgentContextCard(view)
+	require.NotContains(t, card, "uhost-old-a")
+	require.NotContains(t, card, "uhost-old-b")
+	require.NotContains(t, card, "序号=")
 }
 
 func TestSetSessionStateNormalizesOnlyV8BackgroundJob(t *testing.T) {

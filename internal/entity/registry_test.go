@@ -274,35 +274,6 @@ func TestRegistrySnapshotResolvesIDsAndNames(t *testing.T) {
 	assert.Equal(t, ResolveNotFoundInAccount, res.Status)
 }
 
-func TestRegistrySnapshotInstanceIDRefsInText(t *testing.T) {
-	reg := NewRegistry()
-	require.NoError(t, reg.SyncFromDescribe(describeResult(
-		host("uhost-1qy6d8tkfrl4", "classic", "Running", "4090", 1),
-		host("cpod-1rkv126dxgiq", "pod", "Running", "4090", 1),
-	), "init"))
-	snap := reg.Snapshot()
-
-	assert.Equal(t,
-		[]string{"cpod-1rkv126dxgiq"},
-		snap.InstanceIDTokensInText("请关闭cpod-1rkv126dxgiq这台实例"),
-	)
-	assert.Empty(t, snap.InstanceIDTokensInText("my-gpu-box 今天状态怎样"))
-
-	cpodOnly := RegistrySnapshot{Instances: map[string]InstanceSnapshot{
-		"cpod-1rkv126dxgiq": {UHostId: "cpod-1rkv126dxgiq"},
-	}}
-	assert.Equal(t,
-		[]string{"uhost-1qy6d8tkfrl4"},
-		cpodOnly.InstanceIDTokensInText("uhost-1qy6d8tkfrl4 的状态"),
-	)
-
-	hits, unresolved := snap.ResolveInstanceRefsInText("查 CPOD-1RKV126DXGIQ 和 cpod-1rkv126dxgiq")
-	require.Len(t, hits, 1)
-	assert.Equal(t, "cpod-1rkv126dxgiq", hits[0].UHostId)
-	assert.Empty(t, unresolved,
-		"a case-insensitive spelling of the same live account ID is not a second unresolved target")
-}
-
 // A read target is model-shaped input: the model can correctly copy an account
 // ID while labelling it as `name`, or leave it inside the shell prompt / access
 // URL where the user observed it. Resolution must use the live account listing
@@ -393,42 +364,6 @@ func TestResolveByNamePrefersExactLongAccountIDOverItsPrefix(t *testing.T) {
 	require.Equal(t, ResolveHit, result.Status)
 	require.Len(t, matches, 1)
 	assert.Equal(t, "cpod-abcdef", matches[0].UHostId)
-}
-
-func TestAccountInstanceIDsInTextUsesOnlyTheLiveAccountGrammar(t *testing.T) {
-	snap := RegistrySnapshot{Instances: map[string]InstanceSnapshot{
-		"cpod-abc":    {UHostId: "cpod-abc", Name: "short-instance"},
-		"cpod-abcdef": {UHostId: "cpod-abcdef", Name: "long-instance"},
-		"uhost-def":   {UHostId: "uhost-def", Name: "other"},
-	}}
-
-	matches := snap.AccountInstanceIDsInText("8188-cpod-abcdef-s1.pod.example")
-	require.Len(t, matches, 1)
-	assert.Equal(t, "cpod-abcdef", matches[0].UHostId,
-		"a shorter live ID must not win by prefix")
-
-	matches = snap.AccountInstanceIDsInText("copy cpod-abc to uhost-def")
-	require.Len(t, matches, 2)
-	assert.ElementsMatch(t, []string{"cpod-abc", "uhost-def"},
-		[]string{matches[0].UHostId, matches[1].UHostId})
-
-	assert.Empty(t, snap.AccountInstanceIDsInText("display name short-instance"),
-		"authorization provenance must not inherit fuzzy display-name matching")
-}
-
-func TestResolveInstanceRefsSeparatesWrappersFromTrueUnknownIDs(t *testing.T) {
-	snap := RegistrySnapshot{Instances: map[string]InstanceSnapshot{
-		"cpod-abc": {UHostId: "cpod-abc", Name: "pod"},
-	}}
-
-	_, unresolved := snap.ResolveInstanceRefsInText("https://8188-cpod-abc-s1.pod.example")
-	assert.Empty(t, unresolved, "a wrapper around one exact account ID is not a second target")
-
-	hits, unresolved := snap.ResolveInstanceRefsInText("排查 cpod-abc 和 cpod-does-not-exist")
-	require.Len(t, hits, 1)
-	assert.Equal(t, "cpod-abc", hits[0].UHostId)
-	assert.Equal(t, []string{"cpod-does-not-exist"}, unresolved,
-		"an unrelated unknown ID remains explicit even when the text also contains a valid account ID")
 }
 
 func TestSnapshotIDStableAcrossInputOrder(t *testing.T) {

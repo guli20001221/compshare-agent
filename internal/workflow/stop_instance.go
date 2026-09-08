@@ -81,6 +81,7 @@ func stepStopInstance() Step {
 		},
 	}
 }
+
 // extractInstanceZone returns the Zone from the first UHostSet entry, or defaultVal.
 func extractInstanceZone(result map[string]any, defaultVal string) string {
 	if result == nil {

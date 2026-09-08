@@ -4,8 +4,6 @@ import (
 	"sort"
 	"strings"
 	"unicode"
-
-	"github.com/compshare-agent/internal/platform"
 )
 
 type ResolveStatus string
@@ -103,20 +101,6 @@ func (r *EntityRegistry) ResolveByName(name string) ([]*InstanceSnapshot, Resolv
 	return matches, ResolveResult{Status: status, Query: query, Candidates: idsOfSnapshots(matches)}
 }
 
-func (r *EntityRegistry) InstanceIDTokensInText(text string) []string {
-	if r == nil {
-		return nil
-	}
-	return r.Snapshot().InstanceIDTokensInText(text)
-}
-
-func (r *EntityRegistry) ResolveInstanceRefsInText(text string) ([]*InstanceSnapshot, []string) {
-	if r == nil {
-		return nil, nil
-	}
-	return r.Snapshot().ResolveInstanceRefsInText(text)
-}
-
 func (r *EntityRegistry) Filter(spec FilterSpec) []*InstanceSnapshot {
 	state := strings.ToLower(strings.TrimSpace(spec.State))
 	gpuType := strings.ToLower(strings.TrimSpace(spec.GPUType))
@@ -203,95 +187,6 @@ func (s RegistrySnapshot) ResolveByName(name string) ([]*InstanceSnapshot, Resol
 	return matches, ResolveResult{Status: status, Query: query, Candidates: idsOfSnapshots(matches)}
 }
 
-// InstanceIDTokensInText recognizes platform instance IDs without resolving or
-// authorizing them. Prefixes observed in the snapshot remain supported as well.
-func (s RegistrySnapshot) InstanceIDTokensInText(text string) []string {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return nil
-	}
-	prefixes := s.instanceIDPrefixes()
-	if len(prefixes) == 0 {
-		return nil
-	}
-	seen := map[string]struct{}{}
-	tokens := make([]string, 0)
-	for i := 0; i < len(text); i++ {
-		if text[i] > unicode.MaxASCII {
-			continue
-		}
-		if i > 0 && isInstanceIDTokenByte(text[i-1]) {
-			continue
-		}
-		for _, prefix := range prefixes {
-			endPrefix := i + len(prefix)
-			if endPrefix >= len(text) || text[endPrefix] != '-' {
-				continue
-			}
-			if !strings.EqualFold(text[i:endPrefix], prefix) {
-				continue
-			}
-			end := endPrefix + 1
-			for end < len(text) && isInstanceIDTokenByte(text[end]) {
-				end++
-			}
-			if end == endPrefix+1 {
-				continue
-			}
-			token := text[i:end]
-			if _, ok := seen[token]; ok {
-				continue
-			}
-			seen[token] = struct{}{}
-			tokens = append(tokens, token)
-			i = end - 1
-			break
-		}
-	}
-	return tokens
-}
-
-func (s RegistrySnapshot) ResolveInstanceRefsInText(text string) ([]*InstanceSnapshot, []string) {
-	tokens := s.InstanceIDTokensInText(text)
-	if len(tokens) == 0 {
-		return nil, nil
-	}
-	// A platform URL or shell prompt can wrap an exact live account ID inside a
-	// longer token (for example 8188-cpod-abc-s1). AccountInstanceIDsInText applies
-	// the entity-specific boundary rule; use the same proof to avoid reporting the
-	// wrapper itself as a second, unresolved target.
-	accountHits := s.AccountInstanceIDsInText(text)
-	hits := make([]*InstanceSnapshot, 0, len(tokens))
-	unresolved := make([]string, 0)
-	for _, token := range tokens {
-		if inst, res := s.ResolveByID(token); res.Status == ResolveHit && inst != nil {
-			hits = append(hits, inst)
-			continue
-		}
-		wrappedAccountID := false
-		for _, inst := range accountHits {
-			if inst != nil && containsLiteralInstanceIDSpan(token, inst.UHostId) {
-				wrappedAccountID = true
-				break
-			}
-		}
-		if wrappedAccountID {
-			continue
-		}
-		unresolved = append(unresolved, token)
-	}
-	return hits, unresolved
-}
-
-// AccountInstanceIDsInText returns only literal IDs that occur in text and are
-// present in this account snapshot. It deliberately performs neither fuzzy-name
-// matching nor wrapper parsing: the live account listing is the complete grammar.
-// This is suitable for authorization provenance where an access hostname, shell
-// prompt, or other wrapper may contain the exact instance ID the user selected.
-func (s RegistrySnapshot) AccountInstanceIDsInText(text string) []*InstanceSnapshot {
-	return instancesWhoseIDAppearsInText(text, s.Instances)
-}
-
 func (s RegistrySnapshot) instancesForIDs(ids []string) []*InstanceSnapshot {
 	matches := make([]*InstanceSnapshot, 0, len(ids))
 	for _, id := range ids {
@@ -318,64 +213,6 @@ func (r *EntityRegistry) instancesForIDsLocked(ids []string) []*InstanceSnapshot
 		return matches[i].UHostId < matches[j].UHostId
 	})
 	return matches
-}
-
-func (s RegistrySnapshot) instanceIDPrefixes() []string {
-	prefixes := platform.InstanceIDPrefixes()
-	for id, inst := range s.Instances {
-		instanceID := strings.TrimSpace(inst.UHostId)
-		if instanceID == "" {
-			instanceID = strings.TrimSpace(id)
-		}
-		prefix, ok := instanceIDPrefix(instanceID)
-		if !ok {
-			continue
-		}
-		prefixes = append(prefixes, prefix)
-	}
-	return normalizedInstanceIDPrefixes(prefixes)
-}
-
-// normalizedInstanceIDPrefixes makes tokenization deterministic for a prefix set.
-func normalizedInstanceIDPrefixes(prefixes []string) []string {
-	seen := map[string]struct{}{}
-	ordered := make([]string, 0, len(prefixes))
-	for _, prefix := range prefixes {
-		prefix = strings.ToLower(strings.TrimSpace(prefix))
-		if prefix == "" {
-			continue
-		}
-		if _, ok := seen[prefix]; ok {
-			continue
-		}
-		seen[prefix] = struct{}{}
-		ordered = append(ordered, prefix)
-	}
-	sort.Slice(ordered, func(i, j int) bool {
-		if len(ordered[i]) != len(ordered[j]) {
-			return len(ordered[i]) > len(ordered[j])
-		}
-		return ordered[i] < ordered[j]
-	})
-	return ordered
-}
-
-func instanceIDPrefix(id string) (string, bool) {
-	idx := strings.IndexByte(id, '-')
-	if idx <= 0 || idx >= len(id)-1 {
-		return "", false
-	}
-	prefix := strings.ToLower(id[:idx])
-	for i := 0; i < len(prefix); i++ {
-		if !isASCIIAlphaNum(prefix[i]) {
-			return "", false
-		}
-	}
-	return prefix, true
-}
-
-func isInstanceIDTokenByte(b byte) bool {
-	return isASCIIAlphaNum(b) || b == '-' || b == '_'
 }
 
 func isASCIIAlphaNum(b byte) bool {

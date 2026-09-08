@@ -120,9 +120,8 @@ func resolveMonitorTargets(ctx context.Context, targets []platform.TargetRef, rt
 	if len(targets) == 0 {
 		if rt.FallbackInstanceID != "" {
 			targets = []platform.TargetRef{{
-				Type:   platform.TargetRefUHostIDUserInput,
-				Value:  rt.FallbackInstanceID,
-				Source: platform.SourcePriorTurn,
+				Type:  platform.TargetRefUHostIDUserInput,
+				Value: rt.FallbackInstanceID,
 			}}
 		} else {
 			return nil, nil, ReadFallbackBeforeTool(platform.ReadFallbackMissingTarget)

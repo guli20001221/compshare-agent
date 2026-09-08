@@ -17,9 +17,6 @@ const (
 	refundCapabilityLabel = string(intent.IntentRefundEstimate)
 	refundAction          = "GetCompShareRefundPrice"
 
-	// A stale prior-turn target is a handled answer so the Agent can explain it.
-	refundStaleSelectionReply = "未找到刚才选中的实例，可能已被删除或当前账号不可见。请重新指定实例名称或实例 ID 后再估算退费。"
-
 	// noRefundEstimateReply — the upstream returned no refund rows at all. A
 	// successful query with no data is a structured Empty read.
 	noRefundEstimateReply = "未获取到退费估算结果。这个查询只做估算，不会释放实例。"
@@ -39,7 +36,7 @@ func (r RefundEstimateRequest) MissingFields() []platform.MissingField {
 
 // RefundEstimateResponse carries the raw price payload plus the resolved
 // instances used to label the rows. Terminal outcomes (unresolved / ambiguous
-// target, stale prior-turn selection, upstream failure) are returned by Handle
+// target or upstream failure) are returned by Handle
 // as a ReadResult, never here.
 type RefundEstimateResponse struct {
 	Raw       map[string]any
@@ -65,12 +62,6 @@ func refundHandle(ctx context.Context, req RefundEstimateRequest, rt ReadRuntime
 	// the one capability that refuses what upstream would have priced.
 	instances, ids, reason := resolveReadTargetSnapshots(ctx, req.Targets, rt)
 	if reason != nil {
-		// Explain a stale prior-turn selection instead of silently retrying.
-		if len(req.Targets) == 1 && req.Targets[0].Source == platform.SourcePriorTurn {
-			r := ReadHandled(refundStaleSelectionReply)
-			r.ToolAction = refundAction
-			return RefundEstimateResponse{}, r
-		}
 		return RefundEstimateResponse{}, readTargetFallbackResult(*reason)
 	}
 	args := map[string]any{"UHostIds": ids}

@@ -76,7 +76,7 @@ func imageOnlySpecResolver(imageCatalog *deployment.ImageCatalogSnapshot) *Resol
 			},
 		},
 	}
-	r := New(catalog, EvidenceVerifierFunc(func(SlotCandidate) bool { return true }), MachineTypeCatalog{})
+	r := New(catalog, TargetAdjudicatorFunc(func(SlotCandidate) TargetVerdict { return TargetAccept }), MachineTypeCatalog{})
 	if imageCatalog != nil {
 		r = r.WithImageCatalog(imageCatalog)
 	}
@@ -87,8 +87,7 @@ func imageIDProposal(id string) ActionProposal {
 	return ActionProposal{
 		TurnID: "turn-1", Operation: "CreateInstanceWorkflow",
 		Slots: []SlotCandidate{{
-			Name: "CompShareImageId", Value: id, Source: SourceUserExplicit,
-			Evidence: &SourceEvidence{MessageID: "turn-1", Quote: id},
+			Name: "CompShareImageId", Value: id,
 		}},
 	}
 }

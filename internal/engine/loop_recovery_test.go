@@ -13,24 +13,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// These tests pin the loop-exit graceful-degradation contract: when the agent
-// loop reaches the round ceiling OR an LLM call errors AFTER a prior round
-// already gathered groundable SearchKnowledge evidence, deliver the cited answer
-// from that evidence instead of discarding the whole turn for a bare
-// "请重新描述" / "LLM 调用失败". This reuses the budget-exit recovery primitive
-// (synthesizeOnBudgetExceeded), which is empty-ledger-gated, so a turn that
-// gathered nothing is byte-identical to before (those halves are pinned by the
-// extended TestChat_MaxRoundsExceeded / TestChat_LLMError).
-//
-// WHY this matters: in the current-main replay these exits produced the
-// "处理轮次超限" cluster (M106/M110/M115/M143) and the 180s-timeout cluster
-// (M095/M118/M148) — turns where the user got nothing even though the system had
-// already retrieved an answer.
+// Loop exits retain the original task, history and completed observations for
+// one final Agent response without tools. Cancellation skips that final attempt.
 
 // mockLLMSteps scripts a per-call sequence of either a response or an error.
 // Unlike mockLLM (responses only) and mockLLMWithError (always errors), it can
 // model "round 0 succeeded and recorded evidence, then a later call errors/times
-// out, then the recovery synthesis call succeeds". A step's onErr runs just
+// out, then the final Agent response succeeds". A step's onErr runs just
 // before the error is returned — used to cancel the ctx mid-flight so the
 // recovery ctx-gate can be exercised.
 type mockLLMSteps struct {
@@ -61,8 +50,7 @@ func (m *mockLLMSteps) Chat(_ context.Context, _ llm.ChatRequest) (*llm.ChatResp
 	return s.resp, nil
 }
 
-// keptVLLMHit is the kept (above-floor) SearchKnowledge hit the scripted
-// retriever returns; KBVersion is required by NewEvidence for synthesis.
+// keptVLLMHit is the above-floor SearchKnowledge hit returned by the fixture.
 func keptVLLMHit() knowledge.RetrievalHit {
 	return knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{
 		ChunkID:    "ext-vllm-oom-001",
@@ -80,7 +68,7 @@ func keptVLLMHit() knowledge.RetrievalHit {
 const recoveryModelToken = "recovery-model-token-abcdefghijklmnopqrst"
 
 func vllmGroundedRepairResponse() llm.ChatResponse {
-	return llm.ChatResponse{Content: `{"answer":"可以把 max-model-len 调小来降低显存占用[1]。临时地址：https://example.invalid/download?Authorization=` + recoveryModelToken + `"}`}
+	return llm.ChatResponse{Content: `可以把 max-model-len 调小来降低显存占用[1]。临时地址：https://example.invalid/download?Authorization=` + recoveryModelToken}
 }
 
 func vllmRetriever() *scriptedKnowledgeRetriever {
@@ -95,10 +83,7 @@ func prepareKnowledgeRecoveryLane(t *testing.T, eng *Engine) {
 	eng.InitWithContext("test user")
 }
 
-// TestChat_RoundCeiling_RecoversFromGatheredEvidence: round 0 calls
-// SearchKnowledge (records a kept hit), rounds 1..9 thrash with a plain read and
-// never produce a final text reply, so the loop hits the round ceiling with a
-// non-empty ledger → recovery synthesizes the cited answer instead of refusing.
+// The final Agent request can use knowledge gathered before the loop ceiling.
 func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
 	responses := make([]llm.ChatResponse, maxReActRounds+1)
 	responses[0] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
@@ -109,8 +94,7 @@ func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
 			toolCall("tc", "ReadCapability_resource_info", `{}`),
 		}}
 	}
-	// Index maxReActRounds is consumed by the one-call grounded recovery, NOT
-	// the loop. It returns the answer together with an evidence proof.
+	// The final request has the same conversation but no further tools.
 	responses[maxReActRounds] = vllmGroundedRepairResponse()
 
 	mock := &mockLLM{responses: responses}
@@ -134,12 +118,14 @@ func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
 
 func TestChat_RoundCeiling_DoesNotGuessFromInstanceKeywords(t *testing.T) {
 	const sensitiveReply = "Jupyter Token：server-owned-token"
+	const finalAnswer = "尚未取得足够的目标详情，暂时不能确认该实例当前状态。"
 	responses := make([]llm.ChatResponse, maxReActRounds)
 	for i := range responses {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
 			toolCall(fmt.Sprintf("list-%d", i), "ReadCapability_resource_info", `{}`),
 		}}
 	}
+	responses = append(responses, llm.ChatResponse{Content: finalAnswer})
 	target := map[string]any{
 		"UHostId": "uhost-zzzz-hidden",
 		"Name":    "claude-write-test",
@@ -168,7 +154,8 @@ func TestChat_RoundCeiling_DoesNotGuessFromInstanceKeywords(t *testing.T) {
 	exec := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": describe,
 	}}
-	eng := NewWithDeps(&mockLLM{responses: responses}, exec, nil)
+	model := &mockLLM{responses: responses}
+	eng := NewWithDeps(model, exec, nil)
 	limiter := &scriptedRateLimiter{}
 	limiter.before = func(governance.Request) {
 		eng.sensitiveRepliesThisTurn = []string{sensitiveReply}
@@ -179,16 +166,23 @@ func TestChat_RoundCeiling_DoesNotGuessFromInstanceKeywords(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "claude-write-test 这台状态怎么样", noopStep)
 	require.NoError(t, err)
-	assert.Equal(t, sensitiveReply+"\n\n"+reactCeilingRefusal, reply)
+	assert.Equal(t, sensitiveReply+"\n\n"+finalAnswer, reply)
+	require.Len(t, model.calls, maxReActRounds+1)
+	finalRequest := model.calls[maxReActRounds]
+	require.Empty(t, finalRequest.Tools)
+	require.Contains(t, renderTestMessages(finalRequest.Messages), "claude-write-test 这台状态怎么样")
+	require.True(t, eng.ReactCeilingHitThisTurn())
 }
 
 func TestChat_RoundCeiling_DoesNotClassifyPunctuationFollowup(t *testing.T) {
+	const finalAnswer = "host-a 运行中，host-b 已关机。"
 	responses := make([]llm.ChatResponse, maxReActRounds)
 	for i := range responses {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
 			toolCall(fmt.Sprintf("list-%d", i), "ReadCapability_resource_info", `{}`),
 		}}
 	}
+	responses = append(responses, llm.ChatResponse{Content: finalAnswer})
 	describe := map[string]any{"UHostSet": []any{
 		map[string]any{"UHostId": "uhost-a", "Name": "host-a", "State": "Running", "GpuType": "4090", "Zone": "cn-wlcb-01"},
 		map[string]any{"UHostId": "uhost-b", "Name": "host-b", "State": "Stopped", "GpuType": "A100", "Zone": "cn-sh2-02"},
@@ -196,7 +190,8 @@ func TestChat_RoundCeiling_DoesNotClassifyPunctuationFollowup(t *testing.T) {
 	exec := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": describe,
 	}}
-	eng := NewWithDeps(&mockLLM{responses: responses}, exec, nil)
+	model := &mockLLM{responses: responses}
+	eng := NewWithDeps(model, exec, nil)
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},
 		{Role: openai.ChatMessageRoleUser, Content: "我有哪些实例"},
@@ -206,16 +201,24 @@ func TestChat_RoundCeiling_DoesNotClassifyPunctuationFollowup(t *testing.T) {
 
 	reply, err := eng.Chat(context.Background(), "？", noopStep)
 	require.NoError(t, err)
-	assert.Equal(t, reactCeilingRefusal, reply)
+	assert.Equal(t, finalAnswer, reply)
+	require.Len(t, model.calls, maxReActRounds+1)
+	finalRequest := model.calls[maxReActRounds]
+	require.Empty(t, finalRequest.Tools)
+	require.Contains(t, renderTestMessages(finalRequest.Messages), "我有哪些实例")
+	require.Contains(t, renderTestMessages(finalRequest.Messages), "您共有 2 台实例：host-a、host-b。")
+	require.Contains(t, renderTestMessages(finalRequest.Messages), "？")
 }
 
 func TestChat_RoundCeiling_DoesNotParseTargetFromFreeText(t *testing.T) {
+	const finalAnswer = "尚未找到 autotest，未执行开机。"
 	responses := make([]llm.ChatResponse, maxReActRounds)
 	for i := range responses {
 		responses[i] = llm.ChatResponse{ToolCalls: []openai.ToolCall{
 			toolCall(fmt.Sprintf("list-%d", i), "ReadCapability_resource_info", `{}`),
 		}}
 	}
+	responses = append(responses, llm.ChatResponse{Content: finalAnswer})
 	describe := map[string]any{"UHostSet": []any{
 		map[string]any{
 			"UHostId": "uhost-existing",
@@ -231,13 +234,19 @@ func TestChat_RoundCeiling_DoesNotParseTargetFromFreeText(t *testing.T) {
 	exec := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": describe,
 	}}
-	eng := NewWithDeps(&mockLLM{responses: responses}, exec, nil)
+	model := &mockLLM{responses: responses}
+	eng := NewWithDeps(model, exec, nil)
 	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
 	require.NoError(t, eng.registry.SyncFromDescribe(describe, "test"))
 
 	reply, err := eng.Chat(context.Background(), "将autotest这台实例用无卡模式开启", noopStep)
 	require.NoError(t, err)
-	assert.Equal(t, reactCeilingRefusal, reply)
+	assert.Equal(t, finalAnswer, reply)
+	require.Len(t, model.calls, maxReActRounds+1)
+	finalRequest := model.calls[maxReActRounds]
+	require.Empty(t, finalRequest.Tools)
+	require.Contains(t, renderTestMessages(finalRequest.Messages), "将autotest这台实例用无卡模式开启")
+	require.NotContains(t, exec.calls, "StartCompShareInstance")
 }
 
 // TestChat_LLMError_RecoversWhenEvidenceInHandAndCtxLive: round 0 gathers
@@ -264,7 +273,7 @@ func TestChat_LLMError_RecoversWhenEvidenceInHandAndCtxLive(t *testing.T) {
 	assert.Contains(t, reply, "max-model-len")
 	assert.NotContains(t, reply, "[1]")
 	assert.NotContains(t, reply, recoveryModelToken, "LLM-error recovery must cross the ordinary response redaction boundary")
-	assert.Equal(t, 3, mock.idx, "round0 search + round1 error + synthesis = exactly 3 LLM calls")
+	assert.Equal(t, 3, mock.idx, "search, failed model attempt and final Agent response")
 }
 
 // TestChat_LLMError_CtxCancelledSkipsRecovery pins the ctx gate: evidence is in
@@ -279,7 +288,7 @@ func TestChat_LLMError_CtxCancelledSkipsRecovery(t *testing.T) {
 			toolCall("sk", "SearchKnowledge", `{"query":"vllm 显存不足"}`),
 		}}},
 		{err: fmt.Errorf("context canceled"), onErr: cancel}, // cancel as the error surfaces
-		{resp: &llm.ChatResponse{Content: "这条不应被消费 [1]。"}},   // synthesis step — must NOT run
+		{resp: &llm.ChatResponse{Content: "这条不应被消费 [1]。"}},   // final attempt must not run after cancellation
 	}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
 	prepareKnowledgeRecoveryLane(t, eng)
@@ -291,5 +300,5 @@ func TestChat_LLMError_CtxCancelledSkipsRecovery(t *testing.T) {
 	_, err := eng.Chat(ctx, "vllm 显存不足怎么办", noopStep)
 	require.Error(t, err, "a cancelled ctx must not be masked by recovery")
 	assert.Contains(t, err.Error(), "LLM 调用失败")
-	assert.Equal(t, 2, mock.idx, "recovery synthesis must be skipped — only round0 and the erroring round1 ran")
+	assert.Equal(t, 2, mock.idx, "cancellation skips the final Agent attempt")
 }

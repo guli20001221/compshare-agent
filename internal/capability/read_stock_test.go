@@ -9,6 +9,7 @@ import (
 	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/platform"
+	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/zones"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -703,7 +704,7 @@ func TestRenderStockCapacity_GroupsByZoneAndCollapsesCPUMemoryVariants(t *testin
 
 	lines := strings.Split(reply, "\n")
 	require.Len(t, lines, 4, "one header plus one line per zone, not 24 items in one sentence")
-	assert.Contains(t, lines[0], "可以新建实例")
+	assert.Contains(t, lines[0], "通过本次容量预检")
 	assert.Contains(t, lines[0], "CPU/内存", "the collapsed dimension must be named, not silently dropped")
 	assert.Equal(t, "- 4090 / 上海二B (cn-sh2-02)：1、2、4、8 卡", lines[1])
 	assert.Equal(t, "- 4090 / 华北一C (cn-bj2-03)：1、2、4、8 卡", lines[2])
@@ -732,7 +733,8 @@ func TestStockInventoryZeroDoesNotOverridePositiveCapacity(t *testing.T) {
 		CheckedSpec: 1, EnoughSpecs: []capacitySpec{{GPUCount: "1", Label: "1卡/16C/64G"}},
 	}}
 
-	assert.Contains(t, renderStockCapacityReply(checks), "可以新建实例")
+	assert.Contains(t, renderStockCapacityReply(checks), "通过本次容量预检")
+	assert.NotContains(t, renderStockCapacityReply(checks), "可以新建实例")
 	assert.NotContains(t, renderStockCapacityReply(checks), "暂无可用库存")
 }
 
@@ -821,4 +823,125 @@ func TestCapacityPrecheckUsesRequestedPoolChargeType(t *testing.T) {
 	spot := capacityPrecheckArgs(entry, "img", nil, nil, nil, deployment.GPUInventoryPoolSpot)
 	assert.Equal(t, deployment.ChargeTypePostpay, postpay["ChargeType"])
 	assert.Equal(t, deployment.ChargeTypeSpot, spot["ChargeType"])
+}
+
+func TestStockSpecifiedImageUsesItsCatalogMetadata(t *testing.T) {
+	for _, action := range []string{platformImageAction, communityImageAction, customImageAction, sharedImageAction} {
+		t.Run(action, func(t *testing.T) {
+			image := map[string]any{"CompShareImageId": "img-selected", "Name": "Selected", "Status": "Available", "Size": float64(256 * 1024)}
+			imageRaw := map[string]any{"TotalCount": float64(0), "ImageSet": []any{image}}
+			if action == communityImageAction {
+				imageRaw = map[string]any{"CompshareImageGroup": []any{map[string]any{
+					"GroupId": "group-selected", "ImageName": "Community family", "Data": []any{image},
+				}}}
+			}
+			exec := &mapReadExec{results: map[string]map[string]any{
+				"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{stockImageTestType("cn-wlcb-01")}},
+				"DescribeCompShareSupportZone":            stockSupportZonesFixture(),
+				action:                                    imageRaw,
+				"CheckCompShareResourceCapacity": {"Specs": []any{map[string]any{
+					"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true,
+				}}},
+			}, errs: map[string]error{}}
+			if action != platformImageAction {
+				exec.errs[platformImageAction] = tools.NewUpstreamAPIError(230, "Params [CompShareImageId] not available")
+			}
+			if action == customImageAction || action == sharedImageAction {
+				exec.errs[communityImageAction] = tools.NewUpstreamAPIError(8039, "Resource not exist")
+			}
+			spec := NewReadCapability(stockReadSpec())
+			props := spec.Schema()["properties"].(map[string]any)
+			require.Contains(t, props, "image_id")
+			req, err := spec.Decode(map[string]any{
+				"gpu_type": "4090", "image_id": "img-selected", "zone_mentions": []any{"cn-wlcb-01"}, "inventory_pool": stockInventoryPoolUnspecified,
+			})
+			require.NoError(t, err)
+			result := spec.Run(context.Background(), req, ReadRuntime{Executor: exec})
+			require.Equal(t, platform.ReadStatusHandled, result.Status)
+			assert.Contains(t, result.Reply, "指定镜像 img-selected")
+			assert.Contains(t, result.Reply, "系统盘 256 GB CLOUD_SSD")
+			assert.Contains(t, result.Reply, "华北二A (cn-wlcb-01)")
+			assert.NotContains(t, result.Reply, "可以新建实例")
+			capacityCalls := 0
+			for _, call := range exec.calls {
+				if call.action == customImageAction || call.action == sharedImageAction {
+					assert.NotContains(t, call.args, "CompShareImageId", "tenant visibility is enforced by the list API")
+				}
+				if call.action == platformImageAction || call.action == communityImageAction {
+					assert.Equal(t, "img-selected", call.args["CompShareImageId"])
+					assert.NotContains(t, call.args, "ImageType", "an exact requested image must never be replaced by a System sample")
+				}
+				if call.action == "CheckCompShareResourceCapacity" {
+					capacityCalls++
+					assert.Equal(t, "img-selected", call.args["CompShareImageId"])
+					assert.Equal(t, "cn-wlcb-01", call.args["Zone"])
+					disks := call.args["Disks"].([]any)
+					require.Len(t, disks, 1)
+					assert.Equal(t, uint32(256), disks[0].(map[string]any)["Size"])
+				}
+			}
+			assert.Equal(t, 1, capacityCalls)
+		})
+	}
+}
+
+func stockImageTestType(zone string) map[string]any {
+	return map[string]any{"Name": "4090", "Zone": zone, "Status": "Normal",
+		"Disks": []any{map[string]any{"BootDisk": []any{map[string]any{"Name": "CLOUD_SSD", "MinimalSize": float64(100)}}}},
+	}
+}
+
+type stockZoneFailureExec struct{ *mapReadExec }
+
+func (e *stockZoneFailureExec) ExecuteInternal(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
+	if action == "CheckCompShareResourceCapacity" {
+		e.calls = append(e.calls, fakeReadExecCall{action: action, args: args})
+		switch args["Zone"] {
+		case "cn-wlcb-01":
+			return nil, tools.NewUpstreamAPIError(230, "Params [MinimalCpuPlatform] not available")
+		case "cn-sh2-02":
+			return nil, tools.NewUpstreamAPIError(8433, "adaptive uhost image id is empty")
+		}
+		return map[string]any{"Specs": []any{map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true}}}, nil
+	}
+	return e.mapReadExec.ExecuteInternal(ctx, action, args)
+}
+
+func TestStockSpecifiedImageKeepsFailuresWithEachZone(t *testing.T) {
+	exec := &stockZoneFailureExec{&mapReadExec{results: map[string]map[string]any{
+		"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{
+			stockImageTestType("cn-wlcb-01"), stockImageTestType("cn-sh2-02"), stockImageTestType("cn-bj2-03"),
+		}},
+		"DescribeCompShareSupportZone": stockSupportZonesFixture(),
+		platformImageAction:            {"ImageSet": []any{map[string]any{"CompShareImageId": "img-selected", "Status": "Available", "Size": float64(200 * 1024)}}},
+	}}}
+	result := runStock(t, exec, StockAvailabilityRequest{GPUType: "4090", ImageID: "img-selected"})
+	assert.Contains(t, result.Reply, "华北一C (cn-bj2-03)：1 卡")
+	assert.Contains(t, result.Reply, "华北二A (cn-wlcb-01)：容量预检未完成；上游错误码 230：Params [MinimalCpuPlatform] not available")
+	assert.Contains(t, result.Reply, "上海二B (cn-sh2-02)：容量预检未完成；上游错误码 8433：adaptive uhost image id is empty")
+	assert.NotContains(t, result.Reply, "镜像在该可用区不可用")
+	assert.NotContains(t, result.Reply, "可以新建实例")
+}
+
+func TestStockSpecifiedImageWithoutMetadataDoesNotUseSample(t *testing.T) {
+	for _, missing := range []string{"image", "disk"} {
+		t.Run(missing, func(t *testing.T) {
+			catalog := stockImageTestType("cn-wlcb-01")
+			imageID := "img-other"
+			if missing == "disk" {
+				delete(catalog, "Disks")
+				imageID = "img-selected"
+			}
+			exec := &mapReadExec{results: map[string]map[string]any{
+				"DescribeAvailableCompShareInstanceTypes": {"AvailableInstanceTypes": []any{catalog}},
+				"DescribeCompShareSupportZone":            stockSupportZonesFixture(),
+				platformImageAction:                       {"ImageSet": []any{map[string]any{"CompShareImageId": imageID, "Status": "Available", "Size": float64(200 * 1024)}}},
+			}}
+			result := runStock(t, exec, StockAvailabilityRequest{GPUType: "4090", ImageID: "img-selected"})
+			assert.Contains(t, result.Reply, "预检未执行")
+			for _, call := range exec.calls {
+				assert.NotEqual(t, "CheckCompShareResourceCapacity", call.action)
+			}
+		})
+	}
 }

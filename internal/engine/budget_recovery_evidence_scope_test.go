@@ -1,11 +1,9 @@
 package engine
 
 import (
-	"context"
 	"testing"
 
 	"github.com/compshare-agent/internal/knowledge"
-	"github.com/compshare-agent/internal/llm"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,99 +17,6 @@ func priorPricingLedger() knowledge.EvidenceLedger {
 			Snippet: "RTX 4090 按量计费为每小时 2.00 元。",
 		}},
 	}
-}
-
-// The budget / round-ceiling / LLM-error recovery path GENERATES the answer the
-// user reads. It must therefore write only from evidence THIS turn gathered.
-//
-// It did not. The ledger came from knowledgeLedgerForVerification, which merges
-// prior verified evidence in, so a turn that retrieved nothing at all still
-// produced a confident answer built from a chunk fetched for a different question
-// several turns earlier — and then stored that answer, copying the same chunk into
-// a second entry with a fresh timestamp, which is how a chunk retrieved once stops
-// ever ageing out of the verifiedEvidenceMaxTurns window.
-//
-// The exits are not hypothetical: replaying production traffic they produced the
-// 处理轮次超限 cluster (M106/M110/M115/M143) and the 180s-timeout cluster
-// (M095/M118/M148), and 51 of 127 replayed sessions carry verified_knowledge.
-func TestBudgetRecoveryRefusesOnPriorEvidenceAlone(t *testing.T) {
-	// A live LLM response is scripted deliberately. If the guard regresses, the
-	// test must fail on the ANSWER being produced, not on an empty mock queue.
-	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{
-		{Content: `{"answer":"RTX 4090 按量计费每小时 2.00 元[1]。"}`},
-	}}, &mockExecutor{}, nil)
-	eng.maxTokensPerTurn = 50000
-	eng.rememberVerifiedEvidence("4090 一小时多少钱", priorPricingLedger())
-
-	require.Len(t, eng.sessionState.VerifiedEvidence, 1,
-		"premise: the prior entry must exist, or this test proves nothing")
-	require.NotEmpty(t, eng.knowledgeLedgerForVerification("那包月呢").Items,
-		"premise: the verifier can still see it — this test is about the GENERATOR, not the verifier")
-	require.Empty(t, eng.searchKnowledgeHitsThisTurn, "premise: this turn retrieved nothing")
-	require.Empty(t, eng.platformReadEvidenceThisTurn, "premise: this turn read nothing")
-
-	got, ok := eng.synthesizeOnBudgetExceeded(context.Background(), "那包月呢")
-	assert.False(t, ok,
-		"a turn that retrieved nothing must keep the canned refusal, not answer a monthly-billing "+
-			"question out of an hourly-pricing chunk fetched for a different question")
-	assert.Empty(t, got)
-	assert.Len(t, eng.sessionState.VerifiedEvidence, 1,
-		"and it must not re-stamp the prior chunk into a second entry, which would reset its age")
-}
-
-// The other half: with evidence of its own, the recovery still delivers. This is
-// the behaviour the guard must not have cost — pinned separately so a fix that
-// simply disabled the path cannot pass.
-func TestBudgetRecoveryStillDeliversFromThisTurnsEvidence(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{
-		{Content: `{"answer":"可以把 max-model-len 调小来降低显存占用[1]。"}`},
-	}}, &mockExecutor{}, nil)
-	eng.maxTokensPerTurn = 50000
-	eng.rememberVerifiedEvidence("4090 一小时多少钱", priorPricingLedger())
-	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{keptVLLMHit()}
-
-	got, ok := eng.synthesizeOnBudgetExceeded(context.Background(), "vllm 显存不足怎么办")
-	require.True(t, ok, "evidence in hand + over budget must still synthesize rather than refuse")
-	assert.Contains(t, got, "max-model-len")
-	assert.Equal(t, groundingCitationScopeCurrentOnly, eng.groundingCitationScopeThisTurn)
-}
-
-func TestBudgetRecoveryStoresOnlyTheCitedCurrentItem(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{
-		Content: `{"answer":"采用第四项[[current-4]]。"}`,
-	}}}, &mockExecutor{}, nil)
-	eng.maxTokensPerTurn = 50000
-	eng.searchKnowledgeLedgerThisTurn = groundingTestLedger(
-		"第四项", "current-1", "current-2", "current-3", "current-4",
-	)
-
-	got, ok := eng.synthesizeOnBudgetExceeded(context.Background(), "第四项")
-	require.True(t, ok)
-	assert.Equal(t, "采用第四项。", got)
-	assert.Equal(t, groundingRepaired, eng.groundingOutcomeThisTurn)
-	assert.Equal(t, groundingCitationScopeCurrentOnly, eng.groundingCitationScopeThisTurn)
-	require.Len(t, eng.sessionState.VerifiedEvidence, 1)
-	require.Len(t, eng.sessionState.VerifiedEvidence[0].Evidence.Items, 1)
-	assert.Equal(t, "current-4", eng.sessionState.VerifiedEvidence[0].Evidence.Items[0].ChunkID)
-}
-
-func TestBudgetRecoveryInvalidCitationSetHasNoScopeOrVerifiedEvidence(t *testing.T) {
-	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{
-		Content: `{"answer":"采用第四项[[current-4]]，另见[[fake-id]]。"}`,
-	}}}, &mockExecutor{}, nil)
-	eng.maxTokensPerTurn = 50000
-	eng.searchKnowledgeLedgerThisTurn = groundingTestLedger(
-		"第四项", "current-1", "current-2", "current-3", "current-4",
-	)
-
-	got, ok := eng.synthesizeOnBudgetExceeded(context.Background(), "第四项")
-	require.True(t, ok, "citation validation remains fail-open for the user-visible answer")
-	assert.Equal(t, "采用第四项，另见。", got)
-	assert.Equal(t, groundingRepaired, eng.groundingOutcomeThisTurn,
-		"the existing outcome remains backward-compatible")
-	assert.Empty(t, eng.groundingCitationScopeThisTurn,
-		"a partially invalid citation set must not claim provenance")
-	assert.Empty(t, eng.sessionState.VerifiedEvidence)
 }
 
 // A grounded answer stores THIS turn's evidence. Storing the merged ledger the

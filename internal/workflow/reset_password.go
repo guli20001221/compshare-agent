@@ -117,6 +117,7 @@ func stepVerifyReset() Step {
 		},
 	}
 }
+
 // containerSpecialChars is the allowed special character set for container
 // instance passwords, per ResetCompShareInstancePassword.md.
 const containerSpecialChars = "()`~!@#$%^&*-+=_|{}[]:;'<>,.?/"

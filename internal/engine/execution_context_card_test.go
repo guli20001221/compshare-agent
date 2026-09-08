@@ -17,7 +17,6 @@ func fullyPopulatedContext() AgentContext {
 		SelectedEntities: []SelectedEntityHint{
 			{Kind: "instance", ID: "inst-LIVE", Name: "web-01", Source: SelectedInstanceSourceUser, Freshness: ContinuityFreshnessFresh},
 			{Kind: "instance", ID: "inst-SOLE", Name: "only-one", Source: selectionSourceAccountSingle, Freshness: ContinuityFreshnessFresh},
-			{Kind: "instance", ID: "inst-CAND", Name: "candidate-2", Ordinal: 2, Source: selectionSourcePendingCard, Freshness: ContinuityFreshnessFresh},
 			{Kind: "instance", ID: "inst-SEEN", Name: "just-read", Source: SelectedInstanceSourceObserved, Freshness: ContinuityFreshnessFresh},
 			{Kind: "instance", ID: "inst-RECALLED", Name: "not-live", Source: "agent_inference", Freshness: ContinuityFreshnessFresh},
 		},
@@ -34,9 +33,9 @@ var semanticBlockLabels = []string{
 func TestContextCardKeepsOnlyLiveExecutionState(t *testing.T) {
 	card := renderAgentContextCard(fullyPopulatedContext())
 
-	require.Contains(t, card, "【本轮执行上下文（仅用于目标指代）】")
+	require.Contains(t, card, "【本轮执行上下文】")
 	assert.NotContains(t, card, "不授权任何写操作")
-	for _, id := range []string{"inst-LIVE", "inst-SOLE", "inst-CAND", "inst-SEEN"} {
+	for _, id := range []string{"inst-LIVE", "inst-SOLE", "inst-SEEN"} {
 		assert.Contains(t, card, id, "live execution state must survive")
 	}
 	assert.NotContains(t, card, "inst-RECALLED", "semantic hints never become a second memory")
@@ -57,4 +56,15 @@ func TestContextCompilerKeepsTheCurrentReferentForTheAgent(t *testing.T) {
 	view := (ContextCompiler{}).CompileForTurn(e, "关掉它", "t", time.Now())
 	require.Contains(t, renderAgentContextCard(view), "inst-BBB",
 		"the current referent remains visible after target interpretation moves to the Agent")
+}
+
+func TestContextCardShowsFreshTurnTimeWithoutAnInstance(t *testing.T) {
+	first := time.Date(2026, 9, 8, 15, 59, 0, 0, time.UTC)
+	for _, at := range []time.Time{first, first.Add(2 * time.Minute)} {
+		view := (ContextCompiler{}).CompileForTurn(nil, "明天是几号", "turn", at)
+		card := renderAgentContextCard(view)
+		want := at.In(time.FixedZone("Asia/Shanghai", 8*60*60)).Format("2006-01-02 15:04:05 +08:00")
+		require.Contains(t, card, want)
+		require.Contains(t, card, "Asia/Shanghai")
+	}
 }

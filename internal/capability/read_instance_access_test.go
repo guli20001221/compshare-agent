@@ -31,7 +31,7 @@ func (e *accessReadExec) ExecuteInternal(ctx context.Context, action string, arg
 
 func accessTarget(id string) []platform.TargetRef {
 	return []platform.TargetRef{{
-		Type: platform.TargetRefUHostIDUserInput, Value: id, Source: platform.SourceUserText,
+		Type: platform.TargetRefUHostIDUserInput, Value: id,
 	}}
 }
 

@@ -12,7 +12,6 @@ import (
 	"github.com/compshare-agent/internal/platform"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/zones"
-	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -151,7 +150,7 @@ func TestInstanceAccessDiagnosisCanContinueToAgentAndKnowledge(t *testing.T) {
 
 	out := eng.executeTool(context.Background(), toolCall("read",
 		capability.ReadToolName(intent.IntentInstanceAccess),
-		`{"targets":[{"type":"uhost_id_user_input","value":"cpod-1","source":"user_text"}],"access_type":"custom_port","protocol":"tcp","port":8188}`), noopStep)
+		`{"targets":[{"type":"uhost_id_user_input","value":"cpod-1"}],"access_type":"custom_port","protocol":"tcp","port":8188}`), noopStep)
 
 	_, final := isFinalReply(out)
 	require.False(t, final, "a diagnosis is evidence for the Agent, not a reason to terminate its turn")
@@ -180,7 +179,7 @@ func TestJupyterTokenReturnsOpaqueObservation(t *testing.T) {
 
 	out := eng.executeTool(context.Background(), toolCall("read",
 		capability.ReadToolName(intent.IntentInstanceAccess),
-		`{"targets":[{"type":"uhost_id_user_input","value":"uhost-1","source":"user_text"}],"access_type":"jupyter_token"}`), noopStep)
+		`{"targets":[{"type":"uhost_id_user_input","value":"uhost-1"}],"access_type":"jupyter_token"}`), noopStep)
 
 	_, final := isFinalReply(out)
 	require.False(t, final, "an opaque value must not terminate the central Agent")
@@ -191,30 +190,6 @@ func TestJupyterTokenReturnsOpaqueObservation(t *testing.T) {
 	require.NotContains(t, out, token, "the opaque value must not pass through the model")
 	require.Len(t, eng.platformReadEvidenceThisTurn, 1)
 	require.Contains(t, eng.sensitiveRepliesThisTurn[0], token)
-}
-
-func TestRecentPriorUserTextsExcludesCurrentTurnAndAssistantText(t *testing.T) {
-	eng := &Engine{lastUserMsg: "当前轮 那个呢", messages: []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "system"},
-		{Role: openai.ChatMessageRoleUser, Content: "第一轮 InfiniteTalk"},
-		{Role: openai.ChatMessageRoleAssistant, Content: "assistant-only LiveTalking"},
-		{Role: openai.ChatMessageRoleUser, Content: "第二轮 ComfyUI"},
-		{Role: openai.ChatMessageRoleUser, Content: "当前轮 那个呢"},
-	}}
-	require.Equal(t, []string{"第二轮 ComfyUI", "第一轮 InfiniteTalk"}, eng.recentPriorUserTexts(4))
-}
-
-func TestRecentPriorUserTextsExcludesScreenshotOCRAndWrappedCurrentTurn(t *testing.T) {
-	current := "请推荐别的数字人镜像"
-	eng := &Engine{lastUserMsg: current, messages: []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "system"},
-		{Role: openai.ChatMessageRoleUser, Content: WrapScreenshotContext("旧截图出现 LiveTalking", "上一轮请看截图")},
-		{Role: openai.ChatMessageRoleAssistant, Content: "助手提到 HeyGem"},
-		{Role: openai.ChatMessageRoleUser, Content: WrapScreenshotContext("本轮截图出现 MuseTalk", current)},
-	}}
-
-	prior := eng.recentPriorUserTexts(4)
-	require.Equal(t, []string{"上一轮请看截图"}, prior)
 }
 
 func TestConcreteReadReturnsStructuredMissingFieldsBeforeHandler(t *testing.T) {
@@ -247,7 +222,7 @@ func TestRejectedReadArgumentsAskTheModelToCorrectItsOwnCall(t *testing.T) {
 			name:         "unsupported ordinal target",
 			lastUser:     "查询第2台",
 			action:       capability.ReadToolName(intent.IntentResourceInfo),
-			arguments:    `{"targets":[{"type":"slot_position","value":"2","source":"user_text"}]}`,
+			arguments:    `{"targets":[{"type":"slot_position","value":"2"}]}`,
 			sourceStatus: "read_argument_validation",
 			reasonParts:  []string{"type"},
 		},
@@ -255,7 +230,7 @@ func TestRejectedReadArgumentsAskTheModelToCorrectItsOwnCall(t *testing.T) {
 			name:         "filter unsupported by access reader",
 			lastUser:     "查运行中实例的 SSH 登录方式",
 			action:       capability.ReadToolName(intent.IntentInstanceAccess),
-			arguments:    `{"targets":[{"type":"filter","value":"state=running","source":"user_text"}],"access_type":"ssh"}`,
+			arguments:    `{"targets":[{"type":"filter","value":"state=running"}],"access_type":"ssh"}`,
 			sourceStatus: "read_argument_validation",
 			reasonParts:  []string{"type"},
 		},
@@ -271,25 +246,9 @@ func TestRejectedReadArgumentsAskTheModelToCorrectItsOwnCall(t *testing.T) {
 			name:         "schema validation",
 			lastUser:     "查询 uhost-diag-002 的 SSH 登录方式",
 			action:       capability.ReadToolName(intent.IntentInstanceAccess),
-			arguments:    `{"targets":[{"type":"uhost_id_user_input","value":"uhost-diag-002","source":"user_text"}],"access_type":"ssh","evil":"injection"}`,
+			arguments:    `{"targets":[{"type":"uhost_id_user_input","value":"uhost-diag-002"}],"access_type":"ssh","evil":"injection"}`,
 			sourceStatus: "read_argument_validation",
 			reasonParts:  []string{"evil"},
-		},
-		{
-			name:         "invented grounding filter",
-			lastUser:     "查询昨天的CPU历史监控",
-			action:       capability.ReadToolName(intent.IntentMonitorHistory),
-			arguments:    `{"time_window":{"type":"absolute","start":"2026-07-18 00:00","end":"2026-07-19 00:00","source_span":"昨天"}}`,
-			sourceStatus: "read_argument_grounding",
-			reasonParts:  []string{"time_window", "absolute", "preset/relative"},
-		},
-		{
-			name:         "catalog zone without same-turn catalog evidence",
-			lastUser:     "华北2a 的 H20 现在有库存吗",
-			action:       capability.ReadToolName(intent.IntentStockAvailability),
-			arguments:    `{"gpu_type":"H20","zone_mentions":["cn-wlcb-01"],"inventory_pool":"Unspecified"}`,
-			sourceStatus: "read_argument_grounding",
-			reasonParts:  []string{"zone_mentions", "cn-wlcb-01", "字面子串"},
 		},
 		{
 			name:         "image list removed semantic_queries field",
@@ -325,7 +284,7 @@ func TestRejectedReadArgumentsAskTheModelToCorrectItsOwnCall(t *testing.T) {
 	}
 }
 
-func TestUnmatchedStockZoneIsCorrectedFromSameTurnLiveCatalog(t *testing.T) {
+func TestStockQueriesUseLiveCatalogWithoutCurrentTurnLiteralProof(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeAvailableCompShareInstanceTypes": {
 			"AvailableInstanceTypes": []any{map[string]any{
@@ -375,6 +334,14 @@ func TestUnmatchedStockZoneIsCorrectedFromSameTurnLiveCatalog(t *testing.T) {
 	require.NotNil(t, observation.Envelope)
 	require.Contains(t, executor.calls, "CheckCompShareResourceCapacity",
 		"the corrected call must execute the requested stock query rather than stop at the catalog")
+
+	eng = NewWithDeps(&mockLLM{}, executor, nil)
+	eng.lastUserMsg = "同一个区 H20 呢"
+	followUp := eng.executeTool(context.Background(), toolCall("stock-followup", action,
+		`{"gpu_type":"H20","zone_mentions":["cn-wlcb-01"],"inventory_pool":"Unspecified"}`), noopStep)
+	require.NoError(t, json.Unmarshal([]byte(followUp), &observation), followUp)
+	require.Equal(t, platform.ReadStatusHandled, observation.Status,
+		"canonical parameters remain valid when the user does not repeat a zone literal")
 }
 
 // TestAccountFinanceUnavailableReturnsStructuredUnavailable: the model-visible
@@ -433,18 +400,4 @@ func TestStockReadLeavesNoCrossTurnReferent(t *testing.T) {
 
 	// A minimal freshness record may exist, but it has no model argument to
 	// substitute. The unfiltered response above is the observable contract.
-}
-
-func TestReadBoundaryRejectsUngroundedMonitorAbsoluteWindow(t *testing.T) {
-	executor := &mockExecutor{}
-	eng := NewWithDeps(&mockLLM{}, executor, nil)
-	eng.lastUserMsg = "查询昨天的CPU历史监控"
-	out := eng.executeTool(context.Background(), toolCall("read", capability.ReadToolName(intent.IntentMonitorHistory),
-		`{"time_window":{"type":"absolute","start":"2026-07-18 00:00","end":"2026-07-19 00:00","source_span":"昨天"}}`), noopStep)
-
-	result, ok := tools.ParseAgentToolResult(agentToolObservation(capability.ReadToolName(intent.IntentMonitorHistory), out))
-	require.True(t, ok, out)
-	assert.Equal(t, tools.AgentToolNextCorrectToolCall, result.NextStep)
-	assert.Equal(t, tools.AgentToolCodeInvalidArguments, result.Error.Code)
-	require.Empty(t, executor.calls, "an invented absolute date must be rejected before any upstream query")
 }

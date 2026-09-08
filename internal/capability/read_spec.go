@@ -32,7 +32,6 @@ type ReadExecutor interface {
 type EntityResolver interface {
 	ResolveByID(id string) (*entity.InstanceSnapshot, entity.ResolveResult)
 	ResolveByName(name string) ([]*entity.InstanceSnapshot, entity.ResolveResult)
-	InstanceIDTokensInText(text string) []string
 	// CanAssertAbsenceAt reports whether the registry is fresh AS OF `at`, complete
 	// and untruncated enough to say an id is genuinely NOT in the account. A cold,
 	// never-synced, STALE (older than the freshness TTL), invalidated or truncated
@@ -117,14 +116,6 @@ type ReadEffect interface{ readEffect() }
 type RememberVerifiedInstances struct{ IDs []string }
 
 func (RememberVerifiedInstances) readEffect() {}
-
-// RememberDisplayedInstances carries the typed, already-truncated candidates that resource_info
-// actually exposed to the model. The engine commits their ordinal order only if the final reply
-// visibly names at least two of them, so a later “第 N 台” can resolve without trusting hidden rows
-// from the upstream response.
-type RememberDisplayedInstances struct{ Instances []entity.InstanceSnapshot }
-
-func (RememberDisplayedInstances) readEffect() {}
 
 // ReadUnavailable marks a deliberately-unsupported capability: a deterministic
 // "not available in real time" answer plus the supported alternatives, produced

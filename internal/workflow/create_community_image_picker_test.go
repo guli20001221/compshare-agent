@@ -204,8 +204,7 @@ func TestGuidedImagePicker_MissingVersionDegradesToName(t *testing.T) {
 // and — with no concrete image id — the GPU list was never constrained by
 // SupportedGpuTypes and the capacity precheck (guidedCapacityArgs) was skipped, so
 // every card/spec showed as selectable regardless of the image (e.g. 2080Ti offered
-// for an InfiniteTalk create). Platform names still skip (resolved in the final
-// form); an already-concrete CompShareImageId still skips.
+// for an InfiniteTalk create). Concrete IDs are preselected on this card.
 func TestShouldSkipGuidedImageStep_CommunityNamedRunsPicker(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -214,8 +213,8 @@ func TestShouldSkipGuidedImageStep_CommunityNamedRunsPicker(t *testing.T) {
 	}{
 		{"community + only a name → picker runs to resolve a concrete id",
 			map[string]any{"ImageSource": "community", "ImageName": "最强AI数字人 InfiniteTalk"}, false},
-		{"community + concrete CompShareImageId → skip (already resolved)",
-			map[string]any{"ImageSource": "community", "CompShareImageId": "cimg-abc"}, true},
+		{"community + concrete CompShareImageId → confirm the preselected image",
+			map[string]any{"ImageSource": "community", "CompShareImageId": "cimg-abc"}, false},
 		{"community + no name → picker runs to browse",
 			map[string]any{"ImageSource": "community"}, false},
 		{"platform + a name → picker resolves before hardware",
@@ -226,9 +225,6 @@ func TestShouldSkipGuidedImageStep_CommunityNamedRunsPicker(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			wfCtx := NewContext(tc.params)
-			if hasExplicitImageSelection(tc.params) {
-				wfCtx.referenceData.ImageSelection = ImageSelectionUserPinned
-			}
 			skip, err := shouldSkipGuidedImageStep(wfCtx)
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantSkip, skip)

@@ -14,7 +14,7 @@ import (
 const contextCardMarker = "【本轮执行上下文"
 
 // Canonical replay must not reintroduce a semantic summary block. This input has
-// no live execution continuity, so it should carry only the base system prompt.
+// no instance continuity, so its context card should carry only turn time.
 func TestAssembledContextHasNoSemanticMemoryBlock(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "好的，继续。"}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
@@ -30,15 +30,17 @@ func TestAssembledContextHasNoSemanticMemoryBlock(t *testing.T) {
 	require.Len(t, mock.calls, 1)
 
 	sent := mock.calls[0].Messages
-	assert.Equal(t, 1, countSystemMessages(sent),
-		"history assembly must not add a summary when there is no live execution card")
+	assert.Equal(t, 2, countSystemMessages(sent))
 	cardHits := 0
 	for _, msg := range sent {
 		if msg.Role == openai.ChatMessageRoleSystem && strings.Contains(msg.Content, contextCardMarker) {
 			cardHits++
+			assert.Contains(t, msg.Content, "本轮开始时间：")
+			assert.NotContains(t, msg.Content, "相关对象：")
+			assert.NotContains(t, msg.Content, "先看看配置")
 		}
 	}
-	assert.Equal(t, 0, cardHits, "semantic task state must not manufacture a context card")
+	assert.Equal(t, 1, cardHits, "one turn-time card, not a semantic summary")
 }
 
 // buildMessagesForLLM records the assembler's before/after message counts so the

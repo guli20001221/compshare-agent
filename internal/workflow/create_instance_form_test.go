@@ -549,18 +549,36 @@ func TestCreateInstanceGuided_PassesZoneIDToCreatePathAPIs(t *testing.T) {
 	}
 }
 
-func TestCreateInstanceGuided_ExplicitFullSpecWithImageIntentShowsFinalOnly(t *testing.T) {
+// Prefilled image, billing and hardware remain visible choices. Accepting the
+// defaults preserves the supplied configuration through the final priced card.
+func TestCreateInstanceGuided_ExplicitFullSpecKeepsEditableChoices(t *testing.T) {
 	executor := formMockExecutor()
 	var seenSteps []int
+	var seenFields []string
 
 	eng := NewEngine(executor, nil, nil)
 	eng.SetConfirmEditsFn(func(_ string, args map[string]any, form *ConfirmForm) ConfirmResolution {
 		require.NotNil(t, form)
 		require.NotNil(t, form.Step)
 		seenSteps = append(seenSteps, form.Step.Index)
-		assert.Equal(t, 1, form.Step.Index)
 		assert.Zero(t, form.Step.Total)
-		assert.True(t, form.Step.Final)
+		if !form.Step.Final {
+			require.Len(t, form.Fields, 1)
+			field := form.Fields[0]
+			seenFields = append(seenFields, field.Key)
+			switch field.Key {
+			case "ImageId":
+				assert.Equal(t, "img-002", field.Value)
+			case "ChargeType":
+				assert.Equal(t, "Postpay", field.Value)
+			case "GpuType":
+				assert.Equal(t, "A800", field.Value)
+				assert.Contains(t, optionValues(&field), "4090")
+			default:
+				t.Fatalf("unexpected selection card: %s", field.Key)
+			}
+			return ConfirmResolution{Confirmed: true}
+		}
 		assert.Equal(t, "A800", args["GpuType"])
 		assert.Equal(t, float64(1), args["Gpu"])
 		assert.Equal(t, float64(32), args["CPU"])
@@ -579,17 +597,16 @@ func TestCreateInstanceGuided_ExplicitFullSpecWithImageIntentShowsFinalOnly(t *t
 		"GuidedRecommended": true,
 		"CompShareImageId":  "img-002",
 		"ImageName":         "PyTorch",
+		"ChargeType":        "Postpay",
 	}, WithReferenceData(ReferenceData{
-		ZoneCatalog:    createZoneCatalog(),
-		ImageSelection: ImageSelectionUserPinned,
+		ZoneCatalog: createZoneCatalog(),
 	}))
 
 	require.NoError(t, err)
 	require.True(t, result.Success)
-	assert.Equal(t, []int{1}, seenSteps)
-	for _, step := range result.Steps {
-		assert.NotContains(t, step.Name, "选择")
-	}
+	assert.Equal(t, []int{1, 2, 3, 4}, seenSteps)
+	assert.Equal(t, []string{"ImageId", "ChargeType", "GpuType"}, seenFields,
+		"the single available A800 zone/count/spec need no extra cards")
 
 	var created map[string]any
 	for _, c := range executor.calls {
@@ -603,6 +620,80 @@ func TestCreateInstanceGuided_ExplicitFullSpecWithImageIntentShowsFinalOnly(t *t
 	assert.Equal(t, float64(32), created["CPU"])
 	assert.Equal(t, float64(131072), created["Memory"])
 	assert.Equal(t, "cn-wlcb-01", created["Zone"])
+}
+
+func TestCreateInstanceGuided_PrefilledChoicesRemainEditableThroughFinalConfirmation(t *testing.T) {
+	executor := formMockExecutor()
+	for _, raw := range executor.results["DescribeAvailableCompShareInstanceTypes"]["AvailableInstanceTypes"].([]any) {
+		row := raw.(map[string]any)
+		if row["Name"] == "4090" && row["Zone"] == "cn-wlcb-01" {
+			row["MachineSizes"] = []any{
+				map[string]any{"Gpu": float64(1), "Collection": []any{
+					map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+					map[string]any{"Cpu": float64(32), "Memory": []any{float64(128)}},
+				}},
+				map[string]any{"Gpu": float64(2), "Collection": []any{
+					map[string]any{"Cpu": float64(32), "Memory": []any{float64(128)}},
+				}},
+			}
+		}
+	}
+	executor.results["CheckCompShareResourceCapacity"]["Specs"] = []any{
+		map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+		map[string]any{"Gpu": float64(1), "Cpu": float64(32), "Mem": float64(128), "ResourceEnough": true},
+		map[string]any{"Gpu": float64(2), "Cpu": float64(32), "Mem": float64(128), "ResourceEnough": true},
+	}
+	executor.results["GetCompShareInstanceUserPrice"]["PriceDetails"] = []any{
+		map[string]any{"ChargeType": "Day", "Price": 12.0},
+	}
+	var fields []string
+	var finalArgs map[string]any
+	eng := NewEngine(executor, nil, nil)
+	eng.SetConfirmEditsFn(func(_ string, args map[string]any, form *ConfirmForm) ConfirmResolution {
+		require.NotNil(t, form)
+		if form.Step.Final {
+			finalArgs = args
+			return ConfirmResolution{Confirmed: false}
+		}
+		require.Len(t, form.Fields, 1)
+		field := form.Fields[0]
+		fields = append(fields, field.Key)
+		if field.Key != "ImageId" {
+			assert.Greater(t, len(field.Options), 1, "prefilling must not hide %s alternatives", field.Key)
+		}
+		switch field.Key {
+		case "ChargeType":
+			assert.Equal(t, "Postpay", field.Value)
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ChargeType": "Day"}}
+		case "CpuMemory":
+			assert.Equal(t, formatGuidedSpecKey("cn-wlcb-01", 1, 16, 65536), field.Value)
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{
+				"CpuMemory": formatGuidedSpecKey("cn-wlcb-01", 1, 32, 131072),
+			}}
+		default:
+			return ConfirmResolution{Confirmed: true}
+		}
+	})
+	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{
+		"GpuType": "4090", "GuidedGpuLocked": true,
+		"Zone": "cn-wlcb-01", "Gpu": float64(1), "Cpu": float64(16), "Memory": float64(65536),
+		"CompShareImageId": "img-002", "ImageName": "PyTorch", "ChargeType": "Postpay",
+	})
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Equal(t, "确认创建", result.StoppedAt)
+	assert.Equal(t, []string{"ImageId", "ChargeType", "GpuType", "Zone", "Gpu", "CpuMemory"}, fields)
+	require.NotNil(t, finalArgs)
+	assert.Equal(t, "Day", finalArgs["ChargeType"])
+	assert.Equal(t, float64(32), finalArgs["CPU"])
+	assert.Equal(t, float64(131072), finalArgs["Memory"])
+	assert.Contains(t, finalArgs["price"], "12.00")
+	for _, call := range executor.calls {
+		assert.NotEqual(t, "CreateCompShareInstance", call.action, "declining the final card must not create")
+		if call.action == "CheckCompShareResourceCapacity" || call.action == "GetCompShareInstanceUserPrice" {
+			assert.Equal(t, "Day", call.args["ChargeType"], "billing edits must reach every dependent call")
+		}
+	}
 }
 
 func TestCreateInstanceGuided_IncompatibleSelectedCommunityImageShowsGPUCard(t *testing.T) {
@@ -650,8 +741,7 @@ func TestCreateInstanceGuided_IncompatibleSelectedCommunityImageShowsGPUCard(t *
 		"Memory":            float64(65536),
 		"GuidedRecommended": true,
 	}, WithReferenceData(ReferenceData{
-		ZoneCatalog:    createZoneCatalog(),
-		ImageSelection: ImageSelectionUserPinned,
+		ZoneCatalog: createZoneCatalog(),
 	}))
 
 	require.NoError(t, err)
@@ -1224,6 +1314,49 @@ func TestGuidedImageSourceOverrideCommunitySwitchesSource(t *testing.T) {
 	assert.NotContains(t, wfCtx.Params, "ImageName")
 }
 
+func TestPrefilledImageSourceStillOffersCatalogChoice(t *testing.T) {
+	for _, source := range []string{"platform", "community", "custom", "sharing"} {
+		t.Run(source, func(t *testing.T) {
+			wfCtx := formWfCtx(t, map[string]any{"GpuType": "V100S", "ChargeType": "Spot", "ImageSource": source})
+			skip, err := shouldSkipGuidedImageSourceStep(wfCtx)
+			require.NoError(t, err)
+			require.False(t, skip)
+			form, err := buildGuidedImageSourceForm(wfCtx)
+			require.NoError(t, err)
+			assert.Equal(t, source, form.Field("ImageSource").Value)
+			assert.Equal(t, []string{"platform", "community", "custom", "sharing"}, optionValues(form.Field("ImageSource")))
+			require.NoError(t, applyGuidedImageSourceOverrides(wfCtx, map[string]string{"ImageSource": source}))
+			skip, err = shouldSkipGuidedImageSourceStep(wfCtx)
+			require.NoError(t, err)
+			assert.True(t, skip, "an actual card selection must not be asked again")
+		})
+	}
+	wfCtx := formWfCtx(t, map[string]any{"ImageSource": "platform", "CompShareImageId": "img-torch"})
+	skip, err := shouldSkipGuidedImageSourceStep(wfCtx)
+	require.NoError(t, err)
+	assert.True(t, skip, "an exact image proceeds to its concrete-image confirmation")
+}
+
+func TestGuidedImageSourceSelectionPreservesTheRequestedImageSearch(t *testing.T) {
+	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "ImageName": "ComfyUI"})
+	skip, err := shouldSkipGuidedImageSourceStep(wfCtx)
+	require.NoError(t, err)
+	require.False(t, skip)
+
+	require.NoError(t, applyGuidedImageSourceOverrides(wfCtx, map[string]string{"ImageSource": "community"}))
+	assert.Equal(t, "ComfyUI", wfCtx.Params["ImageName"])
+	query, err := stepReQuerySelectedSourceImages().BuildArgs(wfCtx)
+	require.NoError(t, err)
+	assert.Equal(t, "ComfyUI", query["FuzzySearch"])
+	wfCtx.StepResults["查询镜像"] = map[string]any{"CompshareImageGroup": []any{
+		map[string]any{"ImageName": "ComfyUI", "Data": []any{map[string]any{"CompShareImageId": "comfy", "Name": "v1", "Status": "Available"}}},
+		map[string]any{"ImageName": "Unrelated", "Data": []any{map[string]any{"CompShareImageId": "other", "Name": "v1", "Status": "Available"}}},
+	}}
+	form, err := buildGuidedImageForm(wfCtx)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"comfy"}, optionValues(form.Field("ImageId")))
+}
+
 // TestGuidedImageSourceChangeClearsStaleTypeTag is the F2 gate: an ImageType / ImageTag
 // chosen against the PREVIOUS source's catalog must be cleared when the source changes in
 // the source step, so it cannot filter the new source's candidates against foreign values
@@ -1316,47 +1449,6 @@ func TestSourceReQueryFiresOnBothDirectionSwitches(t *testing.T) {
 	}
 }
 
-// TestCreateInstanceGuided_ReverseSwitchCommunityToPlatformUsesPlatformCatalog is the
-// reverse-direction correctness test the reviewer demanded: an initial community browse
-// switched to platform in the source step must RE-QUERY platform and select from the
-// PLATFORM catalog — never leave the stale community listing in place. This is the exact
-// bug the old asymmetric community-only re-query missed (it skipped the reverse switch).
-func TestCreateInstanceGuided_ReverseSwitchCommunityToPlatformUsesPlatformCatalog(t *testing.T) {
-	executor := formMockExecutor()
-	var finalImageOptions []string
-
-	eng := NewEngine(executor, nil, nil)
-	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
-		require.NotNil(t, form)
-		require.NotNil(t, form.Step)
-		if source := form.Field("ImageSource"); source != nil {
-			assert.Equal(t, "community", source.Value, "initial source is community")
-			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageSource": "platform"}}
-		}
-		if image := form.Field("ImageId"); image != nil && image.Editable {
-			finalImageOptions = optionValues(image)
-			return ConfirmResolution{Confirmed: false}
-		}
-		return ConfirmResolution{Confirmed: true}
-	})
-
-	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{"GpuType": "4090", "ImageSource": "community"})
-	require.NoError(t, err)
-	assert.False(t, result.Success)
-	// The platform catalog after the reverse switch — NOT the stale community images.
-	assert.Contains(t, finalImageOptions, "img-001")
-	assert.NotContains(t, finalImageOptions, "cimg-sd-001", "reverse switch must drop the stale community catalog")
-
-	var calls []string
-	for _, c := range executor.calls {
-		calls = append(calls, c.action)
-	}
-	// Both queries happened: the initial community browse AND the reverse re-query to
-	// platform (the old code skipped this second one on a switch away from community).
-	assert.Contains(t, calls, "DescribeCommunityImages")
-	assert.Contains(t, calls, "DescribeCompShareImages")
-}
-
 func TestCreateInstanceGuided_CommunitySourceQueriesCommunityImages(t *testing.T) {
 	executor := formMockExecutor()
 	var finalImageOptions []string
@@ -1405,45 +1497,6 @@ func TestCreateInstanceGuided_CommunitySourceQueriesCommunityImages(t *testing.T
 	require.NotNil(t, sortCondition)
 	assert.Equal(t, "CreatedCount", sortCondition["Field"])
 	assert.Equal(t, false, sortCondition["ASC"])
-}
-
-func TestCreateInstanceGuided_CommunitySourceOverridesInitialPlatformSource(t *testing.T) {
-	executor := formMockExecutor()
-	var finalImageOptions []string
-
-	eng := NewEngine(executor, nil, nil)
-	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
-		require.NotNil(t, form)
-		require.NotNil(t, form.Step)
-		// Image-first reorder: community source gives the image its own picker step 2
-		// (before the specs); capture the community image options there.
-		switch form.Step.Index {
-		case 1:
-			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageSource": "community"}}
-		case 2:
-			finalImageOptions = optionValues(fieldByKey(t, form, "ImageId"))
-			return ConfirmResolution{Confirmed: false}
-		default:
-			t.Fatalf("unexpected guided form step %d", form.Step.Index)
-			return ConfirmResolution{}
-		}
-	})
-
-	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{
-		"GpuType":     "4090",
-		"ImageSource": "platform",
-	})
-	require.NoError(t, err)
-	assert.False(t, result.Success)
-	assert.Equal(t, []string{"cimg-sd-001", "cimg-ds-r1-32b"}, finalImageOptions)
-
-	var communityCalls int
-	for _, c := range executor.calls {
-		if c.action == "DescribeCommunityImages" {
-			communityCalls++
-		}
-	}
-	assert.Equal(t, 1, communityCalls)
 }
 
 func TestGuidedImageFormOptionsShowsTopTenCommunityGroups(t *testing.T) {
@@ -1557,6 +1610,9 @@ func TestCreateInstanceGuided_LegacyConfirmationPromotesTheDisplayedReplacementG
 
 	var confirmedGPUs []string
 	eng := NewEngine(executor, func(_ string, args map[string]any) bool {
+		if _, imageSelection := args["ImageId"]; imageSelection {
+			return true
+		}
 		if gpuType, _ := args["GpuType"].(string); gpuType != "" {
 			confirmedGPUs = append(confirmedGPUs, gpuType)
 		}

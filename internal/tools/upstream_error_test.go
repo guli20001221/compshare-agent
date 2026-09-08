@@ -78,7 +78,7 @@ func TestRetCodeHint_KeyCodeMeanings(t *testing.T) {
 		code       int
 		substrings []string
 	}{
-		{230, []string{"可用区", "规格", "镜像"}},
+		{230, []string{"请求参数", "接口要求", "冲突"}},
 		{520, []string{"余额不足"}},
 		{8010, []string{"不是关机状态"}},
 		{8090, []string{"价格查询失败"}},

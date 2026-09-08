@@ -27,68 +27,7 @@ type ReferenceData struct {
 	// image resolution. nil on paths that carry no image field; nil-safe accessors,
 	// so a consumer reads it the same way whether or not it is present.
 	ImageCatalog *deployment.ImageCatalogSnapshot
-	// ImageSelection records whether the create's image was settled by the user or
-	// only suggested by the Agent, so the guided image steps offer a suggestion on
-	// the picker instead of silently sealing it. Zero value (ImageSelectionUnset) on
-	// every non-create run and on a create that named no image.
-	ImageSelection ImageSelectionState
-	// ChargeTypeUserPinned records whether the USER named the purchase mode, as
-	// opposed to the Agent filling in a default. The guided charge-type card is
-	// skipped only for the former: asking someone to repeat themselves is rude,
-	// but silently answering for them is worse. Presence of ChargeType in Params
-	// cannot make this distinction — the create tool's own schema says "默认
-	// Postpay", so the Agent volunteers it on requests that never mentioned
-	// billing, and reading key-presence as consent suppressed the card for exactly
-	// the users it exists for. Same rail as ImageSelection and the same reason.
-	//
-	// Zero value false = not user-pinned = show the card, which is the safe
-	// default for any path that does not populate ReferenceData.
-	ChargeTypeUserPinned bool
-	// ImageSourceUserPinned records whether the USER explicitly chose platform
-	// or community. A catalog term such as ComfyUI can legitimately exist in both
-	// sources, so the mere presence (or default value) of ImageSource in Params
-	// cannot settle this axis. The guided flow uses this bit to distinguish an
-	// actual source choice from an Agent/default hint before deciding whether it
-	// may skip the source card.
-	//
-	// Zero value false is intentionally conservative: when provenance is absent,
-	// the workflow verifies the alternate live catalog or asks the user.
-	ImageSourceUserPinned bool
-	// ImageIntentText is the exact current user turn, carried only as a
-	// non-business hint for the image picker. It closes one narrow gap: when the
-	// Agent omits ImageName or supplies only a free-text suggestion in an otherwise
-	// valid create proposal, the workflow may recover a catalog preference only
-	// when it is literally present both here and in the live image catalog's
-	// structured SoftwareFacts or Tags.
-	//
-	// It never selects or seals an image. A recovered framework only narrows and
-	// orders the real catalog; the concrete CompShareImageId still comes from the
-	// user's picker submission. Keeping the text in ReferenceData means it cannot
-	// leak into Params or the sealed create contract.
-	ImageIntentText string
 }
-
-// ImageSelectionState records who settled the create's image, so every image step
-// reads one authority instead of each re-deciding from CompShareImageId != "". The
-// engine derives it from the resolved proposal's provenance before the run, and it
-// rides ReferenceData — never Params, never the seal.
-type ImageSelectionState int
-
-const (
-	// ImageSelectionUnset: the proposal named no image — browse from scratch.
-	ImageSelectionUnset ImageSelectionState = iota
-	// ImageSelectionSuggested: the Agent proposed an image id or name the user did
-	// not name. It is a default to preselect on the picker, NOT a decision — the
-	// picker still asks the user to confirm a concrete image. When a verified
-	// community id carries an upstream family identity, that picker is scoped to
-	// the family's versions rather than an unrelated catalog page.
-	ImageSelectionSuggested
-	// ImageSelectionUserPinned: the user's own text named the image (explicit id or
-	// explicit name). Browsing is skipped; a concrete pinned id skips the picker too
-	// (a bare name still shows the ranked picker), and the final confirmation card is
-	// still shown.
-	ImageSelectionUserPinned
-)
 
 const (
 	// StepToolCall executes an API tool via executor.
@@ -227,7 +166,7 @@ type Definition struct {
 	// MutationCommitted reports whether a successful run actually crossed a
 	// mutating step. nil means yes, preserving every existing workflow. A
 	// workflow whose live preflight proves the requested state already exists can
-	// return false so the Agent does not consume the turn's write slot for a no-op.
+	// return false so a no-op is not recorded as a committed write.
 	MutationCommitted func(wfCtx *Context) bool
 	// NeedsZoneCatalog declares that this workflow consumes the turn's live zone
 	// snapshot even though its public proposal schema has no Zone field. Most
@@ -268,31 +207,10 @@ type Definition struct {
 	// GuidedIntake is true. Every name must be a real field of this workflow
 	// (BuildCatalog enforces it).
 	GuidedIntakeFields []string
-	// UserSuppliedOptionalFields answers a DIFFERENT question from
-	// GuidedIntakeFields, which is why it is a second list rather than a reuse of
-	// the first: not "can the form collect this?" but "may the Agent infer this
-	// value when the form cannot re-confirm it?". A valid current-message value is
-	// preserved; an Agent-inferred value is omitted so the platform derives it.
-	//
-	// EXPLICIT, never derived. The obvious derivation (every optional non-target
-	// field) would silently omit meaningful Agent-assisted fields across other
-	// operations. BuildCatalog enforces that each name is a real field of this
-	// guided workflow and is optional, non-target and non-secret.
-	UserSuppliedOptionalFields []string
 }
 
-// FailureReason classifies a failure for callers that must DO something different
-// about different failures, rather than merely retell them.
-//
-// It exists because the alternative is reading the prose. isCreateStockShortage
-// tested strings.Contains(message, "库存不足") — so the sentence a user reads was
-// also a control signal, and the two cannot both be free. Rewording the message
-// changed behaviour; translating it would have removed it. The reason is now
-// produced where the branch is actually taken, and the message is free to be a
-// message again.
-//
-// The zero value classifies nothing, which is the right default: a failure with no
-// declared reason must not accidentally match one.
+// FailureReason records a typed workflow outcome independently of its wording.
+// Empty means the failed step did not classify the outcome.
 type FailureReason string
 
 const (
@@ -461,21 +379,6 @@ func (c *Context) ImageCatalog() *deployment.ImageCatalogSnapshot {
 	return c.referenceData.ImageCatalog
 }
 
-// ImageSelection reports who settled the create's image — the user's own text
-// (ImageSelectionUserPinned), an Agent suggestion (ImageSelectionSuggested), or
-// nothing (ImageSelectionUnset). It is the single authority the guided image steps
-// read instead of each inferring intent from CompShareImageId != "". Zero value on
-// a run that carries no image selection state.
-func (c *Context) ImageSelection() ImageSelectionState { return c.referenceData.ImageSelection }
-
-// ImageSourceUserPinned reports whether the current user turn explicitly selected
-// an image source rather than receiving an Agent/default value.
-func (c *Context) ImageSourceUserPinned() bool { return c.referenceData.ImageSourceUserPinned }
-
-// ImageIntentText returns the exact current-turn text used only for catalog-backed
-// image-intent recovery. It is never part of Params or a sealed contract.
-func (c *Context) ImageIntentText() string { return c.referenceData.ImageIntentText }
-
 // Result returns the API result from a previous step, or nil.
 func (c *Context) Result(stepName string) map[string]any {
 	return c.StepResults[stepName]
@@ -497,7 +400,7 @@ type Result struct {
 	// params instead of stale input.
 	//
 	// It is not proof that the final mutating step was authorized; consult
-	// Failure.Sealed for that distinction.
+	// Failure.ExecutionAuthorized for that distinction.
 	Contract *SealedActionContract `json:"-"`
 	// Failure describes the step that stopped this workflow, or nil when it
 	// succeeded. Server-internal, like Contract and Err.

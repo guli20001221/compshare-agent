@@ -30,7 +30,7 @@ func BuildCatalog() (*Catalog, error) {
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q: %w", operation, err)
 		}
-		intake, err := intakeSpecForOperation(definition.GuidedIntake, definition.GuidedIntakeFields, definition.UserSuppliedOptionalFields, fields)
+		intake, err := intakeSpecForOperation(definition.GuidedIntake, definition.GuidedIntakeFields, fields)
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q: %w", operation, err)
 		}
@@ -187,16 +187,8 @@ func operationValidator(operation string) func(map[string]any) error {
 // problem on such a field is not form-correctable. Errors when a declared field
 // is not a real field of the operation (a typo would silently disable correction)
 // or when a guided workflow declares no fields.
-//
-// UserSuppliedOptionalFields is the second, narrower declaration: optional
-// fields the form cannot collect and therefore must not be inferred by the
-// Agent. A REQUIRED field may not be declared, nor may a target (it would omit a
-// write's addressee) or secret (it would omit a password the user typed).
-func intakeSpecForOperation(guidedIntake bool, collectable, userSupplied []string, fields map[string]FieldSpec) (IntakeSpec, error) {
+func intakeSpecForOperation(guidedIntake bool, collectable []string, fields map[string]FieldSpec) (IntakeSpec, error) {
 	if !guidedIntake {
-		if len(userSupplied) > 0 {
-			return IntakeSpec{}, fmt.Errorf("UserSuppliedOptionalFields declared without GuidedIntake")
-		}
 		return IntakeSpec{}, nil
 	}
 	if len(collectable) == 0 {
@@ -211,23 +203,9 @@ func intakeSpecForOperation(guidedIntake bool, collectable, userSupplied []strin
 			return IntakeSpec{}, fmt.Errorf("GuidedIntakeFields names a non-collectable field %q (target or secret)", name)
 		}
 	}
-	for _, name := range userSupplied {
-		field, ok := fields[name]
-		if !ok {
-			return IntakeSpec{}, fmt.Errorf("UserSuppliedOptionalFields names unknown field %q", name)
-		}
-		if field.Required {
-			return IntakeSpec{}, fmt.Errorf("UserSuppliedOptionalFields names required field %q", name)
-		}
-		if field.Target || field.Codec == CodecSensitiveText {
-			return IntakeSpec{}, fmt.Errorf("UserSuppliedOptionalFields names a field %q that must never be omitted (target or secret)", name)
-		}
-	}
 	out := append([]string(nil), collectable...)
 	sort.Strings(out)
-	explicit := append([]string(nil), userSupplied...)
-	sort.Strings(explicit)
-	return IntakeSpec{Mode: IntakeGuided, CollectableFields: out, UserSuppliedOptionalFields: explicit}, nil
+	return IntakeSpec{Mode: IntakeGuided, CollectableFields: out}, nil
 }
 
 func stringSet(value any) map[string]bool {
@@ -254,6 +232,5 @@ func stringSlice(value any) []string {
 		return nil
 	}
 }
-
 
 func normalizeName(name string) string { return strings.TrimSpace(name) }
