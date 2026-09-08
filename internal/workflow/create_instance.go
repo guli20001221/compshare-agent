@@ -3198,8 +3198,9 @@ func shouldSkipGuidedImageSourceStep(wfCtx *Context) (bool, error) {
 	if wfCtx == nil {
 		return false, nil
 	}
-	return strings.TrimSpace(paramStr(wfCtx.Params, "ImageSource", "")) != "" ||
-		strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "" ||
+	// A source is a preselection, not a concrete image. Keep catalog browsing
+	// available until an exact image or an actual source-card choice settles it.
+	return strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "" ||
 		guidedStepWasReached(wfCtx, guidedStepImageSource), nil
 }
 

@@ -1314,6 +1314,29 @@ func TestGuidedImageSourceOverrideCommunitySwitchesSource(t *testing.T) {
 	assert.NotContains(t, wfCtx.Params, "ImageName")
 }
 
+func TestPrefilledImageSourceStillOffersCatalogChoice(t *testing.T) {
+	for _, source := range []string{"platform", "community", "custom", "sharing"} {
+		t.Run(source, func(t *testing.T) {
+			wfCtx := formWfCtx(t, map[string]any{"GpuType": "V100S", "ChargeType": "Spot", "ImageSource": source})
+			skip, err := shouldSkipGuidedImageSourceStep(wfCtx)
+			require.NoError(t, err)
+			require.False(t, skip)
+			form, err := buildGuidedImageSourceForm(wfCtx)
+			require.NoError(t, err)
+			assert.Equal(t, source, form.Field("ImageSource").Value)
+			assert.Equal(t, []string{"platform", "community", "custom", "sharing"}, optionValues(form.Field("ImageSource")))
+			require.NoError(t, applyGuidedImageSourceOverrides(wfCtx, map[string]string{"ImageSource": source}))
+			skip, err = shouldSkipGuidedImageSourceStep(wfCtx)
+			require.NoError(t, err)
+			assert.True(t, skip, "an actual card selection must not be asked again")
+		})
+	}
+	wfCtx := formWfCtx(t, map[string]any{"ImageSource": "platform", "CompShareImageId": "img-torch"})
+	skip, err := shouldSkipGuidedImageSourceStep(wfCtx)
+	require.NoError(t, err)
+	assert.True(t, skip, "an exact image proceeds to its concrete-image confirmation")
+}
+
 func TestGuidedImageSourceSelectionPreservesTheRequestedImageSearch(t *testing.T) {
 	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "ImageName": "ComfyUI"})
 	skip, err := shouldSkipGuidedImageSourceStep(wfCtx)
