@@ -57,7 +57,7 @@ func TestRetrievalRecallRealCorpusStockShortage(t *testing.T) {
 // Known gap, deliberately not papered over: the original user-style phrasing
 // recalls neither document under BM25 alone. Do not restore a question pattern
 // to make it pass — that is the bug this comment exists to prevent. Production
-// runs RRF plus a cross-encoder over planner-expanded queries, not this path;
+// runs RRF plus a cross-encoder over the main Agent's queries, not this path;
 // whether that closes the gap is unmeasured, because the shipped sidecar was
 // replaced by this release and there is no baseline left to compare against.
 func TestRetrievalRecallRealCorpusStockStatusSemantics(t *testing.T) {

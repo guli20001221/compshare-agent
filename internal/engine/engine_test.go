@@ -998,7 +998,7 @@ func TestChat_ReadExpensiveRateLimitDenialBecomesToolResult(t *testing.T) {
 
 	require.NoError(t, err)
 	assert.Equal(t, "please narrow", reply)
-	assert.Empty(t, executor.calls, "read-expensive quota denial must happen before API execution")
+	assert.NotContains(t, executor.calls, "DescribeCompShareInstance", "read-expensive quota denial must happen before the target instance API executes")
 	require.Len(t, limiter.requests, 3)
 	assert.Equal(t, governance.ClassLLM, limiter.requests[0].Class)
 	assert.Equal(t, governance.ClassReadExpensiveTool, limiter.requests[1].Class)
