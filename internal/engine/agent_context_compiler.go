@@ -6,6 +6,7 @@ import (
 	"io"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/compshare-agent/internal/security"
 	openai "github.com/sashabaranov/go-openai"
@@ -107,11 +108,15 @@ func isLiveSelectionHint(hint SelectedEntityHint) bool {
 }
 
 // renderAgentContextCard serializes only the context a transcript cannot carry:
-// live execution state (the current instance referent). Complete
+// live execution state (turn time and the current instance referent). Complete
 // prior exchanges live only in the canonical transcript.
 func renderAgentContextCard(view AgentContext) string {
 	var lines []string
-	lines = append(lines, "【本轮执行上下文（仅用于目标指代）】")
+	lines = append(lines, "【本轮执行上下文】")
+	if view.BuiltAtUnix > 0 {
+		local := time.Unix(view.BuiltAtUnix, 0).In(time.FixedZone("Asia/Shanghai", 8*60*60))
+		lines = append(lines, "本轮开始时间："+local.Format("2006-01-02 15:04:05 -07:00")+"（Asia/Shanghai）")
+	}
 	for _, entity := range view.SelectedEntities {
 		if !isLiveSelectionHint(entity) {
 			continue

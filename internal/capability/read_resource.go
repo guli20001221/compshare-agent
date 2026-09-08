@@ -3,6 +3,7 @@ package capability
 import (
 	"context"
 	"strconv"
+	"strings"
 
 	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/entity"
@@ -56,7 +57,7 @@ func resourceReadSpec() ReadCapabilitySpec[ResourceInfoRequest, ResourceInfoResp
 		Description: "查实例、云盘。查询现有实例的共享带宽归属或切换目标时选择 shared_bandwidth；购买和提速规则另查知识库。",
 		Params: objectParam(map[string]schemaNode{
 			"resource_type": enumParam(resourceTypeInstances, resourceTypeDisks, resourceTypeShareBandwidth).described("instances 查实例；disks 查云盘/CVolume；shared_bandwidth 查实例 EIP 的共享带宽归属、口径和已有切换目标，不代表测速或购买入口。"),
-			"targets":       targetRefsParam(platform.TargetRefFilter).described("实例 ID 或精确名称；省略查全部。filter 仅用于 instances/shared_bandwidth，value 用 all、state=running、state=stopped 或 gpu_type=实时型号；不能与 ID/名称混用。disks 只可指定一台实例。"),
+			"targets":       targetRefsParam(platform.TargetRefFilter).described("实例 ID 或精确名称；ID 原样完整传入，未匹配时先核对原文再重查。省略查全部。filter 仅用于 instances/shared_bandwidth，value 用 all、state=running、state=stopped 或 gpu_type=实时型号；不能与 ID/名称混用。disks 只可指定一台实例。"),
 			"disk_ids":      arrayParam(stringParam()).described("磁盘 ID。"),
 		}),
 		NeedsZoneCatalog: func(req ResourceInfoRequest) bool {
@@ -190,11 +191,14 @@ func resourceHandle(ctx context.Context, req ResourceInfoRequest, rt ReadRuntime
 			for _, id := range ids {
 				env.Subjects = append(env.Subjects, envelope.Subject{ID: id, Type: envelope.SubjectInstance})
 				env.Facts = append(env.Facts, envelope.Fact{
-					SubjectID: id, Key: "exists", Label: "当前账号中是否存在", Value: "false", Source: envelope.FactSourceAPI,
+					SubjectID: id, Key: "query_matched", Label: "本次查询是否匹配", Value: "false", Source: envelope.FactSourceAPI,
 				})
 			}
 		}
 		result := ReadEmpty(readprojection.RenderResourceSummary(nil, envMeta))
+		if len(ids) > 0 {
+			result.Reply = "本次在当前账号查询实例 ID：" + strings.Join(ids, "、") + "，未匹配到结果。该结果仅针对上述查询参数。"
+		}
 		result.ToolAction = resourceInfoAction
 		result.Envelope = &env
 		return ResourceInfoResponse{}, result

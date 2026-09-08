@@ -341,9 +341,11 @@ func TestResourceHandle_ColdIDResponseMismatchIsEmpty(t *testing.T) {
 	require.NotNil(t, result.Envelope)
 	foundAbsent := false
 	for _, fact := range result.Envelope.Facts {
-		foundAbsent = foundAbsent || (fact.SubjectID == "uhost-requested" && fact.Key == "exists" && fact.Value == "false")
+		foundAbsent = foundAbsent || (fact.SubjectID == "uhost-requested" && fact.Key == "query_matched" && fact.Value == "false")
 	}
 	assert.True(t, foundAbsent, "the exact point-query absence must keep its queried instance scope")
+	assert.Contains(t, result.Reply, "uhost-requested")
+	assert.Contains(t, result.Reply, "未匹配到结果")
 }
 
 // TestResourceHandle_EmitsVerifiedInstancesEffect: a same-id-verified response

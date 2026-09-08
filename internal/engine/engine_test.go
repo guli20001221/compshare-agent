@@ -213,9 +213,10 @@ func TestChat_DirectReply(t *testing.T) {
 	assert.NoError(t, err)
 	assert.Equal(t, "您好，有什么可以帮您？", reply)
 
-	// Should have 1 LLM call with system + user messages
+	// One call with the static prompt, turn-time context and user message.
 	assert.Len(t, mock.calls, 1)
-	assert.Len(t, mock.calls[0].Messages, 2) // system + user
+	assert.Len(t, mock.calls[0].Messages, 3)
+	assert.Contains(t, mock.calls[0].Messages[1].Content, "本轮开始时间：")
 }
 
 func TestChat_AssignsTurnIdentityWhenTransportDoesNotProvideOne(t *testing.T) {
@@ -671,16 +672,17 @@ func TestConversationHistory_Accumulates(t *testing.T) {
 	eng.Chat(context.Background(), "问题1", noopStep)
 	eng.Chat(context.Background(), "问题2", noopStep)
 
-	// Second call should include: system + user1 + assistant1 + user2
+	// The second call has one fresh context card plus the complete exchange.
 	assert.Len(t, mock.calls, 2)
-	assert.Len(t, mock.calls[1].Messages, 4) // system + u1 + a1 + u2
+	assert.Len(t, mock.calls[1].Messages, 5)
 
 	// Verify message history
 	msgs := mock.calls[1].Messages
 	assert.Equal(t, openai.ChatMessageRoleSystem, msgs[0].Role)
-	assert.Equal(t, "问题1", msgs[1].Content)
-	assert.Equal(t, "回复1", msgs[2].Content)
-	assert.Equal(t, "问题2", msgs[3].Content)
+	assert.Contains(t, msgs[1].Content, "本轮开始时间：")
+	assert.Equal(t, "问题1", msgs[2].Content)
+	assert.Equal(t, "回复1", msgs[3].Content)
+	assert.Equal(t, "问题2", msgs[4].Content)
 }
 
 func TestUnknownAction_Rejected(t *testing.T) {
