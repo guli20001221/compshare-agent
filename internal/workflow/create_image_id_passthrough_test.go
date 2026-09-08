@@ -53,11 +53,8 @@ func TestCreateImageCatalogPrefersThisRunsQueryOverAnInjectedSnapshot(t *testing
 		"a proposal-time snapshot must not shadow a source switch or the name-miss browse rescue")
 }
 
-// TestGuidedCreateAcceptsAConcreteImageIdAndSkipsThePicker pins the passthrough
-// end to end at the workflow boundary: an id that arrives in params is the image,
-// no name resolution happens, and the picker that exists to RESOLVE an image does
-// not ask a question that is already answered.
-func TestGuidedCreateAcceptsAConcreteImageIdAndSkipsThePicker(t *testing.T) {
+// A concrete ID remains the preselection without suppressing its confirmation.
+func TestGuidedCreateAcceptsAConcreteImageIdAndKeepsThePicker(t *testing.T) {
 	params := map[string]any{
 		"ImageSource":      "community",
 		"CompShareImageId": "compshareImage-1mefk6bv35xn",
@@ -66,7 +63,7 @@ func TestGuidedCreateAcceptsAConcreteImageIdAndSkipsThePicker(t *testing.T) {
 
 	skip, err := shouldSkipGuidedImageStep(wfCtx)
 	require.NoError(t, err)
-	assert.True(t, skip, "a concrete id needs no picker")
+	assert.False(t, skip, "a concrete id is still confirmed before hardware")
 
 	// pickImageId must take the id as given rather than re-deriving it from a
 	// catalog that a FuzzySearch may have narrowed to nothing — that re-derivation

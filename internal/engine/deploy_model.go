@@ -10,12 +10,7 @@ import (
 	"github.com/compshare-agent/internal/zones"
 )
 
-// deploy_model.go holds the zone-resolution and create-time stock helpers used by
-// the single workflow execution path. The instance-create path resolves the
-// zone/GPU here before the workflow runs. This file owns the write-path zone
-// catalog snapshot builder (the single reference the resolver and the workflow
-// share) and the create-time stock helpers. A user-named zone is resolved once, by
-// the action resolver's CodecZone against the live catalog.
+// The resolver and workflow share one live zone catalog snapshot.
 
 // supportZoneListStrict is the write-path support-zone fetch, without a serve-stale fallback: an
 // expired catalog that fails to refresh returns an error instead of stale zones.
@@ -103,66 +98,8 @@ func (e *Engine) zoneCatalogSnapshotForSpec(ctx context.Context, spec actionreso
 	return e.zoneCatalogSnapshot(ctx)
 }
 
-type zoneStock int
-
-const (
-	zoneUnknown zoneStock = iota // could not determine (no image id / API error / no matching spec)
-	zoneInStock                  // single-card config confirmed available
-	zoneSoldOut                  // single-card config present but ResourceEnough=false
-)
-
-// zoneStockState checks whether gpuType's single-card config has real stock in a
-// zone, the same gate the saga's stepCheckCapacity uses (Specs[].{Gpu==1,
-// ResourceEnough}). It needs the resolved CompShareImageId (capacity is image-
-// scoped); without one it returns zoneUnknown so the caller falls back to the
-// preferred zone rather than skipping it. Read-only (works in read-only mode too).
-func (e *Engine) zoneStockState(ctx context.Context, zone, gpuType, imageID string, zoneCat *deployment.ZoneCatalogSnapshot) zoneStock {
-	if imageID == "" || gpuType == "" {
-		return zoneUnknown
-	}
-	// The placement comes from the SAME turn snapshot the create used — image
-	// recovery must not re-resolve the zone through a second path. A zone the
-	// snapshot does not carry yields zoneUnknown, so the caller defers to the
-	// preferred zone rather than guessing.
-	placement, ok := zoneCat.Placement(zone)
-	if !ok {
-		return zoneUnknown
-	}
-	capArgs := deployment.BuildCapacityArgs(deployment.DeploymentDraft{
-		Zone:             zone,
-		GPUType:          gpuType,
-		CompShareImageID: imageID,
-	})
-	deployment.ApplyCapacityPlacementArgs(capArgs, placement)
-	res := e.querySafeRead(ctx, "CheckCompShareResourceCapacity", capArgs)
-	if res == nil {
-		return zoneUnknown
-	}
-	specs, _ := res["Specs"].([]any)
-	sawSingleCard := false
-	for _, s := range specs {
-		m, _ := s.(map[string]any)
-		if m == nil {
-			continue
-		}
-		if g, _ := m["Gpu"].(float64); g != 1 {
-			continue
-		}
-		sawSingleCard = true
-		if enough, _ := m["ResourceEnough"].(bool); enough {
-			return zoneInStock
-		}
-	}
-	if sawSingleCard {
-		return zoneSoldOut
-	}
-	return zoneUnknown
-}
-
 // querySafeRead runs a read-only tool through the safe executor
-// (OriginWorkflowInternal = no per-call confirm / registry churn) and returns the
-// raw result map, or nil on error (matching degrades gracefully — the matcher still
-// has the other source + the user message + the static-table GPU fallback).
+// (OriginWorkflowInternal = no per-call confirm / registry churn), returning nil on error.
 func (e *Engine) querySafeRead(ctx context.Context, action string, args map[string]any) map[string]any {
 	raw, _ := e.querySafeReadResult(ctx, action, args)
 	return raw

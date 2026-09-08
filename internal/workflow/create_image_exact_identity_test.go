@@ -194,7 +194,7 @@ func TestGuidedCreateConfirmsAndCreatesTheExactImageOutsideBrowsePage(t *testing
 
 	require.NoError(t, err)
 	require.True(t, result.Success, result.Message)
-	assert.Zero(t, imageCards, "an exact requested image does not require another picker")
+	assert.Equal(t, 1, imageCards, "an exact requested image is preselected on one concrete-image card")
 	assert.Equal(t, exactRecommendedImageID, finalImage, "the priced final card must still confirm the exact image")
 	createCall, ok := findExecutorCall(executor.calls, "CreateCompShareInstance")
 	require.True(t, ok)

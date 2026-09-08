@@ -83,7 +83,7 @@ var retCodeGuidanceByCode = map[int]retCodeGuidance{
 	150:    retryLaterGuidance("服务暂时不可用：请稍后重试。"),
 	210:    chooseAlternativeGuidance("请求缺少必要信息：请补充实例、可用区、规格或价格所需参数后再试。"),
 	220:    chooseAlternativeGuidance("请求参数超出平台允许范围：请调整数值后再试。"),
-	230:    chooseAlternativeGuidance("该可用区/规格/镜像组合不被接受：请更换可用区、规格或镜像后再试，不要重复同一请求。"),
+	230:    chooseAlternativeGuidance("请求参数不符合接口要求或存在冲突：请核对本次请求参数及对应资源状态。"),
 	240:    failedGuidance("当前账号没有执行该操作的权限：请确认项目、角色或资源归属。"),
 	280:    chooseAlternativeGuidance("参数格式不符合要求：请检查名称、密码、时间或容量格式后再试。"),
 	520:    chooseAlternativeGuidance("账号余额不足：请充值或更换计费方式后再试。"),

@@ -549,18 +549,36 @@ func TestCreateInstanceGuided_PassesZoneIDToCreatePathAPIs(t *testing.T) {
 	}
 }
 
-func TestCreateInstanceGuided_ExplicitFullSpecWithImageIntentShowsFinalOnly(t *testing.T) {
+// Prefilled image, billing and hardware remain visible choices. Accepting the
+// defaults preserves the supplied configuration through the final priced card.
+func TestCreateInstanceGuided_ExplicitFullSpecKeepsEditableChoices(t *testing.T) {
 	executor := formMockExecutor()
 	var seenSteps []int
+	var seenFields []string
 
 	eng := NewEngine(executor, nil, nil)
 	eng.SetConfirmEditsFn(func(_ string, args map[string]any, form *ConfirmForm) ConfirmResolution {
 		require.NotNil(t, form)
 		require.NotNil(t, form.Step)
 		seenSteps = append(seenSteps, form.Step.Index)
-		assert.Equal(t, 1, form.Step.Index)
 		assert.Zero(t, form.Step.Total)
-		assert.True(t, form.Step.Final)
+		if !form.Step.Final {
+			require.Len(t, form.Fields, 1)
+			field := form.Fields[0]
+			seenFields = append(seenFields, field.Key)
+			switch field.Key {
+			case "ImageId":
+				assert.Equal(t, "img-002", field.Value)
+			case "ChargeType":
+				assert.Equal(t, "Postpay", field.Value)
+			case "GpuType":
+				assert.Equal(t, "A800", field.Value)
+				assert.Contains(t, optionValues(&field), "4090")
+			default:
+				t.Fatalf("unexpected selection card: %s", field.Key)
+			}
+			return ConfirmResolution{Confirmed: true}
+		}
 		assert.Equal(t, "A800", args["GpuType"])
 		assert.Equal(t, float64(1), args["Gpu"])
 		assert.Equal(t, float64(32), args["CPU"])
@@ -579,16 +597,16 @@ func TestCreateInstanceGuided_ExplicitFullSpecWithImageIntentShowsFinalOnly(t *t
 		"GuidedRecommended": true,
 		"CompShareImageId":  "img-002",
 		"ImageName":         "PyTorch",
+		"ChargeType":        "Postpay",
 	}, WithReferenceData(ReferenceData{
 		ZoneCatalog: createZoneCatalog(),
 	}))
 
 	require.NoError(t, err)
 	require.True(t, result.Success)
-	assert.Equal(t, []int{1}, seenSteps)
-	for _, step := range result.Steps {
-		assert.NotContains(t, step.Name, "选择")
-	}
+	assert.Equal(t, []int{1, 2, 3, 4}, seenSteps)
+	assert.Equal(t, []string{"ImageId", "ChargeType", "GpuType"}, seenFields,
+		"the single available A800 zone/count/spec need no extra cards")
 
 	var created map[string]any
 	for _, c := range executor.calls {
@@ -602,6 +620,80 @@ func TestCreateInstanceGuided_ExplicitFullSpecWithImageIntentShowsFinalOnly(t *t
 	assert.Equal(t, float64(32), created["CPU"])
 	assert.Equal(t, float64(131072), created["Memory"])
 	assert.Equal(t, "cn-wlcb-01", created["Zone"])
+}
+
+func TestCreateInstanceGuided_PrefilledChoicesRemainEditableThroughFinalConfirmation(t *testing.T) {
+	executor := formMockExecutor()
+	for _, raw := range executor.results["DescribeAvailableCompShareInstanceTypes"]["AvailableInstanceTypes"].([]any) {
+		row := raw.(map[string]any)
+		if row["Name"] == "4090" && row["Zone"] == "cn-wlcb-01" {
+			row["MachineSizes"] = []any{
+				map[string]any{"Gpu": float64(1), "Collection": []any{
+					map[string]any{"Cpu": float64(16), "Memory": []any{float64(64)}},
+					map[string]any{"Cpu": float64(32), "Memory": []any{float64(128)}},
+				}},
+				map[string]any{"Gpu": float64(2), "Collection": []any{
+					map[string]any{"Cpu": float64(32), "Memory": []any{float64(128)}},
+				}},
+			}
+		}
+	}
+	executor.results["CheckCompShareResourceCapacity"]["Specs"] = []any{
+		map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
+		map[string]any{"Gpu": float64(1), "Cpu": float64(32), "Mem": float64(128), "ResourceEnough": true},
+		map[string]any{"Gpu": float64(2), "Cpu": float64(32), "Mem": float64(128), "ResourceEnough": true},
+	}
+	executor.results["GetCompShareInstanceUserPrice"]["PriceDetails"] = []any{
+		map[string]any{"ChargeType": "Day", "Price": 12.0},
+	}
+	var fields []string
+	var finalArgs map[string]any
+	eng := NewEngine(executor, nil, nil)
+	eng.SetConfirmEditsFn(func(_ string, args map[string]any, form *ConfirmForm) ConfirmResolution {
+		require.NotNil(t, form)
+		if form.Step.Final {
+			finalArgs = args
+			return ConfirmResolution{Confirmed: false}
+		}
+		require.Len(t, form.Fields, 1)
+		field := form.Fields[0]
+		fields = append(fields, field.Key)
+		if field.Key != "ImageId" {
+			assert.Greater(t, len(field.Options), 1, "prefilling must not hide %s alternatives", field.Key)
+		}
+		switch field.Key {
+		case "ChargeType":
+			assert.Equal(t, "Postpay", field.Value)
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ChargeType": "Day"}}
+		case "CpuMemory":
+			assert.Equal(t, formatGuidedSpecKey("cn-wlcb-01", 1, 16, 65536), field.Value)
+			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{
+				"CpuMemory": formatGuidedSpecKey("cn-wlcb-01", 1, 32, 131072),
+			}}
+		default:
+			return ConfirmResolution{Confirmed: true}
+		}
+	})
+	result, err := eng.runCreateTest(CreateInstanceGuidedDef(), map[string]any{
+		"GpuType": "4090", "GuidedGpuLocked": true,
+		"Zone": "cn-wlcb-01", "Gpu": float64(1), "Cpu": float64(16), "Memory": float64(65536),
+		"CompShareImageId": "img-002", "ImageName": "PyTorch", "ChargeType": "Postpay",
+	})
+	require.NoError(t, err)
+	assert.False(t, result.Success)
+	assert.Equal(t, "确认创建", result.StoppedAt)
+	assert.Equal(t, []string{"ImageId", "ChargeType", "GpuType", "Zone", "Gpu", "CpuMemory"}, fields)
+	require.NotNil(t, finalArgs)
+	assert.Equal(t, "Day", finalArgs["ChargeType"])
+	assert.Equal(t, float64(32), finalArgs["CPU"])
+	assert.Equal(t, float64(131072), finalArgs["Memory"])
+	assert.Contains(t, finalArgs["price"], "12.00")
+	for _, call := range executor.calls {
+		assert.NotEqual(t, "CreateCompShareInstance", call.action, "declining the final card must not create")
+		if call.action == "CheckCompShareResourceCapacity" || call.action == "GetCompShareInstanceUserPrice" {
+			assert.Equal(t, "Day", call.args["ChargeType"], "billing edits must reach every dependent call")
+		}
+	}
 }
 
 func TestCreateInstanceGuided_IncompatibleSelectedCommunityImageShowsGPUCard(t *testing.T) {
@@ -1495,6 +1587,9 @@ func TestCreateInstanceGuided_LegacyConfirmationPromotesTheDisplayedReplacementG
 
 	var confirmedGPUs []string
 	eng := NewEngine(executor, func(_ string, args map[string]any) bool {
+		if _, imageSelection := args["ImageId"]; imageSelection {
+			return true
+		}
 		if gpuType, _ := args["GpuType"].(string); gpuType != "" {
 			confirmedGPUs = append(confirmedGPUs, gpuType)
 		}

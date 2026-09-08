@@ -134,8 +134,6 @@ func enumValuesForType(typ reflect.Type) ([]string, bool) {
 		return platform.TimeWindowTypeValues(), true
 	case reflect.TypeOf(platform.ImageSource("")):
 		return platform.ImageSourceValues(), true
-	case reflect.TypeOf(platform.ListMode("")):
-		return platform.ListModeValues(), true
 	case reflect.TypeOf(platform.PriceKind("")):
 		return platform.PriceKindValues(), true
 	case reflect.TypeOf(platform.DetailLevel("")):

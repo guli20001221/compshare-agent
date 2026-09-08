@@ -10,9 +10,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// An exact Agent-proposed image ID reaches configuration and the existing
-// confirmation flow without reopening the image picker.
-func TestExactCustomImageIDSkipsImageBrowseCardsEndToEnd(t *testing.T) {
+// An exact image goes straight to its preselected card, without asking the
+// user to rediscover its source, category or family.
+func TestExactCustomImageIDReachesItsCardWithoutBrowsingEndToEnd(t *testing.T) {
 	const imageID = "compshareImage-custom-current-turn"
 	executor := &mockExecutorFn{fn: func(action string, _ map[string]any) (map[string]any, error) {
 		switch action {
@@ -44,7 +44,7 @@ func TestExactCustomImageIDSkipsImageBrowseCardsEndToEnd(t *testing.T) {
 				},
 			}}, nil
 		default:
-			// The first remaining card is the purchase-mode card, before any
+			// The first remaining card is the concrete-image card, before any
 			// capacity/price/create call. Empty successful inventory snapshots are
 			// enough for this no-write entry-point test.
 			return map[string]any{"RetCode": float64(0)}, nil
@@ -77,9 +77,11 @@ func TestExactCustomImageIDSkipsImageBrowseCardsEndToEnd(t *testing.T) {
 	}
 	_ = eng.executeResolvedWorkflow(context.Background(), confirmable, noopStep)
 
-	require.NotNil(t, firstForm, "the direct-id flow must reach a configuration card")
-	assert.NotNil(t, firstForm.Field("ChargeType"), "the first visible choice is configuration, not image browsing")
-	for _, field := range []string{"ImageSource", "ImageCategory", "ImageTag", "ImageFamily", "ImageId"} {
+	require.NotNil(t, firstForm, "the direct-id flow must reach a selection card")
+	require.NotNil(t, firstForm.Field("ImageId"))
+	assert.Equal(t, imageID, firstForm.Field("ImageId").Value)
+	assert.True(t, firstForm.Field("ImageId").Editable)
+	for _, field := range []string{"ImageSource", "ImageCategory", "ImageTag", "ImageFamily"} {
 		assert.Nil(t, firstForm.Field(field), "direct exact id must not reopen %s", field)
 	}
 	assert.NotContains(t, executor.calls, "DescribeCompShareImageTags",

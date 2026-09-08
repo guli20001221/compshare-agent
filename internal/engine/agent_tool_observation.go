@@ -45,7 +45,7 @@ func agentToolObservation(action, raw string) string {
 		result := tools.AgentToolInvalidToolCall(
 			action,
 			tools.AgentToolCodeInvalidArguments,
-			"工具参数不符合该操作的声明。请根据 data.rejection_details 修正字段后重新调用；不要要求用户重复已经提供的信息。",
+			"工具参数不符合该操作的要求。请根据 data.rejected 和已有对话修正参数；确实缺少用户决定的信息时再询问，不要重复索取已有信息。",
 			meta,
 		)
 		result.Data = toolObservationData(object)
@@ -110,7 +110,7 @@ func agentToolObservation(action, raw string) string {
 	if nonEmptyCollection(object["rejected"]) {
 		data := toolObservationData(object)
 		return tools.MarshalAgentToolResult(tools.AgentToolNeedsInput(
-			action, data, "INVALID_FIELD_VALUE", "用户提供的字段不符合该操作要求，需要用户修正。", meta))
+			action, data, "INVALID_FIELD_VALUE", "当前参数不符合该操作要求，请根据校验原因和已有对话确定下一步。", meta))
 	}
 	if nonEmptyCollection(object["dependency_failures"]) {
 		return tools.MarshalAgentToolResult(tools.AgentToolRetryLater(
@@ -157,14 +157,13 @@ func searchKnowledgeHasNoCitableEvidence(action string, object map[string]any) b
 	return ok && !nonEmptyCollection(items)
 }
 
-// toolObservationData removes legacy control fields from the factual payload.
-// The typed outer error carries the safe, actionable message, while meta keeps
-// the source status. That prevents two competing root-level status vocabularies
-// from reaching the model and keeps raw RetCode text out of data.
+// toolObservationData removes competing root-level control fields. Resolver
+// validation reasons remain available so the Agent can correct its arguments;
+// resolvedActionForModel has already applied the shared credential redaction.
 func toolObservationData(object map[string]any) map[string]any {
 	data := make(map[string]any, len(object))
 	for key, value := range object {
-		if key == "error" || key == "status" || key == "rejected" {
+		if key == "error" || key == "status" {
 			continue
 		}
 		data[key] = value

@@ -118,7 +118,7 @@ func TestGuidedImageFamilyPicker_PlatformRowsRemainOneCardImageChoices(t *testin
 	assert.Equal(t, "镜像", form.Field("ImageId").Label)
 }
 
-func TestGuidedImageFamilyPicker_ExactImageNeedsNoFamilyOrVersionIntake(t *testing.T) {
+func TestGuidedImageFamilyPicker_ExactImageSkipsBrowsingButKeepsConcreteConfirmation(t *testing.T) {
 	wfCtx := familyPickerContext()
 	wfCtx.Params["CompShareImageId"] = "live-v2"
 	familySkip, err := shouldSkipGuidedImageFamilyStep(wfCtx)
@@ -126,7 +126,10 @@ func TestGuidedImageFamilyPicker_ExactImageNeedsNoFamilyOrVersionIntake(t *testi
 	assert.True(t, familySkip)
 	imageSkip, err := shouldSkipGuidedImageStep(wfCtx)
 	require.NoError(t, err)
-	assert.True(t, imageSkip, "the exact requested image is confirmed on the final priced card")
+	assert.False(t, imageSkip, "the exact image stays preselected on its concrete-image card")
+	form, err := buildGuidedImageForm(wfCtx)
+	require.NoError(t, err)
+	assert.Equal(t, "live-v2", form.Field("ImageId").Value)
 }
 
 func TestGuidedImageFamilyPicker_SingletonFamilyResolvesWithoutVersionCard(t *testing.T) {

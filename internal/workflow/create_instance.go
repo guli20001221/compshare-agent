@@ -3110,40 +3110,6 @@ func markGuidedStepReached(wfCtx *Context, logical int) {
 	wfCtx.Params["GuidedReachedOrder"] = append(order, logical)
 }
 
-func guidedStepSkipped(wfCtx *Context, logical int) bool {
-	var (
-		skip bool
-		err  error
-	)
-	switch logical {
-	case guidedStepGPU:
-		skip, err = shouldSkipGuidedGPUStep(wfCtx)
-	case guidedStepZone:
-		skip, err = shouldSkipGuidedZoneStep(wfCtx)
-	case guidedStepGPUCount:
-		skip, err = shouldSkipGuidedGPUCountStep(wfCtx)
-	case guidedStepCPUMemory:
-		skip, err = shouldSkipGuidedCPUMemoryStep(wfCtx)
-	case guidedStepImageSource:
-		skip, err = shouldSkipGuidedImageSourceStep(wfCtx)
-	case guidedStepImageFacets:
-		skip, err = shouldSkipGuidedImageFacetsStep(wfCtx)
-	case guidedStepImageTag:
-		skip, err = shouldSkipGuidedImageTagStep(wfCtx)
-	case guidedStepImageFamily:
-		skip, err = shouldSkipGuidedImageFamilyStep(wfCtx)
-	case guidedStepImage:
-		skip, err = shouldSkipGuidedImageStep(wfCtx)
-	case guidedStepChargeType:
-		skip, err = shouldSkipGuidedChargeTypeStep(wfCtx)
-	case guidedStepFinal:
-		return false
-	default:
-		return false
-	}
-	return err == nil && skip
-}
-
 func guidedStepTitle(index int, title string) string {
 	return fmt.Sprintf("%s，%s", guidedOrdinal(index), title)
 }
@@ -3168,12 +3134,9 @@ func shouldSkipGuidedGPUStep(wfCtx *Context) (bool, error) {
 	supported := currentImageSupportedGPUs(wfCtx.Params, createImageResult(wfCtx))
 	selected, opts := guidedGPUFormOptions(wfCtx, wfCtx.Result("查询可用配比"), supported,
 		current, true, wfCtx.Params, wfCtx.Result("查询GPU库存"))
-	// A complete pre-filled request may skip the GPU card only while the exact
-	// GPU it carries is still a selectable server option. If the catalog or an
-	// authoritative capacity probe has disabled it, reopen the existing GPU
-	// step: the user either chooses an offered alternative or receives the GPU's
-	// concrete unavailable reason there, before zone/spec/price work begins.
-	if !strings.EqualFold(selected, current) || !enabledOptionExists(opts, current) {
+	// Prefilled values remain editable whenever the live catalog offers a choice.
+	// An unavailable value must also reach the card that can explain or replace it.
+	if !strings.EqualFold(selected, current) || !isOnlyEnabledOption(opts, current) {
 		return false, nil
 	}
 	if len(supported) > 0 && containsFold(supported, current) && hasExplicitImageIntent(wfCtx.Params) &&
@@ -3191,7 +3154,7 @@ func shouldSkipGuidedZoneStep(wfCtx *Context) (bool, error) {
 		return false, nil
 	}
 	selected, opts, _ := guidedZoneFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, current, wfCtx.Params, wfCtx.Result("查询GPU库存"))
-	return strings.EqualFold(selected, current) && enabledOptionExists(opts, current), nil
+	return strings.EqualFold(selected, current) && isOnlyEnabledOption(opts, current), nil
 }
 
 func shouldSkipGuidedGPUCountStep(wfCtx *Context) (bool, error) {
@@ -3206,7 +3169,7 @@ func shouldSkipGuidedGPUCountStep(wfCtx *Context) (bool, error) {
 	}
 	selected, opts := guidedGPUCountFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, zone, current, wfCtx.Params, wfCtx.Result("查询GPU库存"))
 	value := fmt.Sprintf("%.0f", current)
-	return selected == current && enabledOptionExists(opts, value), nil
+	return selected == current && isOnlyEnabledOption(opts, value), nil
 }
 
 func shouldSkipGuidedCPUMemoryStep(wfCtx *Context) (bool, error) {
@@ -3226,7 +3189,7 @@ func shouldSkipGuidedCPUMemoryStep(wfCtx *Context) (bool, error) {
 	}
 	current := formatGuidedSpecKey(zone, gpu, cpu, memoryMB)
 	selected, opts := guidedCpuMemoryFormOptions(wfCtx, wfCtx.Result("查询可用配比"), gpuType, zone, gpu, wfCtx.Params, wfCtx.Result("查询GPU库存"))
-	return selected == current && enabledOptionExists(opts, current), nil
+	return selected == current && isOnlyEnabledOption(opts, current), nil
 }
 
 // Image and source parameters come from the Agent or a form submission. They
@@ -3309,7 +3272,13 @@ func shouldSkipGuidedImageFamilyStep(wfCtx *Context) (bool, error) {
 }
 
 func shouldSkipGuidedImageStep(wfCtx *Context) (bool, error) {
-	return wfCtx != nil && strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "", nil
+	if wfCtx == nil || strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) == "" {
+		return false, nil
+	}
+	// An Agent-supplied image is preselected on the concrete-image card. Only a
+	// choice already confirmed by this workflow can make that card redundant.
+	return guidedStepWasReached(wfCtx, guidedStepImage) ||
+		guidedStepWasReached(wfCtx, guidedStepImageFamily), nil
 }
 
 // tenantImageInventorySelected keeps tenant-scoped custom/shared catalogs out of
@@ -3427,6 +3396,20 @@ func enabledOptionExists(opts []ConfirmFormOption, value string) bool {
 	return false
 }
 
+func isOnlyEnabledOption(opts []ConfirmFormOption, value string) bool {
+	selectable := 0
+	for _, opt := range opts {
+		if opt.Disabled {
+			continue
+		}
+		if opt.Value != value {
+			return false
+		}
+		selectable++
+	}
+	return selectable == 1
+}
+
 // guidedChargeTypeOptions is the charge-type card's option list. Unlike the
 // plain card's createChargeTypeOptions it cannot name a zone — none is chosen
 // yet — so it disables a mode only when nothing in the catalog sells it.
@@ -3444,24 +3427,12 @@ func guidedChargeTypeOptions(wfCtx *Context) []ConfirmFormOption {
 }
 
 func shouldSkipGuidedChargeTypeStep(wfCtx *Context) (bool, error) {
-	if wfCtx != nil && strings.TrimSpace(paramStr(wfCtx.Params, "ChargeType", "")) != "" {
-		return true, nil
+	if wfCtx == nil {
+		return false, nil
 	}
-	// Nothing to choose between: one selectable mode is an answer, not a question.
-	selectable := 0
-	for _, opt := range guidedChargeTypeOptions(wfCtx) {
-		if !opt.Disabled {
-			selectable++
-		}
-	}
-	if selectable <= 1 {
-		return true, nil
-	}
-	// Don't turn a card-free flow into a one-card flow. A request that pinned
-	// everything else goes straight to the confirmation today; adding a question
-	// there would interrogate the one user who asked for nothing. The charge type
-	// keeps its default and the final card states it.
-	return guidedChargeTypeIsTheOnlyCard(wfCtx), nil
+	// The supplied mode is a preselection, not a reason to remove the user's
+	// purchase choice. A lone valid mode needs no separate selection card.
+	return isOnlyEnabledOption(guidedChargeTypeOptions(wfCtx), createChargeType(wfCtx.Params)), nil
 }
 
 // chargeTypeChangeHint says where the purchase mode can be changed. The final
@@ -3473,18 +3444,6 @@ func chargeTypeChangeHint(wfCtx *Context) string {
 		return "需要改用其他计费方式，请返回上面的「购买方式」一步重新选择。"
 	}
 	return "需要改用其他计费方式，请重新发起创建并说明要使用的计费方式。"
-}
-
-func guidedChargeTypeIsTheOnlyCard(wfCtx *Context) bool {
-	for step := guidedStepFirst; step < guidedStepFinal; step++ {
-		if step == guidedStepChargeType {
-			continue
-		}
-		if !guidedStepSkipped(wfCtx, step) {
-			return false
-		}
-	}
-	return true
 }
 
 func buildGuidedChargeTypeForm(wfCtx *Context) (*ConfirmForm, error) {
@@ -4302,11 +4261,8 @@ func buildGuidedFinalForm(wfCtx *Context) (*ConfirmForm, error) {
 			Index: index,
 			Total: total,
 			Title: guidedStepTitle(index, "确认镜像与计费"),
-			// The charge type is stated, not offered. It is settled before step one
-			// (see above) and there is no earlier card to point at, so saying "已在
-			// 前面选定" would send the user looking for a control that does not
-			// exist. Naming the current value and how to change it is the honest
-			// version — the Summary carries it too, alongside the price it produced.
+			// The final summary states the purchase choice and its price. Changes
+			// belong to the earlier card, before billing-scoped capacity checks.
 			Description: fmt.Sprintf(
 				"镜像决定开机即用的预装环境（框架与驱动）。本次确认只创建实例及所选镜像；镜像已包含的软件会随实例提供，其他软件不会自动安装。当前计费方式为「%s」，价格按此计算；%s确认无误后点击下方按钮即开始创建。",
 				chargeTypeLabel(createChargeType(wfCtx.Params)),
@@ -5729,6 +5685,12 @@ func guidedImageFormOptionsForContext(wfCtx *Context, gpuType string) (string, [
 	images := createImageResult(wfCtx)
 	if images == nil {
 		return "", nil, 0
+	}
+	// A concrete image is confirmed before hardware. Keep that choice available
+	// even when a prefilled GPU is incompatible; the following GPU card owns the
+	// compatible hardware choice. Status and zone/container filters still apply.
+	if strings.TrimSpace(paramStr(wfCtx.Params, "CompShareImageId", "")) != "" {
+		gpuType = ""
 	}
 	return guidedImageFormOptionsFromSet(
 		wfCtx.Params,

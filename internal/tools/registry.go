@@ -583,7 +583,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "CreateInstanceWorkflow",
-			Description: "创建实例及所选镜像；信息不全时引导补全。仅用于创建，不用于询价或库存查询。不会安装镜像外软件。",
+			Description: "创建实例及所选镜像；参数不完整也可直接调用，其余选项由引导卡收集。仅用于创建，不用于询价或库存查询。不会安装镜像外软件。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -601,7 +601,7 @@ var Registry = []openai.Tool{
 					},
 					"ChargeType": map[string]any{
 						"type":        "string",
-						"description": "计费方式：Postpay(按量/按小时后付费) / Month(包月) / Day(包日) / Spot(抢占式)，默认 Postpay。",
+						"description": "计费方式：Postpay(按量/按小时后付费) / Month(包月) / Day(包日) / Spot(抢占式)。仅在用户说明了计费方式时填写；用户没有说时省略本字段，创建流程会向用户确认。",
 						"enum":        []string{"Postpay", "Spot", "Day", "Month"},
 					},
 					"Cpu": map[string]any{

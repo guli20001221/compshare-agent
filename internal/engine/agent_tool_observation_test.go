@@ -166,7 +166,7 @@ func TestRejectedWriteProposalIsRoutedToTheResponsibleActor(t *testing.T) {
 			require.Equal(t, tc.wantCode, result.Error.Code)
 			data, ok := result.Data.(map[string]any)
 			require.True(t, ok)
-			require.NotContains(t, data, "rejected", "human/internal rejection prose must not enter the model payload")
+			require.Equal(t, []any{"Zone: internal validation detail"}, data["rejected"], "the Agent needs the validation reason, not only its category")
 			details, ok := data["rejection_details"].([]any)
 			require.True(t, ok)
 			require.Len(t, details, 1)
@@ -174,6 +174,37 @@ func TestRejectedWriteProposalIsRoutedToTheResponsibleActor(t *testing.T) {
 			require.Equal(t, "Zone", detail["slot"])
 			require.Equal(t, "invalid_value", detail["kind"])
 			require.Equal(t, string(tc.actor), detail["actor"])
+		})
+	}
+}
+
+func TestOperationValidationReasonReachesTheAgent(t *testing.T) {
+	catalog, err := actionresolver.BuildCatalog()
+	require.NoError(t, err)
+	resolver := actionresolver.New(catalog, actionresolver.TargetAdjudicatorFunc(func(actionresolver.SlotCandidate) actionresolver.TargetVerdict {
+		return actionresolver.TargetAccept
+	}), actionresolver.MachineTypeCatalog{})
+	for _, tc := range []struct {
+		operation string
+		slots     []actionresolver.SlotCandidate
+		reason    string
+	}{
+		{"ResizeInstanceWorkflow", nil, "at least one target specification is required"},
+		{"UpdateInstancePortsWorkflow", []actionresolver.SlotCandidate{
+			{Name: "AddTcpPorts", Value: []any{"8080"}},
+		}, "AddTcpPorts 只能包含 1 到 65535 的端口整数。"},
+	} {
+		t.Run(tc.operation, func(t *testing.T) {
+			slots := append([]actionresolver.SlotCandidate{{Name: "UHostId", Value: "uhost-test"}}, tc.slots...)
+			resolved := resolver.Resolve(actionresolver.ActionProposal{Operation: tc.operation, Slots: slots})
+			require.False(t, resolved.ReadyForConfirmation)
+			require.Equal(t, []string{tc.reason}, resolved.Rejected)
+			result, ok := tools.ParseAgentToolResult(agentToolObservation("ProposeAction", resolvedActionForModel(resolved)))
+			require.True(t, ok)
+			require.Equal(t, tools.AgentToolNextCorrectToolCall, result.NextStep)
+			require.Equal(t, []any{tc.reason}, result.Data.(map[string]any)["rejected"])
+			require.Contains(t, result.Error.Message, "已有对话")
+			require.Contains(t, result.Error.Message, "确实缺少用户决定的信息时再询问")
 		})
 	}
 }

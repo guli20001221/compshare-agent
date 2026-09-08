@@ -76,19 +76,6 @@ func ImageSourceValues() []string {
 	}
 }
 
-// ListMode toggles between listing everything and filtering by a query.
-type ListMode string
-
-const (
-	ListModeAll      ListMode = "all"
-	ListModeFiltered ListMode = "filtered"
-)
-
-// ListModeValues is the enum's single source of allowed wire values.
-func ListModeValues() []string {
-	return []string{string(ListModeAll), string(ListModeFiltered)}
-}
-
 // PriceKind selects the account (discounted) or catalog (list) price.
 type PriceKind string
 

@@ -25,18 +25,8 @@ func TestChargeTypeCardIsOfferedWhenTheUserDidNotSayIt(t *testing.T) {
 	assert.Equal(t, "Postpay", field.Value, "the existing default stays the default")
 	assert.Len(t, field.Options, len(createFormChargeTypes))
 	assert.NotEmpty(t, form.Step.Description, "a card without guidance text is a bare card")
-}
 
-// Two ways of already knowing the answer, neither of which should produce a
-// question. The second is the one that matters for the request that pinned
-// everything: adding a card there would interrogate the only user who asked for
-// nothing.
-func TestChargeTypeCardIsNotAskedWhenThereIsNothingToAsk(t *testing.T) {
-	explicit := formWfCtx(t, map[string]any{"GpuType": "4090", "ChargeType": "Spot"})
-	skip, err := shouldSkipGuidedChargeTypeStep(explicit)
-	require.NoError(t, err)
-	assert.True(t, skip, "the user already said Spot; asking again asks them to repeat themselves")
-
+	// Prefilling the machine does not remove the purchase choice.
 	fullySpecified := formWfCtx(t, map[string]any{
 		"GpuType": "A800", "GuidedGpuLocked": true, "Zone": "cn-wlcb-01",
 		"Gpu": float64(1), "Cpu": float64(32), "Memory": float64(131072),
@@ -44,7 +34,24 @@ func TestChargeTypeCardIsNotAskedWhenThereIsNothingToAsk(t *testing.T) {
 	})
 	skip, err = shouldSkipGuidedChargeTypeStep(fullySpecified)
 	require.NoError(t, err)
-	assert.True(t, skip, "every other card is skipped; do not turn a card-free flow into a one-card flow")
+	assert.False(t, skip, "nothing here is the user's billing choice; still ask")
+}
+
+func TestChargeTypeCardKeepsPrefilledModesEditable(t *testing.T) {
+	for _, charge := range []string{"Postpay", "Spot", "Day", "Month"} {
+		t.Run(charge, func(t *testing.T) {
+			wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090", "ChargeType": charge})
+			skip, err := shouldSkipGuidedChargeTypeStep(wfCtx)
+			require.NoError(t, err)
+			require.False(t, skip, "a prefilled mode must not suppress the purchase choice")
+			form, err := buildGuidedChargeTypeForm(wfCtx)
+			require.NoError(t, err)
+			field := fieldByKey(t, form, "ChargeType")
+			assert.Equal(t, charge, field.Value)
+			assert.True(t, field.Editable)
+			assert.Greater(t, len(field.Options), 1)
+		})
+	}
 }
 
 // The supplied framework name should rank the same live candidates regardless of
@@ -76,11 +83,8 @@ func TestImagePickerOffersTheNamedFrameworkWhateverTheCasing(t *testing.T) {
 	}
 }
 
-// The community path picks a concrete image version on its own card. The final
-// card then re-opened the same choice, asking the same question twice. The
-// platform path has no such card by design (shouldSkipGuidedImageStep: the
-// concrete image step IS the community picker), so there the final card is the
-// only selector and must stay editable.
+// Both image sources settle the concrete image before hardware. The final card
+// states that choice without reopening an edit that would invalidate hardware.
 func TestFinalCardNeverReopensTheResolvedImage(t *testing.T) {
 	params := map[string]any{
 		"GpuType": "4090", "Zone": "cn-wlcb-01", "Gpu": float64(1),

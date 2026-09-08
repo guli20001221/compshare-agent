@@ -11,6 +11,7 @@ import (
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/platform"
+	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/zones"
 )
 
@@ -42,6 +43,9 @@ type StockAvailabilityRequest struct {
 	GPUType       string   `json:"gpu_type,omitempty"`
 	ZoneMentions  []string `json:"zone_mentions,omitempty"`
 	InventoryPool string   `json:"inventory_pool,omitempty"`
+	// ImageID binds the capacity request to an exact live image. The result still
+	// depends on the disk, charge type and individual specifications checked.
+	ImageID string `json:"image_id,omitempty"`
 }
 
 // MissingFields: none — an unfiltered stock listing is valid.
@@ -68,6 +72,8 @@ type stockCapacityCheck struct {
 	CheckedSpec   int
 	EnoughSpecs   []capacitySpec
 	Failed        bool
+	Scope         string
+	Failure       string
 }
 
 // capacitySpec is one precheck-passing configuration. GPUCount is kept apart
@@ -86,6 +92,8 @@ const stockCapabilityDescription = "查询 GPU 机型在各可用区的实时库
 
 const stockZoneMentionsDescription = "目标可用区名称或 ZoneID；未限定区域时省略。未匹配时返回实时目录，语义唯一时使用目录中的完整名称或 ZoneID 重试，存在多个合理候选时再请用户选择。"
 
+const stockImageIDDescription = "要一并预检的精确镜像 ID。已选定镜像时填写，使用该镜像与本轮目录计算的系统盘查询各区容量；未指定时使用系统镜像样本。结果仅代表本次参数的容量预检，不是完整镜像兼容性或最终创建保证。"
+
 func stockReadSpec() ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabilityResponse] {
 	return ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabilityResponse]{
 		Label:       stockCapabilityLabel,
@@ -94,6 +102,7 @@ func stockReadSpec() ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabil
 			"gpu_type":       stringParam(),
 			"zone_mentions":  arrayParam(stringParam()).described(stockZoneMentionsDescription),
 			"inventory_pool": enumParam(stockInventoryPoolUnspecified, deployment.GPUInventoryPoolExclusive, deployment.GPUInventoryPoolSpot).described("用户明确询问独占库存时填 Exclusive，明确询问抢占式库存时填 Spot；未限定时填 Unspecified。"),
+			"image_id":       stringParam().described(stockImageIDDescription),
 		}),
 		Handle: stockHandle,
 		Render: stockRender,
@@ -374,17 +383,21 @@ func stockCapacityPrecheck(ctx context.Context, rt ReadRuntime, req StockAvailab
 		}
 	}
 	entriesByModel, modelOrder := groupStockEntriesByModel(entries)
-	imageRaw, err := rt.Executor.Execute(ctx, "DescribeCompShareImages", map[string]any{
-		"ImageType": "System",
-		"Limit":     20,
-	})
+	requestedImageID := strings.TrimSpace(req.ImageID)
+	imageRaw, imageID, err := stockPrecheckImage(ctx, rt, requestedImageID)
 	if err != nil {
-		return joinStockReply(renderStockCapacityReply(failedStockCapacityChecks(entriesByModel, modelOrder))+"\n容量预检未执行：系统镜像查询暂时失败。", inventoryReply), true, ReadResult{}
+		note := "容量预检未执行：系统镜像查询暂时失败。"
+		if requestedImageID != "" {
+			note = "容量预检未执行：未取得指定镜像 " + requestedImageID + " 的目录元数据，请重新查询镜像目录。"
+		}
+		return joinStockReply(renderStockCapacityReply(failedStockCapacityChecks(entriesByModel, modelOrder))+"\n"+note, inventoryReply), true, ReadResult{}
 	}
 	if imageRaw == nil {
 		imageRaw = map[string]any{}
 	}
-	imageID := selectCapacityPrecheckImageID(imageRaw)
+	if imageID == "" {
+		imageID = selectCapacityPrecheckImageID(imageRaw)
+	}
 	if imageID == "" {
 		return joinStockReply(renderStockCapacityReply(failedStockCapacityChecks(entriesByModel, modelOrder))+"\n容量预检未执行：未获取到可用于预检的系统镜像。", inventoryReply), true, ReadResult{}
 	}
@@ -399,25 +412,92 @@ func stockCapacityPrecheck(ctx context.Context, rt ReadRuntime, req StockAvailab
 			}
 			zoneLabel := stockZoneDisplay(entry, supportZones)
 			args := capacityPrecheckArgs(entry, imageID, supportZones, stockRaw, imageRaw, req.InventoryPool)
-			capacityRaw, err := stockExecuteCapacityPrecheck(ctx, rt, args)
-			if err != nil {
-				checks = append(checks, stockCapacityCheck{Name: model, Zone: zoneLabel, CanonicalZone: entry.Zone, Failed: true})
+			check := stockCapacityCheck{Name: model, Zone: zoneLabel, CanonicalZone: entry.Zone, Scope: stockCapacityScope(args)}
+			if requestedImageID != "" && len(mapSliceAt(args, "Disks")) == 0 {
+				check.Failed = true
+				check.Failure = "未取得本区系统盘类型或大小，预检未执行"
+				checks = append(checks, check)
 				continue
 			}
-			check := summarizeStockCapacity(entry, capacityRaw)
-			check.Zone = zoneLabel
+			capacityRaw, err := stockExecuteCapacityPrecheck(ctx, rt, args)
+			if err != nil {
+				check.Failed = true
+				check.Failure = stockCapacityFailure(err)
+				checks = append(checks, check)
+				continue
+			}
+			summary := summarizeStockCapacity(entry, capacityRaw)
+			check.CheckedSpec, check.EnoughSpecs = summary.CheckedSpec, summary.EnoughSpecs
 			checks = append(checks, check)
 		}
 	}
 	if len(checks) == 0 {
 		return joinStockReply(renderStockCapacityReply(failedStockCapacityChecks(entriesByModel, modelOrder))+"\n容量预检未执行：当前接口结果缺少可用区信息。", inventoryReply), true, ReadResult{}
 	}
+	imageNote := "预检使用系统镜像样本 " + imageID + "。"
+	if requestedImageID != "" {
+		imageNote = "预检使用指定镜像 " + requestedImageID + "；系统盘按本轮目录计算，结果仅适用于本次参数。"
+	}
 	if pool := normalizeInventoryPool(req.InventoryPool); pool != "" {
 		eligibleChecks, poolReply := requestedInventoryPoolView(inventory, checks, pool)
-		return joinStockReply(renderStockCapacityReply(eligibleChecks), poolReply), true, ReadResult{}
+		return joinStockReply(imageNote+"\n"+renderStockCapacityReply(eligibleChecks), poolReply), true, ReadResult{}
 	}
 	// Keep inventory counts inline with their zone so the answer remains one table.
-	return renderStockCapacityReplyWithCounts(checks, inventory), true, ReadResult{}
+	return imageNote + "\n" + renderStockCapacityReplyWithCounts(checks, inventory), true, ReadResult{}
+}
+
+// Exact IDs can belong to any catalog. Custom and shared images must retain
+// their tenant-list visibility contract; platform/community support point reads.
+func stockPrecheckImage(ctx context.Context, rt ReadRuntime, imageID string) (map[string]any, string, error) {
+	if imageID == "" {
+		raw, err := rt.Executor.Execute(ctx, platformImageAction, map[string]any{"ImageType": "System", "Limit": 20})
+		return raw, "", err
+	}
+	for _, source := range []struct{ action, name string }{
+		{platformImageAction, "platform"}, {communityImageAction, "community"},
+		{customImageAction, "custom"}, {sharedImageAction, "sharing"},
+	} {
+		var raw map[string]any
+		var err error
+		if source.action == customImageAction || source.action == sharedImageAction {
+			raw, err = imageExecuteAll(ctx, rt, source.action, "ImageSet", nil)
+		} else {
+			args := map[string]any{"CompShareImageId": imageID, "Limit": 100}
+			if source.action == communityImageAction {
+				args["ExcludeReadme"] = true
+			}
+			raw, err = rt.Executor.Execute(ctx, source.action, args)
+		}
+		if err != nil {
+			continue
+		}
+		entries := deployment.ParsePlatformImageEntries(raw, source.name)
+		if source.action == communityImageAction {
+			entries = deployment.ParseCommunityImageEntries(raw)
+		}
+		if entry, found := deployment.NewImageCatalogSnapshot(true, entries).ByID(imageID); found {
+			return raw, entry.ID, nil
+		}
+	}
+	return nil, "", fmt.Errorf("image metadata not found for %s", imageID)
+}
+
+func stockCapacityScope(args map[string]any) string {
+	parts := []string{"计费方式 " + safeString(args, "ChargeType")}
+	for _, item := range mapSliceAt(args, "Disks") {
+		disk, _ := item.(map[string]any)
+		if disk != nil {
+			parts = append(parts, fmt.Sprintf("系统盘 %v GB %s", disk["Size"], safeString(disk, "Type")))
+		}
+	}
+	return strings.Join(parts, "，")
+}
+
+func stockCapacityFailure(err error) string {
+	if apiErr, ok := tools.UpstreamAPIErrorFrom(err); ok {
+		return fmt.Sprintf("上游错误码 %d：%s", apiErr.Code, strings.TrimSpace(apiErr.Message))
+	}
+	return "上游调用失败，请稍后重试"
 }
 
 func stockGPUInventorySnapshot(ctx context.Context, rt ReadRuntime, supportZones []zones.ZoneInfo) *deployment.GPUInventorySnapshot {
@@ -903,8 +983,8 @@ func stockRegionFromZone(zone string) string {
 // is the canonical probe image" contract). So a precheck that runs with this image and
 // returns all ResourceEnough=false is a SAMPLE negative only — it must NOT be
 // generalized to "this GPU has no stock" (see renderStockInventoryCapacityReply). Only a
-// POSITIVE result confirms creatability; the authoritative negative comes from the create
-// workflow re-checking the user's final sealed image/zone/disk/spec.
+// positive result identifies specifications passing this simulation; the create
+// workflow still checks the user's final image/zone/disk/spec.
 //
 // Returns "" when no usable row — the caller then surfaces an honest 容量预检未执行
 // message rather than defaulting to some image.
@@ -1027,7 +1107,7 @@ func renderStockCapacityReplyLines(checks []stockCapacityCheck, inventory *deplo
 	}
 	names := make([]string, 0, len(checks))
 	seenNames := map[string]struct{}{}
-	var failedZones []string
+	var incomplete []string
 	checkedSpecs := 0
 	// Group the passing configurations by 机型+可用区 and keep only the distinct card
 	// counts. Listing every configuration flattened three levels into one sentence:
@@ -1037,6 +1117,7 @@ func renderStockCapacityReplyLines(checks []stockCapacityCheck, inventory *deplo
 	type capacityGroup struct{ name, zone string }
 	countsByGroup := map[capacityGroup][]string{}
 	canonicalByGroup := map[capacityGroup]string{}
+	scopeByGroup := map[capacityGroup]string{}
 	groupOrder := make([]capacityGroup, 0, len(checks))
 	for _, check := range checks {
 		if _, ok := seenNames[check.Name]; !ok {
@@ -1044,16 +1125,35 @@ func renderStockCapacityReplyLines(checks []stockCapacityCheck, inventory *deplo
 			names = append(names, check.Name)
 		}
 		if check.Failed {
-			failedZones = append(failedZones, check.Zone)
+			line := fmt.Sprintf("- %s / %s：容量预检未完成", check.Name, check.Zone)
+			if check.Failure != "" {
+				line += "；" + check.Failure
+			}
+			if check.Scope != "" {
+				line += "；" + check.Scope
+			}
+			incomplete = append(incomplete, line)
 			continue
 		}
 		checkedSpecs += check.CheckedSpec
+		if len(check.EnoughSpecs) == 0 {
+			status := "本次参数未返回通过的规格"
+			if check.CheckedSpec == 0 {
+				status = "未返回规格结果，容量预检未完成"
+			}
+			line := fmt.Sprintf("- %s / %s：%s", check.Name, check.Zone, status)
+			if check.Scope != "" {
+				line += "；" + check.Scope
+			}
+			incomplete = append(incomplete, line)
+		}
 		for _, spec := range check.EnoughSpecs {
 			group := capacityGroup{check.Name, check.Zone}
 			// The group is keyed by the DISPLAY zone label; the inventory snapshot is
 			// keyed by the zone id. Keep the id alongside so the card count can be
 			// looked up — 华北二A (cn-wlcb-01) would not resolve.
 			canonicalByGroup[group] = check.CanonicalZone
+			scopeByGroup[group] = check.Scope
 			if _, seen := countsByGroup[group]; !seen {
 				groupOrder = append(groupOrder, group)
 			}
@@ -1072,14 +1172,18 @@ func renderStockCapacityReplyLines(checks []stockCapacityCheck, inventory *deplo
 			return groupOrder[i].zone < groupOrder[j].zone
 		})
 		lines := make([]string, 0, len(groupOrder)+1)
-		lines = append(lines, fmt.Sprintf("%s 当前有可创建库存，可以新建实例。已通过预检的卡数（每种卡数下还有多种 CPU/内存组合，创建时可选）：", models))
+		lines = append(lines, fmt.Sprintf("%s 当前有规格通过本次容量预检。已通过预检的卡数（对应部分 CPU/内存组合，完整配置仍需创建流程确认）：", models))
 		for _, group := range groupOrder {
 			counts := countsByGroup[group]
 			sort.Slice(counts, func(i, j int) bool { return gpuCountOrder(counts[i]) < gpuCountOrder(counts[j]) })
-			lines = append(lines, fmt.Sprintf("- %s / %s：%s 卡%s", group.name, group.zone,
-				strings.Join(counts, "、"), zoneCardCountSuffix(inventory, group.name, canonicalByGroup[group])))
+			line := fmt.Sprintf("- %s / %s：%s 卡%s", group.name, group.zone,
+				strings.Join(counts, "、"), zoneCardCountSuffix(inventory, group.name, canonicalByGroup[group]))
+			if scopeByGroup[group] != "" {
+				line += "；" + scopeByGroup[group]
+			}
+			lines = append(lines, line)
 		}
-		return appendCapacityFailureNote(strings.Join(lines, "\n"), failedZones)
+		return strings.Join(append(lines, incomplete...), "\n")
 	}
 	if checkedSpecs == 0 {
 		// Every model reaching here came from matchedNormalStockEntries, so the
@@ -1092,13 +1196,13 @@ func renderStockCapacityReplyLines(checks []stockCapacityCheck, inventory *deplo
 		// statement and be explicit that exact creatability was not verified this
 		// turn. A precheck failure must not override
 		// the catalog answer.)
-		return fmt.Sprintf("%s 机型当前开售；本次容量预检未完成，尚未确认具体配置的可创建性，精确库存请以控制台创建页为准。", models)
+		return strings.Join(append([]string{fmt.Sprintf("%s 机型当前开售；本次容量预检未完成，尚未确认具体配置的可创建性。", models)}, incomplete...), "\n")
 	}
 	// checkedSpecs>0 but nothing enough is a SAMPLE negative (the probe image's OS/disk
 	// feed the sim); it must not be generalized into a global creation denial. Keep the
 	// on-sale truth and defer the authoritative answer to the create flow.
 	reply := fmt.Sprintf("%s 机型开售；样本容量预检未通过，但不能据此判断该机型无法创建，精确可创建性以创建流程中你最终选择的镜像与配置为准。", models)
-	return appendCapacityFailureNote(reply, failedZones)
+	return strings.Join(append([]string{reply}, incomplete...), "\n")
 }
 
 func stockZoneDisplay(entry stockInstanceTypeEntry, supportZones []zones.ZoneInfo) string {
@@ -1126,12 +1230,4 @@ func gpuCountOrder(count string) int {
 		return 1 << 30
 	}
 	return n
-}
-
-func appendCapacityFailureNote(reply string, failedZones []string) string {
-	if len(failedZones) == 0 {
-		return reply
-	}
-	sort.Strings(failedZones)
-	return reply + " 另有部分可用区暂时无法确认。"
 }

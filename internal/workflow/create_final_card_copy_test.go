@@ -18,9 +18,8 @@ import (
 // "重新发起创建", which was written before the card existed and afterwards told
 // users to redo the whole request to change something they had just been asked.
 func TestFinalCardStatesTheChargeTypeItNoLongerOffers(t *testing.T) {
-	// Every case here is one the USER named, which is what skips the card and
-	// leaves no earlier step to point at. The un-named case takes the other
-	// branch and is covered by the test below.
+	// A final form with no recorded purchase card must still name its active mode
+	// and provide an accurate fallback instruction.
 	for _, tc := range []struct{ charge, label string }{
 		{"Postpay", "按量付费（按小时计费）"},
 		{"Spot", "抢占式"},
@@ -32,7 +31,7 @@ func TestFinalCardStatesTheChargeTypeItNoLongerOffers(t *testing.T) {
 				"Gpu": float64(1), "Cpu": float64(32), "Memory": float64(131072),
 				"ChargeType": tc.charge,
 			})
-			require.True(t, guidedStepSkipped(wfCtx, guidedStepChargeType), "premise: no earlier step")
+			require.False(t, guidedStepWasReached(wfCtx, guidedStepChargeType), "premise: no recorded earlier step")
 
 			form, err := buildGuidedFinalForm(wfCtx)
 			require.NoError(t, err)

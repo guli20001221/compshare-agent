@@ -76,7 +76,7 @@ func TestUnavailableCreateImageDoesNotSubstituteAnotherImage(t *testing.T) {
 	var result workflow.Result
 	require.NoError(t, json.Unmarshal([]byte(reply), &result))
 	assert.False(t, result.Success)
-	assert.Contains(t, result.Message, "该可用区/规格/镜像组合不被接受")
+	assert.Contains(t, result.Message, "请求参数不符合接口要求或存在冲突")
 	assert.Equal(t, "检查库存", result.StoppedAt)
 	assert.Zero(t, confirmations, "the unavailable exact image must not be replaced by another image's card")
 	imageReads := 0

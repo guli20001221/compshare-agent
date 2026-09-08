@@ -137,8 +137,8 @@ func (r *Resolver) Resolve(proposal ActionProposal) ResolvedAction {
 	}
 	if len(result.Missing) == 0 && len(result.Conflicts) == 0 && len(result.Rejected) == 0 && len(result.DependencyFailures) == 0 && spec.ValidateResolved != nil {
 		if err := spec.ValidateResolved(result.Arguments); err != nil {
-			// The Agent corrects invalid structured arguments; it may ask the user
-			// when a business choice is genuinely missing.
+			// The Agent uses the validation reason and conversation to repair its
+			// arguments or ask for a genuinely missing business choice.
 			reject("", RejectOperationContract, RejectionActorModel, err.Error())
 		}
 	}
