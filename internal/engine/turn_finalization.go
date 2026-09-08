@@ -5,13 +5,14 @@ import (
 	"strings"
 
 	"github.com/compshare-agent/internal/llm"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 // finishAgentTurn closes the existing conversation after its tool budget or
 // model attempt ends. It preserves the ordinary prompt, task and transcript;
 // no tools are offered, so this call can only explain results already obtained.
 func (e *Engine) finishAgentTurn(ctx context.Context) (string, bool) {
-	if ctx.Err() != nil || e.llmClient == nil || len(e.toolResultsByCallThisTurn) == 0 {
+	if ctx.Err() != nil || e.llmClient == nil || !e.turnReturnedToolResults() {
 		return "", false
 	}
 	messages := withEphemeralSystemBeforeLastUser(e.buildMessagesForLLM(nil),
@@ -26,4 +27,22 @@ func (e *Engine) finishAgentTurn(ctx context.Context) (string, bool) {
 	}
 	answer := strings.TrimSpace(resp.Content)
 	return answer, answer != ""
+}
+
+// turnReturnedToolResults reports whether this turn already put a tool result in
+// front of the model. The conversation is the authority for that question, not
+// the reuse cache: the cache answers whether an identical later call may replay
+// an observation, so it deliberately omits unavailable ones — which the closing
+// answer still has to report as the part that did not complete.
+func (e *Engine) turnReturnedToolResults() bool {
+	start := currentTurnStart(e.messages)
+	if start < 0 {
+		return false
+	}
+	for _, message := range e.messages[start:] {
+		if message.Role == openai.ChatMessageRoleTool {
+			return true
+		}
+	}
+	return false
 }

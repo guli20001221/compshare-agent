@@ -61,7 +61,10 @@ func TestClosingRequiresCompletedWorkAndCompleteModelOutput(t *testing.T) {
 	_, ok := eng.finishAgentTurn(context.Background())
 	require.False(t, ok)
 	require.Empty(t, model.calls)
-	eng.toolResultsByCallThisTurn = map[string]string{"read": "tool result"}
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: "看看我的实例"},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: "read", Content: "tool result"},
+	}
 	_, ok = eng.finishAgentTurn(context.Background())
 	require.False(t, ok)
 	require.Len(t, model.calls, 1)
