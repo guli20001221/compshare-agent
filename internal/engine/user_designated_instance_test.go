@@ -46,8 +46,10 @@ func TestExecutedInstanceIsObservedContextAcrossTurns(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("d1", "DiagnoseInstanceInternals",
 			`{"UHostId":"cpod-typed-1","Task":"排查 ComfyUI 打不开","Mode":"repair"}`)}},
+		{Content: "排查完成"},
 		{ToolCalls: []openai.ToolCall{toolCall("d2", "DiagnoseInstanceInternals",
 			`{"UHostId":"cpod-typed-1","Task":"继续排查 ComfyUI","Mode":"repair"}`)}},
+		{Content: "排查完成"},
 	}}
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
 	eng.SetInstanceOps(runner)

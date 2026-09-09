@@ -107,6 +107,11 @@ type MessageStore interface {
 	Append(ctx context.Context, m Message) error
 	UpdateAssistant(ctx context.Context, owner Owner, msgID string, patch AssistantPatch) error
 	ListBySession(ctx context.Context, sessionID string, limit int, cursor string) ([]Message, string, error)
+	// ListRecentBySessionPage returns one newest-first page. cursor is opaque and
+	// continues strictly before the last row of the previous page. This reverse
+	// keyset contract lets cold history recovery stop at its size budget without
+	// loading an unbounded session or imposing a row-count memory policy.
+	ListRecentBySessionPage(ctx context.Context, sessionID string, limit int, cursor string) ([]Message, string, error)
 	GetWithOwnerCheck(ctx context.Context, owner Owner, msgID string) (Message, error)
 }
 

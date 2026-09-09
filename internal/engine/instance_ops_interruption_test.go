@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/opscontext"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
 )
@@ -163,7 +164,7 @@ func TestInstanceOpsInterruptionSummaryIsReadOnlyAndUsesCurrentTurn(t *testing.T
 	summary := e.InstanceOpsInterruptionSummary()
 	require.Contains(t, summary, "本轮对实例 uhost-x")
 	require.Contains(t, summary, "已执行 1 条命令")
-	require.Contains(t, summary, "不会重新启动")
+	require.Contains(t, summary, "不会自动重放原启动命令")
 	require.Equal(t, summary, e.InstanceOpsInterruptionSummary())
 	require.Same(t, pending, e.pendingInstanceOpsInterruption, "reading a persistence summary must not consume the next-turn notice")
 	require.Equal(t, state, e.sessionState, "rendering must not alter job/session continuation state")
@@ -356,14 +357,15 @@ func TestBackgroundJobSurvivesAnInterruptedTurnAndOnlyPollsOnTheSameInstance(t *
 
 	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), func(StepEvent) {})
 
-	job := eng.sessionState.PersistedInstanceOpsJob
+	require.Len(t, eng.sessionState.PersistedInstanceOpsJobs, 1)
+	job := eng.sessionState.PersistedInstanceOpsJobs[0]
 	require.Equal(t, "uhost-1", job.InstanceID)
 	require.Equal(t, jobID, job.JobID)
 	require.Equal(t, "下载 LoRA 权重", job.Purpose)
 	require.NotEmpty(t, job.UpdatedAt)
 	require.NotNil(t, eng.pendingInstanceOpsInterruption)
 	require.Contains(t, renderInstanceOpsInterruptionNotice(*eng.pendingInstanceOpsInterruption), jobID)
-	require.Nil(t, eng.backgroundJobForInstance("uhost-other"),
+	require.Empty(t, eng.backgroundJobsForInstance("uhost-other"),
 		"an opaque handle must never be offered to a different instance")
 
 	// The next turn on the same instance gets only the opaque handle. No command is retained in the
@@ -374,14 +376,14 @@ func TestBackgroundJobSurvivesAnInterruptedTurnAndOnlyPollsOnTheSameInstance(t *
 	}}
 	runner.err = nil
 	runner.verdict = InstanceOpsVerdict{Text: "后台任务已完成", Ran: 1}
-	eng.instanceOpsRanThisTurn = false
+	eng.instanceOpsResultsThisTurn = nil
 	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), func(StepEvent) {})
 
-	require.NotNil(t, runner.lastReq.Context.PendingBackgroundJob)
-	require.Equal(t, jobID, runner.lastReq.Context.PendingBackgroundJob.JobID)
-	require.Equal(t, "unknown", runner.lastReq.Context.PendingBackgroundJob.State)
-	require.Equal(t, "下载 LoRA 权重", runner.lastReq.Context.PendingBackgroundJob.Purpose)
-	require.True(t, eng.sessionState.PersistedInstanceOpsJob.IsZero(),
+	require.Len(t, runner.lastReq.Context.PendingBackgroundJobs, 1)
+	require.Equal(t, jobID, runner.lastReq.Context.PendingBackgroundJobs[0].JobID)
+	require.Equal(t, "unknown", runner.lastReq.Context.PendingBackgroundJobs[0].State)
+	require.Equal(t, "下载 LoRA 权重", runner.lastReq.Context.PendingBackgroundJobs[0].Purpose)
+	require.Empty(t, eng.sessionState.PersistedInstanceOpsJobs,
 		"a terminal poll must clear the live handle instead of polling it forever")
 }
 
@@ -389,25 +391,24 @@ func TestBackgroundJobUnknownStateIsPolledButMalformedStateCannotClearIt(t *test
 	jobID := "job-" + strings.Repeat("b", 32)
 	eng := &Engine{}
 	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "unknown", "安装依赖")
-	require.Equal(t, "unknown", eng.backgroundJobForInstance("uhost-1").State)
+	require.Equal(t, "unknown", eng.backgroundJobsForInstance("uhost-1")[0].State)
 
 	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "future_state", "")
-	require.NotNil(t, eng.backgroundJobForInstance("uhost-1"),
+	require.NotEmpty(t, eng.backgroundJobsForInstance("uhost-1"),
 		"version skew must degrade to keeping an unresolved handle, not silently dropping it")
 
 	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "not_found", "")
-	require.Nil(t, eng.backgroundJobForInstance("uhost-1"))
+	require.Empty(t, eng.backgroundJobsForInstance("uhost-1"))
 
-	// This is deliberately one slot rather than a job registry. An active job on
-	// A cannot be silently replaced by a later event for B.
+	// A job on another instance gets its own handle without replacing A.
 	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "running", "安装依赖")
 	newJobID := "job-" + strings.Repeat("d", 32)
 	eng.observeInstanceOpsBackgroundJob("uhost-2", newJobID, "unknown", "另一项任务")
-	require.Equal(t, jobID, eng.backgroundJobForInstance("uhost-1").JobID)
-	require.Nil(t, eng.backgroundJobForInstance("uhost-2"))
+	require.Equal(t, jobID, eng.backgroundJobsForInstance("uhost-1")[0].JobID)
+	require.Equal(t, newJobID, eng.backgroundJobsForInstance("uhost-2")[0].JobID)
 }
 
-func TestBackgroundJobOnAnotherInstanceMakesTheSingleDurableSlotBusy(t *testing.T) {
+func TestBackgroundJobOnAnotherInstanceConsumesCapacityWithoutBlockingIndependentWork(t *testing.T) {
 	jobID := "job-" + strings.Repeat("a", 32)
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "只读排查完成"}}
 	eng := newInstanceOpsEngine(runner, alwaysConfirm)
@@ -421,11 +422,11 @@ func TestBackgroundJobOnAnotherInstanceMakesTheSingleDurableSlotBusy(t *testing.
 	}, func(StepEvent) {})
 
 	require.Equal(t, 1, runner.calls)
-	require.Nil(t, runner.lastReq.Context.PendingBackgroundJob,
+	require.Empty(t, runner.lastReq.Context.PendingBackgroundJobs,
 		"another instance must never receive the opaque handle")
-	require.True(t, runner.lastReq.Context.BackgroundJobSlotBusy,
-		"the harness must refuse a second background launch instead of executing an untrackable job")
-	require.Equal(t, jobID, eng.sessionState.PersistedInstanceOpsJob.JobID)
+	require.Equal(t, 1, runner.lastReq.Context.BackgroundJobsTracked)
+	require.Less(t, len(eng.sessionState.PersistedInstanceOpsJobs), opscontext.MaxBackgroundJobs)
+	require.Equal(t, jobID, eng.sessionState.PersistedInstanceOpsJobs[0].JobID)
 }
 
 func TestNotFoundClearsMatchingBackgroundJobAndReleasesSlot(t *testing.T) {
@@ -441,13 +442,13 @@ func TestNotFoundClearsMatchingBackgroundJobAndReleasesSlot(t *testing.T) {
 		"UHostId": "uhost-gone", "Task": "检查后台任务", "Mode": "repair",
 	}, func(StepEvent) {})
 
-	require.True(t, eng.sessionState.PersistedInstanceOpsJob.IsZero())
+	require.Empty(t, eng.sessionState.PersistedInstanceOpsJobs)
 	require.Nil(t, eng.pendingInstanceOpsInterruption,
 		"NotFound before any settled command must not promise that an unpollable job was retained")
 
 	runner.err = nil
 	runner.verdict = InstanceOpsVerdict{Text: "另一实例可以继续"}
-	eng.instanceOpsRanThisTurn = false
+	eng.instanceOpsResultsThisTurn = nil
 	eng.lastUserMsg = "排查 uhost-next"
 	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: eng.lastUserMsg}
 	eng.turnContextViewReady = true
@@ -455,7 +456,7 @@ func TestNotFoundClearsMatchingBackgroundJobAndReleasesSlot(t *testing.T) {
 		"UHostId": "uhost-next", "Task": "排查服务", "Mode": "repair",
 	}, func(StepEvent) {})
 
-	require.False(t, runner.lastReq.Context.BackgroundJobSlotBusy)
+	require.Zero(t, runner.lastReq.Context.BackgroundJobsTracked)
 }
 
 func TestBackgroundJobPurposeIsRedactedAndRuneBounded(t *testing.T) {
@@ -463,7 +464,7 @@ func TestBackgroundJobPurposeIsRedactedAndRuneBounded(t *testing.T) {
 	eng := &Engine{}
 	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "running",
 		"联系 user@example.com token=secret-value "+strings.Repeat("长", 240))
-	purpose := eng.sessionState.PersistedInstanceOpsJob.Purpose
+	purpose := eng.sessionState.PersistedInstanceOpsJobs[0].Purpose
 	require.LessOrEqual(t, len([]rune(purpose)), maxPersistedInstanceOpsJobPurposeRunes)
 	require.Contains(t, purpose, "user@example.com")
 	require.NotContains(t, purpose, "secret-value")
@@ -488,14 +489,61 @@ func TestBackgroundJobRoundTripsAcrossEngineRebuildWithoutCommand(t *testing.T) 
 	cold := &Engine{}
 	cold.RehydrateHistory(nil)
 	cold.SetSessionState(persisted.AgentSessionState, version+1)
-	resumed := cold.backgroundJobForInstance("uhost-1")
-	require.NotNil(t, resumed)
-	require.Equal(t, jobID, resumed.JobID)
-	require.Contains(t, resumed.Purpose, "[REDACTED]")
-	require.Nil(t, cold.backgroundJobForInstance("uhost-2"))
+	resumed := cold.backgroundJobsForInstance("uhost-1")
+	require.Len(t, resumed, 1)
+	require.Equal(t, jobID, resumed[0].JobID)
+	require.Contains(t, resumed[0].Purpose, "[REDACTED]")
+	require.Empty(t, cold.backgroundJobsForInstance("uhost-2"))
 
 	// A whole-session reset clears the slot; normal HTTP hydration restores it
 	// by calling SetSessionState after this boundary.
 	cold.InitWithContext("another isolated session")
-	require.Nil(t, cold.backgroundJobForInstance("uhost-1"))
+	require.Empty(t, cold.backgroundJobsForInstance("uhost-1"))
+}
+
+func TestMultipleBackgroundJobsSurviveRebuildAndFinishIndependently(t *testing.T) {
+	serviceID, installID, otherID := "job-"+strings.Repeat("1", 32), "job-"+strings.Repeat("2", 32), "job-"+strings.Repeat("3", 32)
+	hot := &Engine{sessionStateHydrated: true, sessionStateVersion: 3}
+	hot.observeInstanceOpsBackgroundJob("cpod-a", serviceID, "running", "run requested service")
+	hot.observeInstanceOpsBackgroundJob("cpod-a", installID, "started", "install dependency")
+	hot.observeInstanceOpsBackgroundJob("uhost-b", otherID, "unknown", "download requested model")
+	hot.recordInstanceOpsInterruption("cpod-a", nil)
+	for _, id := range []string{serviceID, installID} {
+		require.Contains(t, hot.InstanceOpsInterruptionSummary(), id)
+	}
+	require.NotContains(t, hot.InstanceOpsInterruptionSummary(), otherID)
+
+	state, version, _ := hot.SessionStateSnapshot()
+	raw, err := json.Marshal(PersistedContext{AgentSessionState: state})
+	require.NoError(t, err)
+	parsed, err := ParsePersistedContext(raw)
+	require.NoError(t, err)
+	cold := &Engine{}
+	cold.SetSessionState(parsed.AgentSessionState, version+1)
+	require.Len(t, cold.backgroundJobsForInstance("cpod-a"), 2)
+	require.Equal(t, otherID, cold.backgroundJobsForInstance("uhost-b")[0].JobID)
+	cold.observeInstanceOpsBackgroundJob("uhost-b", installID, "succeeded", "")
+	require.Len(t, cold.backgroundJobsForInstance("cpod-a"), 2, "a foreign-target terminal event cannot finish this instance's job")
+	cold.observeInstanceOpsBackgroundJob("cpod-a", installID, "succeeded", "")
+	require.Equal(t, []opscontext.BackgroundJob{{JobID: serviceID, State: "running", Purpose: "run requested service"}}, cold.backgroundJobsForInstance("cpod-a"))
+	require.Len(t, cold.sessionState.PersistedInstanceOpsJobs, 2)
+	cold.clearBackgroundJobForInstance("cpod-a")
+	require.Equal(t, otherID, cold.sessionState.PersistedInstanceOpsJobs[0].JobID)
+
+	snapshot, _, _ := cold.SessionStateSnapshot()
+	snapshot.PersistedInstanceOpsJobs[0].Purpose = "caller changed snapshot"
+	require.Equal(t, "download requested model", cold.sessionState.PersistedInstanceOpsJobs[0].Purpose)
+}
+
+func TestBackgroundJobCapacityNeverEvictsAnUnresolvedHandle(t *testing.T) {
+	eng := &Engine{}
+	for i := 1; i <= opscontext.MaxBackgroundJobs; i++ {
+		eng.observeInstanceOpsBackgroundJob("cpod-a", fmt.Sprintf("job-%032x", i), "running", "requested work")
+	}
+	require.Len(t, eng.sessionState.PersistedInstanceOpsJobs, opscontext.MaxBackgroundJobs)
+	eng.observeInstanceOpsBackgroundJob("cpod-a", "job-"+strings.Repeat("f", 32), "running", "excess launch")
+	require.Len(t, eng.sessionState.PersistedInstanceOpsJobs, opscontext.MaxBackgroundJobs)
+	require.Equal(t, fmt.Sprintf("job-%032x", 1), eng.sessionState.PersistedInstanceOpsJobs[0].JobID)
+	eng.observeInstanceOpsBackgroundJob("cpod-a", fmt.Sprintf("job-%032x", 1), "failed", "")
+	require.Len(t, eng.sessionState.PersistedInstanceOpsJobs, opscontext.MaxBackgroundJobs-1)
 }

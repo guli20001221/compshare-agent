@@ -27,8 +27,8 @@ context = conn.get("context") or {}
 facts = context.get("platform_facts") or []
 targets = conn.get("endpoint_targets") or []
 authorizations = conn.get("probe_authorizations") or []
-pending = conn.get("pending_background_job") or {}
-slot_busy = bool(conn.get("background_job_slot_busy"))
+pending = conn.get("pending_background_jobs") or []
+remaining = conn.get("background_job_slots_remaining")
 print("@@OUTCOME " + json.dumps({"outcome": "", "err_class": "", "context_applied": True}))
 print("<<<VERDICT>>>")
 print("CONTEXT_SCHEMA=%r" % context.get("schema_version"))
@@ -40,10 +40,11 @@ print("CONTEXT_HAS_AUTHORIZATIONS=%r" % ("probe_authorizations" in context,))
 print("PROBE_AUTHORIZATIONS=%r" % len(authorizations))
 print("AUTHORIZATION_FIRST=%r" % ((authorizations[0].get("ref") if authorizations else None),))
 print("AUTHORIZATION_VALUE_LENGTH=%r" % ((len(authorizations[0].get("value") or "") if authorizations else 0),))
-print("CONTEXT_HAS_PENDING_JOB=%r" % ("pending_background_job" in context,))
-print("PENDING_JOB=%r" % pending.get("job_id"))
-print("PENDING_JOB_PURPOSE=%r" % pending.get("purpose"))
-print("BACKGROUND_JOB_SLOT_BUSY=%r" % slot_busy)
+print("CONTEXT_HAS_PENDING_JOBS=%r" % ("pending_background_jobs" in context,))
+print("PENDING_JOBS=%r" % len(pending))
+print("PENDING_JOB=%r" % (pending[0].get("job_id") if pending else None))
+print("PENDING_JOB_PURPOSE=%r" % (pending[0].get("purpose") if pending else None))
+print("BACKGROUND_JOB_SLOTS_REMAINING=%r" % remaining)
 print("<<<END>>>")
 `
 
@@ -69,10 +70,10 @@ func TestSupervisorSendsReferenceContextOnHandshake(t *testing.T) {
 		ProbeAuthorizations: []opscontext.ProbeAuthorization{{
 			Reference: "current-user-authorization-1", Value: "Bear" + "er supervisor-private-canary",
 		}},
-		PendingBackgroundJob: &opscontext.BackgroundJob{
+		PendingBackgroundJobs: []opscontext.BackgroundJob{{
 			JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", State: "running", Purpose: "download model weights",
-		},
-		BackgroundJobSlotBusy: true,
+		}},
+		BackgroundJobsTracked: 2,
 	}
 	res, err := sup.RunWithContext(context.Background(), cred("uhost-abc", "1.2.3.4", "root", 23, "S3cr3tPw"), "task", modelContext, nil, nil)
 	require.NoError(t, err)
@@ -87,10 +88,11 @@ func TestSupervisorSendsReferenceContextOnHandshake(t *testing.T) {
 	require.Contains(t, res.Output, "PROBE_AUTHORIZATIONS=1")
 	require.Contains(t, res.Output, "AUTHORIZATION_FIRST='current-user-authorization-1'")
 	require.Contains(t, res.Output, "AUTHORIZATION_VALUE_LENGTH=32")
-	require.Contains(t, res.Output, "CONTEXT_HAS_PENDING_JOB=False")
+	require.Contains(t, res.Output, "CONTEXT_HAS_PENDING_JOBS=False")
+	require.Contains(t, res.Output, "PENDING_JOBS=1")
 	require.Contains(t, res.Output, "PENDING_JOB='job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'")
 	require.Contains(t, res.Output, "PENDING_JOB_PURPOSE='download model weights'")
-	require.Contains(t, res.Output, "BACKGROUND_JOB_SLOT_BUSY=True")
+	require.Contains(t, res.Output, fmt.Sprintf("BACKGROUND_JOB_SLOTS_REMAINING=%d", opscontext.MaxBackgroundJobs-2))
 	require.NotContains(t, res.Output, "private")
 	require.NotContains(t, res.Output, "supervisor-private-canary")
 	require.True(t, res.ContextApplied)

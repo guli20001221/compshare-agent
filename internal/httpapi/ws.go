@@ -10,6 +10,7 @@ import (
 
 	"github.com/bitly/go-simplejson"
 	"github.com/coder/websocket"
+	"github.com/compshare-agent/internal/engine"
 	wsx "github.com/compshare-agent/internal/httpapi/ws"
 	"github.com/compshare-agent/internal/store"
 	"github.com/compshare-agent/internal/workflow"
@@ -43,16 +44,22 @@ func (h *Handlers) wsConnLifetime() time.Duration {
 	return h.wsMachineLifetime() + wsInteractionAllowance
 }
 
-// wsMachineLifetime is the machine half: the wedged-connection floor, or the configured
-// in-instance lane budget plus non-harness machine slack when that is longer.
+// wsMachineLifetime is the machine half: the wedged-connection floor, or enough
+// time for every independent in-instance run the engine admits in one turn plus
+// non-harness machine slack when that is longer.
 func (h *Handlers) wsMachineLifetime() time.Duration {
 	if h == nil || h.cfg == nil {
 		return minWSMachineLifetime
 	}
-	// A configured timeout declares the maximum legitimate lane duration. When
-	// the lane is absent the field is zero and the floor applies.
-	if lane := h.cfg.Agent.SSHOps.Timeout; lane > 0 && lane+wsMachineSlack > minWSMachineLifetime {
-		return lane + wsMachineSlack
+	// A configured timeout is per Guest run, not per outer turn. The transport
+	// must reserve the same bounded multiplicity as the engine; otherwise a
+	// legal second run borrows the independent human-confirmation allowance or
+	// loses its final report when the socket closes.
+	if lane := h.cfg.Agent.SSHOps.Timeout; lane > 0 {
+		turnMachine := lane*time.Duration(engine.MaxInstanceOpsRunsPerTurn) + wsMachineSlack
+		if turnMachine > minWSMachineLifetime {
+			return turnMachine
+		}
 	}
 	return minWSMachineLifetime
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/compshare-agent/internal/opscontext"
 	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/tools"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 // maxInstanceOpsStepEvents caps the per-command activity events the engine emits
@@ -78,12 +79,6 @@ func instanceOpsNoSSHTargetObservation(action string) string {
 		tools.AgentToolMeta{SourceStatus: "no_ssh_target"}))
 }
 
-// INV-11 counts a runner attempt, including one that failed before Guest entry.
-const (
-	instanceOpsRepeatRefusalForUser  = "本回合已发起过一次实例内排查请求，本次重复调用没有执行。"
-	instanceOpsRepeatRefusalForModel = "本回合已经发起过一次实例内排查请求；请勿重复调用该通道。请基于首次观察继续判断，必要时改用适用的平台只读能力或知识检索。"
-)
-
 // executeInstanceOps handles a DiagnoseInstanceInternals tool call: the
 // deployment-authorized in-instance diagnosis and repair lane. It is dispatched from executeToolOnce BEFORE the
 // diagnosis-chain and mutating-tool branches, so it never inherits the
@@ -94,15 +89,19 @@ const (
 // names it anyway.
 //
 // Ordering:
-//   - nil-runner  → feature disabled, inert refusal, no slot consumed (INV-10)
+//   - nil-runner  → feature disabled, inert refusal (INV-10)
 //   - write grant → the deployment must have enabled autonomous mutating tools
 //   - param check → UHostId + Task required
-//   - INV-11 gate → at most one in-instance run per turn
+//   - invocation replay → return the existing observation, without rerunning commands
 //   - Run         → tenant-scoped exact-ID lookup, fixed credentials/scope, audited execution
 func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
+	return e.executeInstanceOpsInvocation(ctx, action, args, "", onStep)
+}
+
+func (e *Engine) executeInstanceOpsInvocation(ctx context.Context, action string, args map[string]any, invocationID string, onStep func(StepEvent)) (result string) {
 	// INV-10: with no runner the lane is off. The tool is absent from the window,
 	// so a well-behaved model cannot reach here; a replayed/hallucinated call gets
-	// an inert refusal and does NOT consume the per-turn slot.
+	// an inert refusal without entering a Guest.
 	if e.instanceOps == nil {
 		msg := "实例内排查功能当前不可用。"
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
@@ -139,12 +138,20 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	// The central Agent owns semantic target selection. Pass its ID unchanged;
 	// the runner verifies that exact ID under the request's tenant-scoped STS
 	// identity before fetching credentials or entering the fixed instance scope.
-	// INV-11 counts one runner attempt, including a pre-entry failure.
-	if e.instanceOpsRanThisTurn {
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: instanceOpsRepeatRefusalForUser})
-		return friendlyToolResultJSON(instanceOpsRepeatRefusalForModel)
+	// Canonical call IDs distinguish an intentional next step from delivery replay.
+	// Direct compatibility callers without an ID reuse identical target/task calls.
+	key := invocationID
+	if key == "" {
+		key = instanceID + "\x00" + task
 	}
-	e.instanceOpsRanThisTurn = true
+	if previous, ok := e.instanceOpsResultsThisTurn[key]; ok {
+		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: "复用本次调用的已有结果，未重复执行实例内命令。"})
+		return previous
+	}
+	if e.instanceOpsResultsThisTurn == nil {
+		e.instanceOpsResultsThisTurn = make(map[string]string)
+	}
+	defer func() { e.instanceOpsResultsThisTurn[key] = result }()
 
 	// Connected and command progress become bounded activity events. Command
 	// output never enters this stream; only metadata does.
@@ -190,18 +197,19 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		}
 	}
 
-	modelContext.PendingBackgroundJob = e.backgroundJobForInstance(instanceID)
-	modelContext.BackgroundJobSlotBusy = e.backgroundJobSlotBusyForOtherInstance(instanceID)
+	modelContext.PendingBackgroundJobs = e.backgroundJobsForInstance(instanceID)
+	modelContext.BackgroundJobsTracked = len(e.sessionState.PersistedInstanceOpsJobs)
 	modelContext.AgentSession = e.instanceOpsAgentSessionForRun(instanceID)
 	verdict, err := e.instanceOps.Run(ctx, InstanceOpsRequest{
-		TurnID:     e.currentTurnID,
-		InstanceID: instanceID,
-		Task:       task,
-		Context:    modelContext,
+		TurnID:       e.currentTurnID,
+		InvocationID: invocationID,
+		InstanceID:   instanceID,
+		Task:         task,
+		Context:      modelContext,
 	}, onProgress)
 	if err != nil {
 		// A control-plane NotFound result is authoritative for this target: its guest job can no
-		// longer be polled and must not occupy the conversation's only observable-job slot forever.
+		// longer be polled and must not occupy the conversation's job capacity forever.
 		// Clear before composing the interruption so no notice falsely promises a retained cursor.
 		if errors.Is(err, ErrInstanceOpsNotFound) {
 			e.clearBackgroundJobForInstance(instanceID)
@@ -230,7 +238,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		if errors.Is(err, ErrInstanceOpsNotFound) {
 			msg := fmt.Sprintf("在当前账号下找不到实例 %s，可能已被删除 / 释放，或实例 ID 有误。请到控制台核对实例 ID 后再试。", instanceID)
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
-			return finalReplyPrefix + msg
+			return instanceOpsBoundaryObservation(action, instanceID, "INSTANCE_NOT_FOUND", msg)
 		}
 		// Address derivation failed before the lane entered the instance. Report only
 		// that observable boundary: it does not identify the underlying cause or prove
@@ -238,7 +246,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 		if errors.Is(err, ErrInstanceOpsAddressUnavailable) {
 			msg := "无法换算该实例的内网地址，本次没有进入实例，也没有执行任何实例内命令。当前只能确认诊断入口未建立，尚无法判断根因，也不能据此判断实例本身是否异常。请稍后重试；如需立即验证，可按控制台显示的登录地址、端口和用户名尝试登录。"
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
-			return finalReplyPrefix + msg
+			return instanceOpsBoundaryObservation(action, instanceID, "SSH_ADDRESS_UNAVAILABLE", msg)
 		}
 		// Candidate addresses were available, but the TCP prerequisite for SSH did
 		// not connect. This is still pre-entry: no authentication and no guest command.
@@ -256,14 +264,37 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 			msg := fmt.Sprintf("该实例当前状态为 %s，不是运行中（Running），无法进入实例排查。等实例恢复运行后可以再试。",
 				instanceOpsStateFromError(err))
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
-			return finalReplyPrefix + msg
+			return instanceOpsBoundaryObservation(action, instanceID, "INSTANCE_NOT_RUNNING", msg)
 		}
-		// Honest terminal failure — never let the model narrate a root cause the
+		// Honest bounded failure — never supply a root cause the
 		// harness did not reach. The reason class is a constant; the underlying
 		// error (already credential-free) is not surfaced to the user verbatim.
+		errorCode := "SSH_RUN_INTERRUPTED"
+		if errors.Is(err, ErrInstanceOpsTimedOut) {
+			errorCode = "SSH_RUN_TIMEOUT"
+		}
 		msg := "实例内排查未能完成，请稍后重试，或到控制台查看实例状态。"
-		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
-		return finalReplyPrefix + msg
+		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal,
+			Message: msg, ErrorCode: errorCode})
+		// Compose from this invocation's callbacks, not the pending notice from
+		// an earlier run. The parent needs settled work now, before deciding its
+		// next action; the same bounded notice is also available after disconnect.
+		ran, refused := 0, 0
+		for _, step := range settled {
+			switch step.Disposition {
+			case "ran":
+				ran++
+			case "refused":
+				refused++
+			}
+		}
+		report := renderInstanceOpsInterruptionSummary(instanceOpsInterruption{
+			InstanceID: instanceID, Steps: settled, BackgroundJobs: e.backgroundJobsForInstance(instanceID),
+		}, "本次调用")
+		return tools.MarshalAgentToolResult(tools.AgentToolFailureWithLimits(action,
+			map[string]any{"instance_id": instanceID, "run_completed": false,
+				"commands_ran": ran, "commands_refused": refused, "report": report},
+			errorCode, msg, tools.AgentToolMeta{SourceStatus: "interrupted"}))
 	}
 
 	e.recordInstanceOpsReferent(instanceID)
@@ -279,16 +310,73 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map
 	if verdict.AgentFailed {
 		// A settled partial report is deliverable, but it is not a completed
 		// diagnostic turn. Preserve its text and command tallies without retrying
-		// writes or asking the outer model to rewrite the report.
+		// writes. The parent receives the partial report and its incomplete status.
 		summary.Type = StepBlocked
 		summary.Message = fmt.Sprintf("实例内诊断中断，共执行 %d 条命令（拒绝 %d 条），已保留本轮执行记录", verdict.Ran, verdict.Refused)
 		summary.ErrorCode = instanceOpsAgentFailureCode(verdict.ErrClass)
 	}
 	onStep(summary)
 
-	// The verdict is a deterministic final reply: finalReplyPrefix routes it straight
-	// out through agentruntime.Final, structurally beyond any synthesis rewrite (F6).
-	return finalReplyPrefix + verdict.Text
+	// Like a native subagent result, this is an observation, not a forced end to
+	// the parent turn. The Agent may finish, use a platform workflow, or delegate
+	// a subsequent verification. Completion of this run is not proof of repair.
+	data := map[string]any{
+		"instance_id": instanceID, "report": verdict.Text,
+		"commands_ran": verdict.Ran, "commands_refused": verdict.Refused,
+		"run_completed": !verdict.AgentFailed,
+	}
+	if verdict.AgentFailed {
+		return tools.MarshalAgentToolResult(tools.AgentToolFailureWithLimits(action, data,
+			instanceOpsAgentFailureCode(verdict.ErrClass), "实例内任务中断；已执行结果仍有效，尚未完成的工作见 report。",
+			tools.AgentToolMeta{SourceStatus: "interrupted"}))
+	}
+	return tools.MarshalAgentToolResult(tools.AgentToolSuccess(action, data, tools.AgentToolMeta{SourceStatus: "reported"}))
+}
+
+func instanceOpsWallClockTimedOut(raw string) bool {
+	result, ok := tools.ParseAgentToolResult(raw)
+	return ok && result.Meta.Action == "DiagnoseInstanceInternals" &&
+		result.Status == tools.AgentToolStatusFailed && result.Error.Code == "SSH_RUN_TIMEOUT"
+}
+
+func instanceOpsBoundaryObservation(action, instanceID, code, message string) string {
+	return tools.MarshalAgentToolResult(tools.AgentToolFailureWithLimits(action,
+		map[string]any{"instance_id": instanceID, "run_completed": false}, code, message,
+		tools.AgentToolMeta{SourceStatus: "unavailable"}))
+}
+
+// Read the existing canonical tool results, not another memory/summary store.
+// If the parent model fails after a completed subagent call, the already obtained
+// report must still reach the user. Do not promote it to a new claim of repair.
+func (e *Engine) instanceOpsRecoveryReply() (string, bool) {
+	start := currentTurnStart(e.messages)
+	if start < 0 {
+		return "", false
+	}
+	var reports []string
+	seen := make(map[string]bool)
+	for _, message := range e.messages[start:] {
+		if message.Role != openai.ChatMessageRoleTool {
+			continue
+		}
+		result, ok := tools.ParseAgentToolResult(message.Content)
+		if !ok || result.Meta.Action != "DiagnoseInstanceInternals" {
+			continue
+		}
+		data, ok := result.Data.(map[string]any)
+		if !ok {
+			continue
+		}
+		report, _ := data["report"].(string)
+		if report != "" && !seen[report] {
+			seen[report] = true
+			reports = append(reports, report)
+		}
+	}
+	if len(reports) == 0 {
+		return "", false
+	}
+	return strings.Join(reports, "\n\n") + "\n\n（后续汇总未完成；以上是本轮已经取得的实例内执行报告，未验证事项仍以报告为准。）", true
 }
 
 // Only runner protocol metadata becomes a trace code. A future or malformed

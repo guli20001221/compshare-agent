@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -85,7 +87,9 @@ func (m *recordingMessages) UpdateAssistant(_ context.Context, _ store.Owner, _ 
 
 type rehydratingMessages struct {
 	recordingMessages
-	list []store.Message
+	list        []store.Message
+	recentCalls int
+	recentLimit int
 }
 
 func (m *rehydratingMessages) Append(_ context.Context, msg store.Message) error {
@@ -96,6 +100,34 @@ func (m *rehydratingMessages) Append(_ context.Context, msg store.Message) error
 
 func (m *rehydratingMessages) ListBySession(_ context.Context, _ string, _ int, _ string) ([]store.Message, string, error) {
 	return append([]store.Message(nil), m.list...), "", nil
+}
+func (m *rehydratingMessages) ListRecentBySessionPage(_ context.Context, _ string, limit int, cursor string) ([]store.Message, string, error) {
+	m.recentCalls++
+	m.recentLimit = limit
+	end := len(m.list)
+	if cursor != "" {
+		var err error
+		end, err = strconv.Atoi(cursor)
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+	rows := make([]store.Message, 0, end-start)
+	for i := end - 1; i >= start; i-- {
+		rows = append(rows, m.list[i])
+	}
+	next := ""
+	if start > 0 {
+		next = strconv.Itoa(start)
+	}
+	return rows, next, nil
 }
 
 type captureLLM struct {
@@ -624,6 +656,90 @@ func TestDispatchChatColdSessionDoesNotRehydrateCurrentUserMessage(t *testing.T)
 		}
 	}
 	require.Equal(t, 1, userCopies, "current user message must be sent to the model exactly once on cold sessions")
+}
+
+func TestDispatchChatLongSessionRecentHistorySurvivesColdAndHot(t *testing.T) {
+	captured := &captureLLM{}
+	messages := &rehydratingMessages{}
+	for i := 0; i < 68; i++ {
+		messages.list = append(messages.list,
+			store.Message{Role: "user", Content: fmt.Sprintf("prior question %02d", i), Status: "ok"},
+			store.Message{Role: "assistant", Content: fmt.Sprintf("prior answer %02d", i), Status: "ok"},
+		)
+	}
+	// 137 rows cross a reverse-page boundary. The last request never got an
+	// assistant row at all: it and every earlier short exchange still fit the
+	// engine's size budget and must survive.
+	const unfinished = "下载目标改为系统盘 /root/models，保留这些参数，不要重新安装系统。"
+	messages.list = append(messages.list, store.Message{Role: "user", Content: unfinished, Status: "ok"})
+	deps := &engine.SharedDeps{
+		LLMClient:        captured,
+		RateLimiter:      governance.NewInMemoryRateLimiter(governance.DefaultLimits()),
+		ExternalExecutor: tools.ToolExecutor(chatExecutor{}),
+	}
+	pool := agentpool.NewWithDeps(deps, messages, agentpool.Options{Capacity: 1, IdleTTL: time.Hour})
+	defer pool.Close()
+	h := NewHandlers(
+		&config.Config{Agent: config.AgentConfig{
+			LLM:  config.LLMConfig{Model: "model-x"},
+			HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+			STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+		}},
+		&mockSessions{byID: map[string]store.Session{"sess-long": {
+			ID: "sess-long", TopOrganizationID: 1, OrganizationID: 2,
+			MessageCount: len(messages.list), CreatedAt: time.Now(), UpdatedAt: time.Now(),
+		}}}, messages, mockFeedback{}, pool, nil,
+	)
+	for _, turn := range []string{"继续", "继续刚才的下载"} {
+		sink, apiErr := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-long","Message":"`+turn+`","request_uuid":"req-long","top_organization_id":1,"organization_id":2}`)
+		require.Nil(t, apiErr, "an unconfigured quota must allow sessions beyond 20 turns")
+		require.True(t, sink.has("done"))
+		var rendered strings.Builder
+		for _, message := range captured.messages {
+			rendered.WriteString(message.Content)
+			rendered.WriteByte('\n')
+		}
+		require.Contains(t, rendered.String(), unfinished, "the interrupted user request survives both cold and hot continuation")
+		require.Contains(t, rendered.String(), "prior answer 67", "recent completed conversation survives")
+		require.Contains(t, rendered.String(), "prior question 00", "short exchanges before the first database page still fit the size budget")
+		require.Contains(t, rendered.String(), "prior answer 18", "a page boundary must not discard a complete exchange")
+	}
+	require.Equal(t, 2, messages.recentCalls, "cold loading pages backwards once; the second continuation is a hot pool hit")
+	require.Equal(t, 128, messages.recentLimit, "the page size is an I/O batch, not the history ceiling")
+}
+
+func TestDispatchChatSessionQuotaIsOptionalAndUncapped(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		quota        int
+		messageCount int
+		allowed      bool
+	}{
+		{"unlimited well beyond twenty", 0, 2000, true},
+		{"explicit larger quota below limit", 100, 198, true},
+		{"explicit larger quota reached", 100, 200, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := engine.NewWithDeps(chatLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
+			eng.RehydrateHistory(nil)
+			h := NewHandlers(&config.Config{Agent: config.AgentConfig{
+				LLM:  config.LLMConfig{Model: "model-x"},
+				HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour, MaxSessionTurns: tc.quota},
+				STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+			}}, &mockSessions{byID: map[string]store.Session{"sess-quota": {
+				ID: "sess-quota", TopOrganizationID: 1, OrganizationID: 2,
+				MessageCount: tc.messageCount, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			}}}, &recordingMessages{}, mockFeedback{}, fakePool{eng: eng}, nil)
+			sink, apiErr := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-quota","Message":"继续","request_uuid":"req-quota","top_organization_id":1,"organization_id":2}`)
+			if tc.allowed {
+				require.Nil(t, apiErr)
+				require.True(t, sink.has("done"))
+			} else {
+				require.NotNil(t, apiErr)
+				require.Equal(t, ErrSessionTurnLimit.RetCode, apiErr.RetCode)
+			}
+		})
+	}
 }
 
 func TestDispatchChatRejectsWhenSessionTurnLimitReached(t *testing.T) {

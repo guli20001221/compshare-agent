@@ -114,7 +114,7 @@ Verify the original authenticated behavior and which managed process owns the ac
 a responding page alone does not establish recovery.
 
 For long work set run_in_background=true and provide purpose. The tool owns detachment, logs and
-the opaque job ID; do not hand-roll detachment. At most one background job may be active. Use
+the opaque job ID; do not hand-roll detachment. Independent jobs may run concurrently. Use
 poll_background_job for status and log updates; a terminal poll frees the slot. Reads and scoped
 foreground changes remain available while a job runs."""
 
@@ -163,7 +163,7 @@ _AGENT_SESSION_SETTINGS = "runtime-settings.json"
 _MAX_AGENT_SESSION_CONTRACT = 128
 _MAX_AGENT_SESSION_MODEL = 200
 _AGENT_TRANSCRIPT_RETENTION_DAYS = 1
-_AGENT_SESSION_CONTRACT = "sshops-agent-v8"
+_AGENT_SESSION_CONTRACT = "sshops-agent-v9"
 _CONVERSATION_ANCHOR = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -330,6 +330,7 @@ _CONTEXT_FACT_KEYS_BY_VERSION = {
 _BACKGROUND_JOB_ID = re.compile(r"^job-[0-9a-f]{32}$")
 _ACTIVE_BACKGROUND_JOB_STATES = {"started", "running", "unknown"}
 _TERMINAL_BACKGROUND_JOB_STATES = {"succeeded", "failed", "interrupted", "not_found"}
+_MAX_BACKGROUND_JOBS = 32
 
 
 def _context_text(value, limit=_MAX_CONTEXT_TEXT):
@@ -518,6 +519,27 @@ def normalize_pending_background_job(value):
     return result
 
 
+def background_jobs_from_handshake(conn):
+    """Restore only owned handles for this instance and reserve bounded durable capacity."""
+    if "pending_background_jobs" not in conn:
+        # Older servers can durably remember only one handle. Respect that
+        # transport capacity during a mixed rollout, without imposing it on
+        # the plural protocol.
+        legacy = normalize_pending_background_job(conn.get("pending_background_job"))
+        return ([legacy] if legacy else []), (0 if legacy or conn.get("background_job_slot_busy") else 1)
+    raw = conn.get("pending_background_jobs") or []
+    if not isinstance(raw, list):
+        raise ValueError("pending_background_jobs must be an array")
+    remaining = conn.get("background_job_slots_remaining", _MAX_BACKGROUND_JOBS - len(raw))
+    if len(raw) > _MAX_BACKGROUND_JOBS or \
+            type(remaining) is not int or not 0 <= remaining <= _MAX_BACKGROUND_JOBS - len(raw):
+        raise ValueError("invalid background job continuation capacity")
+    jobs = [normalize_pending_background_job(item) for item in raw]
+    if any(item is None for item in jobs) or len({item["job_id"] for item in jobs}) != len(jobs):
+        raise ValueError("invalid or duplicate background job continuation handle")
+    return jobs, remaining
+
+
 # State exactly what each port-shaped fact proves; catalog expectation,
 # control-plane metadata, forwarding and a guest listener are distinct facts.
 _CONTEXT_FENCE_NOTES = {
@@ -625,26 +647,23 @@ def _sdk_exception_error_class(exc) -> str:
     return "sdk_timeout" if isinstance(exc, TimeoutError) else "sdk_error"
 
 
-def render_prepared_prompt(task, context, pending_background_job=None,
-                           background_job_slot_busy=False):
+def render_prepared_prompt(task, context, pending_background_jobs=None,
+                           background_job_slots_remaining=None):
     """Render a previously validated context without changing task semantics."""
     task = str(task or "").strip()
     continuation = ""
-    if pending_background_job is not None:
+    if pending_background_jobs:
         continuation = (
-            "\n\nA previously authorized background job on this same instance is still unresolved: "
-            + _context_json(pending_background_job) + ". Call poll_background_job with that exact "
-            "job_id before proposing a dependent change. Read-only diagnosis and other scoped "
-            "foreground changes remain available, but the tools refuse a second background job while "
-            "this one is active. Do not reconstruct or rerun the command that created it. Once a poll "
-            "observes a terminal state, continue the "
-            "smallest necessary repair and verification normally."
+            "\n\nThese previously authorized background jobs on this instance remain unresolved: "
+            + _context_json(pending_background_jobs) + ". Poll the relevant exact job_id before "
+            "dependent work. Independent foreground and background work may continue; a healthy "
+            "long-lived service need not finish before another job starts. Do not reconstruct or "
+            "rerun the commands that created these jobs."
         )
-    elif background_job_slot_busy:
-        continuation = (
-            "\n\nThis conversation already tracks an unresolved background job on another instance. "
-            "This run may diagnose, read, and perform scoped reversible foreground changes, "
-            "but it cannot start another background job until the tracked job reaches a terminal state."
+    if background_job_slots_remaining == 0:
+        continuation += (
+            "\n\nThe session has reached its tracked background-job capacity. Poll an owned job "
+            "that may have finished before launching another; other foreground work remains available."
         )
     if context is None:
         return task + continuation
@@ -1733,8 +1752,8 @@ def assert_tool_surface(opts) -> None:
     entirely (the spike's #1 safety bug).
 
     Every run expects the same ALLOWED_TOOLS entries. A background-job continuation still needs
-    read-only diagnosis and may proceed after a terminal poll; executable gates reject every new
-    second background launch while the opaque handle is active. `tools` is the load-bearing
+    diagnosis and independent repairs; exact instance-owned handles select which job to poll.
+    `tools` is the load-bearing
     off-switch, asserted FIRST: per the SDK it is the base set of built-ins
     that EXIST, and anything absent from it cannot run at all. `allowed_tools` only grants auto-approval
     (a built-in NOT listed there still EXISTS), and `disallowed_tools` is a hand-enumerated denylist a
@@ -2117,7 +2136,7 @@ def resolve_claude_cli() -> str:
     return _native_windows_cli(cli)
 
 
-def build_options(server, model, max_turns=DEFAULT_MAX_TURNS, pending_background_job=None,
+def build_options(server, model, max_turns=DEFAULT_MAX_TURNS, pending_background_jobs=None,
                   agent_session=None):
     from claude_agent_sdk import ClaudeAgentOptions
     # Keep a stable surface across a continuation: read-only diagnosis remains useful while a job
@@ -2191,10 +2210,9 @@ async def main():
     reference_context = prepare_resumed_reference_context(
         reference_context, _CONN.get("conversation_resume_index", 0),
         bool(agent_session is not None and agent_session.get("resume_existing")))
-    pending_background_job = normalize_pending_background_job(_CONN.get("pending_background_job"))
-    background_job_slot_busy = bool(_CONN.get("background_job_slot_busy"))
+    pending_background_jobs, background_job_slots_remaining = background_jobs_from_handshake(_CONN)
     prompt = render_prepared_prompt(
-        task, reference_context, pending_background_job, background_job_slot_busy)
+        task, reference_context, pending_background_jobs, background_job_slots_remaining)
 
     # F2: fast-fail if the instance is unreachable, before spawning the agent (which would otherwise
     # spend its whole budget retrying commands that each hang at the SSH connect timeout). No command
@@ -2206,7 +2224,7 @@ async def main():
         _emit_verdict(f"⚠ 实例内排查未能开始：{reason}")
         return
 
-    active_background_job_id = (pending_background_job or {}).get("job_id")
+    active_background_jobs = {item["job_id"]: item for item in pending_background_jobs}
     read_progress = _ReadProgressGuard()
     ssh_exec_tool_schema = ssh_exec_schema()
     remote_text_tool_schema = remote_text.input_schema()
@@ -2232,7 +2250,7 @@ async def main():
     @tool("ssh_exec", TOOL_DESC, ssh_exec_tool_schema)
     @serialize_identical_read("ssh_exec", ssh_exec_tool_schema)
     async def ssh_exec(args):
-        nonlocal active_background_job_id
+        nonlocal background_job_slots_remaining
         command = str(args.get("command") or "").strip()
         run_in_background = args.get("run_in_background", False)
         if not isinstance(run_in_background, bool):
@@ -2249,13 +2267,9 @@ async def main():
             tier = guardrails.classify(command)
             refusal = ""
             message = ""
-            if active_background_job_id:
+            if background_job_slots_remaining <= 0:
                 refusal, message = "refused_precondition", (
-                    "a background job is still active; poll it to a terminal state before another change")
-            elif background_job_slot_busy:
-                refusal, message = "refused_precondition", (
-                    "this conversation already tracks a background job on another instance; "
-                    "a second background launch would have no durable resume cursor")
+                    "tracked background-job capacity is full; poll a finished owned job before another launch")
             elif not command or len(command) > _MAX_REMOTE_COMMAND or not purpose:
                 refusal, message = "refused_precondition", (
                     "background execution requires a bounded command and a non-empty purpose")
@@ -2283,7 +2297,10 @@ async def main():
                 text = _confirmation_refusal_text(refusal, display)
                 return {"content": [{"type": "text", "text": text}], "is_error": True}
             job_id = remote_job.new_job_id()
-            active_background_job_id = job_id
+            # Reserve before the first await so parallel tool calls cannot
+            # launch more jobs than the server can persist.
+            active_background_jobs[job_id] = {"job_id": job_id, "state": "unknown", "purpose": purpose}
+            background_job_slots_remaining -= 1
             # Publish BEFORE the launcher SSH call: a disconnect may kill this harness while the
             # detached guest process survives. The next turn polls rather than replaying it.
             _emit_background_job(job_id, "unknown", purpose)
@@ -2299,7 +2316,10 @@ async def main():
             _record_structured_step(display, "mutating", disposition,
                                     len(rendered.encode("utf-8")), job_id, state, purpose)
             if state in _TERMINAL_BACKGROUND_JOB_STATES:
-                active_background_job_id = None
+                active_background_jobs.pop(job_id, None)
+                background_job_slots_remaining += 1
+            else:
+                active_background_jobs[job_id]["state"] = state
             return {"content": [{"type": "text", "text": rendered}],
                     "structuredContent": result,
                     **({"is_error": True} if not result.get("ok") else {})}
@@ -2531,11 +2551,11 @@ async def main():
           annotations=ToolAnnotations(title="Poll a remote background job", readOnlyHint=True,
                                       destructiveHint=False, idempotentHint=True, openWorldHint=True))
     async def poll_background_job(args):
-        nonlocal active_background_job_id
+        nonlocal background_job_slots_remaining
         job_id = args.get("job_id") or ""
-        if not active_background_job_id or job_id != active_background_job_id:
+        if job_id not in active_background_jobs:
             result = {"ok": False, "error_class": "invalid_job_id",
-                      "message": "poll accepts only the currently active server-tracked job_id"}
+                      "message": "poll accepts only an owned server-tracked job_id on this instance"}
             rendered = json.dumps(result, ensure_ascii=False, separators=(",", ":"))
             _record_structured_step("poll_background_job job=invalid", "read_only",
                                     "refused_precondition", len(rendered.encode("utf-8")))
@@ -2557,7 +2577,8 @@ async def main():
                                 disposition, len(rendered.encode("utf-8")),
                                 str(result.get("job_id") or job_id), state)
         if state in _TERMINAL_BACKGROUND_JOB_STATES:
-            active_background_job_id = None
+            if active_background_jobs.pop(job_id, None) is not None:
+                background_job_slots_remaining += 1
             _JOB_POLL_OFFSETS.pop(job_id, None)
             # Completion is a real state transition (including a job resumed from a prior model
             # turn), so observations made while it was running may now be re-verified.
@@ -2631,7 +2652,7 @@ async def main():
         turns = int(_CONN.get("max_turns") or DEFAULT_MAX_TURNS)
     except (TypeError, ValueError):
         turns = DEFAULT_MAX_TURNS
-    options = build_options(server, selected_model, turns, pending_background_job, agent_session)
+    options = build_options(server, selected_model, turns, pending_background_jobs, agent_session)
 
     # The activity stream is the @@STEP lines emitted from run_command as each command settles. The
     # model's mid-loop reasoning TextBlocks are NOT commands and are NOT scrubbed, so they are dropped;

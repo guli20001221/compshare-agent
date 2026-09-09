@@ -87,6 +87,24 @@ func TestRehydrateHistoryBuildsSystemUserAssistantMessages(t *testing.T) {
 	assert.Equal(t, "第一答", eng.messages[2].Content)
 }
 
+func TestRehydrateHistoryDiscardsOrphanAssistantAtRecentPageBoundary(t *testing.T) {
+	eng := NewWithDeps(&deltaMockLLM{}, &mockExecutor{}, nil)
+	eng.RehydrateHistory([]HistoryMessage{
+		{Role: "assistant", Content: "orphan answer"},
+		{Role: "assistant", Content: "another orphan"},
+		{Role: "user", Content: "recent request"},
+		{Role: "assistant", Content: "recent answer"},
+		{Role: "user", Content: "unfinished request"},
+	})
+	require.Equal(t, []ConversationPair{
+		{User: "recent request", Assistant: "recent answer"},
+		{User: "unfinished request"},
+	}, eng.recentConversationPairs())
+	for _, message := range eng.messages {
+		assert.NotContains(t, message.Content, "orphan")
+	}
+}
+
 func TestRehydrateHistorySkipsEmptyContent(t *testing.T) {
 	eng := NewWithDeps(&deltaMockLLM{}, &mockExecutor{}, func(string, map[string]any) bool { return false })
 

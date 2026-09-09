@@ -412,17 +412,22 @@ type Engine struct {
 	// settable, so a session can hold a different runner than its siblings — it is
 	// not treated as a shared singleton.
 	instanceOps InstanceOpsRunner
-	// instanceOpsRanThisTurn enforces at most one authorized runner attempt per
-	// turn (INV-11). Set immediately before Run, so pre-entry failures and partial
-	// executions both spend the slot. Reset per turn. Per-session/per-turn —
-	// sharing would let one tenant's attempt withdraw the lane from another's turn.
-	instanceOpsRanThisTurn bool
+	// A tool-call identity is one invocation, not one user turn. Preserve its
+	// result against delivery replay while allowing the Agent to continue a task
+	// after a platform operation or to work on another explicitly chosen instance.
+	instanceOpsResultsThisTurn map[string]string
 
 	// pendingInstanceOpsInterruption is a user-facing notice left by a diagnosis that ended without
 	// delivering its verdict, drained by the next turn. It is session state, not turn state, so it
 	// is deliberately NOT reset in the per-turn block — resetting it there would clear it on the
 	// very turn that is supposed to show it. See instance_ops_interruption.go.
 	pendingInstanceOpsInterruption *instanceOpsInterruption
+	// instanceOpsInterruptionIncludedInReplyThisTurn is set only when the
+	// deterministic response composer has copied the canonical interrupted-run
+	// report into this turn's final reply. The transport acknowledges delivery
+	// after that reply is durably stored; generating a reply alone is not proof
+	// that a disconnected client received it.
+	instanceOpsInterruptionIncludedInReplyThisTurn bool
 	// lastConfirmationTerminalReason is why the most recent authorization card in
 	// this turn ended, in observability's closed-set spelling. It exists because
 	// ConfirmFunc answers a bool, so every non-approval — the user declining, the
@@ -860,7 +865,7 @@ func (e *Engine) RegistrySnapshot() entity.RegistrySnapshot {
 // InitWithContext initializes an isolated Engine with test context.
 func (e *Engine) InitWithContext(userCtx string) {
 	e.pendingInstanceOpsInterruption = nil
-	e.sessionState.PersistedInstanceOpsJob = PersistedInstanceOpsJob{}
+	e.sessionState.PersistedInstanceOpsJobs = nil
 	e.sessionState.PersistedInstanceOpsAgent = PersistedInstanceOpsAgentSession{}
 	e.baseUserContext = userCtx
 	systemPrompt := prompt.BuildSystemWithOptions(userCtx, e.reactPromptBuildOptions())
@@ -878,7 +883,7 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 	// execution state, including an opaque guest-job cursor, is installed
 	// separately through SetSessionState after this history rebuild.
 	e.pendingInstanceOpsInterruption = nil
-	e.sessionState.PersistedInstanceOpsJob = PersistedInstanceOpsJob{}
+	e.sessionState.PersistedInstanceOpsJobs = nil
 	e.sessionState.PersistedInstanceOpsAgent = PersistedInstanceOpsAgentSession{}
 	e.baseUserContext = ""
 	systemPrompt := prompt.BuildSystemWithOptions("", e.reactPromptBuildOptions())
@@ -903,6 +908,11 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 			e.messages = append(e.messages, openai.ChatCompletionMessage{Role: msg.Role, Content: msg.Content})
 			pendingUser = msg.Content
 		case openai.ChatMessageRoleAssistant:
+			// A bounded tail may begin mid-exchange. Never replay an answer (or
+			// its tool transcript) without the user request it belongs to.
+			if pendingUser == "" {
+				continue
+			}
 			transcript := transcriptFromRow(msg.Transcript)
 			assistantContent := msg.Content
 			// Some deterministic tool results have a channel-specific display form:
@@ -993,7 +1003,7 @@ func containsVerbatimBillingObservation(messages []openai.ChatCompletionMessage)
 func (e *Engine) SetSessionState(state SessionState, version int) {
 	if e.sessionStateHydrated && version <= e.sessionStateVersion {
 		e.sessionState.VerifiedEvidence = mergeVerifiedEvidence(e.sessionState.VerifiedEvidence, state.VerifiedEvidence)
-		// SelectedInstance{ID,Name} / PendingSelection* / PersistedInstanceOpsJob/Agent /
+		// SelectedInstance{ID,Name} / PendingSelection* / PersistedInstanceOpsJobs/Agent /
 		// SchemaVersion: keep the in-memory value. The local engine has not
 		// yet persisted, so its scalars are at-or-newer than the incoming row.
 		return
@@ -1004,17 +1014,17 @@ func (e *Engine) SetSessionState(state SessionState, version int) {
 	// cannot bypass the persistence boundary. Version 0 is the client-provided CreateSession
 	// envelope, so neither server-owned continuation cursor may enter through it.
 	if (state.SchemaVersion != SessionStateSchemaV8 && state.SchemaVersion != SessionStateSchemaV9 &&
-		state.SchemaVersion != SessionStateSchemaV10) || version <= 0 {
-		state.PersistedInstanceOpsJob = PersistedInstanceOpsJob{}
+		state.SchemaVersion != SessionStateSchemaV10 && state.SchemaVersion != SessionStateSchemaV11) || version <= 0 {
+		state.PersistedInstanceOpsJobs = nil
 	} else {
-		state.PersistedInstanceOpsJob = normalizePersistedInstanceOpsJob(state.PersistedInstanceOpsJob)
+		state.PersistedInstanceOpsJobs = normalizePersistedInstanceOpsJobs(state.PersistedInstanceOpsJobs)
 	}
 	// CreateCSAgentSession accepts an arbitrary client Context at version 0. The SDK cursor is
 	// server-owned continuation authority, not client state: never let a caller seed a UUID that
 	// could attach this new product session to another local transcript. The first server CAS write
 	// advances ContextVersion and may then carry a cursor observed from @@AGENT_SESSION. V9 did not
 	// bind that cursor to an outer-conversation anchor, so only V10 may hydrate the current contract.
-	if state.SchemaVersion != SessionStateSchemaV10 || version <= 0 {
+	if (state.SchemaVersion != SessionStateSchemaV10 && state.SchemaVersion != SessionStateSchemaV11) || version <= 0 {
 		state.PersistedInstanceOpsAgent = PersistedInstanceOpsAgentSession{}
 	} else {
 		state.PersistedInstanceOpsAgent = normalizePersistedInstanceOpsAgentSession(state.PersistedInstanceOpsAgent)
@@ -1034,6 +1044,9 @@ func (e *Engine) SetSessionState(state SessionState, version int) {
 		state.SelectedInstanceSource = ""
 		state.SelectedInstanceAtUnix = 0
 		state.SelectedInstanceFreshness = ""
+	}
+	if len(state.PersistedInstanceOpsJobs) > 0 {
+		state.SchemaVersion = SessionStateSchemaCurrent
 	}
 	e.sessionState = state
 	e.sessionStateVersion = version
@@ -1063,6 +1076,7 @@ func (e *Engine) ClearSessionState() {
 // row, which is exactly the bug we want to avoid on parse-failure paths.
 func (e *Engine) SessionStateSnapshot() (state SessionState, version int, hydrated bool) {
 	state = e.sessionState
+	state.PersistedInstanceOpsJobs = append([]PersistedInstanceOpsJob(nil), state.PersistedInstanceOpsJobs...)
 	if e.sessionStateHydrated && (state.SchemaVersion == "" || state.SchemaVersion == SessionStateSchemaV1) {
 		state.SchemaVersion = SessionStateSchemaCurrent
 	}
@@ -1262,7 +1276,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.knowledgeQAAgentLoopThisTurn = false
 	e.directAnswerToolRetryPending = false
 	e.directAnswerToolRetryOutcomeThisTurn = ""
-	e.instanceOpsRanThisTurn = false
+	e.instanceOpsResultsThisTurn = nil
+	e.instanceOpsInterruptionIncludedInReplyThisTurn = false
 	// Deliver any notice left by a diagnosis that ended without a verdict. It goes to the USER, on
 	// the activity stream, and is never appended to e.messages — the model must not restate,
 	// summarize or act on it. Drained here, at the top of the turn, so it can never fire on the same
@@ -1338,6 +1353,16 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	}
 	finishCommittedWrite := func() (agentruntime.Result, bool) {
 		reply, ok := e.committedWriteRecoveryReply()
+		if report, available := e.instanceOpsRecoveryReply(); available {
+			if e.pendingInstanceOpsInterruption != nil {
+				e.instanceOpsInterruptionIncludedInReplyThisTurn = true
+			}
+			if ok {
+				reply += "\n\n" + report
+			} else {
+				reply, ok = report, true
+			}
+		}
 		if !ok {
 			return agentruntime.Result{}, false
 		}
@@ -1744,6 +1769,14 @@ func (e *Engine) runToolCallsRound(ctx context.Context, userMsg string, resp *ll
 					committed = append(committed, reply)
 				}
 			}
+			if report, available := e.instanceOpsRecoveryReply(); available {
+				if e.pendingInstanceOpsInterruption != nil {
+					e.instanceOpsInterruptionIncludedInReplyThisTurn = true
+				}
+				if !strings.Contains(finalMsg, report) {
+					committed = append(committed, report)
+				}
+			}
 			finalMsg = strings.Join(append(committed, finalMsg), "\n\n")
 			finalMsg = e.finalizeHostTerminalResponse(userMsg, finalMsg)
 			historyFinalMsg := finalMsg
@@ -1790,6 +1823,44 @@ func (e *Engine) runToolCallsRound(ctx context.Context, userMsg string, resp *ll
 			Content:    toolResult,
 			ToolCallID: tc.ID,
 		})
+		// A wall-clock-expired Guest run has already consumed the lane's complete
+		// budget and may have applied a repair. Deliver its settled report now;
+		// another full run in this user turn can only crowd out the answer. Other
+		// partial Agent failures remain ordinary observations and may use their SDK
+		// cursor when continuing is still useful.
+		if instanceOpsWallClockTimedOut(toolResult) {
+			finalMsg, available := e.instanceOpsRecoveryReply()
+			if !available {
+				finalMsg = "实例内排查达到本轮时间上限，尚未取得可交付的执行报告。"
+			} else {
+				if e.pendingInstanceOpsInterruption != nil {
+					e.instanceOpsInterruptionIncludedInReplyThisTurn = true
+				}
+			}
+			var committed []string
+			for _, reply := range e.committedWriteRepliesThisTurn {
+				if !strings.Contains(finalMsg, reply) {
+					committed = append(committed, reply)
+				}
+			}
+			finalMsg = strings.Join(append(committed, finalMsg), "\n\n")
+			finalMsg = e.finalizeHostTerminalResponse(userMsg, finalMsg)
+			for _, remaining := range resp.ToolCalls[idx+1:] {
+				e.messages = append(e.messages, openai.ChatCompletionMessage{
+					Role: openai.ChatMessageRoleTool, Content: "skipped", ToolCallID: remaining.ID,
+				})
+			}
+			e.messages = append(e.messages, openai.ChatCompletionMessage{
+				Role: openai.ChatMessageRoleAssistant, Content: finalMsg,
+			})
+			if emitDelta != nil && finalMsg != "" {
+				if len(e.verbatimBlocksThisTurn) > 0 {
+					emitDelta(verbatimBlockSeparator)
+				}
+				emitDelta(finalMsg)
+			}
+			return agentruntime.Final(finalMsg, agentruntime.FinishDeterministicReply), nil
+		}
 	}
 	return agentruntime.Continue(), nil
 }
@@ -2873,7 +2944,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	// without this branch it would fall through to the mutating handler and be
 	// blocked. executeInstanceOps fails closed when the lane is off (nil runner).
 	if action == "DiagnoseInstanceInternals" {
-		return e.executeInstanceOps(ctx, action, args, onStep)
+		return e.executeInstanceOpsInvocation(ctx, action, args, tc.ID, onStep)
 	}
 
 	// Registered diagnosis meta-tools delegate to the diagnosis engine. Instance

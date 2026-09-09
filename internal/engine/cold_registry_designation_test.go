@@ -22,6 +22,7 @@ func TestColdTypedIDSurvivesAProseOnlyAcknowledgement(t *testing.T) {
 				{Content: "已记录当前实例。"},
 				{ToolCalls: []openai.ToolCall{toolCall("diagnose", "DiagnoseInstanceInternals",
 					"{\"UHostId\":\"cpod-1uivn2vwu842\",\"Task\":\"只读核查 GPU\"}")}},
+				{Content: "排查完成"},
 			}}
 			eng := NewWithDeps(model, &mockExecutor{}, nil)
 			eng.SetInstanceOps(runner)
@@ -48,7 +49,7 @@ func TestColdTypedIDSurvivesAProseOnlyAcknowledgement(t *testing.T) {
 			require.NoError(t, err)
 			require.Equal(t, 1, runner.calls)
 			require.Equal(t, instanceID, runner.lastReq.InstanceID)
-			require.Len(t, model.calls, 2)
+			require.Len(t, model.calls, 3)
 			var history []openai.ChatCompletionMessage
 			for _, message := range model.calls[1].Messages {
 				if message.Role != openai.ChatMessageRoleSystem {

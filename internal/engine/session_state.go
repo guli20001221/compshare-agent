@@ -56,7 +56,11 @@ const SessionStateSchemaV9 = "9.0"
 // new cursor, while WorkdirID keeps Claude's project/transcript lookup rooted in one private cwd.
 const SessionStateSchemaV10 = "10.0"
 
-const SessionStateSchemaCurrent = SessionStateSchemaV10
+// SessionStateSchemaV11 retains independent observation handles for multiple
+// background jobs. A long-lived service does not occupy the only repair slot.
+const SessionStateSchemaV11 = "11.0"
+
+const SessionStateSchemaCurrent = SessionStateSchemaV11
 
 // ErrUnknownSessionStateSchema is returned by ParsePersistedContext when a
 // row looks like an agent envelope (top-level object with an
@@ -87,6 +91,7 @@ var knownSessionStateSchemaVersions = map[string]struct{}{
 	SessionStateSchemaV8:  {},
 	SessionStateSchemaV9:  {},
 	SessionStateSchemaV10: {},
+	SessionStateSchemaV11: {},
 }
 
 // SessionState is the per-session, JSON-serializable, multi-replica-safe
@@ -112,18 +117,17 @@ type SessionState struct {
 	SelectedInstanceAtUnix    int64                            `json:"selected_instance_at_unix,omitempty"`
 	SelectedInstanceFreshness string                           `json:"selected_instance_freshness,omitempty"`
 	VerifiedEvidence          []VerifiedEvidenceTurn           `json:"verified_knowledge,omitempty"`
-	PersistedInstanceOpsJob   PersistedInstanceOpsJob          `json:"persisted_instance_ops_job,omitzero"`
+	PersistedInstanceOpsJobs  []PersistedInstanceOpsJob        `json:"persisted_instance_ops_jobs,omitempty"`
 	PersistedInstanceOpsAgent PersistedInstanceOpsAgentSession `json:"persisted_instance_ops_agent,omitzero"`
 }
 
-// PersistedInstanceOpsJob is the single durable observation cursor for a
+// PersistedInstanceOpsJob is a durable observation cursor for a
 // reviewed background job in a tenant guest. Purpose is a redacted, bounded
 // human description; it is not executable. Command text and command output are
 // intentionally absent from this type and therefore cannot enter SessionState.
 //
-// One slot is intentional. While it contains an active job, an event for a
-// different instance/job cannot replace it; terminal state for the matching job
-// clears the slot.
+// Jobs are keyed by instance and job ID; a terminal observation removes only
+// that job. An active service and a package installation can therefore coexist.
 type PersistedInstanceOpsJob struct {
 	InstanceID string `json:"instance_id,omitempty"`
 	JobID      string `json:"job_id,omitempty"`
@@ -188,6 +192,29 @@ func (s SessionState) MarshalJSON() ([]byte, error) {
 	}
 	type alias SessionState
 	return json.Marshal(alias(s))
+}
+
+// UnmarshalJSON upgrades the old single-job field without retaining two
+// producers of active-job state. Only versions that actually owned that field
+// may contribute a legacy handle; client version-0 authority is checked during
+// SetSessionState as before.
+func (s *SessionState) UnmarshalJSON(data []byte) error {
+	type alias SessionState
+	var wire struct {
+		alias
+		LegacyJob PersistedInstanceOpsJob `json:"persisted_instance_ops_job"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	*s = SessionState(wire.alias)
+	if s.SchemaVersion == SessionStateSchemaV8 || s.SchemaVersion == SessionStateSchemaV9 || s.SchemaVersion == SessionStateSchemaV10 {
+		s.PersistedInstanceOpsJobs = nil
+		if job := normalizePersistedInstanceOpsJob(wire.LegacyJob); !job.IsZero() {
+			s.PersistedInstanceOpsJobs = []PersistedInstanceOpsJob{job}
+		}
+	}
+	return nil
 }
 
 // PersistedContext is the on-wire shape stored in sessions.context. It

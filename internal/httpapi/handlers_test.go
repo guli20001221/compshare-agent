@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -149,6 +150,32 @@ func (m *mockMessages) UpdateAssistant(_ context.Context, _ store.Owner, _ strin
 }
 func (m *mockMessages) ListBySession(_ context.Context, _ string, _ int, _ string) ([]store.Message, string, error) {
 	return m.list, "", nil
+}
+func (m *mockMessages) ListRecentBySessionPage(_ context.Context, _ string, limit int, cursor string) ([]store.Message, string, error) {
+	end := len(m.list)
+	if cursor != "" {
+		var err error
+		end, err = strconv.Atoi(cursor)
+		if err != nil {
+			return nil, "", err
+		}
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	start := end - limit
+	if start < 0 {
+		start = 0
+	}
+	rows := make([]store.Message, 0, end-start)
+	for i := end - 1; i >= start; i-- {
+		rows = append(rows, m.list[i])
+	}
+	next := ""
+	if start > 0 {
+		next = strconv.Itoa(start)
+	}
+	return rows, next, nil
 }
 func (m *mockMessages) GetWithOwnerCheck(_ context.Context, _ store.Owner, msgID string) (store.Message, error) {
 	msg, ok := m.checked[msgID]

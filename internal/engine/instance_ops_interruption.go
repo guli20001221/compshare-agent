@@ -34,9 +34,9 @@ type instanceOpsSettledStep struct {
 // instanceOpsInterruption is the pending notice, stashed when a run ends without a verdict and
 // drained by the next turn.
 type instanceOpsInterruption struct {
-	InstanceID    string
-	Steps         []instanceOpsSettledStep
-	BackgroundJob *opscontext.BackgroundJob
+	InstanceID     string
+	Steps          []instanceOpsSettledStep
+	BackgroundJobs []opscontext.BackgroundJob
 }
 
 const (
@@ -114,85 +114,102 @@ func normalizePersistedInstanceOpsJob(job PersistedInstanceOpsJob) PersistedInst
 	return job
 }
 
-// observeInstanceOpsBackgroundJob updates the durable continuation cursor from
-// one structured-tool event. Terminal observations clear the matching handle.
-// Malformed lifecycle values are ignored, and no command text is retained.
-// While A has an active cursor, a different job (including one on B) cannot
-// silently replace it. This one-slot guarantee relies on the current singleton deployment plus
-// agentpool's per-session lease. A deployment with multiple replicas must add a shared pre-launch
-// reservation before it may rely on this cursor as an exclusive distributed slot.
+// normalizePersistedInstanceOpsJobs retains distinct bounded observation
+// handles; another target's handle never becomes authority for this target.
+func normalizePersistedInstanceOpsJobs(jobs []PersistedInstanceOpsJob) []PersistedInstanceOpsJob {
+	var result []PersistedInstanceOpsJob
+	seen := make(map[string]struct{})
+	for _, raw := range jobs {
+		job := normalizePersistedInstanceOpsJob(raw)
+		if job.IsZero() {
+			continue
+		}
+		key := strings.ToLower(job.InstanceID) + ":" + job.JobID
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, job)
+		if len(result) == opscontext.MaxBackgroundJobs {
+			break
+		}
+	}
+	return result
+}
+
+// observeInstanceOpsBackgroundJob updates the matching handle, never another
+// job. The harness reserves capacity before launching; these updates rely on
+// the same serialized session lease as all other session execution state.
 func (e *Engine) observeInstanceOpsBackgroundJob(instanceID, jobID, state, purpose string) {
 	if e == nil || !validInstanceOpsJobID(jobID) {
 		return
 	}
-	instanceID = strings.TrimSpace(instanceID)
-	jobID = strings.TrimSpace(jobID)
-	state = strings.TrimSpace(state)
+	instanceID, jobID, state = strings.TrimSpace(instanceID), strings.TrimSpace(jobID), strings.TrimSpace(state)
 	if instanceID == "" {
 		return
 	}
-	current := e.sessionState.PersistedInstanceOpsJob
+	jobs := normalizePersistedInstanceOpsJobs(e.sessionState.PersistedInstanceOpsJobs)
+	index := -1
+	for i, job := range jobs {
+		if strings.EqualFold(job.InstanceID, instanceID) && job.JobID == jobID {
+			index = i
+			break
+		}
+	}
 	if activeInstanceOpsJobState(state) {
-		if validPersistedInstanceOpsJob(current) &&
-			(!strings.EqualFold(current.InstanceID, instanceID) || current.JobID != jobID) {
+		if index < 0 && len(jobs) >= opscontext.MaxBackgroundJobs {
 			return
 		}
 		purpose = normalizePersistedInstanceOpsJobPurpose(purpose)
-		if purpose == "" && strings.EqualFold(current.InstanceID, instanceID) && current.JobID == jobID {
-			purpose = current.Purpose
+		if purpose == "" && index >= 0 {
+			purpose = jobs[index].Purpose
 		}
-		e.sessionState.PersistedInstanceOpsJob = PersistedInstanceOpsJob{
-			InstanceID: instanceID,
-			JobID:      jobID,
-			State:      state,
-			Purpose:    purpose,
-			UpdatedAt:  time.Now().UTC().Format(time.RFC3339Nano),
+		job := PersistedInstanceOpsJob{
+			InstanceID: instanceID, JobID: jobID, State: state, Purpose: purpose,
+			UpdatedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		}
+		if index < 0 {
+			jobs = append(jobs, job)
+		} else {
+			jobs[index] = job
+		}
+		e.sessionState.PersistedInstanceOpsJobs = jobs
 		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 		return
 	}
-	if !terminalInstanceOpsJobState(state) {
-		return
-	}
-	if validPersistedInstanceOpsJob(current) && strings.EqualFold(current.InstanceID, instanceID) && current.JobID == jobID {
-		e.sessionState.PersistedInstanceOpsJob = PersistedInstanceOpsJob{}
+	if terminalInstanceOpsJobState(state) && index >= 0 {
+		e.sessionState.PersistedInstanceOpsJobs = append(jobs[:index], jobs[index+1:]...)
 		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 	}
 }
 
-func (e *Engine) backgroundJobForInstance(instanceID string) *opscontext.BackgroundJob {
-	current := e.sessionState.PersistedInstanceOpsJob
-	if !validPersistedInstanceOpsJob(current) ||
-		!strings.EqualFold(strings.TrimSpace(current.InstanceID), strings.TrimSpace(instanceID)) {
+func (e *Engine) backgroundJobsForInstance(instanceID string) []opscontext.BackgroundJob {
+	if e == nil {
 		return nil
 	}
-	job := opscontext.BackgroundJob{
-		JobID:   current.JobID,
-		State:   current.State,
-		Purpose: normalizePersistedInstanceOpsJobPurpose(current.Purpose),
+	var result []opscontext.BackgroundJob
+	for _, job := range normalizePersistedInstanceOpsJobs(e.sessionState.PersistedInstanceOpsJobs) {
+		if strings.EqualFold(job.InstanceID, strings.TrimSpace(instanceID)) {
+			result = append(result, opscontext.BackgroundJob{JobID: job.JobID, State: job.State, Purpose: job.Purpose})
+		}
 	}
-	return &job
+	return result
 }
 
-func (e *Engine) backgroundJobSlotBusyForOtherInstance(instanceID string) bool {
-	if e == nil {
-		return false
-	}
-	current := e.sessionState.PersistedInstanceOpsJob
-	return validPersistedInstanceOpsJob(current) &&
-		!strings.EqualFold(strings.TrimSpace(current.InstanceID), strings.TrimSpace(instanceID))
-}
-
-// clearBackgroundJobForInstance drops only the cursor whose control-plane target has been
+// clearBackgroundJobForInstance drops only handles whose control-plane target has been
 // authoritatively reported absent. It cannot clear a different instance's in-flight work.
 func (e *Engine) clearBackgroundJobForInstance(instanceID string) {
 	if e == nil {
 		return
 	}
-	current := e.sessionState.PersistedInstanceOpsJob
-	if validPersistedInstanceOpsJob(current) &&
-		strings.EqualFold(strings.TrimSpace(current.InstanceID), strings.TrimSpace(instanceID)) {
-		e.sessionState.PersistedInstanceOpsJob = PersistedInstanceOpsJob{}
+	var retained []PersistedInstanceOpsJob
+	for _, job := range e.sessionState.PersistedInstanceOpsJobs {
+		if !strings.EqualFold(job.InstanceID, strings.TrimSpace(instanceID)) {
+			retained = append(retained, job)
+		}
+	}
+	if len(retained) != len(e.sessionState.PersistedInstanceOpsJobs) {
+		e.sessionState.PersistedInstanceOpsJobs = retained
 		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 	}
 }
@@ -201,14 +218,14 @@ func (e *Engine) clearBackgroundJobForInstance(instanceID string) {
 // command settled or an approved background launch published its opaque handle. A preflight
 // failure has neither and remains silent.
 func (e *Engine) recordInstanceOpsInterruption(instanceID string, steps []instanceOpsSettledStep) {
-	job := e.backgroundJobForInstance(instanceID)
-	if len(steps) == 0 && job == nil {
+	jobs := e.backgroundJobsForInstance(instanceID)
+	if len(steps) == 0 && len(jobs) == 0 {
 		return
 	}
 	e.pendingInstanceOpsInterruption = &instanceOpsInterruption{
-		InstanceID:    instanceID,
-		Steps:         append([]instanceOpsSettledStep(nil), steps...),
-		BackgroundJob: job,
+		InstanceID:     instanceID,
+		Steps:          append([]instanceOpsSettledStep(nil), steps...),
+		BackgroundJobs: jobs,
 	}
 }
 
@@ -244,6 +261,19 @@ func (e *Engine) InstanceOpsInterruptionSummary() string {
 		return ""
 	}
 	return renderInstanceOpsInterruptionSummary(*e.pendingInstanceOpsInterruption, "本轮")
+}
+
+// AcknowledgeDeliveredInstanceOpsInterruption consumes an interrupted-run
+// notice only after the gateway has durably stored a deterministic reply that
+// already contains the same canonical report. A generated reply is not enough:
+// a client cancellation may still win at the transport boundary, in which case
+// the notice remains available for the aborted row and the next hot turn.
+func (e *Engine) AcknowledgeDeliveredInstanceOpsInterruption() {
+	if e == nil || !e.instanceOpsInterruptionIncludedInReplyThisTurn {
+		return
+	}
+	e.pendingInstanceOpsInterruption = nil
+	e.instanceOpsInterruptionIncludedInReplyThisTurn = false
 }
 
 // instanceOpsInterruptionAction is the step frame's Action. It is NOT a tool name — nothing
@@ -306,13 +336,13 @@ func renderInstanceOpsInterruptionSummary(notice instanceOpsInterruption, turn s
 		fmt.Fprintf(&b, "· ……另有 %d 条未在此列出\n", omitted)
 	}
 	b.WriteString(interruptionIncompletenessNotice)
-	if notice.BackgroundJob != nil {
-		if notice.BackgroundJob.State == "unknown" {
-			fmt.Fprintf(&b, " 后台任务可能已经启动，任务编号为 %s；继续排查同一实例时只会查询该任务状态，不会重新启动。",
-				notice.BackgroundJob.JobID)
+	for _, job := range notice.BackgroundJobs {
+		if job.State == "unknown" {
+			fmt.Fprintf(&b, " 后台任务可能已经启动，任务编号为 %s；后续可查询该任务当前状态，不会自动重放原启动命令。",
+				job.JobID)
 		} else {
-			fmt.Fprintf(&b, " 后台任务 %s 已保留；继续排查同一实例时只会查询该任务状态，不会重新启动。",
-				notice.BackgroundJob.JobID)
+			fmt.Fprintf(&b, " 后台任务 %s 已保留；后续可查询该任务当前状态，不会自动重放原启动命令。",
+				job.JobID)
 		}
 	}
 	return b.String()

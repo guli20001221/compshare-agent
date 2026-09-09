@@ -35,7 +35,10 @@ const (
 	// AgentSessionContract is the prompt/tool/context contract bound to an opaque
 	// Claude SDK continuation cursor. All transport layers compare this value;
 	// incompatible prompt, tool or authorization changes start a fresh transcript.
-	AgentSessionContract = "sshops-agent-v8"
+	AgentSessionContract = "sshops-agent-v9"
+
+	// MaxBackgroundJobs bounds durable observation handles, not task duration.
+	MaxBackgroundJobs = 32
 
 	StatusKnown       = "known"
 	StatusUnknown     = "unknown"
@@ -105,16 +108,14 @@ type Context struct {
 	// handshake and are never part of Context JSON, prompts, confirmations, audit,
 	// session state, or durable replay. References expire with the harness process.
 	ProbeAuthorizations []ProbeAuthorization `json:"-"`
-	// PendingBackgroundJob is an opaque handle produced by the reviewed guest job tool. It is
-	// session-state continuity, not conversation memory and not a command: the supervisor sends it
-	// on a separate handshake field so it cannot change the versioned reference-context schema.
-	// A resumed harness may only poll this handle; it never receives the original command.
-	PendingBackgroundJob *BackgroundJob `json:"-"`
-	// BackgroundJobSlotBusy is true when this conversation already tracks an unresolved job on a
-	// different instance. The harness receives only this boolean, never that instance's ID or handle,
-	// and uses it solely to refuse a second untrackable background launch. Reads and separately
-	// approved foreground repairs remain available.
-	BackgroundJobSlotBusy bool `json:"-"`
+	// PendingBackgroundJobs are opaque handles produced by the reviewed guest job tool. They are
+	// session-state continuity, not conversation memory or commands: the supervisor sends them
+	// in a separate handshake field so they cannot change the versioned reference-context schema.
+	// A resumed harness may poll these instance-scoped handles; it never receives their commands.
+	PendingBackgroundJobs []BackgroundJob `json:"-"`
+	// BackgroundJobsTracked counts handles retained across instances without exposing other
+	// targets. It bounds new launches while allowing independent jobs to run concurrently.
+	BackgroundJobsTracked int `json:"-"`
 	// AgentSession is an opaque SDK continuation cursor owned by the current product session and
 	// target instance. It contains no transcript, command, output or credential. The harness may
 	// resume it only under the same contract/model and stable control-plane working directory.

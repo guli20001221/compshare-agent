@@ -867,33 +867,31 @@ func TestRuntimeGetenv_NilConfigReturnsBase(t *testing.T) {
 	assert.Equal(t, "from-base", getenv("ANYTHING"))
 }
 
-// The quota is enforced at load, so a deployment's YAML cannot exceed it even
-// though the repo's own YAML does not. It used to be enforced for a stronger
-// reason — a session outliving the model's replay window forgot its own opening
-// with no error and no log line — and the message said so. The engine has no
-// count window any more, so the message must no longer claim one: a wrong reason
-// in a boot error sends the next operator looking at the engine.
-func TestLoadRejectsSessionTurnCapAboveTheQuota(t *testing.T) {
+func TestLoadAcceptsExplicitSessionTurnQuotaAboveTwenty(t *testing.T) {
 	setRequiredSecretEnv(t)
 	path := writeConfig(t, baseConfigWithHTTPMySQLMeta(`
   http:
     max_session_turns: 21
 `))
 
-	_, err := Load(path)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "agent.http.max_session_turns=21")
-	assert.Contains(t, err.Error(), "session quota")
+	cfg, err := Load(path)
+	require.NoError(t, err)
+	assert.Equal(t, 21, cfg.Agent.HTTP.MaxSessionTurns)
 }
 
-func TestLoadAcceptsSessionTurnCapAtTheQuota(t *testing.T) {
+func TestLoadSessionTurnQuotaDefaultsToUnlimited(t *testing.T) {
 	setRequiredSecretEnv(t)
-	path := writeConfig(t, baseConfigWithHTTPMySQLMeta(`
-  http:
-    max_session_turns: 20
-`))
+	for _, httpConfig := range []string{"", "  http:\n    max_session_turns: 0\n"} {
+		path := writeConfig(t, baseConfigWithHTTPMySQLMeta(httpConfig))
+		cfg, err := Load(path)
+		require.NoError(t, err)
+		assert.Zero(t, cfg.Agent.HTTP.MaxSessionTurns)
+	}
+}
 
-	cfg, err := Load(path)
-	require.NoError(t, err, "the boundary value itself must remain loadable")
-	assert.Equal(t, MaxSessionTurnsCeiling, cfg.Agent.HTTP.MaxSessionTurns)
+func TestLoadRejectsNegativeSessionTurnQuota(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfigWithHTTPMySQLMeta("  http:\n    max_session_turns: -1\n"))
+	_, err := Load(path)
+	require.ErrorContains(t, err, "agent.http.max_session_turns")
 }

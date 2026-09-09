@@ -361,9 +361,9 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// turn-local: sharing them would let one tenant's in-instance run (or its
 		// one-per-turn slot) bleed into another tenant's turn. All reset per turn /
 		// cleared on return.
-		"instanceOps":            true,
-		"instanceOpsRanThisTurn": true,
-		"currentTurnID":          true,
+		"instanceOps":                true,
+		"instanceOpsResultsThisTurn": true,
+		"currentTurnID":              true,
 		// The notice left by a diagnosis that ended without a verdict, drained by the
 		// next turn. Per-session and NOT turn-local — it deliberately outlives the turn
 		// that created it, which is the whole point — and emphatically not shared: it
@@ -371,6 +371,9 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// box, so a shared field would show tenant A's half-finished repair to tenant B
 		// as if it were their own. Cleared on delivery, never carried further.
 		"pendingInstanceOpsInterruption": true,
+		// Turn-local proof that the deterministic composer included the pending
+		// report. The HTTP transport consumes it only after durable delivery.
+		"instanceOpsInterruptionIncludedInReplyThisTurn": true,
 		// The opaque guest-job handle now lives inside the already-classified
 		// SessionState field, so it follows the same owner/session hydration boundary
 		// instead of adding a second implicit state source here.
@@ -378,7 +381,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// the refusal. Turn-local and per-session for the obvious reason: inheriting
 		// another session's reason would tell this user their card timed out when
 		// they declined it, or the reverse. Reset at turn entry beside
-		// instanceOpsRanThisTurn.
+		// instanceOpsResultsThisTurn.
 		"lastConfirmationTerminalReason": true,
 		// Verbatim user blocks accumulated this turn (see verbatimReplyPrefix).
 		// Turn-local: sharing it would splice one tenant's rendered billing figures
@@ -413,12 +416,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 86, len(perSessionFields); want != got {
+	if want, got := 87, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 92, typ.NumField(); want != got {
+	if want, got := 93, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update this test's whitelists to match.", want, got)
 	}

@@ -10,10 +10,9 @@ import (
 // fail-closed record that an authorized in-instance repair session happened.
 type AuditEvent struct {
 	RequestUUID string
-	// TurnID is the server-side turn identity; TaskHash is the sha256 of the raw task text.
-	// Together they are the (turn_id, task_hash) UNIQUE key that stops a retry of the
-	// SAME turn from re-entering the box (INV-9). The engine-side per-turn gate (INV-11) is the
-	// primary defense against a one-word Task tweak; this DB key covers cross-turn/replay only.
+	// TurnID is the server-side turn identity. TaskHash binds the canonical tool-call
+	// ID, or Task for legacy callers without an ID. The existing UNIQUE key prevents
+	// replay of one invocation while allowing intentional follow-up calls in a turn.
 	TurnID            string
 	TaskHash          string
 	TopOrganizationID uint32

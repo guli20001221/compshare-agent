@@ -155,7 +155,8 @@ check("tool-desc-drops-false-shape-clause",
 # the lifecycle contract and must not teach a hand-rolled protocol that can drift from it.
 check("tool-desc-routes-long-work-to-ssh-exec-background-mode",
       "run_in_background=true" in flat(_WRITE_DESC) and "do not hand-roll" in _WRITE_DESC.lower() and
-      "At most one background job may be active" in flat(_WRITE_DESC))
+      "Independent jobs may run concurrently" in flat(_WRITE_DESC)
+      and "At most one background job may be active" not in flat(_WRITE_DESC))
 check("surface-has-one-shell-tool-plus-a-read-only-poll",
       "mcp__ssh_ops__ssh_exec" in harness.ALLOWED_TOOLS and
       "mcp__ssh_ops__poll_background_job" in harness.ALLOWED_TOOLS and

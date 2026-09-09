@@ -21,7 +21,8 @@ func TestInstanceOps_AddressUnavailableReportsTheUnresolvedEntryFailure(t *testi
 	var steps []StepEvent
 	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&steps))
 
-	require.True(t, strings.HasPrefix(out, finalReplyPrefix), "a failed rewrite is a terminal refusal")
+	result := requireInstanceOpsObservation(t, out)
+	require.Equal(t, "SSH_ADDRESS_UNAVAILABLE", result.Error.Code)
 	require.Contains(t, out, "没有进入实例")
 	require.Contains(t, out, "没有执行任何实例内命令")
 	require.Contains(t, out, "尚无法判断根因")

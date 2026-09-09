@@ -43,6 +43,20 @@ var ErrInstanceOpsAddressUnavailable = errors.New("engine: instance internal add
 // diagnosis attempt never authenticated over SSH or entered the guest.
 var ErrInstanceOpsSSHPreflightUnreachable = errors.New("engine: instance ssh preflight unreachable")
 
+// ErrInstanceOpsTimedOut means the in-instance Agent consumed its complete
+// wall-clock budget. The run may already have changed the Guest, so the outer
+// Agent must deliver the settled report instead of starting another long Guest
+// run in the same user turn.
+var ErrInstanceOpsTimedOut = errors.New("engine: instance operation timed out")
+
+// MaxInstanceOpsRunsPerTurn is the bounded number of independent Guest-agent
+// runs one outer user turn may start. One run normally diagnoses and repairs the
+// whole scoped task; the second leaves room for a genuinely independent target
+// or a post-platform-change verification. Keeping this as a shared exported
+// bound lets the WebSocket transport reserve enough machine lifetime for every
+// run the engine can actually admit.
+const MaxInstanceOpsRunsPerTurn = 2
+
 // InstanceOpsRunner executes ONE task-authorized in-instance diagnosis/repair and
 // streams its activity back through onProgress. The engine depends only on this
 // structural interface; the concrete runner (a Python Agent-SDK harness spawned
@@ -62,9 +76,10 @@ type InstanceOpsRunner interface {
 // identity and bind credentials, audit and execution to that one instance.
 // TurnID is the server-side audit and retry-dedup identity.
 type InstanceOpsRequest struct {
-	TurnID     string
-	InstanceID string
-	Task       string
+	TurnID       string
+	InvocationID string // canonical outer tool-call ID; distinguishes intentional calls within one turn
+	InstanceID   string
+	Task         string
 	// Context is the versioned, redacted reference data for the inner agent.
 	// It is independent from Task so observations cannot change the dedup hash.
 	Context opscontext.Context

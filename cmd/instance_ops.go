@@ -66,6 +66,7 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 		OrganizationID:    u.OrganizationID,
 		RequestUUID:       req.TurnID, // the engine turn identity IS the request identity (F21)
 		TurnID:            req.TurnID, // the INV-9 (turn_id, task_hash) dedup key
+		InvocationID:      req.InvocationID,
 	}
 
 	// Translate the sshops activity stream into engine progress. "connected" has no wire line of its
@@ -120,6 +121,14 @@ func (r *instanceOpsRunner) Run(ctx context.Context, req engine.InstanceOpsReque
 
 	res, err := r.diag.DiagnoseWithContext(ctx, r.describer, owner, req.InstanceID, req.Task, req.Context, onStep, onConfirm)
 	if err != nil {
+		// Preserve the supervisor's typed wall-clock outcome. A timed-out run may
+		// already have completed a repair; the engine uses this sentinel to return
+		// its settled report promptly instead of spending the rest of the outer
+		// request on a second full in-instance run.
+		if res.TimedOut {
+			log.Printf("ssh-ops: diagnosis timed out for instance %s: %v", req.InstanceID, err)
+			return engine.InstanceOpsVerdict{}, fmt.Errorf("%w: %v", engine.ErrInstanceOpsTimedOut, err)
+		}
 		// Translate the no-SSH-target sentinel into the engine's transport-agnostic
 		// mirror so the engine gives an honest, non-retryable refusal (e.g. a Windows
 		// instance: empty SshLoginCommand) without importing internal/sshops. Every

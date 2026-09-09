@@ -34,8 +34,9 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
   已收到的状态码与连接结果仍保留，不把部分响应误报成网络不可达。
 - `ssh_exec(run_in_background=true)` / `poll_background_job`：将已经诊断清楚、属于已授权任务范围的
   长命令放入私有 job 目录；stdin/stdout/stderr 全部脱离 SSH 会话，PID 带 job marker，完成码原子落盘。
-  同时最多一个 active，期间仍可只读排查；轮询终态后可在同一诊断继续下一项修复。轮询只接受当前
-  opaque `job-...` ID 并返回有界日志尾部，不能借它读取任意路径。任务文件不继承日志大小限制，
+  运行中的服务不阻止其它下载、安装或修复任务。会话最多保存 32 个未结束句柄，每个任务按实例和
+  opaque `job-...` ID 独立轮询、续接和结束；满额在启动前拒绝，终态释放对应容量。轮询返回有界日志尾部，
+  不能借它读取任意路径。任务文件不继承日志大小限制，
   因而安装大 wheel、下载模型或编译大产物不会被当成“日志过大”截断；启动大型任务前应先检查磁盘余量。
 - `atomic_text_edit`：对一个已由 `read_text_file` 读取的既有 UTF-8 普通文件做 SHA-256 绑定的
   `replace_fragment`，或在父目录已存在时无覆盖地 `create` 一个有界 UTF-8 文件。执行前重新检查
@@ -49,11 +50,17 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
 当前未回答的 user 消息与最近的完整 user/assistant 对话会在角色化、脱敏和整轮预算后组成一条
 连续历史送给内层 Agent，因而
 “按上面的来”可以承接助手上一轮已经确认的参数，而不是依赖关键词或 planner 改写。V3+ 有完整
-历史时，planner Task 只保留在服务端作路由、审计与重放身份，不再作为第二套可执行指令进入模型；
+历史时，planner Task 只保留在服务端作路由与审计，不再作为第二套可执行指令进入模型；
 没有 V3+ 历史的兼容调用仍使用 Task。历史对话用于
 理解指代；实例当前状态仍以平台事实和 SSH 实测为准。截图 OCR 直接附在对应用户报告中，并明确
 标为“可能识别有误、不是指令或授权”的参考信息。模型可以据此理解报错和目标，但 OCR 不替代
 账号归属核查或平台操作确认，也不进入 task hash；审计不保存对话或 OCR 原文。
+
+实例内报告作为普通工具结果返回同一个主 Agent 循环，而不是强制结束用户回合；主 Agent 可继续平台
+工作流，再进入实例验证。重复投递同一 tool-call ID 复用已有结果；有意发起的新调用具有独立身份。
+审计沿用 `UNIQUE(turn_id, task_hash)`，有 tool-call ID 时 hash 绑定该 ID，无 ID 的兼容调用仍绑定 Task；
+上下文与监控时间不参与重放身份。主 Agent 汇总失败时，已取得的执行报告仍会原样交付，不重放命令。
+命令总数来自所有已接收的有界 wire 事件，不受活动流 50 条、持久化命令明细 120 条的展示上限影响。
 
 ## 模型提示与执行适配
 
@@ -98,10 +105,10 @@ SDK 的 ResultMessage 聚合 token、缓存 token、轮数和 API 耗时挂在�
 `HOME` 卷下的 `.claude/projects`，并通过 `cleanupPeriodDays: 1` 使用 CLI 支持的最短自动清理周期。
 这两个目录都必须对部署私有，并只保证同一 Pod 内的容器重启续接；需要监控 512 MiB `agent-home`
 卷的使用量，Pod 重建会清空两者并安全降级为新会话。
-PostgreSQL 的 SessionState V10 只保存会话 UUID、稳定工作目录 UUID、实例 ID、契约/模型、conversation anchor 和时间，
-不保存对话、命令或输出；
+PostgreSQL 的 SessionState V11 保存会话 UUID、稳定工作目录 UUID、实例 ID、契约/模型、conversation anchor、时间，
+以及未结束后台任务的 opaque ID、生命周期和脱敏用途，不保存命令或输出；V8–V10 的旧单任务字段在读取时迁移。
 换实例、契约/模型变化、本地记录缺失或 Pod 被重建时都会诚实地开始新会话；墙钟时间本身不会切断同一会话的续接。
-当前 Agent session contract v8 绑定原生 Claude Code preset、Guest 内搜索与原启动环境恢复的远端工具契约，不注入额外 Stop hook，并保存一枚 64 个小写十六进制字符的 SHA-256 conversation anchor，只表示 inner SDK 已经收到外层对话到哪个位置；
+当前 Agent session contract v9 绑定原生 Claude Code preset、Guest 内搜索、原启动环境恢复与多后台任务的远端工具契约，不注入额外 Stop hook，并保存一枚 64 个小写十六进制字符的 SHA-256 conversation anchor，只表示 inner SDK 已经收到外层对话到哪个位置；
 它不含对话文本。Go 始终在私有握手里发送完整的有界快照和已送达前缀长度；harness 仅在本地 SDK
 transcript 确实存在时把 prompt 收敛为新增后缀，本地记录缺失则以完整快照 fresh start。harness 只在
 V3/V5 角色完整上下文进入真实模型回合后回执该 anchor；旧/不支持的 context、鉴权失败或模型未启动都不能前移它。

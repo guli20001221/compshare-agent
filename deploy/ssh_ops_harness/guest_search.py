@@ -114,20 +114,17 @@ def _scan(fs, operation, spec, limits, policy):
             if is_dir:
                 directories.append((path, depth + 1))
                 continue
-            files_seen += 1
-            if files_seen > limits["files"] or bytes_scanned >= limits["total_bytes"]:
-                skipped["scan_limit"] += 1
-                truncated = True
-                break
             if not fnmatch.fnmatchcase(name, spec["file_glob"]):
                 continue
-            if bytes_scanned + attrs.st_size > limits["total_bytes"]:
-                skipped["scan_limit"] += 1
-                truncated = True
-                break
             if attrs.st_size > limits["file_bytes"]:
                 skipped["file_too_large"] += 1
                 continue
+            files_seen += 1
+            if (files_seen > limits["files"]
+                    or bytes_scanned + attrs.st_size > limits["total_bytes"]):
+                skipped["scan_limit"] += 1
+                truncated = True
+                break
             data = fs.read(path, limits["file_bytes"] + 1)
             if data is None:
                 continue

@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/config"
+	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/workflow"
 )
 
@@ -15,20 +16,21 @@ import (
 // application directory on the box — so the turn that was killed was the one that had changed the
 // most, and nothing was delivered saying so.
 //
-// The assertion is the INVARIANT (machine lifetime > lane budget), not a specific number, so raising
-// either budget cannot quietly reintroduce the contradiction.
-func TestWSMachineLifetimeOutlivesTheLaneBudget(t *testing.T) {
+// The assertion is the INVARIANT (machine lifetime > every admitted lane run),
+// not a specific number, so raising either budget or the run bound cannot
+// quietly reintroduce the contradiction.
+func TestWSMachineLifetimeOutlivesEveryAdmittedLaneRun(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		lane time.Duration
 		want time.Duration
 	}{
 		{"no lane configured keeps the wedged-connection floor", 0, minWSMachineLifetime},
-		{"a lane well inside the floor changes nothing", 5 * time.Minute, minWSMachineLifetime},
+		{"two short lane runs plus slack exceed the floor", 5 * time.Minute, 12 * time.Minute},
 		// The exact shape of the live failure.
-		{"a lane budget near the floor extends the socket", 12 * time.Minute, 14 * time.Minute},
+		{"a lane budget near the floor reserves two runs", 12 * time.Minute, 26 * time.Minute},
 		// No silent clamp: a ceiling that cuts a longer lane off would be the same bug again.
-		{"a long lane budget is honoured, not capped", 30 * time.Minute, 32 * time.Minute},
+		{"a long lane budget is honoured, not capped", 30 * time.Minute, 62 * time.Minute},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := &Handlers{cfg: &config.Config{}}
@@ -37,8 +39,10 @@ func TestWSMachineLifetimeOutlivesTheLaneBudget(t *testing.T) {
 			if got != tc.want {
 				t.Fatalf("wsMachineLifetime() = %v, want %v", got, tc.want)
 			}
-			if tc.lane > 0 && got <= tc.lane {
-				t.Fatalf("machine lifetime (%v) must outlive the lane budget (%v)", got, tc.lane)
+			allRuns := tc.lane * time.Duration(engine.MaxInstanceOpsRunsPerTurn)
+			if tc.lane > 0 && got <= allRuns {
+				t.Fatalf("machine lifetime (%v) must outlive %d lane runs (%v)",
+					got, engine.MaxInstanceOpsRunsPerTurn, allRuns)
 			}
 		})
 	}

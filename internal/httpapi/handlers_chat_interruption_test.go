@@ -21,11 +21,87 @@ import (
 
 type interruptedDiagnosisLLM struct{}
 
-func (interruptedDiagnosisLLM) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+func (interruptedDiagnosisLLM) Chat(_ context.Context, req llm.ChatRequest) (*llm.ChatResponse, error) {
+	for _, message := range req.Messages {
+		if message.Role == openai.ChatMessageRoleTool && message.ToolCallID == "diagnosis-call" {
+			return &llm.ChatResponse{Content: "实例内排查未能完成；已执行情况以本轮记录为准。"}, nil
+		}
+	}
 	return &llm.ChatResponse{ToolCalls: []openai.ToolCall{{
 		ID: "diagnosis-call", Type: openai.ToolTypeFunction,
 		Function: openai.FunctionCall{Name: "DiagnoseInstanceInternals", Arguments: `{"UHostId":"uhost-1","Task":"排查服务状态"}`},
 	}}}, nil
+}
+
+type timeoutDiagnosisLLM struct{}
+
+func (timeoutDiagnosisLLM) Chat(context.Context, llm.ChatRequest) (*llm.ChatResponse, error) {
+	return &llm.ChatResponse{ToolCalls: []openai.ToolCall{{
+		ID: "diagnosis-timeout", Type: openai.ToolTypeFunction,
+		Function: openai.FunctionCall{Name: "DiagnoseInstanceInternals", Arguments: `{"UHostId":"uhost-1","Task":"恢复原有服务"}`},
+	}}}, nil
+}
+
+type timeoutDiagnosisRunner struct {
+	cancel context.CancelFunc
+	calls  int
+}
+
+func (r *timeoutDiagnosisRunner) Run(_ context.Context, _ engine.InstanceOpsRequest, onProgress func(engine.InstanceOpsProgress)) (engine.InstanceOpsVerdict, error) {
+	r.calls++
+	exit := 0
+	onProgress(engine.InstanceOpsProgress{Kind: engine.InstanceOpsProgressCommand,
+		Command: "systemctl start original-app", Tier: "mutating", Disposition: "ran", ExitCode: &exit})
+	if r.cancel != nil {
+		r.cancel()
+	}
+	return engine.InstanceOpsVerdict{}, engine.ErrInstanceOpsTimedOut
+}
+
+func TestTimeoutReportIsAcknowledgedOnlyAfterSuccessfulHTTPPersistence(t *testing.T) {
+	for _, canceled := range []bool{false, true} {
+		t.Run(map[bool]string{false: "persisted_success", true: "client_disconnected"}[canceled], func(t *testing.T) {
+			streamCtx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			runner := &timeoutDiagnosisRunner{}
+			if canceled {
+				runner.cancel = cancel
+			}
+			eng := engine.NewWithDeps(timeoutDiagnosisLLM{}, chatExecutor{}, denyConfirm)
+			eng.SetMutatingToolsEnabled(true)
+			eng.SetInstanceOps(runner)
+			eng.RehydrateHistory(nil)
+			messages := &recordingMessages{}
+			sessions := &mockSessions{byID: map[string]store.Session{"timeout-delivery": {
+				ID: "timeout-delivery", TopOrganizationID: 1, OrganizationID: 2,
+				CreatedAt: time.Now(), UpdatedAt: time.Now(),
+			}}}
+			h := NewHandlers(&config.Config{Agent: config.AgentConfig{
+				LLM:  config.LLMConfig{Model: "offline-timeout"},
+				HTTP: config.HTTPConfig{MaxInputLength: 4000, SSEKeepaliveInterval: time.Hour},
+				STS:  config.STSConfig{RoleUrnTemplate: "ucs:iam::%d:role/test"},
+			}}, sessions, messages, mockFeedback{}, fakePool{eng: eng}, nil)
+			base := BaseRequest{Action: "SendCSAgentChat", RequestUUID: "timeout-delivery-request"}
+			base.Owner = store.Owner{TopOrganizationID: 1, OrganizationID: 2}
+			prep, apiErr := h.prepareChat(context.Background(), base, "timeout-delivery", "请恢复 uhost-1 的原有服务", "")
+			require.Nil(t, apiErr)
+			defer prep.release()
+
+			h.chatStream(streamCtx, &recordingSink{}, base, prep)
+
+			require.Equal(t, 1, runner.calls)
+			require.Contains(t, messages.patch.Content, "systemctl start original-app")
+			if canceled {
+				require.Equal(t, "aborted", messages.patch.Status)
+				require.NotEmpty(t, eng.InstanceOpsInterruptionSummary(),
+					"a disconnected transport must retain the observed report")
+			} else {
+				require.Equal(t, "ok", messages.patch.Status)
+				require.Empty(t, eng.InstanceOpsInterruptionSummary(),
+					"a durably persisted canonical report must not repeat next turn")
+			}
+		})
+	}
 }
 
 type interruptedDiagnosisRunner struct {
@@ -96,7 +172,8 @@ func TestChatInterruptedDiagnosisPersistsObservedWorkAndCancellation(t *testing.
 			require.Equal(t, 1, sessions.updateContextCalls, "the existing continuation envelope is persisted once")
 			persisted, err := engine.ParsePersistedContext(sessions.byID["interrupted"].Context)
 			require.NoError(t, err)
-			require.Equal(t, jobID, persisted.AgentSessionState.PersistedInstanceOpsJob.JobID)
+			require.Len(t, persisted.AgentSessionState.PersistedInstanceOpsJobs, 1)
+			require.Equal(t, jobID, persisted.AgentSessionState.PersistedInstanceOpsJobs[0].JobID)
 			require.Equal(t, sessionID, persisted.AgentSessionState.PersistedInstanceOpsAgent.SessionID)
 			require.Equal(t, workdirID, persisted.AgentSessionState.PersistedInstanceOpsAgent.WorkdirID)
 			require.Len(t, persisted.AgentSessionState.PersistedInstanceOpsAgent.ConversationAnchor, 64)
@@ -118,7 +195,7 @@ func TestChatInterruptedDiagnosisPersistsObservedWorkAndCancellation(t *testing.
 				require.Contains(t, messages.patch.Content, "可能已修改实例，结果不确定")
 				require.Contains(t, messages.patch.Content, "可能不完整")
 				require.Contains(t, messages.patch.Content, jobID)
-				require.Contains(t, messages.patch.Content, "不会重新启动")
+				require.Contains(t, messages.patch.Content, "不会自动重放原启动命令")
 				require.NotContains(t, messages.patch.Content, secret)
 				require.NotEmpty(t, eng.InstanceOpsInterruptionSummary(), "persistence must not consume the existing next-turn notice")
 			} else {

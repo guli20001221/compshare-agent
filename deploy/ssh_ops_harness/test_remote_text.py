@@ -2,7 +2,6 @@
 import hashlib
 import os
 import shutil
-import stat
 import tempfile
 
 import remote_text
