@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
@@ -55,13 +56,39 @@ func TestBudgetClosingUsesPlainReadResultsWithoutRAG(t *testing.T) {
 	require.Equal(t, "当前没有实例。", reply)
 }
 
+// An unavailable search is withheld from the reuse cache so the same query can
+// run again. The turn still produced a tool result the user is owed an account
+// of, so closing must stay reachable and carry that failure into the answer.
+func TestBudgetClosingRunsAfterAnUnavailableSearch(t *testing.T) {
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("search", "SearchKnowledge", `{"query":"vllm 显存不足"}`)}, Usage: llm.TokenUsage{TotalTokens: 60000}},
+		{Content: "知识库这次没查到，vLLM 显存问题还没能给出答复。"},
+	}}
+	eng := NewWithDeps(model, &mockExecutor{}, nil)
+	eng.maxTokensPerTurn = 50000
+	eng.SetKnowledgeRetriever(&scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
+		{Enabled: true, Unavailable: true, FailureReason: "mcp_timeout"},
+	}})
+
+	reply, err := eng.Chat(context.Background(), "vLLM 显存不足怎么办", noopStep)
+
+	require.NoError(t, err)
+	require.Empty(t, eng.toolResultsByCallThisTurn, "premise: the failed search is not a reusable observation")
+	require.Len(t, model.calls, 2, "closing still runs on the conversation's own tool result")
+	require.Contains(t, renderTestMessages(model.calls[1].Messages), "knowledge_unavailable")
+	require.Equal(t, "知识库这次没查到，vLLM 显存问题还没能给出答复。", reply)
+}
+
 func TestClosingRequiresCompletedWorkAndCompleteModelOutput(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{{Content: "unfinished", StopReason: "length", Usage: llm.TokenUsage{TotalTokens: 12}}}}
 	eng := NewWithDeps(model, &mockExecutor{}, nil)
 	_, ok := eng.finishAgentTurn(context.Background())
 	require.False(t, ok)
 	require.Empty(t, model.calls)
-	eng.toolResultsByCallThisTurn = map[string]string{"read": "tool result"}
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: "看看我的实例"},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: "read", Content: "tool result"},
+	}
 	_, ok = eng.finishAgentTurn(context.Background())
 	require.False(t, ok)
 	require.Len(t, model.calls, 1)

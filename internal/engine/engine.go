@@ -2757,7 +2757,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 				return result
 			}
 			result := e.executeToolOnce(ctx, tc, onStep)
-			if _, final := isFinalReply(result); !final {
+			if _, final := isFinalReply(result); !final && cacheableAgentToolObservation(action, result) {
 				e.toolResultsByCallThisTurn[key] = result
 			}
 			return result

@@ -13,7 +13,7 @@ import (
 
 // ReadChunk is the explicit second half of agentic retrieval: SearchKnowledge
 // shows a bounded snippet for ordinary/weak entries and may enrich the strongest
-// accepted entries; ReadChunk returns any remaining chunk's FULL body by id.
+// accepted entries; ReadChunk returns a requested chunk's FULL body by id.
 // Without it the agent may have only an excerpt that routinely stops
 // before the parameters, thresholds or step list the question was actually about,
 // and a truncated excerpt is indistinguishable from a corpus that never covered
@@ -174,6 +174,9 @@ func (e *Engine) autoMaterializeKnowledgeChunks(
 		for _, group := range groups {
 			chunks, err := remoteReader.ReadChunks(ctx, group.searchID, group.ids)
 			if err != nil {
+				if errors.Is(err, knowledge.ErrSearchCapabilityInvalid) {
+					e.invalidateSearchKnowledgeCapability(group.searchID)
+				}
 				result.Unavailable = true
 				continue
 			}
@@ -283,8 +286,7 @@ func (e *Engine) executeRemoteReadChunk(reader searchBoundChunkReader, ids []str
 	groupIndex := map[string]int{}
 	searchRefreshNeeded := false
 	for _, id := range ids {
-		if _, seen := e.readChunkIDsThisTurn[id]; seen {
-			itemsByID[id] = readChunkItem{ChunkID: id, Status: readChunkStatusAlreadyRead}
+		if _, complete := e.previouslyReadKnowledgeChunk(id); complete {
 			continue
 		}
 		searchID := ""
@@ -317,6 +319,7 @@ func (e *Engine) executeRemoteReadChunk(reader searchBoundChunkReader, ids []str
 		chunks, err := reader.ReadChunks(ctx, group.searchID, group.ids)
 		if err != nil {
 			if errors.Is(err, knowledge.ErrSearchCapabilityInvalid) {
+				e.invalidateSearchKnowledgeCapability(group.searchID)
 				searchRefreshNeeded = true
 				for _, id := range group.ids {
 					itemsByID[id] = readChunkItem{ChunkID: id, Status: readChunkStatusSearchNeeded}
@@ -370,14 +373,14 @@ func (e *Engine) materializeReadChunks(
 			items = append(items, item)
 			continue
 		}
-		if _, seen := e.readChunkIDsThisTurn[id]; seen {
-			items = append(items, readChunkItem{ChunkID: id, Status: readChunkStatusAlreadyRead})
-			continue
-		}
-		chunk, found := lookup(id)
-		if !found {
-			items = append(items, readChunkItem{ChunkID: id, Status: readChunkStatusNotFound})
-			continue
+		chunk, reused := e.previouslyReadKnowledgeChunk(id)
+		if !reused {
+			var found bool
+			chunk, found = lookup(id)
+			if !found {
+				items = append(items, readChunkItem{ChunkID: id, Status: readChunkStatusNotFound})
+				continue
+			}
 		}
 		content := strings.TrimSpace(chunk.Content)
 		contentRunes := utf8.RuneCountInString(content)
@@ -389,15 +392,20 @@ func (e *Engine) materializeReadChunks(
 		}
 		runesLeft -= contentRunes
 		status := readChunkStatusRead
-		if chunk.ContentTruncated {
+		if reused {
+			status = readChunkStatusAlreadyRead
+		} else if chunk.ContentTruncated {
 			status = readChunkStatusSizeLimit
 		} else {
 			e.markChunkRead(id)
 		}
 		// The ledger receives exactly the delivered body and the upstream
-		// completeness flag, never an undisplayed suffix.
-		chunk.Content = content
-		read = append(read, chunk)
+		// completeness flag, never an undisplayed suffix. Replayed bodies are
+		// already recorded and do not create another evidence observation.
+		if !reused {
+			chunk.Content = content
+			read = append(read, chunk)
+		}
 		items = append(items, readChunkItem{
 			ChunkID:    id,
 			Status:     status,
@@ -408,6 +416,23 @@ func (e *Engine) materializeReadChunks(
 		})
 	}
 	return items, read
+}
+
+// A complete body may have left the model's bounded transcript. Explicit reads
+// can re-project that same turn-local evidence without fetching it again; the
+// ordinary per-call content budget still applies in materializeReadChunks.
+func (e *Engine) previouslyReadKnowledgeChunk(id string) (knowledge.KBChunk, bool) {
+	if _, complete := e.readChunkIDsThisTurn[id]; !complete {
+		return knowledge.KBChunk{}, false
+	}
+	for _, item := range e.searchKnowledgeLedgerThisTurn.Items {
+		if item.ChunkID == id && strings.TrimSpace(item.Snippet) != "" {
+			return knowledge.KBChunk{
+				ChunkID: id, Title: item.Title, SourceType: item.SourceType, Content: item.Snippet,
+			}, true
+		}
+	}
+	return knowledge.KBChunk{}, false
 }
 
 func (e *Engine) finishReadChunk(

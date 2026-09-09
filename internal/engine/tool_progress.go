@@ -9,6 +9,7 @@ import (
 	"github.com/compshare-agent/internal/capability"
 	"github.com/compshare-agent/internal/diagnosis"
 	"github.com/compshare-agent/internal/intent"
+	"github.com/compshare-agent/internal/knowledge"
 )
 
 // repeatableAgentTool identifies reads that may legitimately run more than once
@@ -103,6 +104,69 @@ func toolProgressCallKey(action string, args map[string]any) string {
 func digestToolProgress(payload []byte) string {
 	digest := sha256.Sum256(payload)
 	return hex.EncodeToString(digest[:])
+}
+
+type searchKnowledgeCacheObservation struct {
+	EvidenceLedger           *knowledge.EvidenceLedger      `json:"EvidenceLedger"`
+	BelowFloorCandidates     []belowFloorKnowledgeCandidate `json:"below_floor_candidates"`
+	KnowledgeUnavailable     bool                           `json:"knowledge_unavailable"`
+	AutoExpansionUnavailable bool                           `json:"auto_expansion_unavailable"`
+	Error                    json.RawMessage                `json:"error"`
+}
+
+// An unavailable search is not a reusable observation. A later attempt still
+// passes through SearchKnowledge's existing per-turn retrieval budget.
+func cacheableAgentToolObservation(action, raw string) bool {
+	if action != "SearchKnowledge" {
+		return true
+	}
+	var observation searchKnowledgeCacheObservation
+	return json.Unmarshal([]byte(raw), &observation) == nil &&
+		observation.EvidenceLedger != nil && !observation.KnowledgeUnavailable &&
+		!observation.AutoExpansionUnavailable && len(observation.Error) == 0
+}
+
+// Expiry removes the capability and only cached searches exposing its IDs.
+// Unrelated successful searches remain reusable; the model chooses whether to
+// spend another search call to obtain a fresh capability.
+func (e *Engine) invalidateSearchKnowledgeCapability(searchID string) {
+	expiredIDs := map[string]struct{}{}
+	for chunkID, capability := range e.searchKnowledgeCapabilitiesThisTurn {
+		if capability == searchID {
+			expiredIDs[chunkID] = struct{}{}
+			delete(e.searchKnowledgeCapabilitiesThisTurn, chunkID)
+			delete(e.automaticKnowledgeBodyIDsThisTurn, chunkID)
+		}
+	}
+	if len(expiredIDs) == 0 {
+		return
+	}
+	for key, raw := range e.toolResultsByCallThisTurn {
+		action, _, found := strings.Cut(key, ":")
+		if found && action == "SearchKnowledge" && searchKnowledgeObservationUsesIDs(raw, expiredIDs) {
+			delete(e.toolResultsByCallThisTurn, key)
+		}
+	}
+}
+
+func searchKnowledgeObservationUsesIDs(raw string, ids map[string]struct{}) bool {
+	var observation searchKnowledgeCacheObservation
+	if json.Unmarshal([]byte(raw), &observation) != nil {
+		return false
+	}
+	if observation.EvidenceLedger != nil {
+		for _, item := range observation.EvidenceLedger.Items {
+			if _, ok := ids[item.ChunkID]; ok {
+				return true
+			}
+		}
+	}
+	for _, candidate := range observation.BelowFloorCandidates {
+		if _, ok := ids[candidate.ChunkID]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func repeatedToolObservation(action, previous string) string {

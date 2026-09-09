@@ -144,18 +144,68 @@ func TestReadChunk_BatchSizeLimitLeavesWholeBodyForNextCall(t *testing.T) {
 	assert.Equal(t, 2, eng.readChunkCallsThisTurn)
 }
 
-// A second read of the same id in one turn returns already_read, not a duplicate
-// body — the dedup that keeps a multi-round loop from re-pasting the same text.
-func TestReadChunk_DedupsWithinTurn(t *testing.T) {
-	eng, _ := newChunkStoreEngine(t, knowledge.KBChunk{ChunkID: "c1", Content: "完整正文内容。"})
+func TestReadChunk_ReusesFullBodiesWithoutRefetchWithinBudgets(t *testing.T) {
+	chunks := map[string]knowledge.KBChunk{}
+	hits := []knowledge.RetrievalHit{}
+	for _, id := range []string{"a", "b", "c"} {
+		chunk := knowledge.KBChunk{ChunkID: id, Title: "完整章节 " + id, Content: strings.Repeat(id, 4000)}
+		chunks[id] = chunk
+		hits = append(hits, knowledge.RetrievalHit{Kept: true, Score: 0.9, Chunk: chunk})
+	}
+	retriever := &remoteChunkStoreRetriever{
+		scriptedKnowledgeRetriever: scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
+			{Enabled: true, SearchID: "search", HybridMode: knowledge.RetrievalModeUnknownRemote, HitItems: hits},
+		}},
+		chunks: chunks,
+	}
+	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	eng.SetKnowledgeRetriever(retriever)
+	eng.executeTool(context.Background(), toolCall("search", "SearchKnowledge", `{"query":"完整章节"}`), noopStep)
+	read := toolCall("read", "ReadChunk", `{"chunk_ids":["a","b","c"]}`)
+	for call := 0; call < maxReadChunkCallsPerTurn; call++ {
+		out := readChunkResult(t, eng.executeTool(context.Background(), read, noopStep))
+		items := out["chunks"].([]any)
+		require.Len(t, items, maxReadChunkIDsPerCall)
+		runes := 0
+		for index, id := range []string{"a", "b", "c"} {
+			item := items[index].(map[string]any)
+			expectedStatus := readChunkStatusAlreadyRead
+			if call == 0 {
+				expectedStatus = readChunkStatusRead
+			}
+			require.Equal(t, expectedStatus, item["status"])
+			require.Equal(t, chunks[id].Content, item["content"], "a later model request must recover the entire body without prior transcript content")
+			runes += len([]rune(item["content"].(string)))
+		}
+		require.Equal(t, maxReadChunkRunesPerCall, runes)
+		// A replay must work even if the remote reader is no longer available.
+		retriever.err = fmt.Errorf("reader unavailable after first full delivery")
+	}
+	require.Len(t, retriever.reads, 1, "all repeated bodies come from the existing complete-evidence ledger")
+	require.Equal(t, maxReadChunkCallsPerTurn, eng.readChunkCallsThisTurn)
+	require.Contains(t, eng.executeTool(context.Background(), read, noopStep), `"read_limit_reached":true`)
+	require.Len(t, retriever.reads, 1)
+}
 
-	first := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"c1"}}, noopStep))
-	assert.Equal(t, readChunkStatusRead, first["chunks"].([]any)[0].(map[string]any)["status"])
+func TestReadChunk_ReusedBodySharesBatchBudgetWithFreshBody(t *testing.T) {
+	bodyA, bodyB := strings.Repeat("甲", 8000), strings.Repeat("乙", 5000)
+	eng, _ := newChunkStoreEngine(t,
+		knowledge.KBChunk{ChunkID: "a", Content: bodyA},
+		knowledge.KBChunk{ChunkID: "b", Content: bodyB},
+	)
+	eng.executeTool(context.Background(), toolCall("read-a", "ReadChunk", `{"chunk_ids":["a"]}`), noopStep)
 
-	second := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"c1"}}, noopStep))
-	item := second["chunks"].([]any)[0].(map[string]any)
-	assert.Equal(t, readChunkStatusAlreadyRead, item["status"])
-	assert.Empty(t, item["content"], "an already-read chunk must not re-ship its body")
+	repeated := readChunkResult(t, eng.executeTool(context.Background(), toolCall("read-both", "ReadChunk", `{"chunk_ids":["a","b"]}`), noopStep))
+	items := repeated["chunks"].([]any)
+	require.Len(t, items, 2)
+	require.Equal(t, readChunkStatusAlreadyRead, items[0].(map[string]any)["status"])
+	require.Equal(t, bodyA, items[0].(map[string]any)["content"])
+	require.Equal(t, readChunkStatusSizeLimit, items[1].(map[string]any)["status"])
+	require.Empty(t, items[1].(map[string]any)["content"], "cached bodies consume the same batch budget as newly read bodies")
+	require.NotContains(t, eng.readChunkIDsThisTurn, "b")
+
+	next := readChunkResult(t, eng.executeTool(context.Background(), toolCall("read-b", "ReadChunk", `{"chunk_ids":["b"]}`), noopStep))
+	require.Equal(t, bodyB, next["chunks"].([]any)[0].(map[string]any)["content"])
 }
 
 // An unknown id is reported explicitly as not_found rather than silently dropped,
