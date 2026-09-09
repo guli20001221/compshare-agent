@@ -349,12 +349,9 @@ func instanceOpsBoundaryObservation(action, instanceID, code, message string) st
 // If the parent model fails after a completed subagent call, the already obtained
 // report must still reach the user. Do not promote it to a new claim of repair.
 func (e *Engine) instanceOpsRecoveryReply() (string, bool) {
-	start := len(e.messages)
-	for start > 0 {
-		start--
-		if e.messages[start].Role == openai.ChatMessageRoleUser {
-			break
-		}
+	start := currentTurnStart(e.messages)
+	if start < 0 {
+		return "", false
 	}
 	var reports []string
 	seen := make(map[string]bool)

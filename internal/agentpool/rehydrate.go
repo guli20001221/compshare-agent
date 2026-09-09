@@ -2,6 +2,7 @@ package agentpool
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/compshare-agent/internal/engine"
@@ -15,6 +16,22 @@ import (
 func denyConfirm(_ string, _ map[string]any) bool { return false }
 
 const recentHistoryPageSize = 128
+
+// historyMessageSourceRunes charges the complete cold-history carrier rather
+// than only its display content. Assistant metadata contains the canonical
+// tool transcript that RehydrateHistory will parse and retain, while the JSON
+// envelope supplies a natural structural cost for very short messages. Without
+// both, a one-character conversation can drive thousands of otherwise free DB
+// rows and transcript metadata through the fixed source budget.
+func historyMessageSourceRunes(msg engine.HistoryMessage) int {
+	raw, err := json.Marshal(msg)
+	if err == nil {
+		return len([]rune(string(raw)))
+	}
+	// json.RawMessage can make Marshal fail only for malformed legacy metadata.
+	// Charge that raw payload conservatively instead of turning it into free I/O.
+	return len([]rune(msg.Role)) + len([]rune(msg.Content)) + len(msg.Transcript)
+}
 
 func historyMessage(msg store.Message) (engine.HistoryMessage, bool) {
 	interrupted := msg.Role == "assistant" && (msg.Status == "aborted" || msg.Status == "error")
@@ -68,10 +85,10 @@ func loadRecentHistory(ctx context.Context, messages store.MessageStore, session
 				pendingAssistant = &copyMsg
 			case "user":
 				turn := []engine.HistoryMessage{msg}
-				turnRunes := len([]rune(msg.Content))
+				turnRunes := historyMessageSourceRunes(msg)
 				if pendingAssistant != nil {
 					turn = append(turn, *pendingAssistant)
-					turnRunes += len([]rune(pendingAssistant.Content))
+					turnRunes += historyMessageSourceRunes(*pendingAssistant)
 				}
 				if budgetRunes > 0 && len(turnsNewestFirst) > 0 && spentRunes+turnRunes > budgetRunes {
 					budgetReached = true

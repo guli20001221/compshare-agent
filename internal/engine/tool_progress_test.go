@@ -64,6 +64,25 @@ func TestMonitorUniqueCallBudgetStopsThirdVariant(t *testing.T) {
 	require.Equal(t, 2, uniqueAgentToolCalls(eng.toolResultsByCallThisTurn, action))
 }
 
+func TestInstanceOpsUniqueCallBudgetStopsThirdRun(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: "已核实"}}
+	eng := newInstanceOpsEngine(runner, nil)
+	eng.toolResultsByCallThisTurn = map[string]string{}
+
+	for index, task := range []string{"检查服务", "复核服务"} {
+		callID := []string{"guest-first", "guest-second"}[index]
+		result := eng.executeTool(context.Background(), toolCall(callID, "DiagnoseInstanceInternals",
+			`{"UHostId":"uhost-1","Task":"`+task+`"}`), noopStep)
+		require.NotContains(t, result, "call_budget_exhausted", "run %d", index+1)
+	}
+	third := eng.executeTool(context.Background(), toolCall("guest-third", "DiagnoseInstanceInternals",
+		`{"UHostId":"uhost-1","Task":"第三次检查"}`), noopStep)
+
+	require.Contains(t, third, "call_budget_exhausted")
+	require.Contains(t, third, `"max_unique_calls":2`)
+	require.Equal(t, MaxInstanceOpsRunsPerTurn, runner.calls)
+}
+
 func TestZoneCatalogIsSingleShotOnlyAfterSuccessfulObservation(t *testing.T) {
 	action := capability.ReadToolName(intent.IntentZoneCatalog)
 	results := map[string]string{

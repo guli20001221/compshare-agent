@@ -49,6 +49,14 @@ var ErrInstanceOpsSSHPreflightUnreachable = errors.New("engine: instance ssh pre
 // run in the same user turn.
 var ErrInstanceOpsTimedOut = errors.New("engine: instance operation timed out")
 
+// MaxInstanceOpsRunsPerTurn is the bounded number of independent Guest-agent
+// runs one outer user turn may start. One run normally diagnoses and repairs the
+// whole scoped task; the second leaves room for a genuinely independent target
+// or a post-platform-change verification. Keeping this as a shared exported
+// bound lets the WebSocket transport reserve enough machine lifetime for every
+// run the engine can actually admit.
+const MaxInstanceOpsRunsPerTurn = 2
+
 // InstanceOpsRunner executes ONE task-authorized in-instance diagnosis/repair and
 // streams its activity back through onProgress. The engine depends only on this
 // structural interface; the concrete runner (a Python Agent-SDK harness spawned

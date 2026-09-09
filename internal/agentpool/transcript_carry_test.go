@@ -77,6 +77,47 @@ func TestLoadRecentHistoryCarriesAssistantTranscript(t *testing.T) {
 	}
 }
 
+func TestLoadRecentHistoryBudgetChargesCanonicalTranscriptMetadata(t *testing.T) {
+	rows := []store.Message{
+		{Role: "user", Status: "ok", Content: "older question"},
+		{Role: "assistant", Status: "ok", Content: "older answer", Metadata: []byte(sampleTranscript)},
+		{Role: "user", Status: "ok", Content: "newer question"},
+		{Role: "assistant", Status: "ok", Content: "newer answer", Metadata: []byte(sampleTranscript)},
+	}
+	newerUser, ok := historyMessage(rows[2])
+	require.True(t, ok)
+	newerAssistant, ok := historyMessage(rows[3])
+	require.True(t, ok)
+	budget := historyMessageSourceRunes(newerUser) + historyMessageSourceRunes(newerAssistant)
+
+	messages := &memoryRecentHistoryStore{messages: rows}
+	history, err := loadRecentHistory(context.Background(), messages, "session", budget)
+
+	require.NoError(t, err)
+	require.Equal(t, []engine.HistoryMessage{newerUser, newerAssistant}, history)
+	// Content-only accounting would keep both tiny exchanges because it would
+	// never charge either assistant's canonical transcript.
+	require.Greater(t, len(sampleTranscript), len(newerUser.Content)+len(newerAssistant.Content))
+}
+
+func TestLoadRecentHistoryTinyRowsCannotCauseUnboundedPaging(t *testing.T) {
+	rows := make([]store.Message, 0, 4000)
+	for i := 0; i < 2000; i++ {
+		rows = append(rows,
+			store.Message{Role: "user", Status: "ok", Content: "u"},
+			store.Message{Role: "assistant", Status: "ok", Content: "a"},
+		)
+	}
+	messages := &memoryRecentHistoryStore{messages: rows}
+
+	history, err := loadRecentHistory(context.Background(), messages, "session", 1000)
+
+	require.NoError(t, err)
+	require.LessOrEqual(t, messages.listCalls, 2,
+		"the serialized row structure must consume budget even when content is one rune")
+	require.Less(t, len(history), len(rows))
+}
+
 // Rows written before transcript persistence existed have NULL metadata. They must
 // rebuild exactly as they always did.
 func TestRowsWithoutTranscriptRebuildUnchanged(t *testing.T) {

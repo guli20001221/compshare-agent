@@ -15,7 +15,7 @@ import (
 // repeatableAgentTool identifies reads that may legitimately run more than once
 // in a turn as the Agent refines its evidence.
 func repeatableAgentTool(action string) bool {
-	if action == "SearchKnowledge" || diagnosis.IsDiagnosisTool(action) {
+	if action == "SearchKnowledge" || action == "DiagnoseInstanceInternals" || diagnosis.IsDiagnosisTool(action) {
 		return true
 	}
 	_, ok := capability.ReadIntentForTool(action)
@@ -27,6 +27,9 @@ func repeatableAgentTool(action string) bool {
 // Two attempts leave room for one genuine correction without allowing a monitor
 // turn to consume the whole ReAct budget.
 func maxUniqueAgentToolCalls(action string) int {
+	if action == "DiagnoseInstanceInternals" {
+		return MaxInstanceOpsRunsPerTurn
+	}
 	readIntent, ok := capability.ReadIntentForTool(action)
 	if !ok {
 		return 0
