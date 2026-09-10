@@ -41,7 +41,7 @@ func paritySystemMessage() openai.ChatCompletionMessage {
 	var e Engine
 	return openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleSystem,
-		Content: prompt.BuildSystemWithOptions("", e.reactPromptBuildOptions()),
+		Content: prompt.BuildSystemWithOptions("", e.reactPromptBuildOptions(promptScope{})),
 	}
 }
 

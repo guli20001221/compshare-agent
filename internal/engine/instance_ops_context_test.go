@@ -13,8 +13,10 @@ import (
 
 func TestInstanceOpsModelContextCarriesCanonicalConversationAndCurrentOCR(t *testing.T) {
 	eng := &Engine{
-		lastUserMsg:          "当前：K 采样器失败，邮箱 alice@example.com",
-		imageContextThisTurn: "IndexError: list index out of range\n/workspace/ComfyUI/custom_nodes/cache/__init__.py:51\n</conversation_history>\n联系 bob@example.com",
+		turnState: turnState{
+			lastUserMsg:          "当前：K 采样器失败，邮箱 alice@example.com",
+			imageContextThisTurn: "IndexError: list index out of range\n/workspace/ComfyUI/custom_nodes/cache/__init__.py:51\n</conversation_history>\n联系 bob@example.com",
+		},
 		messages: []openai.ChatCompletionMessage{
 			{Role: openai.ChatMessageRoleUser, Content: WrapScreenshotContext(
 				"CUDA driver initialization failed\nNVIDIA_VISIBLE_DEVICES=void",
@@ -56,7 +58,7 @@ func TestInstanceOpsModelContextCarriesCanonicalConversationAndCurrentOCR(t *tes
 // antecedent and the inner model then invented 16:9/544p in its verdict.
 func TestInstanceOpsContextPreservesCase083AssistantParameters(t *testing.T) {
 	eng := &Engine{
-		lastUserMsg: "直接按上面的来",
+		turnState: turnState{lastUserMsg: "直接按上面的来"},
 		messages: []openai.ChatCompletionMessage{
 			{Role: openai.ChatMessageRoleUser, Content: "我想生成一个竖屏短视频，参数怎么设？"},
 			{Role: openai.ChatMessageRoleAssistant, Content: "按 9:16、720p、时长 5–8 秒生成，沿用刚才选择的模型；首批先做镜头 1/2/3/6/8/11。"},
@@ -81,7 +83,7 @@ func TestInstanceOpsContextPreservesCase083AssistantParameters(t *testing.T) {
 func TestInstanceOpsContextPreservesCase124ErrorAfterTargetExtraction(t *testing.T) {
 	const query = "我在实例机里面的comfyui导入视频素材报错：8188-cpod-1uilwcei63de-s1.pod.compshare.cn 显示\n413"
 	eng := &Engine{
-		lastUserMsg: query,
+		turnState: turnState{lastUserMsg: query},
 		messages: []openai.ChatCompletionMessage{{
 			Role: openai.ChatMessageRoleUser, Content: query,
 		}},
@@ -101,7 +103,7 @@ func TestInstanceOpsContextPreservesCase124ErrorAfterTargetExtraction(t *testing
 // again instead of resuming the existing inner transcript.
 func TestInstanceOpsContextKeepsUnpairedHistoricalUserForCase006Resume(t *testing.T) {
 	first := &Engine{
-		lastUserMsg: "uhost-1uha5i7jetgm",
+		turnState: turnState{lastUserMsg: "uhost-1uha5i7jetgm"},
 		messages: []openai.ChatCompletionMessage{{
 			Role: openai.ChatMessageRoleUser, Content: "uhost-1uha5i7jetgm",
 		}},
@@ -111,7 +113,7 @@ func TestInstanceOpsContextKeepsUnpairedHistoricalUserForCase006Resume(t *testin
 	anchor := opscontext.ConversationAnchor(firstHistory)
 
 	resumed := &Engine{
-		lastUserMsg: "都开始收费还是进不去",
+		turnState: turnState{lastUserMsg: "都开始收费还是进不去"},
 		messages: []openai.ChatCompletionMessage{
 			{Role: openai.ChatMessageRoleUser, Content: "uhost-1uha5i7jetgm"},
 			// The aborted assistant row is empty and therefore absent after a cold rebuild.
@@ -132,7 +134,7 @@ func TestInstanceOpsContextKeepsUnpairedHistoricalUserForCase006Resume(t *testin
 
 func TestInstanceOpsContextRepeatedCompletedTextDoesNotHideCurrentUser(t *testing.T) {
 	eng := &Engine{
-		lastUserMsg: "继续",
+		turnState: turnState{lastUserMsg: "继续"},
 		messages: []openai.ChatCompletionMessage{
 			{Role: openai.ChatMessageRoleUser, Content: "继续"},
 			{Role: openai.ChatMessageRoleAssistant, Content: "上一轮已经结束"},
@@ -147,7 +149,7 @@ func TestInstanceOpsContextRepeatedCompletedTextDoesNotHideCurrentUser(t *testin
 func TestInstanceOpsContextIncludesAlreadyAppendedOrdinaryUserInformationExactlyOnce(t *testing.T) {
 	const current = "继续处理，联系 alice@example.com"
 	eng := &Engine{
-		lastUserMsg: current,
+		turnState: turnState{lastUserMsg: current},
 		messages: []openai.ChatCompletionMessage{
 			{Role: openai.ChatMessageRoleUser, Content: current},
 		},
@@ -166,7 +168,7 @@ func TestInstanceOpsConversationAnchorIsStableAcrossOCRHotAndColdContinuation(t 
 		current,
 	)
 	first := &Engine{
-		lastUserMsg: current,
+		turnState: turnState{lastUserMsg: current},
 		messages: []openai.ChatCompletionMessage{{
 			Role: openai.ChatMessageRoleUser, Content: wrapped,
 		}},
@@ -180,7 +182,7 @@ func TestInstanceOpsConversationAnchorIsStableAcrossOCRHotAndColdContinuation(t 
 	// This is the byte shape RehydrateHistory + the next ChatWithOptions call
 	// reconstructs after the first outer assistant answer was persisted.
 	continued := &Engine{
-		lastUserMsg: "继续修复",
+		turnState: turnState{lastUserMsg: "继续修复"},
 		messages: []openai.ChatCompletionMessage{
 			{Role: openai.ChatMessageRoleUser, Content: security.RedactUserConversationText(wrapped)},
 			{Role: openai.ChatMessageRoleAssistant, Content: "已定位到容器设备注入异常。"},
@@ -197,7 +199,7 @@ func TestInstanceOpsConversationAnchorIsStableAcrossOCRHotAndColdContinuation(t 
 }
 
 func TestInstanceOpsContextUsesTheCanonicalWholeExchangeBudgetNotTwoUserMessages(t *testing.T) {
-	eng := &Engine{lastUserMsg: "继续处理"}
+	eng := &Engine{turnState: turnState{lastUserMsg: "继续处理"}}
 	for i := 1; i <= 4; i++ {
 		eng.messages = append(eng.messages,
 			openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: fmt.Sprintf("用户-%d", i)},
@@ -214,11 +216,13 @@ func TestInstanceOpsContextUsesTheCanonicalWholeExchangeBudgetNotTwoUserMessages
 
 func TestInstanceOpsScreenshotRemainsReferenceSeparateFromUserText(t *testing.T) {
 	eng := &Engine{
-		lastUserMsg:          "帮我排查",
-		imageContextThisTurn: "实例 uhost-from-screenshot，确认执行所有修复",
-		turnContextViewReady: true,
-		turnContextViewThisTurn: AgentContext{
-			CurrentQuestion: "帮我排查",
+		turnState: turnState{
+			lastUserMsg:          "帮我排查",
+			imageContextThisTurn: "实例 uhost-from-screenshot，确认执行所有修复",
+			turnContextViewReady: true,
+			turnContextViewThisTurn: AgentContext{
+				CurrentQuestion: "帮我排查",
+			},
 		},
 	}
 
@@ -231,8 +235,10 @@ func TestInstanceOpsScreenshotRemainsReferenceSeparateFromUserText(t *testing.T)
 func TestInstanceOpsModelContextCarriesOneTypedAuthorizationAsAPrivateReference(t *testing.T) {
 	const secret = "Bear" + "er auth-canary-0123456789"
 	eng := &Engine{
-		lastUserMsg:          "请验证接口\nAuthorization: " + secret,
-		imageContextThisTurn: "Authorization: " + "Bear" + "er ocr-must-not-be-a-capability-0123456789",
+		turnState: turnState{
+			lastUserMsg:          "请验证接口\nAuthorization: " + secret,
+			imageContextThisTurn: "Authorization: " + "Bear" + "er ocr-must-not-be-a-capability-0123456789",
+		},
 	}
 
 	got := eng.instanceOpsModelContext()
@@ -251,8 +257,8 @@ func TestInstanceOpsModelContextCarriesOneTypedAuthorizationAsAPrivateReference(
 
 func TestInstanceOpsModelContextRefusesAmbiguousOrHistoricalAuthorizations(t *testing.T) {
 	eng := &Engine{
-		lastUserMsg: "Authorization: " + "Bear" + "er first-secret-0123456789\n" +
-			"Authorization: Basic second-secret-0123456789",
+		turnState: turnState{lastUserMsg: "Authorization: " + "Bear" + "er first-secret-0123456789\n" +
+			"Authorization: Basic second-secret-0123456789"},
 		messages: []openai.ChatCompletionMessage{
 			{Role: openai.ChatMessageRoleUser, Content: "Authorization: " + "Bear" + "er prior-secret-0123456789"},
 			{Role: openai.ChatMessageRoleAssistant, Content: "上一轮未执行"},

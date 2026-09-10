@@ -222,7 +222,7 @@ func highFanoutEngine(t *testing.T, reads, perResult int) *Engine {
 	// schemas it was pretending to include do not live in the message list at all —
 	// they travel as llm.ChatRequest.Tools and are charged separately below.
 	e.messages = []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: prompt.BuildSystemWithOptions("", e.reactPromptBuildOptions())},
+		{Role: openai.ChatMessageRoleSystem, Content: prompt.BuildSystemWithOptions("", e.reactPromptBuildOptions(promptScope{}))},
 	}
 	for i := 0; i < budgetFixtureExchanges; i++ {
 		q, a := fmt.Sprintf("问题%d", i), fmt.Sprintf("回答%d", i)
