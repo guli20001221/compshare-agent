@@ -36,7 +36,9 @@ func (e *Engine) knowledgeAnswerQuestion(fallback string) string {
 //
 // A verbatim evidence echo is recorded for analysis and never changes the reply.
 func (e *Engine) finalizeAgentLoopKnowledgeAnswer(_ context.Context, fallbackQuestion, candidate string) string {
-	if !e.knowledgeQAAgentLoopThisTurn {
+	// The Agent chose SearchKnowledge iff the turn's transcript holds such a call.
+	// There is no pre-turn knowledge classifier and no flag mirroring that fact.
+	if e.agentToolCallsThisTurn("SearchKnowledge") == 0 {
 		return candidate
 	}
 	resolved := e.knowledgeAnswerQuestion(fallbackQuestion)

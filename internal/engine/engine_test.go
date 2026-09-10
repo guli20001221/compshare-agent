@@ -179,10 +179,10 @@ func toolCall(id, name, argsJSON string) openai.ToolCall {
 	}
 }
 
-// execToolInTurn mirrors runToolCallsRound: a user message opens the turn and the
-// assistant's tool_calls message enters the transcript before the tool executes.
-// The per-turn call budget counts that transcript, so a test that reaches
-// executeTool without it is not exercising the budget at all.
+// execToolInTurn mirrors runToolCallsRound: a user message opens the turn, the
+// assistant's tool_calls message enters the transcript, the tool runs, and its
+// result is appended. Per-turn call budgets count that transcript, so a test
+// that reaches executeTool without it is not exercising the budget at all.
 func execToolInTurn(eng *Engine, tc openai.ToolCall, onStep func(StepEvent)) string {
 	if currentTurnStart(eng.messages) < 0 {
 		eng.messages = append(eng.messages, openai.ChatCompletionMessage{
@@ -192,7 +192,38 @@ func execToolInTurn(eng *Engine, tc openai.ToolCall, onStep func(StepEvent)) str
 	eng.messages = append(eng.messages, openai.ChatCompletionMessage{
 		Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{tc},
 	})
-	return eng.executeTool(context.Background(), tc, onStep)
+	result := eng.executeTool(context.Background(), tc, onStep)
+	eng.messages = append(eng.messages, openai.ChatCompletionMessage{
+		Role: openai.ChatMessageRoleTool, Content: result, ToolCallID: tc.ID,
+	})
+	return result
+}
+
+// seedKnowledgeTurn records a settled SearchKnowledge round in the turn's
+// transcript. Citation finalization asks the transcript whether the Agent chose
+// retrieval, so a test that skips this is not on the knowledge path at all.
+func seedKnowledgeTurn(eng *Engine) {
+	if currentTurnStart(eng.messages) < 0 {
+		eng.messages = append(eng.messages, openai.ChatCompletionMessage{
+			Role: openai.ChatMessageRoleUser, Content: "知识问答",
+		})
+	}
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{
+			Role:      openai.ChatMessageRoleAssistant,
+			ToolCalls: []openai.ToolCall{toolCall("seed-search", "SearchKnowledge", `{"query":"seed"}`)},
+		},
+		openai.ChatCompletionMessage{
+			Role: openai.ChatMessageRoleTool, Content: "{}", ToolCallID: "seed-search",
+		},
+	)
+}
+
+// seedRetrievalRan additionally records the retrieval activity a search produces
+// once it reaches the retriever, which is how the engine knows one ran.
+func seedRetrievalRan(eng *Engine) {
+	eng.searchKnowledgeActivitiesThisTurn = append(eng.searchKnowledgeActivitiesThisTurn,
+		observability.RetrievalActivity{ID: "search_1", Query: "seed"})
 }
 
 func toolNames(registry []openai.Tool) []string {

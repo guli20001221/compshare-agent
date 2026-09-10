@@ -10,6 +10,7 @@ import (
 	"github.com/compshare-agent/internal/diagnosis"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 // repeatableAgentTool identifies reads that may legitimately run more than once
@@ -71,24 +72,41 @@ func completedAgentToolCall(results map[string]string, action string) bool {
 	return false
 }
 
-// agentToolCallsThisTurn counts how many times the current turn has asked for
-// action, reading the canonical transcript rather than any side table. Same
-// authority as turnReturnedToolResults: the conversation records what was asked,
-// while a cache records only what may be replayed.
+// agentToolCallsThisTurn counts the current turn's calls to action that already
+// produced a tool result, reading the canonical transcript rather than a side
+// counter. Same authority as turnReturnedToolResults: the conversation records
+// what was asked and answered, while a cache records only what may be replayed.
+//
+// Counting settled calls rather than every call in the transcript keeps the
+// answer independent of where the caller sits. One assistant message can carry
+// several calls to the same capability; charging them all before the first one
+// runs would refuse a batch the budget is meant to allow.
 func (e *Engine) agentToolCallsThisTurn(action string) int {
 	start := currentTurnStart(e.messages)
 	if start < 0 {
 		return 0
 	}
-	count := 0
+	callIDs := map[string]struct{}{}
 	for _, message := range e.messages[start:] {
 		for _, call := range message.ToolCalls {
 			if call.Function.Name == action {
-				count++
+				callIDs[call.ID] = struct{}{}
 			}
 		}
 	}
-	return count
+	if len(callIDs) == 0 {
+		return 0
+	}
+	settled := 0
+	for _, message := range e.messages[start:] {
+		if message.Role != openai.ChatMessageRoleTool {
+			continue
+		}
+		if _, ok := callIDs[message.ToolCallID]; ok {
+			settled++
+		}
+	}
+	return settled
 }
 
 func toolCallBudgetObservation(action string, limit int) string {

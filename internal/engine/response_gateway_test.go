@@ -58,8 +58,8 @@ func TestResponseGatewayDoesNotOverrideConversationOnlyAnswer(t *testing.T) {
 func TestResponseGatewayKeepsThePromptedConsoleMarker(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.feishuConsoleHandoffThisTurn = true
-	eng.searchKnowledgeRanThisTurn = true
-	eng.knowledgeQAAgentLoopThisTurn = true
+	seedKnowledgeTurn(eng)
+	seedRetrievalRan(eng)
 
 	reply := eng.finalizeResponse(context.Background(), "谁能帮忙处理？", agentprotocol.FeishuConsoleHandoffMarker)
 

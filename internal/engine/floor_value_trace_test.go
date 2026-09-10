@@ -89,7 +89,7 @@ func traceForSearch(t *testing.T, result knowledge.RetrievalResult) observabilit
 	t.Helper()
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
 	eng.SetKnowledgeRetriever(&scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{result}})
-	eng.knowledgeQAAgentLoopThisTurn = true
+	seedKnowledgeTurn(eng)
 
 	var traces []observability.RetrievalTrace
 	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) { traces = append(traces, trace) })

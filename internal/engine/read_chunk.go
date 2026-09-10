@@ -268,11 +268,10 @@ func (e *Engine) executeReadChunk(args map[string]any, onStep func(StepEvent)) s
 		onStep(StepEvent{Type: StepToolResult, Action: "ReadChunk", Source: e.knowledgeToolSource(), Message: "知识库不可用"})
 		return readChunkResultJSON(nil, map[string]any{"error": "知识库不可用。"})
 	}
-	if e.readChunkCallsThisTurn >= maxReadChunkCallsPerTurn {
+	if e.agentToolCallsThisTurn("ReadChunk") >= maxReadChunkCallsPerTurn {
 		onStep(StepEvent{Type: StepToolResult, Action: "ReadChunk", Source: e.knowledgeToolSource(), Message: "本轮读取次数已达上限"})
 		return readChunkResultJSON(nil, map[string]any{"read_limit_reached": true})
 	}
-	e.readChunkCallsThisTurn++
 	if remote {
 		return e.executeRemoteReadChunk(remoteReader, ids, droppedIDs, onStep)
 	}

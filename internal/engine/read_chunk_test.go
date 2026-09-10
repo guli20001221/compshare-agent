@@ -110,7 +110,6 @@ func TestReadChunk_ReturnsThreeMaximumSizedChunksWhole(t *testing.T) {
 		assert.Contains(t, eng.readChunkIDsThisTurn, chunk.ChunkID)
 		assert.Equal(t, item["content"], eng.searchKnowledgeLedgerThisTurn.Items[i].Snippet)
 	}
-	assert.Equal(t, 1, eng.readChunkCallsThisTurn)
 }
 
 func TestReadChunk_BatchSizeLimitLeavesWholeBodyForNextCall(t *testing.T) {
@@ -141,7 +140,6 @@ func TestReadChunk_BatchSizeLimitLeavesWholeBodyForNextCall(t *testing.T) {
 	assert.Equal(t, bodyB, item["content"])
 	assert.Contains(t, eng.readChunkIDsThisTurn, "b")
 	assert.Equal(t, item["content"], eng.searchKnowledgeLedgerThisTurn.Items[0].Snippet)
-	assert.Equal(t, 2, eng.readChunkCallsThisTurn)
 }
 
 func TestReadChunk_ReusesFullBodiesWithoutRefetchWithinBudgets(t *testing.T) {
@@ -160,10 +158,10 @@ func TestReadChunk_ReusesFullBodiesWithoutRefetchWithinBudgets(t *testing.T) {
 	}
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetKnowledgeRetriever(retriever)
-	eng.executeTool(context.Background(), toolCall("search", "SearchKnowledge", `{"query":"完整章节"}`), noopStep)
+	execToolInTurn(eng, toolCall("search", "SearchKnowledge", `{"query":"完整章节"}`), noopStep)
 	read := toolCall("read", "ReadChunk", `{"chunk_ids":["a","b","c"]}`)
 	for call := 0; call < maxReadChunkCallsPerTurn; call++ {
-		out := readChunkResult(t, eng.executeTool(context.Background(), read, noopStep))
+		out := readChunkResult(t, execToolInTurn(eng, read, noopStep))
 		items := out["chunks"].([]any)
 		require.Len(t, items, maxReadChunkIDsPerCall)
 		runes := 0
@@ -182,8 +180,8 @@ func TestReadChunk_ReusesFullBodiesWithoutRefetchWithinBudgets(t *testing.T) {
 		retriever.err = fmt.Errorf("reader unavailable after first full delivery")
 	}
 	require.Len(t, retriever.reads, 1, "all repeated bodies come from the existing complete-evidence ledger")
-	require.Equal(t, maxReadChunkCallsPerTurn, eng.readChunkCallsThisTurn)
-	require.Contains(t, eng.executeTool(context.Background(), read, noopStep), `"read_limit_reached":true`)
+	require.Equal(t, maxReadChunkCallsPerTurn, eng.agentToolCallsThisTurn("ReadChunk"))
+	require.Contains(t, execToolInTurn(eng, read, noopStep), `"read_limit_reached":true`)
 	require.Len(t, retriever.reads, 1)
 }
 
@@ -193,9 +191,9 @@ func TestReadChunk_ReusedBodySharesBatchBudgetWithFreshBody(t *testing.T) {
 		knowledge.KBChunk{ChunkID: "a", Content: bodyA},
 		knowledge.KBChunk{ChunkID: "b", Content: bodyB},
 	)
-	eng.executeTool(context.Background(), toolCall("read-a", "ReadChunk", `{"chunk_ids":["a"]}`), noopStep)
+	execToolInTurn(eng, toolCall("read-a", "ReadChunk", `{"chunk_ids":["a"]}`), noopStep)
 
-	repeated := readChunkResult(t, eng.executeTool(context.Background(), toolCall("read-both", "ReadChunk", `{"chunk_ids":["a","b"]}`), noopStep))
+	repeated := readChunkResult(t, execToolInTurn(eng, toolCall("read-both", "ReadChunk", `{"chunk_ids":["a","b"]}`), noopStep))
 	items := repeated["chunks"].([]any)
 	require.Len(t, items, 2)
 	require.Equal(t, readChunkStatusAlreadyRead, items[0].(map[string]any)["status"])
@@ -204,7 +202,7 @@ func TestReadChunk_ReusedBodySharesBatchBudgetWithFreshBody(t *testing.T) {
 	require.Empty(t, items[1].(map[string]any)["content"], "cached bodies consume the same batch budget as newly read bodies")
 	require.NotContains(t, eng.readChunkIDsThisTurn, "b")
 
-	next := readChunkResult(t, eng.executeTool(context.Background(), toolCall("read-b", "ReadChunk", `{"chunk_ids":["b"]}`), noopStep))
+	next := readChunkResult(t, execToolInTurn(eng, toolCall("read-b", "ReadChunk", `{"chunk_ids":["b"]}`), noopStep))
 	require.Equal(t, bodyB, next["chunks"].([]any)[0].(map[string]any)["content"])
 }
 
@@ -292,7 +290,7 @@ func TestReadChunk_LateSearchRemainsReadableUntilCallBudgetExhausts(t *testing.T
 	item := data["chunks"].([]any)[0].(map[string]any)
 	assert.Equal(t, readChunkStatusRead, item["status"])
 	assert.Equal(t, target.Content, item["content"])
-	assert.Equal(t, 4, eng.readChunkCallsThisTurn)
+	assert.Equal(t, 4, eng.agentToolCallsThisTurn("ReadChunk"))
 	assert.NotContains(t, toolNames(mock.calls[4].Tools), "ReadChunk", "the fourth read still exhausts the tool window")
 	out := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"target"}}, noopStep))
 	assert.Equal(t, true, out["read_limit_reached"])
@@ -353,7 +351,8 @@ func TestAutoMaterializeKnowledgeChunks_LocalCapsIDsAndRunesWithoutSpendingToolC
 	assert.Contains(t, eng.readChunkIDsThisTurn, "a")
 	assert.NotContains(t, eng.readChunkIDsThisTurn, "b", "a partial automatic body must remain explicitly readable")
 	assert.NotContains(t, eng.readChunkIDsThisTurn, "c")
-	assert.Zero(t, eng.readChunkCallsThisTurn, "automatic enrichment must not consume an explicit ReadChunk call")
+	assert.Zero(t, eng.agentToolCallsThisTurn("ReadChunk"),
+		"automatic enrichment is not a ReadChunk tool call and cannot consume its budget")
 
 	again := eng.autoMaterializeKnowledgeChunks(context.Background(), &ledger, []string{"b", "c"})
 	assert.Empty(t, again.ReadIDs, "attempted IDs are not automatically fetched again")
@@ -380,7 +379,7 @@ func TestAutoMaterializeKnowledgeChunks_RemoteFailureKeepsSnippet(t *testing.T) 
 	assert.Equal(t, "bounded search snippet", ledger.Items[0].Snippet)
 	assert.Len(t, eng.automaticKnowledgeBodyIDsThisTurn, 1, "a failed body still consumes one bounded attempt")
 	assert.NotContains(t, eng.readChunkIDsThisTurn, "a")
-	assert.Zero(t, eng.readChunkCallsThisTurn)
+	assert.Zero(t, eng.agentToolCallsThisTurn("ReadChunk"))
 	require.Len(t, retriever.reads, 1)
 	assert.Equal(t, "search-a", retriever.reads[0].searchID)
 	assert.Equal(t, []string{"a"}, retriever.reads[0].chunkIDs)
@@ -473,7 +472,7 @@ func TestAutoMaterializeKnowledgeChunks_LaterSearchExpandsNewStrongBody(t *testi
 	assert.Equal(t, remoteChunkRead{searchID: "first-search", chunkIDs: []string{"a", "b", "c"}}, retriever.reads[0])
 	assert.Equal(t, remoteChunkRead{searchID: "later-search", chunkIDs: []string{"target"}}, retriever.reads[1])
 	assert.Contains(t, eng.readChunkIDsThisTurn, "target")
-	assert.Zero(t, eng.readChunkCallsThisTurn, "automatic reads leave the explicit ReadChunk budget untouched")
+	assert.Zero(t, eng.agentToolCallsThisTurn("ReadChunk"), "automatic reads leave the explicit ReadChunk budget untouched")
 }
 
 func TestAutoMaterializeKnowledgeChunks_RemoteGroupsBySearchCapability(t *testing.T) {
@@ -609,7 +608,7 @@ func TestBelowFloorCandidatesStayReadableAcrossSeparateSearchScoreScales(t *test
 	}
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetKnowledgeRetriever(retriever)
-	eng.knowledgeQAAgentLoopThisTurn = true
+	seedKnowledgeTurn(eng)
 
 	search := readChunkResult(t, eng.executeSearchKnowledge(context.Background(), map[string]any{
 		"query": "与WorkBuddy连接后，还需要手动设置啥",

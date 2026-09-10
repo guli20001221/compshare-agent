@@ -74,9 +74,9 @@ func TestCentralAgentAuthorizesSearchAtExecutionBoundary(t *testing.T) {
 	retriever := &scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{Enabled: true, Empty: true}}}
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetKnowledgeRetriever(retriever)
-	out := eng.executeTool(context.Background(), toolCall("search", "SearchKnowledge", `{"query":"终端粘贴快捷键"}`), noopStep)
+	out := execToolInTurn(eng, toolCall("search", "SearchKnowledge", `{"query":"终端粘贴快捷键"}`), noopStep)
 	require.False(t, strings.Contains(out, "unavailable for this route"))
-	require.True(t, eng.knowledgeQAAgentLoopThisTurn)
+	require.Equal(t, 1, eng.agentToolCallsThisTurn("SearchKnowledge"))
 	require.Len(t, retriever.calls, 1)
 }
 

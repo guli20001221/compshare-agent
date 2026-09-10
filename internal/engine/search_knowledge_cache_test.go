@@ -20,21 +20,22 @@ func TestSearchKnowledgeCacheRetriesSameQueryAfterFailureThenReusesSuccess(t *te
 	eng.SetKnowledgeRetriever(retriever)
 	call := toolCall("search", "SearchKnowledge", `{"query":"Windows 远程桌面客户端剪贴板"}`)
 
-	first := eng.executeTool(context.Background(), call, noopStep)
+	first := execToolInTurn(eng, call, noopStep)
 	observation, ok := tools.ParseAgentToolResult(agentToolObservation("SearchKnowledge", first))
 	require.True(t, ok)
 	require.Equal(t, tools.AgentToolStatusFailed, observation.Status)
 
-	second := eng.executeTool(context.Background(), call, noopStep)
+	second := execToolInTurn(eng, call, noopStep)
 	require.NotContains(t, second, "reused_observation")
 	require.Contains(t, second, "客户端剪贴板说明")
 	require.Len(t, retriever.calls, 2, "the same query must execute after a transient failure")
 
-	third := eng.executeTool(context.Background(), call, noopStep)
+	third := execToolInTurn(eng, call, noopStep)
 	require.Contains(t, third, "reused_observation")
 	require.Contains(t, third, "客户端剪贴板说明")
 	require.Len(t, retriever.calls, 2, "successful evidence still prevents identical search thrash")
-	require.Equal(t, 2, eng.searchKnowledgeCallsThisTurn)
+	require.Equal(t, 3, eng.agentToolCallsThisTurn("SearchKnowledge"),
+		"the replayed round is still a round the turn spent on this capability")
 }
 
 func TestSearchKnowledgeCacheRefreshesExpiredCapabilityWithoutEvictingOtherSearches(t *testing.T) {
@@ -65,7 +66,7 @@ func TestSearchKnowledgeCacheRefreshesExpiredCapabilityWithoutEvictingOtherSearc
 			search := toolCall("search", "SearchKnowledge", `{"query":"目标章节"}`)
 			other := toolCall("other", "SearchKnowledge", `{"query":"其他章节"}`)
 			read := toolCall("read", "ReadChunk", `{"chunk_ids":["target"]}`)
-			eng.executeTool(context.Background(), search, noopStep)
+			execToolInTurn(eng, search, noopStep)
 			eng.executeTool(context.Background(), other, noopStep)
 
 			retriever.err = knowledge.ErrSearchCapabilityInvalid
@@ -75,7 +76,7 @@ func TestSearchKnowledgeCacheRefreshesExpiredCapabilityWithoutEvictingOtherSearc
 			require.NotContains(t, eng.searchKnowledgeCapabilitiesThisTurn, "sibling", "expiry invalidates the entire search capability")
 
 			retriever.err = nil
-			fresh := eng.executeTool(context.Background(), search, noopStep)
+			fresh := execToolInTurn(eng, search, noopStep)
 			require.NotContains(t, fresh, "reused_observation")
 			require.Len(t, retriever.calls, 3, "a same-query refresh must reach the retriever")
 			require.Equal(t, "refreshed", eng.searchKnowledgeCapabilitiesThisTurn["target"])
@@ -84,7 +85,7 @@ func TestSearchKnowledgeCacheRefreshesExpiredCapabilityWithoutEvictingOtherSearc
 			require.Equal(t, "refreshed", retriever.reads[len(retriever.reads)-1].searchID)
 
 			require.Contains(t, eng.executeTool(context.Background(), other, noopStep), "reused_observation")
-			require.Contains(t, eng.executeTool(context.Background(), search, noopStep), "reused_observation")
+			require.Contains(t, execToolInTurn(eng, search, noopStep), "reused_observation")
 			require.Len(t, retriever.calls, 3, "unrelated and refreshed successful searches remain cached")
 		})
 	}
@@ -100,11 +101,11 @@ func TestSearchKnowledgeCacheFailureRetriesStillRespectFourSearchBudget(t *testi
 	eng.SetKnowledgeRetriever(retriever)
 	call := toolCall("search", "SearchKnowledge", `{"query":"暂时不可用的知识查询"}`)
 	for range maxSearchKnowledgeCallsPerTurn {
-		require.Contains(t, eng.executeTool(context.Background(), call, noopStep), `"knowledge_unavailable":true`)
+		require.Contains(t, execToolInTurn(eng, call, noopStep), `"knowledge_unavailable":true`)
 	}
 	require.Len(t, retriever.calls, maxSearchKnowledgeCallsPerTurn)
-	require.Equal(t, maxSearchKnowledgeCallsPerTurn, eng.searchKnowledgeCallsThisTurn)
-	require.Contains(t, eng.executeTool(context.Background(), call, noopStep), `"search_limit_reached":true`)
+	require.Equal(t, maxSearchKnowledgeCallsPerTurn, eng.agentToolCallsThisTurn("SearchKnowledge"))
+	require.Contains(t, execToolInTurn(eng, call, noopStep), `"search_limit_reached":true`)
 	require.Len(t, retriever.calls, maxSearchKnowledgeCallsPerTurn, "cache bypass never bypasses the retrieval budget")
 }
 
@@ -123,24 +124,24 @@ func TestSearchKnowledgeCacheRefreshesAfterAutomaticReadCapabilityExpires(t *tes
 	eng.SetKnowledgeRetriever(retriever)
 	search := toolCall("search", "SearchKnowledge", `{"query":"我使用过程会被监控吗"}`)
 
-	first := eng.executeTool(context.Background(), search, noopStep)
+	first := execToolInTurn(eng, search, noopStep)
 	require.Contains(t, first, `"auto_expansion_unavailable":true`)
 	require.Len(t, retriever.reads, 1, "the failure comes from automatic expansion, not explicit ReadChunk")
 	require.NotContains(t, eng.searchKnowledgeCapabilitiesThisTurn, target.ChunkID)
 	require.NotContains(t, eng.automaticKnowledgeBodyIDsThisTurn, target.ChunkID)
 
 	retriever.err = nil
-	second := eng.executeTool(context.Background(), search, noopStep)
+	second := execToolInTurn(eng, search, noopStep)
 	require.NotContains(t, second, "reused_observation")
 	require.Contains(t, second, `"auto_expanded_chunk_ids":["privacy"]`)
 	require.Contains(t, second, target.Content)
 	require.Len(t, retriever.calls, 2)
 	require.Len(t, retriever.reads, 2)
 	require.Equal(t, "fresh", retriever.reads[1].searchID)
-	require.Equal(t, 2, eng.searchKnowledgeCallsThisTurn)
-	require.Zero(t, eng.readChunkCallsThisTurn)
+	require.Equal(t, 2, eng.agentToolCallsThisTurn("SearchKnowledge"))
+	require.Zero(t, eng.agentToolCallsThisTurn("ReadChunk"))
 
-	require.Contains(t, eng.executeTool(context.Background(), search, noopStep), "reused_observation")
+	require.Contains(t, execToolInTurn(eng, search, noopStep), "reused_observation")
 	require.Len(t, retriever.calls, 2, "successful refreshed searches are still cached")
 	require.Len(t, retriever.reads, 2)
 }
