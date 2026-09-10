@@ -10,7 +10,7 @@ import (
 )
 
 func TestTraceSnapshotReportsOnlyBoundedContinuityMetadata(t *testing.T) {
-	eng := &Engine{
+	eng := &Engine{turnState: turnState{
 		turnContextViewThisTurn: AgentContext{
 			CurrentQuestion:    "secret question",
 			RecentConversation: []ConversationPair{{User: "secret user", Assistant: "secret answer"}},
@@ -25,7 +25,7 @@ func TestTraceSnapshotReportsOnlyBoundedContinuityMetadata(t *testing.T) {
 		selectedInstanceIDAtTurnStart:        "uhost-start",
 		selectedInstanceSourceAtTurnStart:    SelectedInstanceSourceUser,
 		selectedInstanceFreshnessAtTurnStart: ContinuityFreshnessExpired,
-	}
+	}}
 	snapshot := eng.TraceSnapshot(time.Now())
 	require.Equal(t, []string{"recent_pairs"}, snapshot.ContextSources)
 	require.Equal(t, string(ResponseAgent), snapshot.ResponseContract)
@@ -45,16 +45,14 @@ func TestTraceSnapshotReportsOnlyBoundedContinuityMetadata(t *testing.T) {
 }
 
 func TestTraceSnapshotReportsPolicyTerminal(t *testing.T) {
-	eng := &Engine{
-		hardBlockStandingThisTurn: true,
-	}
+	eng := &Engine{turnState: turnState{hardBlockStandingThisTurn: true}}
 
 	snapshot := eng.TraceSnapshot(time.Now())
 	require.Equal(t, string(ResponsePolicyTerminal), snapshot.ResponseContract)
 }
 
 func TestTraceSnapshotOmitsUnknownGroundingCitationScope(t *testing.T) {
-	eng := &Engine{groundingCitationScopeThisTurn: "semantic_support"}
+	eng := &Engine{turnState: turnState{groundingCitationScopeThisTurn: "semantic_support"}}
 	require.Empty(t, eng.TraceSnapshot(time.Now()).GroundingCitationScope)
 }
 

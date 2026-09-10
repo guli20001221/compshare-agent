@@ -119,25 +119,6 @@ func TestResolveByName_NormalizesChinesePunctuation(t *testing.T) {
 	assert.Equal(t, "uhost-cn", matches[0].UHostId)
 }
 
-func TestFilter_ByStateAndGPUType(t *testing.T) {
-	reg := NewRegistry()
-	require.NoError(t, reg.SyncFromDescribe(describeResult(
-		host("uhost-a", "train-a", "Running", "4090", 1),
-		host("uhost-b", "train-b", "Stopped", "4090", 1),
-		host("uhost-c", "train-c", "Running", "A100", 1),
-		host("uhost-d", "no-card", "Running", "4090", 0),
-	), "init"))
-
-	running := reg.Filter(FilterSpec{State: "Running"})
-	assert.Equal(t, []string{"uhost-a", "uhost-c", "uhost-d"}, idsOf(running))
-
-	gpu4090 := reg.Filter(FilterSpec{GPUType: "4090"})
-	assert.Equal(t, []string{"uhost-a", "uhost-b", "uhost-d"}, idsOf(gpu4090))
-
-	running4090 := reg.Filter(FilterSpec{State: "Running", GPUType: "4090"})
-	assert.Equal(t, []string{"uhost-a", "uhost-d"}, idsOf(running4090))
-}
-
 func TestSyncMetadataAndAge(t *testing.T) {
 	now := time.Date(2026, 5, 7, 12, 0, 0, 0, time.UTC)
 	reg := NewRegistry(WithClock(func() time.Time { return now }))
@@ -399,7 +380,6 @@ func TestConcurrentResolveAndSyncFromDescribeNoRace(t *testing.T) {
 			for j := 0; j < 200; j++ {
 				_, _ = reg.ResolveByID("uhost-a")
 				_, _ = reg.ResolveByName("train")
-				_ = reg.Filter(FilterSpec{GPUType: "4090"})
 				_ = reg.Snapshot()
 			}
 		}()

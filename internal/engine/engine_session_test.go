@@ -195,14 +195,16 @@ func TestSessionIsolation_RateLimit(t *testing.T) {
 }
 
 // TestSessionIsolation_AllEngineFieldsClassified — reflection guard.
-// Per plan §3 + §5.5: every Engine struct field MUST be classified as either
-// shared or per-session. New fields added without classification will fail
-// this test and force the maintainer to update plan §3 + the whitelist
-// below. Encodes WHY: silent field additions defeat the §3 cross-session
-// isolation guarantee.
+// Every Engine struct field MUST be classified as shared or per-session. A
+// field added without classification fails here, because a silent addition
+// defeats the cross-session isolation guarantee.
 //
-// Whitelist totals: 6 shared + 98 per-session = 104 fields. Any drift
-// requires classifying the new field here.
+// The embedded turnState needs no per-field entry. Everything inside it belongs
+// to one turn of one session, which is strictly narrower than per-session, and
+// ChatWithOptions replaces the whole value at entry — so a turn-local field
+// cannot reach another session, and cannot reach the next turn of this one
+// either. Adding a per-turn field there is the correct move and costs no
+// bookkeeping; adding one to Engine still has to be justified below.
 func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	sharedFields := map[string]bool{
 		"llmClient":          true,
@@ -226,70 +228,9 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"mutatingToolsEnabled":             true,
 		"messages":                         true,
 		"userTurn":                         true,
-		"lastUserMsg":                      true,
-		"readExpensiveCallsThisTurn":       true,
 		"lastConfirmationAcceptedThisCall": true,
-		// Per-turn agentic SearchKnowledge state (P3): the hits the tool returned,
-		// used by the final-answer citation check. Per-session by design — sharing
-		// would check one tenant's answer against another tenant's retrieved
-		// evidence. Reset every turn.
-		"searchKnowledgeHitsThisTurn": true,
-		// Per-turn verbatim-echo telemetry: which chunk this turn's answer copied.
-		// Per-session for the same reason as the hits it is derived from. Reset
-		// every turn.
-		"answerEchoedChunkIDThisTurn": true,
-		// Per-turn already-read set. Per-session by design — sharing it would
-		// suppress a chunk body the other tenant never saw. The read budget itself
-		// is counted from the turn's transcript. Reset every turn.
-		"readChunkIDsThisTurn":              true,
-		"automaticKnowledgeBodyIDsThisTurn": true,
-		// Remote search capabilities are short-lived and must never leave the
-		// current Engine turn. Sharing this map would authorize a cross-tenant
-		// ReadChunk against another user's search result.
-		"searchKnowledgeCapabilitiesThisTurn": true,
-		"belowFloorKnowledgeIDsThisTurn":      true,
-		// Per-turn ChunkID-keyed evidence ledger (#126), the union of this turn's
-		// SearchKnowledge items, consumed by the grounded-answer cite validator.
-		// Per-session by design — same cross-tenant-leak reasoning as the hits
-		// above. Reset every turn.
-		"searchKnowledgeLedgerThisTurn": true,
-		// Per-turn reference-ledger observability state: tracks SearchKnowledge
-		// activity ids and which chunks came from each activity. Sharing would
-		// cross-link one tenant's citations to another tenant's retrieval trace.
-		// Reset every turn.
-		"searchKnowledgeActivitiesThisTurn":    true,
-		"searchKnowledgeActivityIDsByChunkID":  true,
-		"directAnswerToolRetryPending":         true,
-		"directAnswerToolRetryOutcomeThisTurn": true,
-		// Optional deploy preference extractor injection + its per-turn result.
-		// Kept per-session so test doubles / future stateful wrappers cannot
-		// leak calls or extracted preferences across users.
-		// One cached context judgment per turn. These are reset at the start
-		// of ChatWithOptions and must remain session-local: sharing them would
-		// apply one user's continue/clear decision to another user's task.
-		"turnTokensConsumed": true,
-		// Per-turn ReAct loop counters feeding the trace's react_rounds field and
-		// the budget terminus. Per-session/per-turn by design — a shared counter
-		// would attribute one tenant's loop depth to another's turn. Reset every turn.
-		"reactRoundsThisTurn":           true,
-		"reactCeilingHitThisTurn":       true,
-		"turnModelCallsThisTurn":        true,
-		"turnModelAttemptsThisTurn":     true,
-		"turnCompletionClassHint":       true,
-		"turnCompletionReasonHint":      true,
-		"runtimeFinishReasonThisTurn":   true,
-		"turnCompletionEmittedThisTurn": true,
-		"hardBlockStandingThisTurn":     true,
-		"hardBlockTraceThisTurn":        true,
-		// Per-turn instance-binding observables (#3 StateTrace). Per-session/
-		// per-turn by design — sharing would attribute one tenant's bound
-		// instance to another's turn. Reset every turn.
-		"selectedInstanceIDAtTurnStart":        true,
-		"selectedInstanceSourceAtTurnStart":    true,
-		"selectedInstanceFreshnessAtTurnStart": true,
-		"instanceResolutionSourceThisTurn":     true,
-		"retrievalTraceObserver":               true,
-		"authorizationTraceObserver":           true,
+		"retrievalTraceObserver":           true,
+		"authorizationTraceObserver":       true,
 		// Confirmation outcomes are turn-scoped transport facts. Sharing this
 		// observer would append one tenant's card result to another's trace.
 		"confirmationTraceObserver": true,
@@ -297,25 +238,11 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"rateLimitObserver":         true,
 		"hardBlockObserver":         true,
 		"turnCompletionObserver":    true,
-		// Runtime lifecycle evidence is turn/session-local. Sharing either the
-		// event buffer or its observer would mix two tenants' reasoning traces.
-		"agentRuntimeEventsThisTurn": true,
-		"currentCtx":                 true,
-		// Public-channel authorization is turn-local and must never remain enabled
-		// or disabled because of another session's prior request.
-		"knowledgeOnlyThisTurn": true,
-		// The broader public catalog scope is just as turn-local: a pooled
-		// engine must not carry it into a subsequent console session.
-		"publicPlatformReadOnlyThisTurn": true,
-		// The Feishu handoff completion contract is likewise per-turn. A pooled
-		// engine must never carry its private marker contract into console chats.
-		"feishuConsoleHandoffThisTurn": true,
-		// Renderer selection is channel-local even when authorization precedence
-		// chooses the narrower knowledge-only tool window.
-		"feishuSupportRendererThisTurn": true,
-		// One immutable support-zone view per active turn. Sharing it across
-		// sessions would expose one tenant/turn's catalog availability to another.
-		"zoneCatalogThisTurn": true,
+		// currentCtx and currentTurnID below are the two turn-scoped fields that
+		// stay on Engine rather than moving into turnState: they are cleared when
+		// the call returns, and their absence between turns is what stops an
+		// out-of-turn caller from inheriting a live context or an audit identity.
+		"currentCtx": true,
 		// guidedCreate is a per-turn HTTP capability gate; sharing it would let
 		// one client's opt-in change another client's create workflow shape.
 		"guidedCreate": true,
@@ -323,25 +250,10 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// the JSON-serializable per-session dialog state envelope; mixing
 		// it across sessions would be exactly the cross-user leak this
 		// test was created to prevent.
-		"sessionState":                        true,
-		"sessionStateVersion":                 true,
-		"sessionStateHydrated":                true,
-		"turnContextViewThisTurn":             true,
-		"turnContextViewReady":                true,
-		"promptSectionIDsThisTurn":            true,
-		"verifiedEvidenceUpdateThisTurn":      true,
-		"groundingOutcomeThisTurn":            true,
-		"groundingCitationScopeThisTurn":      true,
-		"promptMessagesRawPeakThisTurn":       true,
-		"promptMessagesAssembledPeakThisTurn": true,
-		"promptMessagesCapAppliedThisTurn":    true,
-		"verifiedInstanceEvidenceThisTurn":    true,
-		"platformReadEvidenceThisTurn":        true,
-		"sensitiveRepliesThisTurn":            true,
-		"toolResultsByCallThisTurn":           true,
-		"actionProposalDispositionThisTurn":   true,
-		"imageContextThisTurn":                true,
-		"baseUserContext":                     true,
+		"sessionState":         true,
+		"sessionStateVersion":  true,
+		"sessionStateHydrated": true,
+		"baseUserContext":      true,
 		// In-instance SSH diagnosis lane (INV-9/INV-11). instanceOps is copied from
 		// SharedDeps but is per-session-overridable via SetInstanceOps for tests,
 		// so a session can hold a different runner than its siblings — classified
@@ -357,28 +269,9 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// box, so a shared field would show tenant A's half-finished repair to tenant B
 		// as if it were their own. Cleared on delivery, never carried further.
 		"pendingInstanceOpsInterruption": true,
-		// Turn-local proof that the deterministic composer included the pending
-		// report. The HTTP transport consumes it only after durable delivery.
-		"instanceOpsInterruptionIncludedInReplyThisTurn": true,
-		// The opaque guest-job handle now lives inside the already-classified
+		// The opaque guest-job handle lives inside the already-classified
 		// SessionState field, so it follows the same owner/session hydration boundary
 		// instead of adding a second implicit state source here.
-		// Why the most recent authorization card in THIS turn ended, used to phrase
-		// the refusal. Turn-local and per-session for the obvious reason: inheriting
-		// another session's reason would tell this user their card timed out when
-		// they declined it, or the reverse. Reset at turn entry.
-		"lastConfirmationTerminalReason": true,
-		// Verbatim user blocks accumulated this turn (see verbatimReplyPrefix).
-		// Turn-local: sharing it would splice one tenant's rendered billing figures
-		// into another tenant's reply — the exact cross-user leak this test exists to
-		// prevent. Reset at turn entry, composed at the turn exit.
-		"verbatimBlocksThisTurn": true,
-		// Sentences for the mutating workflows that committed THIS turn, used by
-		// the error path to report a landed write without a model call. Turn-local
-		// and emphatically per-session: a shared slice would tell one tenant that
-		// another tenant's instance had just been created for them — a leak of an
-		// id plus a false claim about their own account, in one line.
-		"committedWriteRepliesThisTurn": true,
 		// The canonical transcript of the turn that just finished, held for the
 		// metadata write. It carries one tenant's tool arguments and tool results
 		// verbatim, so a shared field would persist tenant A's instance ids and
@@ -401,22 +294,28 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 81, len(perSessionFields); want != got {
+	if want, got := 28, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 87, typ.NumField(); want != got {
-		t.Fatalf("Engine field count drift: expected %d, got %d. "+
-			"Update this test's whitelists to match.", want, got)
+	if want, got := len(sharedFields)+len(perSessionFields)+1, typ.NumField(); want != got {
+		t.Fatalf("Engine field count drift: expected %d (whitelists plus the embedded turnState), got %d. "+
+			"A new per-turn field belongs in turnState; anything else needs a whitelist entry.", want, got)
 	}
 	for i := 0; i < typ.NumField(); i++ {
 		name := typ.Field(i).Name
+		if name == "turnState" {
+			if !typ.Field(i).Anonymous {
+				t.Errorf("turnState must stay embedded: its fields are read as e.fooThisTurn across the package")
+			}
+			continue
+		}
 		if sharedFields[name] || perSessionFields[name] {
 			continue
 		}
-		t.Errorf("Engine field %q is not classified as shared or per-session; "+
-			"update this test's whitelist.", name)
+		t.Errorf("Engine field %q is not classified as shared or per-session. "+
+			"If it belongs to one turn, move it into turnState instead of adding it here.", name)
 	}
 }
 

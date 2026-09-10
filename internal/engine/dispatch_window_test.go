@@ -228,7 +228,7 @@ func TestKnowledgeOnlyExecutionAllowlistIsFailClosed(t *testing.T) {
 }
 
 func TestKnowledgeOnlyExecutionBlocksUnadvertisedToolCall(t *testing.T) {
-	eng := &Engine{knowledgeOnlyThisTurn: true}
+	eng := &Engine{turnState: turnState{knowledgeOnlyThisTurn: true}}
 	var step StepEvent
 	result := eng.executeTool(context.Background(), openai.ToolCall{
 		Function: openai.FunctionCall{
@@ -312,7 +312,7 @@ func TestPublicPlatformReadOnlyExecutionBoundaryIsFailClosed(t *testing.T) {
 	require.True(t, publicPlatformReadOnlyArgsAllowed(priceName, map[string]any{"price_kind": "catalog"}))
 	require.False(t, publicPlatformReadOnlyArgsAllowed(priceName, map[string]any{"price_kind": "account"}))
 
-	eng := &Engine{publicPlatformReadOnlyThisTurn: true}
+	eng := &Engine{turnState: turnState{publicPlatformReadOnlyThisTurn: true}}
 	var step StepEvent
 	result := eng.executeTool(context.Background(), openai.ToolCall{Function: openai.FunctionCall{
 		Name: capability.ReadToolName(intent.IntentResourceInfo), Arguments: `{}`,

@@ -21,11 +21,6 @@ type ResolveResult struct {
 	Candidates []string
 }
 
-type FilterSpec struct {
-	State   string
-	GPUType string
-}
-
 func (r *EntityRegistry) ResolveByID(id string) (*InstanceSnapshot, ResolveResult) {
 	query := strings.TrimSpace(id)
 	r.mu.RLock()
@@ -99,28 +94,6 @@ func (r *EntityRegistry) ResolveByName(name string) ([]*InstanceSnapshot, Resolv
 		status = ResolveAmbiguous
 	}
 	return matches, ResolveResult{Status: status, Query: query, Candidates: idsOfSnapshots(matches)}
-}
-
-func (r *EntityRegistry) Filter(spec FilterSpec) []*InstanceSnapshot {
-	state := strings.ToLower(strings.TrimSpace(spec.State))
-	gpuType := strings.ToLower(strings.TrimSpace(spec.GPUType))
-	matches := make([]*InstanceSnapshot, 0)
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	for _, inst := range r.Instances {
-		if state != "" && strings.ToLower(inst.State) != state {
-			continue
-		}
-		if gpuType != "" && strings.ToLower(inst.GpuType) != gpuType {
-			continue
-		}
-		copy := inst
-		matches = append(matches, &copy)
-	}
-	sort.Slice(matches, func(i, j int) bool {
-		return matches[i].UHostId < matches[j].UHostId
-	})
-	return matches
 }
 
 func (s RegistrySnapshot) ResolveByID(id string) (*InstanceSnapshot, ResolveResult) {

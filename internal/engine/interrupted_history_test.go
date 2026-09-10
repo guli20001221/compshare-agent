@@ -133,14 +133,14 @@ func TestInterruptedUserHistoryKeepsTranscriptAttribution(t *testing.T) {
 
 func TestInterruptedUserHistoryBridgeAnchorWithRepeatedContinuation(t *testing.T) {
 	wrapped := WrapScreenshotContext("CUDA failure\ncontact ocr@example.com", "检查新实例\nAuthorization: Bearer fixture-secret")
-	hot := &Engine{lastUserMsg: "继续", messages: []openai.ChatCompletionMessage{
+	hot := &Engine{turnState: turnState{lastUserMsg: "继续"}, messages: []openai.ChatCompletionMessage{
 		userMsg(wrapped), userMsg("继续"),
 	}}
 	first := hot.instanceOpsConversationHistory()
 	require.Len(t, first, 2)
 	anchor := opscontext.ConversationAnchor(first)
 
-	cold := &Engine{lastUserMsg: "继续"}
+	cold := &Engine{turnState: turnState{lastUserMsg: "继续"}}
 	cold.RehydrateHistory([]HistoryMessage{
 		{Role: "user", Content: security.RedactUserConversationText(wrapped)},
 		{Role: "user", Content: "继续"},
@@ -159,7 +159,7 @@ func TestInterruptedUserHistoryBridgeAnchorWithRepeatedContinuation(t *testing.T
 }
 
 func TestInterruptedUserHistoryBridgeBudgetIncludesCurrentUser(t *testing.T) {
-	eng := &Engine{lastUserMsg: "继续", messages: []openai.ChatCompletionMessage{
+	eng := &Engine{turnState: turnState{lastUserMsg: "继续"}, messages: []openai.ChatCompletionMessage{
 		userMsg("older"), finalMsg("answer"),
 		userMsg(strings.Repeat("新", maxReplayedHistoryRunes-2)),
 		userMsg("继续"),

@@ -16,19 +16,6 @@ func (e *Engine) SetTurnCompletionObserver(observer func(observability.TurnCompl
 	e.turnCompletionObserver = observer
 }
 
-func (e *Engine) resetTurnCompletion() {
-	if e == nil {
-		return
-	}
-	e.turnModelCallsThisTurn = 0
-	e.turnModelAttemptsThisTurn = nil
-	e.turnCompletionClassHint = ""
-	e.turnCompletionReasonHint = ""
-	e.runtimeFinishReasonThisTurn = ""
-	e.turnCompletionEmittedThisTurn = false
-	e.hardBlockTraceThisTurn = observability.EngineHardBlockTrace{}
-}
-
 // markTurnCompletion records a terminal path that cannot be reconstructed from
 // planner status or ReAct rounds. The first terminal marker wins; a standing
 // hard block is handled separately and always has higher priority.

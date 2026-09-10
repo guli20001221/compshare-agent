@@ -197,14 +197,9 @@ type Engine struct {
 	// zoneCatalog resolves availability zones (incl. Chinese display names) from
 	// the live support-zone catalog. nil → falls back to the process-wide
 	// zones.Default(); tests inject a fresh catalog for isolation.
-	zoneCatalog *zones.Catalog
-	// zoneCatalogThisTurn is populated lazily and shared by the zone-catalog read
-	// capability, CodecZone and workflows. It is reset at Chat entry; direct unit
-	// calls outside Chat remain uncached so tests cannot accidentally share state.
-	zoneCatalogThisTurn              *deployment.ZoneCatalogSnapshot
+	zoneCatalog                      *zones.Catalog
 	registry                         *entity.EntityRegistry
 	knowledgeRetriever               KnowledgeRetriever
-	agentRuntimeEventsThisTurn       []agentruntime.Event
 	retrievalTraceObserver           func(observability.RetrievalTrace)
 	turnCompletionObserver           func(observability.TurnCompletionTrace)
 	authorizationTraceObserver       func(observability.AuthorizationTrace)
@@ -213,84 +208,12 @@ type Engine struct {
 	rateLimiter                      governance.RateLimiter
 	rateLimitSubject                 string
 	rateLimitObserver                func(governance.Decision)
-	readExpensiveCallsThisTurn       int
 	lastConfirmationAcceptedThisCall bool
-	// searchKnowledgeHitsThisTurn holds the raw hits behind this turn's evidence
-	// so the final-answer citation check runs against exactly what the agent was
-	// shown. Whether retrieval ran at all is len(searchKnowledgeActivitiesThisTurn),
-	// not a separate flag. Reset per turn.
-	searchKnowledgeHitsThisTurn []knowledge.RetrievalHit
-	// answerEchoedChunkIDThisTurn names the chunk whose body the final answer
-	// reproduced verbatim, or "" for none. TELEMETRY ONLY — it is carried into the
-	// turn-aggregate retrieval trace and must never gate, rewrite or replace an
-	// answer (see finalizeAgentLoopKnowledgeAnswer).
-	answerEchoedChunkIDThisTurn string
-	// readChunkIDsThisTurn records which ledger snippets hold a complete body
-	// rather than a search excerpt, so a re-read re-projects that text instead of
-	// fetching a second copy into context. How many reads the turn has spent is
-	// counted from the transcript. Reset every turn.
-	readChunkIDsThisTurn map[string]struct{}
-	// automaticKnowledgeBodyIDsThisTurn deduplicates automatic body-read attempts
-	// across SearchKnowledge calls, including failed attempts. Each search has its
-	// own bounded body batch, separate from the model-visible ReadChunk budget.
-	automaticKnowledgeBodyIDsThisTurn map[string]struct{}
-	// searchKnowledgeCapabilitiesThisTurn maps only model-visible chunk IDs to
-	// the short-lived remote search_id that surfaced them. It is intentionally
-	// engine-local: sharing it through the process-wide retriever would let one
-	// user's capability authorize another user's evidence read.
-	searchKnowledgeCapabilitiesThisTurn map[string]string
-	// belowFloorKnowledgeIDsThisTurn marks only weak candidates SearchKnowledge
-	// explicitly exposed for optional full-body review. They are not evidence
-	// until ReadChunk succeeds, and then remain low-confidence.
-	belowFloorKnowledgeIDsThisTurn map[string]struct{}
-	// searchKnowledgeLedgerThisTurn is the per-turn ChunkID-keyed, deduped
-	// evidence ledger: the union of every SearchKnowledge call's items this turn.
-	// The grounded-answer validator accepts only ChunkIDs present here.
-	searchKnowledgeLedgerThisTurn       knowledge.EvidenceLedger
-	searchKnowledgeActivitiesThisTurn   []observability.RetrievalActivity
-	searchKnowledgeActivityIDsByChunkID map[string][]string
-	// directAnswerToolRetryPending is local to the current ReAct run. It keeps
-	// the retry in the sole Agent loop and is never persisted as semantic state.
-	directAnswerToolRetryPending bool
-	// directAnswerToolRetryOutcomeThisTurn is content-free telemetry for the
-	// bounded retry. Empty means the retry did not run.
-	directAnswerToolRetryOutcomeThisTurn string
 	// maxTokensPerTurn caps total LLM tokens (prompt + completion) per
 	// user turn. 0 = disabled. Copied from SharedDeps in NewSession.
-	maxTokensPerTurn int
-	// turnTokensConsumed accumulates tokenUsageTotal(usage) across every
-	// LLM call within the current Chat() invocation. Reset at the top of
-	// Chat. Read at ReAct loop iteration boundaries to enforce
-	// maxTokensPerTurn — never mid tool_call / tool_result pair.
-	turnTokensConsumed int
-	// reactRoundsThisTurn counts the ReAct loop rounds entered this turn (zero
-	// for deterministic exits such as an explicit human handoff). reactCeilingHit
-	// ThisTurn is set when the loop exhausted maxReActRounds without a final
-	// answer (that path emits no hard-block, so the trace's budget terminus is
-	// otherwise underivable). Both reset at the top of Chat; read post-turn by the
-	// trace recorder via ReactRoundsThisTurn / ReactCeilingHitThisTurn.
-	reactRoundsThisTurn     int
-	reactCeilingHitThisTurn bool
-	// Context-assembler observability. Peak raw history size and peak
-	// assembled request size across this turn's rounds, plus whether the
-	// conservative message cap ever shed anything. Content-free; reset at the top
-	// of Chat, read post-turn via the Prompt* accessors.
-	promptMessagesRawPeakThisTurn       int
-	promptMessagesAssembledPeakThisTurn int
-	promptMessagesCapAppliedThisTurn    bool
-	turnModelCallsThisTurn              int
-	turnModelAttemptsThisTurn           []observability.ModelAttemptTrace
-	turnCompletionClassHint             string
-	turnCompletionReasonHint            string
-	runtimeFinishReasonThisTurn         agentruntime.FinishReason
-	turnCompletionEmittedThisTurn       bool
-	// A post-LLM or token-budget block can be recovered later in the same turn.
-	// Keep the standing bit so a successfully validated answer can overwrite the
-	// earlier failure attribution instead of being stored as "blocked".
-	hardBlockStandingThisTurn bool
-	hardBlockTraceThisTurn    observability.EngineHardBlockTrace
-	hardBlockObserver         func(observability.EngineHardBlockTrace)
-	confirmFn                 ConfirmFunc
+	maxTokensPerTurn  int
+	hardBlockObserver func(observability.EngineHardBlockTrace)
+	confirmFn         ConfirmFunc
 	// confirmEditsFn is the per-turn editable-form HITL gate.
 	confirmEditsFn workflow.ConfirmEditsFunc
 	// guidedCreate is a per-turn client capability.
@@ -309,90 +232,18 @@ type Engine struct {
 	recentTurns []recordedTurn
 	// mutatingToolsEnabled is the deployment authorization boundary for instance-changing tools.
 	mutatingToolsEnabled bool
-	// verifiedInstanceEvidenceThisTurn is current-turn existence evidence for the
-	// ActionProposal target verifier: exact instance IDs a resource read confirmed
-	// THIS turn by the upstream response echoing the SAME id. Only a same-id-verified
-	// resource_info response populates it — a Monitor/refund subject taken from the
-	// pre-query registry snapshot does NOT, so an observed-but-unverified id can never
-	// serve as a write ExistenceProof. It never persists.
-	verifiedInstanceEvidenceThisTurn map[string]struct{}
-	// actionProposalDispositionThisTurn is a compact, value-free classification of
-	// what the resolver did with this turn's write proposal — "confirmation" /
-	// "intake_form" when it reached a card, else the reason it did not
-	// ("rejected:<slot>=<kind>", "missing:<fields>", "dependency_failure",
-	// "conflict:<slots>", "intake_form_unavailable", "resolve_error"). The
-	// acceptance measurement reads it (via ActionProposalDispositionThisTurn) to
-	// attribute why a create proposal did or did not card. "" when no proposal ran
-	// this turn. Per-turn; reset at the top of Chat.
-	actionProposalDispositionThisTurn string
-	// platformReadEvidenceThisTurn is proof of facts returned by read tools. It
-	// supports server-side grounding and authorization checks, but it never
-	// renders a second user-facing answer: the Agent sees the same evidence and
-	// writes the final Markdown itself.
-	platformReadEvidenceThisTurn []platformReadEvidence
-	// sensitiveRepliesThisTurn contains credentials intentionally withheld from
-	// model context. The final delivery boundary emits each one once.
-	sensitiveRepliesThisTurn []string
-	// committedWriteRepliesThisTurn preserves truthful, model-free completion
-	// text if narration fails after an upstream write has committed.
-	committedWriteRepliesThisTurn []string
-	// Tool progress is turn-local. Replaying an identical read cannot create new
-	// evidence, so the runtime returns the prior observation and withdraws that
-	// concrete capability on the next round instead of spending ten rounds on it.
-	toolResultsByCallThisTurn map[string]string
-	// Raw user message for the current turn. Set at the start of Chat().
-	// Read by executeDiagnosis guards for signal matching. Never mutated
-	// mid-turn.
-	lastUserMsg          string
-	imageContextThisTurn string
 	baseUserContext      string
 	// currentCtx holds the context for the current ChatWithOptions call.
-	// Set at the start of ChatWithOptions and cleared (nil) on return.
+	// Set at the start of ChatWithOptions and cleared (nil) on return. Its
+	// absence is what tells an out-of-turn caller there is no live turn, so it
+	// stays on Engine rather than moving into turnState.
 	currentCtx context.Context
-	// knowledgeOnlyThisTurn is an execution-time authorization boundary for
-	// public Q&A transports. The advertised tool window is not trusted as the
-	// only guard because a model can emit an unadvertised tool name.
-	knowledgeOnlyThisTurn bool
-	// publicPlatformReadOnlyThisTurn is the slightly broader public-channel
-	// authorization boundary. It remains narrower than the console's ordinary
-	// read surface: only public catalog/inventory reads are allowed.
-	publicPlatformReadOnlyThisTurn bool
-	// feishuConsoleHandoffThisTurn changes only the model's completion contract
-	// for a public Feishu Q&A turn. It is reset after every ChatWithOptions call
-	// so the console cannot inherit it from a pool.
-	feishuConsoleHandoffThisTurn bool
-	// feishuSupportRendererThisTurn is a delivery choice, independent of which
-	// authorization scope wins when a client advertises multiple read modes.
-	feishuSupportRendererThisTurn bool
 	// sessionState is the JSON-serializable per-session execution state loaded
 	// before each Chat turn and read back through SessionStateSnapshot afterward.
 	// See session_state.go.
 	sessionState         SessionState
 	sessionStateVersion  int
 	sessionStateHydrated bool
-	// turnContextViewThisTurn is the immutable execution-context projection shared
-	// by target resolution and the Agent context card. It is rebuilt exactly once after
-	// turn-entry expiry/refresh and before the current user message is appended.
-	turnContextViewThisTurn AgentContext
-	turnContextViewReady    bool
-	// Bounded, content-free metadata for the turn trace.
-	promptSectionIDsThisTurn       []string
-	verifiedEvidenceUpdateThisTurn string
-	groundingOutcomeThisTurn       string
-	groundingCitationScopeThisTurn string
-	// Per-turn instance-binding observability. Captured at turn
-	// entry / refreshSystemPrompt, read post-turn by the trace recorder. Per-turn
-	// by design (reset every turn) — a shared value would attribute one tenant's
-	// binding to another's turn.
-	//   - selectedInstance*AtTurnStart: the carried identity, provenance and
-	//     freshness at turn entry, before any mid-turn re-binding.
-	//   - instanceResolutionSourceThisTurn: how the turn-start binding was
-	//     determined (observability.ResolutionSource* — session_state /
-	//     single_host / unresolved).
-	selectedInstanceIDAtTurnStart        string
-	selectedInstanceSourceAtTurnStart    string
-	selectedInstanceFreshnessAtTurnStart string
-	instanceResolutionSourceThisTurn     string
 	// instanceOps runs the read-only in-instance SSH diagnosis lane. nil = lane
 	// off, and the tool is then absent from the model window
 	// (centralAgentToolWindow). Copied from SharedDeps.InstanceOps in NewSession
@@ -403,36 +254,19 @@ type Engine struct {
 
 	// pendingInstanceOpsInterruption is a user-facing notice left by a diagnosis that ended without
 	// delivering its verdict, drained by the next turn. It is session state, not turn state, so it
-	// is deliberately NOT reset in the per-turn block — resetting it there would clear it on the
-	// very turn that is supposed to show it. See instance_ops_interruption.go.
+	// is deliberately NOT part of turnState — starting the next turn with it cleared would clear it
+	// on the very turn that is supposed to show it. See instance_ops_interruption.go.
 	pendingInstanceOpsInterruption *instanceOpsInterruption
-	// instanceOpsInterruptionIncludedInReplyThisTurn is set only when the
-	// deterministic response composer has copied the canonical interrupted-run
-	// report into this turn's final reply. The transport acknowledges delivery
-	// after that reply is durably stored; generating a reply alone is not proof
-	// that a disconnected client received it.
-	instanceOpsInterruptionIncludedInReplyThisTurn bool
-	// lastConfirmationTerminalReason is why the most recent authorization card in
-	// this turn ended, in observability's closed-set spelling. It exists because
-	// ConfirmFunc answers a bool, so every non-approval — the user declining, the
-	// card timing out, the client going away — arrives at the call site as the
-	// same false, and the reply then told a user who ran out of time that they had
-	// cancelled. The reason is already computed for trace; this carries the same
-	// value to the sentence the user reads. Written by the per-turn confirmation
-	// wrapper immediately before it returns, read by the call site that is about
-	// to phrase the refusal. Per-turn, single-goroutine: the wrapper and the
-	// ReAct loop that consumes it are the same goroutine.
-	lastConfirmationTerminalReason string
 	// currentTurnID is the server-side turn identity for THIS turn, the audit dedup
 	// key the in-instance lane uses so a retried request cannot re-enter the box
 	// (INV-9). Set at ChatWithOptions entry from the resolved turnID, cleared on
-	// return. Per-session/per-turn — it is one turn's identity.
+	// return. Like currentCtx it must be absent between turns, not merely replaced
+	// at the next one, so it stays on Engine.
 	currentTurnID string
-	// verbatimBlocksThisTurn holds text that must reach the user byte-identical
-	// (see verbatimReplyPrefix) without ending the turn. Accumulated as tools
-	// return it and composed in front of the Agent's reply at the turn exit.
-	// Reset per turn; per-session so one turn's block cannot bleed into another's.
-	verbatimBlocksThisTurn []string
+
+	// turnState is the current turn's state, replaced wholesale at
+	// ChatWithOptions entry. See turn_state.go.
+	turnState
 }
 
 // SharedDeps groups Engine fields that are safe to share across sessions.
@@ -547,15 +381,15 @@ func (e *Engine) SetInstanceOps(r InstanceOpsRunner) {
 	e.instanceOps = r
 }
 
-func (e *Engine) reactPromptBuildOptions() prompt.BuildOptions {
+func (e *Engine) reactPromptBuildOptions(scope promptScope) prompt.BuildOptions {
 	return prompt.BuildOptions{
 		MutatingToolsEnabled: e.mutatingToolsEnabled,
 		// SSH-ops is an autonomous repair lane. It exists only when both the
 		// deployment write grant and the runner are present; read-only deployments
 		// must not advertise a tool whose product contract includes guest changes.
 		InstanceOpsEnabled:           e.mutatingToolsEnabled && e.instanceOps != nil,
-		FeishuConsoleHandoff:         e.feishuConsoleHandoffThisTurn,
-		FeishuPublicPlatformReadOnly: e.publicPlatformReadOnlyThisTurn,
+		FeishuConsoleHandoff:         scope.feishuConsoleHandoff,
+		FeishuPublicPlatformReadOnly: scope.feishuPublicPlatformReadOnly,
 	}
 }
 
@@ -852,7 +686,7 @@ func (e *Engine) InitWithContext(userCtx string) {
 	e.sessionState.PersistedInstanceOpsJobs = nil
 	e.sessionState.PersistedInstanceOpsAgent = PersistedInstanceOpsAgentSession{}
 	e.baseUserContext = userCtx
-	systemPrompt := prompt.BuildSystemWithOptions(userCtx, e.reactPromptBuildOptions())
+	systemPrompt := prompt.BuildSystemWithOptions(userCtx, e.reactPromptBuildOptions(promptScope{}))
 	e.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: systemPrompt},
 	}
@@ -870,7 +704,7 @@ func (e *Engine) RehydrateHistory(msgs []HistoryMessage) {
 	e.sessionState.PersistedInstanceOpsJobs = nil
 	e.sessionState.PersistedInstanceOpsAgent = PersistedInstanceOpsAgentSession{}
 	e.baseUserContext = ""
-	systemPrompt := prompt.BuildSystemWithOptions("", e.reactPromptBuildOptions())
+	systemPrompt := prompt.BuildSystemWithOptions("", e.reactPromptBuildOptions(promptScope{}))
 	e.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: systemPrompt}}
 	e.recentTurns = nil
 	pendingUser := ""
@@ -1091,7 +925,7 @@ func (e *Engine) refreshSystemPrompt() {
 	default:
 		e.instanceResolutionSourceThisTurn = observability.ResolutionSourceUnresolved
 	}
-	systemPrompt, sectionIDs := prompt.BuildSystemWithOptionsAndTrace(ctx, e.reactPromptBuildOptions())
+	systemPrompt, sectionIDs := prompt.BuildSystemWithOptionsAndTrace(ctx, e.reactPromptBuildOptions(e.turnPromptScope()))
 	e.messages[0].Content = systemPrompt
 	e.promptSectionIDsThisTurn = append([]string(nil), sectionIDs...)
 }
@@ -1138,7 +972,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// transcript is worth keeping. Runs before trimHistoryWithContext strips the
 	// tool messages at the start of the next turn.
 	defer e.captureTurnTranscript()
-	e.resetTurnCompletion()
+	// The turn starts here. Everything scoped to it is replaced in one
+	// assignment, so no field can carry over from the previous turn by being
+	// missing from a list.
+	e.turnState = newTurnState(userMsg, opts)
 	ctx = llm.WithOutboundCallObserver(ctx, func(llm.OutboundCall) {
 		e.turnModelCallsThisTurn++
 	})
@@ -1147,14 +984,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	})
 	e.currentCtx = ctx
 	defer func() { e.currentCtx = nil }()
-	e.knowledgeOnlyThisTurn = opts.KnowledgeOnly
-	defer func() { e.knowledgeOnlyThisTurn = false }()
-	e.publicPlatformReadOnlyThisTurn = opts.PublicPlatformReadOnly && !opts.KnowledgeOnly
-	defer func() { e.publicPlatformReadOnlyThisTurn = false }()
-	e.feishuConsoleHandoffThisTurn = opts.FeishuConsoleHandoff
-	defer func() { e.feishuConsoleHandoffThisTurn = false }()
-	e.feishuSupportRendererThisTurn = opts.PublicPlatformReadOnly || opts.FeishuConsoleHandoff
-	defer func() { e.feishuSupportRendererThisTurn = false }()
 	defer e.emitTurnCompletion()
 	if u, ok := tools.UserFrom(ctx); ok {
 		if subject, ok := governance.SubjectKeyFromOrganization(u.TopOrganizationID, u.OrganizationID); ok {
@@ -1215,54 +1044,18 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		defer func() { e.guidedCreate = origGuidedCreate }()
 	}
 
-	e.lastUserMsg = userMsg
 	// Authorization headers are always removed from the main Agent's live view.
-	// lastUserMsg retains the current typed text just long enough for the SSH-ops
-	// lane, when wired and selected later in this turn, to mint its private opaque
-	// probe reference. Do not apply broad user-message redaction here: signed URLs
-	// have a separate established flow and are not HTTP header capabilities.
+	// turnState.lastUserMsg retains the current typed text just long enough for
+	// the SSH-ops lane, when wired and selected later in this turn, to mint its
+	// private opaque probe reference. Do not apply broad user-message redaction
+	// here: signed URLs have a separate established flow and are not HTTP header
+	// capabilities.
 	llmCurrentUserMsg, _ := security.CaptureUserAuthorizationHeaders(userMsg)
-	e.zoneCatalogThisTurn = nil
-	e.imageContextThisTurn = opts.ImageContext
-	e.readExpensiveCallsThisTurn = 0
-	e.turnTokensConsumed = 0
-	e.reactRoundsThisTurn = 0
-	e.reactCeilingHitThisTurn = false
-	e.promptMessagesRawPeakThisTurn = 0
-	e.promptMessagesAssembledPeakThisTurn = 0
-	e.promptMessagesCapAppliedThisTurn = false
-	e.agentRuntimeEventsThisTurn = nil
-	e.hardBlockStandingThisTurn = false
-	e.hardBlockTraceThisTurn = observability.EngineHardBlockTrace{}
-	e.promptSectionIDsThisTurn = nil
-	e.verifiedEvidenceUpdateThisTurn = evidenceUpdateNone
-	e.groundingOutcomeThisTurn = "unavailable"
-	e.groundingCitationScopeThisTurn = ""
-	e.searchKnowledgeHitsThisTurn = nil
-	e.answerEchoedChunkIDThisTurn = ""
-	e.readChunkIDsThisTurn = nil
-	e.automaticKnowledgeBodyIDsThisTurn = nil
-	e.searchKnowledgeCapabilitiesThisTurn = nil
-	e.belowFloorKnowledgeIDsThisTurn = nil
-	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
-	e.searchKnowledgeActivitiesThisTurn = nil
-	e.searchKnowledgeActivityIDsByChunkID = nil
-	e.verifiedInstanceEvidenceThisTurn = map[string]struct{}{}
-	e.platformReadEvidenceThisTurn = nil
-	e.sensitiveRepliesThisTurn = nil
-	e.committedWriteRepliesThisTurn = nil
-	e.toolResultsByCallThisTurn = map[string]string{}
-	e.actionProposalDispositionThisTurn = ""
-	e.directAnswerToolRetryPending = false
-	e.directAnswerToolRetryOutcomeThisTurn = ""
-	e.instanceOpsInterruptionIncludedInReplyThisTurn = false
 	// Deliver any notice left by a diagnosis that ended without a verdict. It goes to the USER, on
 	// the activity stream, and is never appended to e.messages — the model must not restate,
 	// summarize or act on it. Drained here, at the top of the turn, so it can never fire on the same
 	// turn that stashed it (executeInstanceOps runs strictly later).
 	e.emitPendingInstanceOpsInterruption(onStep)
-	e.lastConfirmationTerminalReason = ""
-	e.verbatimBlocksThisTurn = nil
 	// Single composition site for verbatim blocks: every success path — normal
 	// answer, deterministic reply, token-budget recovery, round-ceiling recovery —
 	// returns through this one function, so a block already streamed to the user
