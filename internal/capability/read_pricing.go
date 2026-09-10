@@ -69,10 +69,10 @@ func pricingReadSpec() ReadCapabilitySpec[PricingRequest, PricingResponse] {
 		Label:       pricingCapabilityLabel,
 		Description: "查询拟创建 GPU 配置及可选系统盘/数据盘在各可用区的实时账号净报价或目录价。用于配置报价，不用于核对已有实例当前费用；后者使用 DiagnoseBilling。云存储 Pro 使用 CFS 创建报价能力。报价已包含上游适用的减免，但接口不返回免费额度数值。",
 		Params: objectParam(map[string]schemaNode{
-			"gpu_type":     stringParam().described("真实 GPU 机型名称；精确名称不会自动替换成显存变体。"),
-			"gpu_count":    integerParam(1).described("卡数；省略时默认为 1。"),
+			"gpu_type":     stringParam().described("真实 GPU 机型名称；精确名称不会自动替换成显存变体。下单时同一取值填 RequestCreateInstance.GpuType。"),
+			"gpu_count":    integerParam(1).described("卡数；省略时默认为 1。下单时同一取值填 RequestCreateInstance.Gpu。"),
 			"price_kind":   enumParam(platform.PriceKindValues()...).described("account=当前账号实付价（默认）；catalog=目录价。"),
-			"zone":         stringParam().described("可选的精确可用区 ID；省略时查询该机型全部可售区域。"),
+			"zone":         stringParam().described("可选的精确可用区 ID；省略时查询该机型全部可售区域。下单时同一取值填 RequestCreateInstance.Zone。"),
 			"charge_types": arrayParam(enumParam("Postpay", "Spot", "Day", "Month")).described("所需计费方式；省略时返回上游提供的全部方式。"),
 			"disks": arrayParam(objectParam(map[string]schemaNode{
 				"role":    enumParam("system", "data").described("system=系统盘；data=普通数据盘。"),

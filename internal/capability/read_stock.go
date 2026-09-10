@@ -99,7 +99,7 @@ func stockReadSpec() ReadCapabilitySpec[StockAvailabilityRequest, StockAvailabil
 		Label:       stockCapabilityLabel,
 		Description: stockCapabilityDescription,
 		Params: objectParam(map[string]schemaNode{
-			"gpu_type":       stringParam(),
+			"gpu_type":       stringParam().described("精确 GPU 机型名称，取实时机型目录原值。下单时同一取值填 RequestCreateInstance.GpuType。"),
 			"zone_mentions":  arrayParam(stringParam()).described(stockZoneMentionsDescription),
 			"inventory_pool": enumParam(stockInventoryPoolUnspecified, deployment.GPUInventoryPoolExclusive, deployment.GPUInventoryPoolSpot).described("用户明确询问独占库存时填 Exclusive，明确询问抢占式库存时填 Spot；未限定时填 Unspecified。"),
 			"image_id":       stringParam().described(stockImageIDDescription),

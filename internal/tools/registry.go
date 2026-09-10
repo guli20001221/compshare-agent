@@ -626,10 +626,14 @@ var Registry = []openai.Tool{
 						"type":        "string",
 						"description": "随实例创建的 SSD 数据盘容量（如 100GB）；用户未指定则省略。",
 					},
+					// sharing and shared are one source. The read catalog spells it
+					// shared, so a value carried straight over from a listing must be
+					// accepted here; the resolver matches enum members exactly and
+					// would reject it before the workflow's alias fold ever runs.
 					"ImageSource": map[string]any{
 						"type":        "string",
-						"description": "镜像来源：platform（平台镜像，默认）/ community（社区镜像）/ custom（当前账户的自制镜像）/ sharing（其他账户共享给当前账户的镜像）。仅在用户明确说出来源，或 ID 来自近期已展示的镜像推荐且来源已知时填写。用户直接给出精确 CompShareImageId 但未说来源时，填写 ID 并省略本字段；服务端会通过实时目录确定其实际来源。",
-						"enum":        []string{"platform", "community", "custom", "sharing"},
+						"description": "镜像来源：platform（平台镜像，默认）/ community（社区镜像）/ custom（当前账户的自制镜像）/ sharing（其他账户共享给当前账户的镜像，兼容 shared）。仅在用户明确说出来源，或 ID 来自近期已展示的镜像推荐且来源已知时填写。用户直接给出精确 CompShareImageId 但未说来源时，填写 ID 并省略本字段；服务端会通过实时目录确定其实际来源。",
+						"enum":        []string{"platform", "community", "custom", "sharing", "shared"},
 					},
 					"ImageName": map[string]any{
 						"type":        "string",
@@ -834,6 +838,7 @@ var Registry = []openai.Tool{
 							},
 							"timezone": map[string]any{
 								"type": "string", "enum": []string{"Asia/Shanghai", "UTC"},
+								"description": "可省略，默认 Asia/Shanghai。",
 							},
 						},
 						"required": []string{"mode"},
@@ -930,7 +935,7 @@ var Registry = []openai.Tool{
 				"properties": map[string]any{
 					"Size": map[string]any{
 						"type":        "integer",
-						"description": "CFS 容量，单位 GB，范围 50 到 2048。",
+						"description": "CFS " + cfsbilling.SizeRangeHint(),
 					},
 					"ChargeType": map[string]any{
 						"type":        "string",
@@ -1233,7 +1238,7 @@ var Registry = []openai.Tool{
 					},
 					"Size": map[string]any{
 						"type":        "number",
-						"description": "CFS 容量，单位 GB，范围 50 到 2048。",
+						"description": "CFS " + cfsbilling.SizeRangeHint(),
 					},
 					"Zone": map[string]any{
 						"type":        "string",
@@ -1267,7 +1272,7 @@ var Registry = []openai.Tool{
 					},
 					"Size": map[string]any{
 						"type":        "number",
-						"description": "目标容量，单位 GB，必须大于当前容量。",
+						"description": "目标容量，必须大于当前容量。" + cfsbilling.SizeRangeHint(),
 					},
 				},
 				"required": []string{"CfsId", "Size"},

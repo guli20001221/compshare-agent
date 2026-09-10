@@ -90,11 +90,13 @@ func instanceAccessReadSpec() ReadCapabilitySpec[InstanceAccessRequest, Instance
 			"software 原样填应用名，仅返回是否声明/有入口记录，不返回 URL/凭据。SSH 以实时 SshLoginCommand 为准。" +
 			"仅明确索要 Token 用 jupyter_token；其他 Jupyter 用 jupyter；自定义端口需协议、端口。",
 		Params: objectParam(map[string]schemaNode{
-			"targets":     targetRefsParam(),
-			"access_type": enumParam(accessTypeSSH, accessTypeJupyter, accessTypeJupyterToken, accessTypeCustomPort, accessTypeSoftware),
-			"protocol":    enumParam(accessProtocolHTTP, accessProtocolTCP, accessProtocolUDP),
-			"port":        boundedIntegerParam(1, 65535),
-			"software":    stringParam().described("software 时必填，原样填用户询问的应用名。"),
+			"targets": targetRefsParam(),
+			"access_type": enumParam(accessTypeSSH, accessTypeJupyter, accessTypeJupyterToken, accessTypeCustomPort, accessTypeSoftware).
+				described("要核验的访问方式，一次只核验一种。"),
+			"protocol": enumParam(accessProtocolHTTP, accessProtocolTCP, accessProtocolUDP).
+				described("仅 custom_port 使用，填该端口实际使用的协议。"),
+			"port":     boundedIntegerParam(1, 65535).described("仅 custom_port 使用，填要核验的端口号。"),
+			"software": stringParam().described("software 时必填，原样填用户询问的应用名。"),
 			"failure_kind": enumParam("timeout", "connection_refused", "authentication_failed", "connection_dropped", "unknown").
 				described("仅 SSH 使用；只按用户实际报告的错误选择，无法确定时用 unknown。"),
 		}, "targets", "access_type"),

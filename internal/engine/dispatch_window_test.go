@@ -190,8 +190,47 @@ func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {
 		// and the four upstream billing modes; pricing remains outside the tool's
 		// contract. Keep the schema explicit instead of recovering bytes by deleting
 		// unrelated tool guidance or merging tools without production selection data.
-		require.LessOrEqual(t, len(toolJSON), 36000, "model-visible tool window grew past its reviewed byte budget")
-		require.LessOrEqual(t, len(system)+len(toolJSON), 41000,
+		//
+		// 36000 -> 36800 (2026-09-10): twenty model-visible parameters carried a
+		// name and a type and nothing else — `port` did not say it applies only to
+		// custom_port, the monitor `targets` did not say an omitted list means the
+		// selected instance, `source` did not say an omitted value means the
+		// platform catalog. Each now states its own fill and omission rule. The
+		// same bytes carry the quote-to-order field mapping (`gpu_type` ->
+		// RequestCreateInstance.GpuType and seven more), which is checked rather
+		// than merely written: see TestToolDescriptionsOnlyNameFieldsTheirTargetToolHas.
+		//
+		// Be honest about what these bytes buy: nothing here was measured against a
+		// model. The recorded gate that could have measured it was retired the same
+		// day as model-stale, so this is a contract-completeness change — the model
+		// could not previously have known these rules from the window — not a
+		// demonstrated behavior improvement. Do not cite it as one.
+		//
+		// Measured max after the change is 36646 (production shape).
+		//
+		// 36800 -> 37000 (2026-09-10): the same pass left the VALUE half of the
+		// quote-to-order mapping unchecked, and it was already broken.
+		// ReadCapability_image_list.source offered only `shared`;
+		// RequestCreateInstance.ImageSource accepted only `sharing`, and
+		// actionresolver.CodecEnum matches members exactly — so a value carried
+		// straight from the listing was refused before the workflow's alias fold ran.
+		// RequestReinstallInstance.ImageSource had carried both spellings since
+		// 1172013d for exactly this reason; #607 widened create's enum and did not
+		// bring the compatibility value along. These bytes are that value, the CFS
+		// capacity bound now stated where upstream enforces it, and Schedule.timezone
+		// finally naming the default its read-side twin already states.
+		//
+		// Unlike the raise above, this one has a demonstrated defect behind it:
+		// TestIdentityReferencesCarryValuesTheTargetFieldAccepts reproduces the
+		// rejection when the value is removed. It is still not a measured model
+		// improvement — no probe was run against a model. Do not cite it as one.
+		//
+		// Measured max after the change is 36850 (production shape).
+		require.LessOrEqual(t, len(toolJSON), 37000, "model-visible tool window grew past its reviewed byte budget")
+		// 41000 -> 41900 -> 42100 (2026-09-10): both raises follow the tool-window
+		// numbers above; the system prompt is unchanged throughout. Measured max is
+		// 41938 (production shape).
+		require.LessOrEqual(t, len(system)+len(toolJSON), 42100,
 			"static prompt plus tool schemas grew past its reviewed byte budget")
 	}
 }

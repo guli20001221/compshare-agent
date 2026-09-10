@@ -47,9 +47,12 @@ func monitorCurrentReadSpec() ReadCapabilitySpec[MonitorCurrentRequest, MonitorR
 	return ReadCapabilitySpec[MonitorCurrentRequest, MonitorResponse]{
 		Label:       monitorCurrentCapabilityLabel,
 		Description: "查询已有实例当前 CPU、内存、GPU 或显存监控数据。用于实时状态；指定历史时间范围时使用历史监控能力。",
-		Params:      objectParam(map[string]schemaNode{"targets": targetRefsParam(), "metrics": metricsParam()}),
-		Handle:      monitorCurrentHandle,
-		Render:      monitorRender,
+		Params: objectParam(map[string]schemaNode{
+			"targets": targetRefsParam().described(targetRefsDoc + " 省略时使用当前会话已选实例。"),
+			"metrics": metricsParam(),
+		}),
+		Handle: monitorCurrentHandle,
+		Render: monitorRender,
 	}
 }
 
@@ -86,7 +89,7 @@ func monitorHistoryReadSpec() ReadCapabilitySpec[MonitorHistoryRequest, MonitorR
 		Label:       monitorHistoryCapabilityLabel,
 		Description: "查询最多 20 个实例、30 天内的 CPU、内存、GPU 或显存历史监控；当前值使用实时监控能力。",
 		Params: objectParam(map[string]schemaNode{
-			"targets":     targetRefsParam(),
+			"targets":     targetRefsParam().described(targetRefsDoc + " 省略时使用当前会话已选实例。"),
 			"metrics":     metricsParam(),
 			"time_window": timeWindowParam(),
 		}, "time_window"),
