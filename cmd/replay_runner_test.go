@@ -213,7 +213,7 @@ func behavioralRepoRoot(t *testing.T) string {
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
-	// file = <root>/cmd/behavioral_gate_test.go → up two = <root>
+	// This file sits in <root>/cmd, so two Dir steps reach the repo root.
 	return filepath.Dir(filepath.Dir(file))
 }
 
