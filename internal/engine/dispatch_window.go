@@ -11,6 +11,47 @@ import (
 	"github.com/compshare-agent/internal/tools"
 )
 
+// toolWindowForRound decides the window the next request carries and narrows it
+// to its final shape. It runs FIRST in the round, because the window is part of
+// the request the provider sizes against and the message budget has to be told
+// how much of the request it has already spent. It travels as its own field
+// (llm.ChatRequest.Tools), so nothing about it is visible in the message list —
+// the production window is 40 schemas and 22,806 runes, larger than the system
+// prompt by an order of magnitude.
+//
+// Narrowing is how a spent budget is enforced: the capability is removed rather
+// than refused in prose, because injecting another policy prompt would create a
+// second and potentially conflicting contract. The window is built before the
+// next assistant message, so the transcript it counts holds exactly the calls
+// that completed.
+func (e *Engine) toolWindowForRound(opts ChatOptions) []openai.Tool {
+	toolWindow := centralAgentToolWindow(e.mutatingToolsEnabled, e.instanceOps != nil)
+	if opts.KnowledgeOnly {
+		toolWindow = centralAgentKnowledgeToolWindow()
+	} else if opts.PublicPlatformReadOnly {
+		toolWindow = centralAgentPublicPlatformReadOnlyToolWindow()
+	}
+	if e.agentToolCallsThisTurn("SearchKnowledge") >= maxSearchKnowledgeCallsPerTurn &&
+		toolListContainsFunction(toolWindow, "SearchKnowledge") {
+		toolWindow = toolListWithoutFunction(toolWindow, "SearchKnowledge")
+	}
+	// Same rule for full-body reads, on their own budget.
+	if e.agentToolCallsThisTurn("ReadChunk") >= maxReadChunkCallsPerTurn &&
+		toolListContainsFunction(toolWindow, "ReadChunk") {
+		toolWindow = toolListWithoutFunction(toolWindow, "ReadChunk")
+	}
+	// A whole-catalog read is complete after one successful observation. The
+	// model may still reason over that observation, but cannot spend later
+	// rounds asking the same immutable snapshot with cosmetic query variants.
+	for _, tool := range toolWindow {
+		if tool.Function != nil && singleShotAgentTool(tool.Function.Name) &&
+			completedAgentToolCall(e.toolResultsByCallThisTurn, tool.Function.Name) {
+			toolWindow = toolListWithoutFunction(toolWindow, tool.Function.Name)
+		}
+	}
+	return toolWindow
+}
+
 // centralAgentToolWindow is the model-visible capability surface. It intentionally
 // does not expose the underlying API tools used by deterministic handlers. Each
 // high-level read is a distinct, catalog-generated tool, while every platform

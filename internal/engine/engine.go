@@ -986,59 +986,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			e.rateLimitSubject = subject
 		}
 	}
-	// Per-turn confirmation wrapper records the terminal state of every card while
-	// preserving the boolean ConfirmFunc used by workflow code.
-	if opts.ConfirmResultFunc != nil || opts.ConfirmFunc != nil || e.confirmFn != nil {
-		origConfirm := e.confirmFn
-		confirm := e.confirmFn
-		if opts.ConfirmFunc != nil {
-			confirm = ConfirmFunc(opts.ConfirmFunc)
-		}
-		wrappedConfirm := ConfirmFunc(func(action string, args map[string]any) bool {
-			started := time.Now()
-			result := ConfirmationResult{}
-			if opts.ConfirmResultFunc != nil {
-				result = opts.ConfirmResultFunc(action, args)
-			} else if confirm != nil {
-				result.Confirmed = confirm(action, args)
-			}
-			e.recordConfirmationResult(action, result, started, nil, nil)
-			// Same value trace records, kept for the user-facing sentence. Set on
-			// the approval path too, so a later refusal can never inherit an
-			// earlier card's reason.
-			e.lastConfirmationTerminalReason = observability.NormalizeConfirmationTerminalReason(result.Confirmed, result.TerminalReason)
-			return result.Confirmed
-		})
-		e.confirmFn = wrappedConfirm
-		e.safeExecutor.SetConfirmFunc(tools.ConfirmFunc(wrappedConfirm))
-		defer func() {
-			e.confirmFn = origConfirm
-			e.safeExecutor.SetConfirmFunc(tools.ConfirmFunc(origConfirm))
-		}()
-	}
-	// Per-turn editable-form gate; HTTP wires it only for clients that advertise support.
-	if opts.ConfirmEditsFunc != nil || e.confirmEditsFn != nil {
-		origEdits := e.confirmEditsFn
-		confirmEdits := e.confirmEditsFn
-		if opts.ConfirmEditsFunc != nil {
-			confirmEdits = opts.ConfirmEditsFunc
-		}
-		e.confirmEditsFn = func(action string, args map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
-			started := time.Now()
-			resolution := confirmEdits(action, args, form)
-			e.recordConfirmationResult(action, ConfirmationResult{
-				Confirmed:      resolution.Confirmed,
-				TerminalReason: resolution.TerminalReason,
-			}, started, args, form)
-			return resolution
-		}
-		defer func() { e.confirmEditsFn = origEdits }()
-	}
-	if opts.GuidedCreate {
-		origGuidedCreate := e.guidedCreate
-		e.guidedCreate = true
-		defer func() { e.guidedCreate = origGuidedCreate }()
-	}
+	defer e.installTurnConfirmation(opts)()
 
 	// Authorization headers are always removed from the main Agent's live view.
 	// turnState.lastUserMsg retains the current typed text just long enough for
@@ -1062,53 +1010,10 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			reply = e.composeWithVerbatimBlocks(reply)
 		}
 	}()
-	continuityNow := time.Now()
-	e.expireStaleSelectedInstance(continuityNow)
 	// Tool proposals, confirmations and trace share this server-side turn ID.
 	opts.TurnID = turnID
-	e.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(e, userMsg, turnID, continuityNow)
-	e.turnContextViewReady = true
-	// Snapshot the carried instance binding at turn entry (before
-	// any mid-turn re-bind), and reset the per-turn binding observables that
-	// refreshSystemPrompt fills next.
-	e.selectedInstanceIDAtTurnStart = e.sessionState.SelectedInstanceID
-	e.selectedInstanceSourceAtTurnStart = e.sessionState.SelectedInstanceSource
-	e.selectedInstanceFreshnessAtTurnStart = normalizedSelectedInstanceFreshness(e.sessionState)
-	e.instanceResolutionSourceThisTurn = ""
-	// Target meaning belongs to the Agent reading canonical conversation, not a
-	// turn-entry name scan. Only confirmed workflows and actual tool observations
-	// update the persisted target context.
-	e.refreshSystemPrompt()
+	e.beginTurn(userMsg, llmCurrentUserMsg, turnID, opts)
 
-	// Trim before appending to guarantee the new user message is never dropped.
-	e.trimHistory()
-
-	// Build the LLM-facing message from the user's text and optional image context.
-	// userMsg remains the original text for argument provenance;
-	// llmUserMsg carries image evidence into conversation history so the
-	// ReAct LLM can reference it. The recognized text is fenced as untrusted
-	// reference data (see WrapScreenshotContext) — the httpapi persist path
-	// MUST produce byte-identical text because it is rehydrated and re-fed to
-	// the LLM on later turns.
-	llmUserMsg := llmCurrentUserMsg
-	if opts.ImageContext != "" {
-		// Screenshot OCR is fallible reference data and can never mint a private
-		// credential capability. Remove any credential/PII before it reaches the
-		// main model, matching the durable user-message boundary.
-		llmUserMsg = WrapScreenshotContext(security.RedactUserConversationText(opts.ImageContext), llmCurrentUserMsg)
-	}
-
-	e.messages = append(e.messages, openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleUser,
-		Content: llmUserMsg,
-	})
-
-	// A length-stopped provider response is not part of semantic history. Keep
-	// only this tiny local recovery state; it is neither persisted nor a second
-	// memory representation.
-	truncatedOutputRecoveries := 0
-	recoverTruncatedOutput := false
-	directAnswerToolRetryDraft := ""
 	emitTerminalText := func(text string) {
 		if opts.OnTextDelta == nil || text == "" {
 			return
@@ -1117,6 +1022,20 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			opts.OnTextDelta(verbatimBlockSeparator)
 		}
 		opts.OnTextDelta(text)
+	}
+	// recordAndStream is how every deterministic exit below finishes: one string
+	// becomes both the assistant's history message and the text the user sees, so
+	// a reload cannot show something different from what was streamed. It returns
+	// that string so the caller can hand it to agentruntime.Final unchanged. What
+	// the exits differ in is which sentence and which finish reason, and nothing
+	// else about ending a turn varies.
+	recordAndStream := func(content string) string {
+		e.messages = append(e.messages, openai.ChatCompletionMessage{
+			Role:    openai.ChatMessageRoleAssistant,
+			Content: content,
+		})
+		emitTerminalText(content)
+		return content
 	}
 	finishCommittedWrite := func() (agentruntime.Result, bool) {
 		reply, ok := e.committedWriteRecoveryReply()
@@ -1133,24 +1052,16 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		if !ok {
 			return agentruntime.Result{}, false
 		}
-		reply = e.finalizeHostTerminalResponse(llmCurrentUserMsg, reply)
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role: openai.ChatMessageRoleAssistant, Content: reply,
-		})
-		emitTerminalText(reply)
+		reply = recordAndStream(e.finalizeHostTerminalResponse(llmCurrentUserMsg, reply))
 		return agentruntime.Final(reply, agentruntime.FinishDeterministicReply), true
 	}
 	finishDirectAnswerToolRetryDraft := func() (agentruntime.Result, bool) {
-		if strings.TrimSpace(directAnswerToolRetryDraft) == "" {
+		if strings.TrimSpace(e.directAnswerToolRetryDraft) == "" {
 			return agentruntime.Result{}, false
 		}
 		e.directAnswerToolRetryOutcomeThisTurn = observability.DirectAnswerRetryOutcomeFallbackDraft
-		content := e.finalizeResponse(ctx, userMsg, directAnswerToolRetryDraft)
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role: openai.ChatMessageRoleAssistant, Content: content,
-		})
-		emitTerminalText(content)
-		directAnswerToolRetryDraft = ""
+		content := recordAndStream(e.finalizeResponse(ctx, userMsg, e.directAnswerToolRetryDraft))
+		e.directAnswerToolRetryDraft = ""
 		e.directAnswerToolRetryPending = false
 		return agentruntime.Final(content, agentruntime.FinishFinalAnswer), true
 	}
@@ -1188,59 +1099,14 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			}
 			// Close the existing conversation using the tool results already obtained.
 			if synth, ok := e.finishAgentTurn(ctx); ok {
-				synth = e.finalizeResponse(ctx, llmCurrentUserMsg, synth)
-				e.messages = append(e.messages, openai.ChatCompletionMessage{
-					Role:    openai.ChatMessageRoleAssistant,
-					Content: synth,
-				})
-				emitTerminalText(synth)
+				synth = recordAndStream(e.finalizeResponse(ctx, llmCurrentUserMsg, synth))
 				return agentruntime.Final(synth, agentruntime.FinishBudgetRecovery), nil
 			}
 			e.emitTokenBudgetExceededHardBlock()
-			content := e.finalizeHostTerminalResponse(llmCurrentUserMsg, tokenBudgetExceededMessage)
-			e.messages = append(e.messages, openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleAssistant,
-				Content: content,
-			})
-			emitTerminalText(content)
+			content := recordAndStream(e.finalizeHostTerminalResponse(llmCurrentUserMsg, tokenBudgetExceededMessage))
 			return agentruntime.Final(content, agentruntime.FinishBudgetRefusal), nil
 		}
-		// The tool window is decided FIRST, and narrowed to its final shape, because
-		// it is part of the request the provider sizes against and the message
-		// budget has to be told how much of the request it has already spent. It
-		// travels as its own field (llm.ChatRequest.Tools), so nothing about it is
-		// visible in the message list — the production window is 40 schemas and
-		// 22,806 runes, larger than the system prompt by an order of magnitude.
-		toolWindow := centralAgentToolWindow(e.mutatingToolsEnabled, e.instanceOps != nil)
-		if opts.KnowledgeOnly {
-			toolWindow = centralAgentKnowledgeToolWindow()
-		} else if opts.PublicPlatformReadOnly {
-			toolWindow = centralAgentPublicPlatformReadOnlyToolWindow()
-		}
-		// Once the bounded search budget is exhausted, remove the capability. The
-		// observations already in the conversation are sufficient for the Agent's
-		// next decision; injecting another policy prompt here would create a second
-		// and potentially conflicting knowledge contract.
-		// The window is built before the next assistant message, so the transcript
-		// holds exactly the calls that completed.
-		if e.agentToolCallsThisTurn("SearchKnowledge") >= maxSearchKnowledgeCallsPerTurn &&
-			toolListContainsFunction(toolWindow, "SearchKnowledge") {
-			toolWindow = toolListWithoutFunction(toolWindow, "SearchKnowledge")
-		}
-		// Same rule for full-body reads, on their own budget.
-		if e.agentToolCallsThisTurn("ReadChunk") >= maxReadChunkCallsPerTurn &&
-			toolListContainsFunction(toolWindow, "ReadChunk") {
-			toolWindow = toolListWithoutFunction(toolWindow, "ReadChunk")
-		}
-		// A whole-catalog read is complete after one successful observation. The
-		// model may still reason over that observation, but cannot spend later
-		// rounds asking the same immutable snapshot with cosmetic query variants.
-		for _, tool := range toolWindow {
-			if tool.Function != nil && singleShotAgentTool(tool.Function.Name) &&
-				completedAgentToolCall(e.toolResultsByCallThisTurn, tool.Function.Name) {
-				toolWindow = toolListWithoutFunction(toolWindow, tool.Function.Name)
-			}
-		}
+		toolWindow := e.toolWindowForRound(opts)
 		req := llm.ChatRequest{
 			Messages: e.buildMessagesForLLM(toolWindow),
 			Tools:    toolWindow,
@@ -1250,9 +1116,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, directAnswerToolRetryInstruction)
 			e.directAnswerToolRetryPending = false
 		}
-		if recoverTruncatedOutput {
+		if e.recoverTruncatedOutput {
 			req.Messages = withEphemeralSystemBeforeLastUser(req.Messages, truncatedOutputRecoveryInstruction)
-			recoverTruncatedOutput = false
+			e.recoverTruncatedOutput = false
 		}
 		if decision, ok := e.allowRateLimited(governance.ClassLLM, "main_react_chat"); !ok {
 			if result, committed := finishCommittedWrite(); committed {
@@ -1264,12 +1130,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				}
 			}
 			e.markTurnCompletion(observability.CompletionClassSafetyBlock, observability.CompletionReasonRateLimit)
-			content := e.finalizeHostTerminalResponse(llmCurrentUserMsg, rateLimitMessage(decision.Reason))
-			e.messages = append(e.messages, openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleAssistant,
-				Content: content,
-			})
-			emitTerminalText(content)
+			content := recordAndStream(e.finalizeHostTerminalResponse(llmCurrentUserMsg, rateLimitMessage(decision.Reason)))
 			return agentruntime.Final(content, agentruntime.FinishRateLimit), nil
 		}
 		// A no-tool model response is not yet user-facing text: the final gateway
@@ -1303,12 +1164,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// A live turn with completed tools can still deliver their results.
 			if ctx.Err() == nil {
 				if synth, ok := e.finishAgentTurn(ctx); ok {
-					synth = e.finalizeResponse(ctx, llmCurrentUserMsg, synth)
-					e.messages = append(e.messages, openai.ChatCompletionMessage{
-						Role:    openai.ChatMessageRoleAssistant,
-						Content: synth,
-					})
-					emitTerminalText(synth)
+					synth = recordAndStream(e.finalizeResponse(ctx, llmCurrentUserMsg, synth))
 					return agentruntime.Final(synth, agentruntime.FinishBudgetRecovery), nil
 				}
 			}
@@ -1342,18 +1198,13 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 					return result, nil
 				}
 			}
-			truncatedOutputRecoveries++
-			if truncatedOutputRecoveries <= maxTruncatedOutputRecoveriesPerTurn {
-				recoverTruncatedOutput = true
+			e.truncatedOutputRecoveries++
+			if e.truncatedOutputRecoveries <= maxTruncatedOutputRecoveriesPerTurn {
+				e.recoverTruncatedOutput = true
 				return agentruntime.Continue(), nil
 			}
 			e.markTurnCompletion(observability.CompletionClassAgent, observability.CompletionReasonModelOutputTruncated)
-			content := e.finalizeHostTerminalResponse(llmCurrentUserMsg, outputTruncatedRefusal)
-			e.messages = append(e.messages, openai.ChatCompletionMessage{
-				Role:    openai.ChatMessageRoleAssistant,
-				Content: content,
-			})
-			emitTerminalText(content)
+			content := recordAndStream(e.finalizeHostTerminalResponse(llmCurrentUserMsg, outputTruncatedRefusal))
 			return agentruntime.Final(content, agentruntime.FinishOutputTruncated), nil
 		}
 		runtimeRound.ModelStep(len(resp.ToolCalls), len(resp.ToolCalls) == 0 && strings.TrimSpace(resp.Content) != "")
@@ -1368,7 +1219,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			// already-paid draft rather than turning a quality retry into a refusal.
 			if round == 0 && e.knowledgeRetriever != nil && strings.TrimSpace(rawContent) != "" &&
 				!e.tokenBudgetExceeded() && maxReActRounds > 1 {
-				directAnswerToolRetryDraft = rawContent
+				e.directAnswerToolRetryDraft = rawContent
 				e.directAnswerToolRetryPending = true
 				return agentruntime.Continue(), nil
 			}
@@ -1380,7 +1231,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			if retryingDirectAnswer {
 				e.directAnswerToolRetryOutcomeThisTurn = observability.DirectAnswerRetryOutcomeDirectAgain
 			}
-			directAnswerToolRetryDraft = ""
+			e.directAnswerToolRetryDraft = ""
 			draft := rawContent
 			content := e.finalizeResponse(ctx, userMsg, draft)
 			// Replay buffered streaming deltas when the LLM content was returned
@@ -1434,7 +1285,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		if retryingDirectAnswer {
 			e.directAnswerToolRetryOutcomeThisTurn = observability.DirectAnswerRetryOutcomeToolSelected
 		}
-		directAnswerToolRetryDraft = ""
+		e.directAnswerToolRetryDraft = ""
 		return e.runToolCallsRound(ctx, llmCurrentUserMsg, resp, toolWindow, runtimeRound, onStep, opts.OnTextDelta)
 	})
 	// Runtime owns the loop's terminal reason; retain it verbatim for the final
@@ -1467,23 +1318,14 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	}
 	// Keep the full task and transcript when closing at the round limit.
 	if synth, ok := e.finishAgentTurn(ctx); ok {
-		synth = e.finalizeResponse(ctx, llmCurrentUserMsg, synth)
-		e.messages = append(e.messages, openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleAssistant,
-			Content: synth,
-		})
-		emitTerminalText(synth)
-		return synth, nil
+		return recordAndStream(e.finalizeResponse(ctx, llmCurrentUserMsg, synth)), nil
 	}
-	// Record the terminal fallback so hot and rebuilt histories agree.
-	content := e.finalizeHostTerminalResponse(llmCurrentUserMsg, reactCeilingRefusal)
-	e.messages = append(e.messages, openai.ChatCompletionMessage{
-		Role:    openai.ChatMessageRoleAssistant,
-		Content: content,
-	})
+	// Record the terminal fallback so hot and rebuilt histories agree. The
+	// completion marker is written first, like the other two refusal exits: it
+	// sets only the class/reason hints, which nothing reads before the deferred
+	// emitTurnCompletion at the end of this call.
 	e.markTurnCompletion(observability.CompletionClassSafetyBlock, observability.CompletionReasonReactRoundCeiling)
-	emitTerminalText(content)
-	return content, nil
+	return recordAndStream(e.finalizeHostTerminalResponse(llmCurrentUserMsg, reactCeilingRefusal)), nil
 }
 
 // runToolCallsRound executes every tool call in resp, feeding results back into
