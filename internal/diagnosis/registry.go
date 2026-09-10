@@ -1,20 +1,11 @@
 package diagnosis
 
-// registeredDiagnosisActions is the complete set exposed to the model and the
-// diagnosis selection card. Resolvable and advertised actions must stay equal.
-var registeredDiagnosisActions = []string{
-	"DiagnoseBilling",
-}
-
-// chainRegistry maps each advertised diagnosis action to its Go chain.
+// chainRegistry maps each diagnosis action to its Go chain. The model-visible
+// advertisement of these actions lives in tools.Registry; a chain that is
+// resolvable here but absent there would be reachable only by a model guessing
+// an unadvertised name.
 var chainRegistry = map[string]func() *Chain{
 	"DiagnoseBilling": BillingAnomalyChain,
-}
-
-// RegisteredDiagnosisActions returns diagnosis action names in prompt-stable
-// human order.
-func RegisteredDiagnosisActions() []string {
-	return append([]string(nil), registeredDiagnosisActions...)
 }
 
 func IsDiagnosisTool(action string) bool {

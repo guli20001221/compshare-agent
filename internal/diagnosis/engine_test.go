@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/compshare-agent/internal/tools"
 )
 
 // --- Mock Executor ---
@@ -343,18 +345,20 @@ func TestRegistry_IsDiagnosisTool(t *testing.T) {
 	assert.False(t, IsDiagnosisTool(""))
 }
 
-// Every resolvable diagnosis chain must be advertised.
+// Every resolvable diagnosis chain must be advertised to the model. The
+// advertisement is tools.Registry itself rather than a second list kept beside
+// chainRegistry: a local list can only ever disagree with the one the model
+// actually reads.
 func TestDiagnosisRegistryHasNoUnadvertisedChains(t *testing.T) {
 	advertised := map[string]bool{}
-	for _, action := range RegisteredDiagnosisActions() {
-		assert.True(t, IsDiagnosisTool(action), "advertised action %s must resolve to a chain", action)
-		assert.False(t, advertised[action], "duplicate advertised action %s", action)
-		advertised[action] = true
+	for _, tool := range tools.Registry {
+		if tool.Function != nil {
+			advertised[tool.Function.Name] = true
+		}
 	}
 	for action := range chainRegistry {
-		assert.True(t, advertised[action], "chainRegistry holds unadvertised chain %s — delete it or advertise it, never keep it resolvable-but-hidden", action)
+		assert.True(t, advertised[action], "chainRegistry holds unadvertised chain %s — delete it or advertise it in tools.Registry, never keep it resolvable-but-hidden", action)
 	}
-	assert.Equal(t, len(advertised), len(chainRegistry), "chainRegistry must equal the advertised set exactly")
 }
 
 func TestRegistry_GetChain(t *testing.T) {
