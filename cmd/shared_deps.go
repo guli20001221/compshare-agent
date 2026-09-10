@@ -24,13 +24,11 @@ func buildHTTPServerPool(cfg *config.Config, messageStore store.MessageStore, ge
 }
 
 // configureSharedDepsFromEnv builds the shared engine dependencies and applies
-// the same operational configuration as the HTTP server boot. Extracted
-// from buildHTTPServerPool so the in-process behavioral-gate test
-// (cmd/behavioral_gate_test.go) can drive an engine wired identically to
-// production — the gate would be worthless if it tested a hand-rolled wiring
-// that drifted from the server's. Returns the configured deps and whether
-// mutating tools are enabled. Behavior is byte-identical to the original inline
-// body of buildHTTPServerPool.
+// the same operational configuration as the HTTP server boot. It is separate
+// from buildHTTPServerPool so the in-process live probes can drive an engine
+// wired identically to production; a probe against hand-rolled wiring measures
+// that wiring rather than the server. Returns the configured deps and whether
+// mutating tools are enabled.
 func configureSharedDepsFromEnv(cfg *config.Config, getenv getenvFunc, db *sql.DB) (*engine.SharedDeps, bool, error) {
 	deps, err := engine.NewSharedDeps(cfg)
 	if err != nil {

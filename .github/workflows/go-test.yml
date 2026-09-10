@@ -4,15 +4,12 @@ name: Go Tests
 # entire `go test ./...` (unit tests + golden scripts) on every PR and on pushes
 # to main.
 #
-# No model / server / DB needed: the real-model eval (eval.TestEval) and the
-# in-process behavioral gate (cmd.TestBehavioralGate) self-skip without their
-# -model / -behavioral-gate flags, so this job stays fast, free, and
-# deterministic. The nightly real-model behavioral gate lives in
-# behavioral-gate.yml; the old eval/intent accuracy-gate.yml and skills-ci.yml
-# were removed with the P6 router / skills-loader deletion.
+# No model / server / DB needed: every real-model probe in the tree self-skips
+# without its own opt-in flag, so this job stays fast, free and deterministic.
+# There is no scheduled real-model job; a probe is run on demand.
 #
 # Complements entity-race.yml (which adds -race on internal/entity); this adds
-# full-suite coverage that CI was previously missing.
+# full-suite coverage.
 
 on:
   pull_request:
