@@ -37,10 +37,10 @@ func TestReadTargetFromTranscriptIsNotLimitedByEarlierUserLiterals(t *testing.T)
 	raw := eng.executeTool(context.Background(), toolCall("read", capability.ReadToolName(intent.IntentResourceInfo),
 		fmt.Sprintf(`{"targets":[{"type":"uhost_id_user_input","value":%q}]}`, targetID)), noopStep)
 	var observation ReadCapabilityObservation
-	require.NoError(t, json.Unmarshal([]byte(raw), &observation), raw)
+	require.NoError(t, json.Unmarshal([]byte(raw.Observation), &observation), raw.Observation)
 	require.Equal(t, platform.ReadStatusHandled, observation.Status)
 	require.Equal(t, []string{targetID}, described)
-	require.Contains(t, raw, targetID)
+	require.Contains(t, raw.Observation, targetID)
 }
 
 func TestHistoricalMonitorFollowupUsesAgentWindowWithoutAnOriginalQuote(t *testing.T) {
@@ -72,7 +72,7 @@ func TestHistoricalMonitorFollowupUsesAgentWindowWithoutAnOriginalQuote(t *testi
 			raw := eng.executeTool(context.Background(), toolCall("monitor", capability.ReadToolName(intent.IntentMonitorHistory),
 				`{"targets":[{"type":"uhost_id_user_input","value":"uhost-second"}],"metrics":["cpu"],"time_window":`+tc.window+`}`), noopStep)
 			var observation ReadCapabilityObservation
-			require.NoError(t, json.Unmarshal([]byte(raw), &observation), raw)
+			require.NoError(t, json.Unmarshal([]byte(raw.Observation), &observation), raw.Observation)
 			require.Equal(t, platform.ReadStatusHandled, observation.Status)
 			require.Equal(t, []string{"uhost-second"}, monitorArgs["UHostIds"])
 			require.Less(t, monitorArgs["StartTime"].(int64), monitorArgs["EndTime"].(int64))
@@ -99,8 +99,8 @@ func TestReadDoesNotReplaceAnUnknownIDWithALongerUserLiteral(t *testing.T) {
 	raw := eng.executeTool(context.Background(), toolCall("read", capability.ReadToolName(intent.IntentResourceInfo),
 		fmt.Sprintf(`{"targets":[{"type":"uhost_id_user_input","value":%q}]}`, shortID)), noopStep)
 	var observation ReadCapabilityObservation
-	require.NoError(t, json.Unmarshal([]byte(raw), &observation), raw)
+	require.NoError(t, json.Unmarshal([]byte(raw.Observation), &observation), raw.Observation)
 	require.Equal(t, platform.ReadStatusEmpty, observation.Status)
 	require.Equal(t, []string{shortID}, described)
-	require.NotContains(t, raw, fullID)
+	require.NotContains(t, raw.Observation, fullID)
 }

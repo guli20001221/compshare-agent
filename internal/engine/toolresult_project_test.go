@@ -169,10 +169,10 @@ func TestExecuteTool_ProjectionOnlyChangesLLMVisibleResult(t *testing.T) {
 
 	require.NotEmpty(t, events)
 	require.Contains(t, events[len(events)-1].TraceResult, "AvailableInstanceTypes")
-	assert.NotContains(t, visible, "HugeMatrix")
-	assert.Contains(t, visible, "RTX4090")
+	assert.NotContains(t, visible.Observation, "HugeMatrix")
+	assert.Contains(t, visible.Observation, "RTX4090")
 	assert.True(t, events[len(events)-1].Projected, "projection signal is recorded for trace")
-	assertFormattedProjectionMetadata(t, visible)
+	assertFormattedProjectionMetadata(t, visible.Observation)
 	traceJSON, err := json.Marshal(events[len(events)-1].TraceResult)
 	require.NoError(t, err)
 	assert.Contains(t, string(traceJSON), "HugeMatrix",

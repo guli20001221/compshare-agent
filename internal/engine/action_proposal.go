@@ -303,13 +303,13 @@ func (e *Engine) machineTypeCatalogSnapshot(ctx context.Context, spec actionreso
 	return actionresolver.MachineTypeCatalog{Names: names, Available: true}
 }
 
-func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any, onStep func(StepEvent)) string {
+func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any, onStep func(StepEvent)) toolOutcome {
 	resolved, err := e.resolveActionProposal(ctx, args)
 	if err != nil {
 		e.actionProposalDispositionThisTurn = "resolve_error"
 		onStep(StepEvent{Type: StepError, Action: tools.ProposeActionName, Source: observability.ToolSourceMainReAct, Message: err.Error()})
 		payload, _ := json.Marshal(map[string]any{"error": err.Error(), "ready_for_confirmation": false})
-		return string(payload)
+		return observed(string(payload))
 	}
 	// Classify what the resolver did with the proposal (value-free) for the
 	// acceptance measurement / trace: did it reach a card, and if not, why.
@@ -326,7 +326,7 @@ func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any,
 			ca, _ := newConfirmableAction(resolved)
 			return e.executeResolvedWorkflow(ctx, ca, onStep)
 		}
-		return resolvedActionForModel(resolved.action)
+		return observed(resolvedActionForModel(resolved.action))
 	}
 	onStep(StepEvent{Type: StepToolResult, Action: tools.ProposeActionName, Source: observability.ToolSourceMainReAct, Message: "提案已验证，进入统一确认与执行门"})
 	// Thread the SAME zone snapshot the resolver canonicalized Zone against into the
@@ -334,7 +334,7 @@ func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any,
 	// than building a second one that could disagree (gate 1). ReadyForConfirmation
 	// was established at the top of this branch, so the constructor accepts it.
 	ca, _ := newConfirmableAction(resolved)
-	reply := e.executeResolvedWorkflow(ctx, ca, onStep)
+	outcome := e.executeResolvedWorkflow(ctx, ca, onStep)
 	// Persist the dual-proof audit for this write's verified targets: the
 	// ExistenceProof the resolver established (which oracle / when / account /
 	// verdict) plus whether the confirmation authorized execution. Fires for both
@@ -350,7 +350,7 @@ func (e *Engine) executeActionProposal(ctx context.Context, args map[string]any,
 	if e.lastConfirmationAcceptedThisCall {
 		e.recordUserSelectedTargets(resolved.action)
 	}
-	return reply
+	return outcome
 }
 
 func resolvedActionForModel(resolved actionresolver.ResolvedAction) string {

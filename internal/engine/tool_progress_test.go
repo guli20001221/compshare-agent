@@ -22,8 +22,8 @@ func TestRepeatedConcreteReadReusesOnlyTheIdenticalCall(t *testing.T) {
 	second := eng.executeTool(context.Background(), call, noopStep)
 
 	require.NotEqual(t, first, second)
-	require.Contains(t, second, "reused_observation")
-	require.Contains(t, second, "same_call_blocked")
+	require.Contains(t, second.Observation, "reused_observation")
+	require.Contains(t, second.Observation, "same_call_blocked")
 	require.Len(t, executor.calls, 1)
 	require.Contains(t, toolNames(centralAgentToolWindow(false, false)), action, "复用一次调用不能撤掉整个能力")
 }
@@ -39,8 +39,8 @@ func TestDifferentArgumentsRemainExecutableWhenResultsMatch(t *testing.T) {
 	first := eng.executeTool(context.Background(), toolCall("first", action, `{"gpu_type":"4090"}`), noopStep)
 	second := eng.executeTool(context.Background(), toolCall("second", action, `{"gpu_type":"A100"}`), noopStep)
 
-	require.NotContains(t, first, "reused_observation")
-	require.NotContains(t, second, "reused_observation")
+	require.NotContains(t, first.Observation, "reused_observation")
+	require.NotContains(t, second.Observation, "reused_observation")
 	require.Len(t, executor.calls, 2, "不同参数即使结果相同也必须真正执行")
 	require.Contains(t, toolNames(centralAgentToolWindow(false, false)), action)
 }
@@ -56,12 +56,12 @@ func TestMonitorCallBudgetStopsThirdCall(t *testing.T) {
 		`{"time_window":{"type":"relative","amount":2,"unit":"hour"}}`,
 	} {
 		result := execToolInTurn(eng, toolCall("call", action, args), noopStep)
-		require.NotContains(t, result, "call_budget_exhausted", "call %d", index+1)
+		require.NotContains(t, result.Observation, "call_budget_exhausted", "call %d", index+1)
 	}
 	third := execToolInTurn(eng, toolCall("third", action,
 		`{"time_window":{"type":"relative","amount":3,"unit":"hour"}}`), noopStep)
-	require.Contains(t, third, "call_budget_exhausted")
-	require.Contains(t, third, `"max_calls_per_turn":2`)
+	require.Contains(t, third.Observation, "call_budget_exhausted")
+	require.Contains(t, third.Observation, `"max_calls_per_turn":2`)
 	require.Equal(t, 3, eng.agentToolCallsThisTurn(action),
 		"the refused call is still a call the model spent a round on")
 }
@@ -82,8 +82,8 @@ func TestMonitorCallBudgetCountsARepeatedCallToo(t *testing.T) {
 	third := execToolInTurn(eng, toolCall("third", action,
 		`{"time_window":{"type":"relative","amount":2,"unit":"hour"}}`), noopStep)
 
-	require.Contains(t, repeat, "reused_observation", "an identical read replays its observation")
-	require.Contains(t, third, "call_budget_exhausted",
+	require.Contains(t, repeat.Observation, "reused_observation", "an identical read replays its observation")
+	require.Contains(t, third.Observation, "call_budget_exhausted",
 		"the replayed round still spent one of the turn's calls")
 }
 
@@ -96,13 +96,13 @@ func TestInstanceOpsCallBudgetStopsThirdRun(t *testing.T) {
 		callID := []string{"guest-first", "guest-second"}[index]
 		result := execToolInTurn(eng, toolCall(callID, "DiagnoseInstanceInternals",
 			`{"UHostId":"uhost-1","Task":"`+task+`"}`), noopStep)
-		require.NotContains(t, result, "call_budget_exhausted", "run %d", index+1)
+		require.NotContains(t, result.Observation, "call_budget_exhausted", "run %d", index+1)
 	}
 	third := execToolInTurn(eng, toolCall("guest-third", "DiagnoseInstanceInternals",
 		`{"UHostId":"uhost-1","Task":"第三次检查"}`), noopStep)
 
-	require.Contains(t, third, "call_budget_exhausted")
-	require.Contains(t, third, `"max_calls_per_turn":2`)
+	require.Contains(t, third.Observation, "call_budget_exhausted")
+	require.Contains(t, third.Observation, `"max_calls_per_turn":2`)
 	require.Equal(t, MaxInstanceOpsRunsPerTurn, runner.calls)
 }
 
@@ -123,9 +123,9 @@ func TestInstanceOpsRetryWithIdenticalArgumentsReentersTheGuest(t *testing.T) {
 	second := execToolInTurn(eng, toolCall("second", "DiagnoseInstanceInternals", args), noopStep)
 
 	require.Equal(t, 2, runner.calls, "an identical-args retry must reach the runner")
-	require.NotContains(t, second, "reused_observation")
-	require.Contains(t, first, "systemctl restart nvidia-persistenced")
-	require.NotContains(t, second, "systemctl restart nvidia-persistenced",
+	require.NotContains(t, second.Observation, "reused_observation")
+	require.Contains(t, first.Observation, "systemctl restart nvidia-persistenced")
+	require.NotContains(t, second.Observation, "systemctl restart nvidia-persistenced",
 		"the retry must report its own run, not the previous attempt's commands")
 }
 

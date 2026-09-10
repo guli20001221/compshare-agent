@@ -16,7 +16,7 @@ import (
 // request. Keeping the check next to the response that used the window avoids a
 // mutable engine-wide allowlist and remains correct when later rounds shed
 // single-shot or budget-exhausted tools.
-func (e *Engine) executeModelTool(ctx context.Context, tc openai.ToolCall, toolWindow []openai.Tool, onStep func(StepEvent)) string {
+func (e *Engine) executeModelTool(ctx context.Context, tc openai.ToolCall, toolWindow []openai.Tool, onStep func(StepEvent)) toolOutcome {
 	action := tc.Function.Name
 	// Action is sometimes projected to a stable internal operation (for example,
 	// RequestStopInstance is recorded as ProposeAction). Preserve the exact model-
@@ -43,7 +43,7 @@ func (e *Engine) executeModelTool(ctx context.Context, tc openai.ToolCall, toolW
 			Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct,
 			Message: message, ErrorCode: agentResult.Error.Code,
 		})
-		return tools.MarshalAgentToolResult(agentResult)
+		return observed(tools.MarshalAgentToolResult(agentResult))
 	}
 	return e.executeTool(ctx, tc, recordSelection)
 }

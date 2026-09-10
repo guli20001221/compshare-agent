@@ -183,7 +183,7 @@ func toolCall(id, name, argsJSON string) openai.ToolCall {
 // assistant's tool_calls message enters the transcript, the tool runs, and its
 // result is appended. Per-turn call budgets count that transcript, so a test
 // that reaches executeTool without it is not exercising the budget at all.
-func execToolInTurn(eng *Engine, tc openai.ToolCall, onStep func(StepEvent)) string {
+func execToolInTurn(eng *Engine, tc openai.ToolCall, onStep func(StepEvent)) toolOutcome {
 	if currentTurnStart(eng.messages) < 0 {
 		eng.messages = append(eng.messages, openai.ChatCompletionMessage{
 			Role: openai.ChatMessageRoleUser, Content: "帮我排查一下",
@@ -192,11 +192,22 @@ func execToolInTurn(eng *Engine, tc openai.ToolCall, onStep func(StepEvent)) str
 	eng.messages = append(eng.messages, openai.ChatCompletionMessage{
 		Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{tc},
 	})
-	result := eng.executeTool(context.Background(), tc, onStep)
+	outcome := eng.executeTool(context.Background(), tc, onStep)
 	eng.messages = append(eng.messages, openai.ChatCompletionMessage{
-		Role: openai.ChatMessageRoleTool, Content: result, ToolCallID: tc.ID,
+		Role: openai.ChatMessageRoleTool, Content: outcomeText(outcome), ToolCallID: tc.ID,
 	})
-	return result
+	return outcome
+}
+
+// outcomeText is the text an outcome carries: its observation, or the reply it
+// delivers. runToolCallsRound writes exactly this to model history, and tests
+// asserting on wording use it where the split between the two is not the thing
+// under test.
+func outcomeText(outcome toolOutcome) string {
+	if outcome.Observation != "" {
+		return outcome.Observation
+	}
+	return outcome.Reply
 }
 
 // seedKnowledgeTurn records a settled SearchKnowledge round in the turn's
@@ -1112,7 +1123,7 @@ func TestWorkflowInternalReadExpensiveConsumesSubjectQuotaButSkipsTurnBudget(t *
 
 	reply := eng.executeResolvedWorkflow(context.Background(), mustConfirmable("StopInstanceWorkflow", map[string]any{"UHostId": "uhost-stop-001"}, zoneRefData(nil)), noopStep)
 
-	assert.Contains(t, reply, "已向实例 uhost-stop-001 提交关机请求", "successful stop reports asynchronous request acceptance")
+	assert.Contains(t, reply.Observation, "已向实例 uhost-stop-001 提交关机请求", "successful stop reports asynchronous request acceptance")
 	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
 	assert.Contains(t, executor.calls, "StopCompShareInstance")
 	var readExpensive []governance.Request
@@ -1142,7 +1153,7 @@ func TestWorkflowInternalReadExpensiveQuotaDenialReturnsFriendlyMessage(t *testi
 
 	reply := eng.executeResolvedWorkflow(context.Background(), mustConfirmable("StopInstanceWorkflow", map[string]any{"UHostId": "uhost-stop-001"}, zoneRefData(nil)), onStep)
 
-	assert.Equal(t, finalReplyPrefix+rateLimitQPSMessage, reply)
+	assert.Equal(t, deterministicReply(rateLimitQPSMessage), reply)
 	assert.Empty(t, executor.calls, "workflow internal quota denial must stop before API execution")
 	require.Len(t, limiter.requests, 2)
 	assert.Equal(t, governance.ClassMutatingTool, limiter.requests[0].Class)
@@ -1165,7 +1176,7 @@ func TestDiagnosisInternalReadExpensiveCountsTurnBudget(t *testing.T) {
 
 	reply := eng.executeDiagnosis(context.Background(), "DiagnoseBilling", map[string]any{"UHostId": "uhost-diag-001"}, onStep)
 
-	assert.Equal(t, finalReplyPrefix+readExpensiveTurnBudgetMessage, reply)
+	assert.Equal(t, deterministicReply(readExpensiveTurnBudgetMessage), reply)
 	assert.Empty(t, executor.calls, "diagnosis internal read-expensive calls must stop when turn budget is exhausted")
 	assertStepWithType(t, *events, StepBlocked, "DescribeCompShareInstance", readExpensiveTurnBudgetMessage)
 	assertStepWithType(t, *events, StepBlocked, "DiagnoseBilling", readExpensiveTurnBudgetMessage)
@@ -1173,7 +1184,7 @@ func TestDiagnosisInternalReadExpensiveCountsTurnBudget(t *testing.T) {
 }
 
 // A turn that reports two symptoms at once ("CPU 跑满" + "一直在扣费") must get BOTH
-// answered. The billing exit used to be finalReplyPrefix, which ended the turn:
+// answered. The billing exit used to be a deterministic reply, which ended the turn:
 // live probes (N=5, both description arms) showed the Agent fetch the monitoring
 // evidence, then call DiagnoseBilling, then return a bare price card — the CPU
 // question unanswered and the evidence already gathered discarded, 5/5 runs.
@@ -1484,11 +1495,10 @@ func TestDiagnoseBillingConsumesMultipleReadExpensiveQuotaUnits(t *testing.T) {
 
 	reply := eng.executeDiagnosis(context.Background(), "DiagnoseBilling", map[string]any{}, onStep)
 
-	assert.Contains(t, reply, "uhost-bill-001")
-	assert.True(t, strings.HasPrefix(reply, verbatimReplyPrefix),
-		"billing figures must reach the user verbatim so the model never re-derives them")
-	assert.False(t, strings.HasPrefix(reply, finalReplyPrefix),
-		"verbatim must not also mean terminal: ending the turn here discarded every other symptom in the question")
+	assert.Contains(t, reply.Reply, "uhost-bill-001")
+	assert.Equal(t, deliverVerbatim, reply.Delivery,
+		"billing figures must reach the user verbatim so the model never re-derives them, "+
+			"and verbatim must not also mean terminal: ending the turn here discarded every other symptom in the question")
 	var readExpensive []governance.Request
 	for _, req := range limiter.requests {
 		if req.Class == governance.ClassReadExpensiveTool {

@@ -1491,9 +1491,9 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 }
 
 // runToolCallsRound executes every tool call in resp, feeding results back into
-// history, and returns the round result. A deterministic final reply (a tool that
-// returns via isFinalReply — e.g. a confirmation card) terminates the turn; a
-// verbatim block (isVerbatimReply) is delivered to the user as-is and the loop
+// history, and returns the round result. A deterministic final reply (a tool
+// whose outcome is deliverFinal — e.g. a confirmation card) terminates the turn;
+// a verbatim block (deliverVerbatim) is delivered to the user as-is and the loop
 // CONTINUES; any other tool result continues the loop. A model-chosen write
 // proposal reaches Resolver → intake/confirm here, including its non-terminal
 // (error / prose) continuations.
@@ -1510,14 +1510,14 @@ func (e *Engine) runToolCallsRound(ctx context.Context, userMsg string, resp *ll
 	e.messages = append(e.messages, assistantMsg)
 
 	for idx, tc := range resp.ToolCalls {
-		toolResult := e.executeModelTool(ctx, tc, toolWindow, onStep)
+		outcome := e.executeModelTool(ctx, tc, toolWindow, onStep)
 		runtimeRound.Observation(tc.Function.Name)
 
 		// Verbatim user block — deliver as-is, keep the turn alive. The model's
 		// history gets an amount-free note in place of the text, so it cannot
-		// restate or recompute the figures (see verbatimReplyPrefix).
-		if block, ok := isVerbatimReply(toolResult); ok {
-			block = security.RedactOperationalTokensInText(block)
+		// restate or recompute the figures.
+		if outcome.Delivery == deliverVerbatim {
+			block := security.RedactOperationalTokensInText(outcome.Reply)
 			if emitDelta != nil {
 				if len(e.verbatimBlocksThisTurn) > 0 {
 					emitDelta(verbatimBlockSeparator)
@@ -1527,14 +1527,15 @@ func (e *Engine) runToolCallsRound(ctx context.Context, userMsg string, resp *ll
 			e.verbatimBlocksThisTurn = append(e.verbatimBlocksThisTurn, block)
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:       openai.ChatMessageRoleTool,
-				Content:    agentToolObservation(tc.Function.Name, fmt.Sprintf(`{"observation":%q,"verbatim_delivered":true}`, verbatimBlockObservation)),
+				Content:    agentToolObservation(tc.Function.Name, outcome.Observation),
 				ToolCallID: tc.ID,
 			})
 			continue
 		}
 
 		// Deterministic final reply — return directly without LLM narration
-		if finalMsg, ok := isFinalReply(toolResult); ok {
+		if outcome.Delivery == deliverFinal {
+			finalMsg := outcome.Reply
 			// A later cancellation/failure must not hide earlier committed actions.
 			var committed []string
 			for _, reply := range e.committedWriteRepliesThisTurn {
@@ -1552,12 +1553,13 @@ func (e *Engine) runToolCallsRound(ctx context.Context, userMsg string, resp *ll
 			}
 			finalMsg = strings.Join(append(committed, finalMsg), "\n\n")
 			finalMsg = e.finalizeHostTerminalResponse(userMsg, finalMsg)
+			// A tool that must not put its delivered text into model history says so
+			// by carrying its own Observation; the loop does not name the tool.
+			// A tool that must not put its delivered text into model history says so
+			// by carrying its own Observation; the loop does not name the tool.
 			historyFinalMsg := finalMsg
-			if tc.Function.Name == tools.CustomerSupportHandoffName {
-				// The active channel receives a QR or private adapter marker. Model
-				// history retains only the semantic outcome, so neither renderer can
-				// be copied into a later answer without another tool call.
-				historyFinalMsg = agentprotocol.CustomerSupportHistoryCompletion
+			if outcome.Observation != "" {
+				historyFinalMsg = outcome.Observation
 			}
 			// Append matching tool response for this tool call
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
@@ -1590,7 +1592,7 @@ func (e *Engine) runToolCallsRound(ctx context.Context, userMsg string, resp *ll
 
 		// Only this normal-result path can be supplied to a later Agent round.
 		// Keep every normal result on the common AgentTool control-plane contract.
-		toolResult = agentToolObservation(tc.Function.Name, toolResult)
+		toolResult := agentToolObservation(tc.Function.Name, outcome.Observation)
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:       openai.ChatMessageRoleTool,
 			Content:    toolResult,
@@ -2175,35 +2177,20 @@ func blockedStepEvent(action, source string, args map[string]any, message string
 	}
 }
 
-// finalReplyPrefix marks a tool result as a deterministic final reply that
-// should be returned directly to the user without LLM narration.
-const finalReplyPrefix = "\x00FINAL:"
-
-// isFinalReply checks if a tool result is a deterministic final reply.
-func isFinalReply(result string) (string, bool) {
-	if strings.HasPrefix(result, finalReplyPrefix) {
-		return strings.TrimPrefix(result, finalReplyPrefix), true
-	}
-	return "", false
-}
-
-// verbatimReplyPrefix delivers an exact user-visible block without terminating
-// the turn. The model receives an amount-free observation instead.
-const verbatimReplyPrefix = "\x00VERBATIM:"
-
-// isVerbatimReply checks if a tool result is a verbatim, non-terminal user block.
-func isVerbatimReply(result string) (string, bool) {
-	if strings.HasPrefix(result, verbatimReplyPrefix) {
-		return strings.TrimPrefix(result, verbatimReplyPrefix), true
-	}
-	return "", false
-}
-
 // verbatimBlockObservation tells the model that the user has already received
 // the authoritative detail while withholding figures that must not be derived.
 const verbatimBlockObservation = "费用卡已向用户完整展示上游返回的明细。具体金额仅从这条模型观察中省略，不是接口未返回；不要否定已展示的卡片。" +
 	"本工具范围是当前配置报价及接口明确返回的停机保留项，不代表已回答一般计费规则或历史实际扣款。" +
 	"不要复述、重算或推断金额；未覆盖的规则问题继续检索知识，其他问题用适用工具处理。全部问题已回答时直接结束本回合、不要再输出文字。"
+
+// verbatimBillingObservationPayload is the model-visible half of a verbatim
+// billing delivery. It is the outcome's Observation, which makes it both what
+// the loop writes to history and what the reuse cache replays for an identical
+// repeat — so re-asking the same question cannot launder the withheld figures
+// into context, and does not re-enter the pricing chain to produce a second card.
+func verbatimBillingObservationPayload() string {
+	return fmt.Sprintf(`{"observation":%q,"verbatim_delivered":true}`, verbatimBlockObservation)
+}
 
 // verbatimBillingHistoryCompletion closes a pure billing exchange in the
 // model-only transcript. It never reaches the browser or messages.content: the
@@ -2562,7 +2549,7 @@ func searchKnowledgeResultJSON(ledger knowledge.EvidenceLedger, followUp string,
 	return string(b)
 }
 
-func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep func(StepEvent)) string {
+func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep func(StepEvent)) toolOutcome {
 	action := tc.Function.Name
 	if e.knowledgeOnlyThisTurn && !knowledgeOnlyToolAllowed(action) {
 		const message = "当前公共问答入口仅允许查询知识库或转接人工客服，不能查询账号资源、执行诊断或发起操作"
@@ -2571,7 +2558,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 			Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct,
 			Message: message, ErrorCode: agentResult.Error.Code,
 		})
-		return tools.MarshalAgentToolResult(agentResult)
+		return observed(tools.MarshalAgentToolResult(agentResult))
 	}
 	if e.publicPlatformReadOnlyThisTurn && !publicPlatformReadOnlyToolAllowed(action) {
 		const message = "当前外部群仅允许查询公开平台目录，不能查询账号或实例数据、执行诊断或发起操作"
@@ -2580,7 +2567,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 			Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct,
 			Message: message, ErrorCode: agentResult.Error.Code,
 		})
-		return tools.MarshalAgentToolResult(agentResult)
+		return observed(tools.MarshalAgentToolResult(agentResult))
 	}
 	if repeatableAgentTool(action) {
 		if e.toolResultsByCallThisTurn == nil {
@@ -2591,7 +2578,7 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 			if previous, exists := e.toolResultsByCallThisTurn[key]; exists {
 				result := repeatedToolObservation(action, previous)
 				onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "相同参数复用已有观察", TraceResult: map[string]any{"status": "reused_observation", "same_call_blocked": true}})
-				return result
+				return observed(result)
 			}
 			// The conversation is the authority for how many times this turn has
 			// already spent the capability — the reuse cache above answers a
@@ -2602,13 +2589,18 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 				e.agentToolCallsThisTurn(action) >= limit {
 				result := toolCallBudgetObservation(action, limit)
 				onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "本轮该能力调用次数已达上限", TraceResult: map[string]any{"status": "call_budget_exhausted", "max_calls_per_turn": limit}})
-				return result
+				return observed(result)
 			}
-			result := e.executeToolOnce(ctx, tc, onStep)
-			if _, final := isFinalReply(result); !final && cacheableAgentToolObservation(action, result) {
-				e.toolResultsByCallThisTurn[key] = result
+			outcome := e.executeToolOnce(ctx, tc, onStep)
+			// What gets replayed is the model-visible observation, never the text
+			// delivered to the user: a verbatim card's figures are withheld from the
+			// model on purpose, and replaying them here would hand them back through
+			// the cache. A terminating outcome is not cached at all — it ends the
+			// turn, so there is no later round to replay it into.
+			if !outcome.terminatesTurn() && cacheableAgentToolObservation(action, outcome.Observation) {
+				e.toolResultsByCallThisTurn[key] = outcome.Observation
 			}
-			return result
+			return outcome
 		}
 	}
 	return e.executeToolOnce(ctx, tc, onStep)
@@ -2620,7 +2612,7 @@ func knowledgeOnlyToolAllowed(action string) bool {
 		capability.Policy.Route == tools.ActionRouteHandoff)
 }
 
-func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep func(StepEvent)) string {
+func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep func(StepEvent)) toolOutcome {
 	action := tc.Function.Name
 
 	// Parse args first (needed for all paths)
@@ -2636,13 +2628,13 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 			tools.AgentToolMeta{SourceStatus: "argument_parse_error"},
 		)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errClass, ErrorCode: agentResult.Error.Code})
-		return tools.MarshalAgentToolResult(agentResult)
+		return observed(tools.MarshalAgentToolResult(agentResult))
 	}
 	if e.publicPlatformReadOnlyThisTurn && !publicPlatformReadOnlyArgsAllowed(action, args) {
 		const message = "当前外部群只能查询公开平台目录：镜像仅限平台/社区目录，价格仅限目录价"
 		agentResult := tools.AgentToolFailure(action, nil, "TOOL_NOT_ALLOWED", message, tools.AgentToolMeta{})
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: message, ErrorCode: agentResult.Error.Code})
-		return tools.MarshalAgentToolResult(agentResult)
+		return observed(tools.MarshalAgentToolResult(agentResult))
 	}
 
 	// SearchKnowledge executes through the engine's configured retriever (remote
@@ -2651,7 +2643,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	// that lane.
 	if action == "SearchKnowledge" {
 		args = e.safeExecutor.FilterArgs(action, args)
-		return e.executeSearchKnowledge(ctx, args, onStep)
+		return observed(e.executeSearchKnowledge(ctx, args, onStep))
 	}
 
 	// ReadChunk shares that lane: it can read only an evidence ID returned by the
@@ -2659,7 +2651,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	// read-only for the same reasons.
 	if action == "ReadChunk" {
 		args = e.safeExecutor.FilterArgs(action, args)
-		return e.executeReadChunk(args, onStep)
+		return observed(e.executeReadChunk(args, onStep))
 	}
 
 	// The model owns the semantic handoff decision. The engine owns delivery, so
@@ -2671,14 +2663,21 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 			reply = agentprotocol.FeishuCustomerSupportMarker
 		}
 		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "已提供客服联系入口，未确认接通或受理"})
-		return finalReplyPrefix + reply
+		// The active channel receives a QR or a private adapter marker. Model
+		// history keeps only the semantic outcome, so neither renderer can be
+		// copied into a later answer without another tool call.
+		return toolOutcome{
+			Observation: agentprotocol.CustomerSupportHistoryCompletion,
+			Reply:       reply,
+			Delivery:    deliverFinal,
+		}
 	}
 
 	if _, ok := capability.ReadIntentForTool(action); ok {
 		// High-level read tools share one policy and one execution adapter. The
 		// concrete tool name selects the capability; it is never accepted from an
 		// arbitrary model-authored string inside the arguments.
-		return e.executeConcreteReadCapability(ctx, action, args, onStep)
+		return observed(e.executeConcreteReadCapability(ctx, action, args, onStep))
 	}
 	if operation, ok := proposalOperationForTool(action); ok {
 		args = proposalArgsForOperation(operation, args)
@@ -2711,7 +2710,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		msg := "write workflows are unavailable until a verified ActionProposal is accepted"
 		agentResult := tools.AgentToolFailure(action, nil, "WORKFLOW_DIRECT_CALL_REFUSED", msg, tools.AgentToolMeta{})
 		onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg, ErrorCode: agentResult.Error.Code})
-		return tools.MarshalAgentToolResult(agentResult)
+		return observed(tools.MarshalAgentToolResult(agentResult))
 	}
 
 	// In-instance SSH diagnosis lane → its own dispatch, BEFORE the diagnosis-chain
@@ -2720,7 +2719,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	// without this branch it would fall through to the mutating handler and be
 	// blocked. executeInstanceOps fails closed when the lane is off (nil runner).
 	if action == "DiagnoseInstanceInternals" {
-		return e.executeInstanceOps(ctx, action, tc.ID, args, onStep)
+		return observed(e.executeInstanceOps(ctx, action, tc.ID, args, onStep))
 	}
 
 	// Registered diagnosis meta-tools delegate to the diagnosis engine. Instance
@@ -2734,7 +2733,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	if decision, ok := e.allowMutatingTool(action); !ok {
 		msg := rateLimitMessage(decision.Reason)
 		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, governance.ErrRateLimited))
-		return finalReplyPrefix + msg
+		return deterministicReply(msg)
 	}
 
 	result, err := e.executeSafeTool(ctx, tools.SafeToolRequest{
@@ -2755,13 +2754,13 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, err))
 			result := tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{})
 			result.Error.Message = msg
-			return tools.MarshalAgentToolResult(result)
+			return observed(tools.MarshalAgentToolResult(result))
 		}
 		if errors.Is(err, tools.ErrDestructiveAction) {
 			msg := fmt.Sprintf("安全限制：%s 是破坏性操作（L2），已拒绝执行。请到控制台手动操作。", action)
 			agentResult := tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{})
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg, ErrorCode: agentResult.Error.Code})
-			return finalReplyPrefix + msg
+			return deterministicReply(msg)
 		}
 		if errors.Is(err, tools.ErrUserDeclined) {
 			// ErrUserDeclined also covers unresolved confirmations, so do not claim
@@ -2769,7 +2768,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 			msg := fmt.Sprintf("好的，%s操作未执行。如需继续，请重新发送指令并确认。", friendlyActionName(action))
 			agentResult := tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{})
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg, ErrorCode: agentResult.Error.Code})
-			return finalReplyPrefix + msg
+			return deterministicReply(msg)
 		}
 		errMsg := fmt.Sprintf("API 调用失败: %v", err)
 		// Attach a recovery hint for known upstream RetCodes so the model
@@ -2783,7 +2782,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		}
 		agentResult := tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{})
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: errMsg, ErrorCode: agentResult.Error.Code})
-		return tools.MarshalAgentToolResult(agentResult)
+		return observed(tools.MarshalAgentToolResult(agentResult))
 	}
 
 	// Bound full-account list dumps before they enter model context.
@@ -2799,7 +2798,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		Message: "调用成功", TraceResult: result.TraceResult, Attempts: result.Attempts, Projected: projected,
 		ToolResultRawRunes: formatTrace.RawRunes, ToolResultVisibleRunes: &visibleRunes, ToolResultTruncated: &truncated,
 	})
-	return formatted
+	return observed(formatted)
 }
 
 func (e *Engine) allowMutatingTool(action string) (governance.Decision, bool) {
@@ -3181,13 +3180,13 @@ func newConfirmableAction(rp resolvedProposal) (confirmableAction, bool) {
 // executeResolvedWorkflow runs an Agent-proposed action whose parameters and
 // exact account target have been verified. The workflow confirms and executes
 // those parameters, using the same live catalog snapshot as the resolver.
-func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAction, onStep func(StepEvent)) string {
+func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAction, onStep func(StepEvent)) toolOutcome {
 	action, args, refData := act.operation, act.args, act.refData
 	e.lastConfirmationAcceptedThisCall = false
 	if !e.mutatingToolsEnabled {
 		msg := mutatingToolsDisabledMessage
 		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, tools.ErrMutatingActionDisabled))
-		return finalReplyPrefix + msg
+		return deterministicReply(msg)
 	}
 	// Hard guard (fail-safe) — instance-operation workflows MUST arrive with a
 	// non-empty UHostId. A resolved write always carries its dual-proof-verified
@@ -3200,7 +3199,7 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
 			guardResult := map[string]any{"success": false, "message": msg}
 			b, _ := json.Marshal(guardResult)
-			return string(b)
+			return observed(string(b))
 		}
 	}
 
@@ -3208,7 +3207,7 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 	if !ok {
 		msg := fmt.Sprintf("未知的工作流: %s", action)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
-		return msg
+		return observed(msg)
 	}
 	if e.guidedCreate && e.confirmEditsFn != nil && operationSupportsGuidedIntake(action) {
 		wf = workflow.CreateInstanceGuidedDef()
@@ -3217,7 +3216,7 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 	if decision, ok := e.allowMutatingTool(action); !ok {
 		msg := rateLimitMessage(decision.Reason)
 		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, e.safeExecutor.RedactArgs(action, args), msg, governance.ErrRateLimited))
-		return finalReplyPrefix + msg
+		return deterministicReply(msg)
 	}
 
 	var wfConfirm workflow.ConfirmFunc
@@ -3315,11 +3314,11 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 	if err != nil {
 		if msg, ok := friendlyToolErrorMessage(err); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, err))
-			return finalReplyPrefix + msg
+			return deterministicReply(msg)
 		}
 		msg := fmt.Sprintf("工作流执行错误: %v", err)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
-		return msg
+		return observed(msg)
 	}
 
 	// Remember a confirmed target even if execution failed, but not one whose
@@ -3338,7 +3337,7 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 				"message": result.Message,
 			}))
 			onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "工作流返回结构化缺参结果，由中央 Agent 结合上下文处理"})
-			return string(payload)
+			return observed(string(payload))
 		}
 		if reply, ok := e.authorizedWriteFailureReply(ctx, action, finalParams, result); ok {
 			// The upstream call may have committed before returning an error. A
@@ -3346,7 +3345,7 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 			// answer. Never invite an automatic retry of a result that may exist.
 			e.markRegistryInvalidated(action)
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, result.Err))
-			return finalReplyPrefix + reply
+			return deterministicReply(reply)
 		}
 		if action == "CreateInstanceWorkflow" && !result.ConfirmationAccepted() && result.Message != "用户取消了操作" {
 			// No creation was authorized. Return the actual validation failure to
@@ -3357,18 +3356,18 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 			}
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, result.Message, result.Err))
 			payload, _ := json.Marshal(result)
-			return string(payload)
+			return observed(string(payload))
 		}
 		if msg, ok := friendlyMessageFromText(result.Message); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, result.Err))
-			return finalReplyPrefix + msg
+			return deterministicReply(msg)
 		}
 	}
 
 	// An unresolved confirmation and an explicit decline share this workflow
 	// result, so state only that the operation was not executed.
 	if !result.Success && result.Message == "用户取消了操作" {
-		return finalReplyPrefix + fmt.Sprintf("好的，%s操作未执行。如需继续，请重新发送指令并确认。", friendlyActionName(action))
+		return deterministicReply(fmt.Sprintf("好的，%s操作未执行。如需继续，请重新发送指令并确认。", friendlyActionName(action)))
 	}
 
 	// An authorized create failure may have affected the instance. Keep its
@@ -3376,12 +3375,12 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 	if !result.Success && action == "CreateInstanceWorkflow" {
 		reply := createWorkflowFailureReply(result.Message, result.Err)
 		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, result.Err))
-		return finalReplyPrefix + reply
+		return deterministicReply(reply)
 	}
 	if !result.Success && action == "CreateCFSWorkflow" {
 		reply := cfsWorkflowFailureReply(result.Message)
 		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, nil))
-		return finalReplyPrefix + reply
+		return deterministicReply(reply)
 	}
 	if !result.Success && action == "CloneCustomImageWorkflow" {
 		reply := strings.TrimSpace(workflowStepPrefixRE.ReplaceAllString(result.Message, ""))
@@ -3389,7 +3388,7 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 			reply = "克隆自制镜像没有成功，请核对源镜像状态和目标可用区后重试。"
 		}
 		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, nil))
-		return finalReplyPrefix + reply
+		return deterministicReply(reply)
 	}
 	if !result.Success && action == "ReinstallInstanceWorkflow" {
 		reply := strings.TrimSpace(workflowStepPrefixRE.ReplaceAllString(result.Message, ""))
@@ -3397,7 +3396,7 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 			reply = "重装系统没有执行，请核对实例状态和目标镜像后重试。"
 		}
 		onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, reply, nil))
-		return finalReplyPrefix + reply
+		return deterministicReply(reply)
 	}
 
 	if result.Success && result.MutationCommitted {
@@ -3415,7 +3414,7 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		// successful creation and can continue through the ordinary narration.
 		if action == "CreateInstanceWorkflow" {
 			if reply, mustReturnDeterministically := createInstanceDeliveryReply(result); mustReturnDeterministically {
-				return finalReplyPrefix + reply
+				return deterministicReply(reply)
 			}
 		}
 		// Finishing an action does not finish the user's task. Return its actual
@@ -3423,7 +3422,7 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		// any subsequent write gets a fresh workflow context and confirmation.
 	}
 	b, _ := json.Marshal(result)
-	return string(b)
+	return observed(string(b))
 }
 
 // workflowRequiresInstanceTarget reports whether an action's mutating step
@@ -3861,23 +3860,23 @@ func cfsWorkflowFailureReply(message string) string {
 }
 
 // executeDiagnosis runs a diagnostic chain and returns the result as JSON.
-func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
-	reply, outcome := e.executeDiagnosisWithOutcome(ctx, action, args, onStep)
+func (e *Engine) executeDiagnosis(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) toolOutcome {
+	result, outcome := e.executeDiagnosisWithOutcome(ctx, action, args, onStep)
 	if outcome == intent.HandlerFailureNone {
 		onStep(StepEvent{
 			Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct,
 			Message: "诊断完成", TraceResult: map[string]any{"status": "completed"},
 		})
 	}
-	return reply
+	return result
 }
 
-func (e *Engine) executeDiagnosisWithOutcome(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) (string, intent.HandlerFailureClass) {
+func (e *Engine) executeDiagnosisWithOutcome(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) (toolOutcome, intent.HandlerFailureClass) {
 	chain, ok := diagnosis.GetChain(action)
 	if !ok {
 		msg := fmt.Sprintf("未知的诊断链: %s", action)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
-		return msg, intent.HandlerFailureGenericRead
+		return observed(msg), intent.HandlerFailureGenericRead
 	}
 	diagEngine := diagnosis.NewEngine(e.toolExecutorFor(tools.OriginDiagnosisInternal), func(ev diagnosis.DiagEvent) {
 		var eventType StepType
@@ -3912,19 +3911,19 @@ func (e *Engine) executeDiagnosisWithOutcome(ctx context.Context, action string,
 	if err != nil {
 		if msg, ok := friendlyToolErrorMessage(err); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, err))
-			return finalReplyPrefix + msg, intent.HandlerFailureActionableUpstream
+			return deterministicReply(msg), intent.HandlerFailureActionableUpstream
 		}
 		msg := fmt.Sprintf("诊断执行错误: %v", err)
 		onStep(StepEvent{Type: StepError, Action: action, Source: observability.ToolSourceMainReAct, Message: msg})
-		return msg, intent.HandlerFailureGenericRead
+		return observed(msg), intent.HandlerFailureGenericRead
 	}
 	if !result.Success {
 		if msg, ok := friendlyMessageFromText(result.Conclusion); ok {
 			onStep(blockedStepEvent(action, observability.ToolSourceMainReAct, nil, msg, nil))
-			return finalReplyPrefix + msg, intent.HandlerFailureActionableUpstream
+			return deterministicReply(msg), intent.HandlerFailureActionableUpstream
 		}
 		b, _ := json.Marshal(result)
-		return string(b), intent.HandlerFailureGenericRead
+		return observed(string(b)), intent.HandlerFailureGenericRead
 	}
 	if action == "DiagnoseBilling" {
 		// Billing amounts are rendered from structured fields and bypass model arithmetic.
@@ -3933,11 +3932,11 @@ func (e *Engine) executeDiagnosisWithOutcome(ctx context.Context, action string,
 		if suggestion := strings.TrimSpace(result.Suggestion); suggestion != "" {
 			reply += "\n\n" + suggestion
 		}
-		return verbatimReplyPrefix + reply, intent.HandlerFailureNone
+		return verbatimReply(reply, verbatimBillingObservationPayload()), intent.HandlerFailureNone
 	}
 
 	b, _ := json.Marshal(result)
-	return string(b), intent.HandlerFailureNone
+	return observed(string(b)), intent.HandlerFailureNone
 }
 
 // StepType identifies what kind of intermediate event occurred.

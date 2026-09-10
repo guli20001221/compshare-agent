@@ -177,9 +177,9 @@ func TestExecuteSearchKnowledge_LocalDispatchSubstantive(t *testing.T) {
 	out := eng.executeTool(context.Background(), tc, noopStep)
 
 	// Substantive evidence: chunk id + a real actionable token in the snippet.
-	assert.Contains(t, out, "EvidenceLedger")
-	assert.Contains(t, out, "ext-gpu-oom-vllm-001")
-	assert.Contains(t, out, "--max-model-len", "result must carry actionable content for the agent to ground on")
+	assert.Contains(t, out.Observation, "EvidenceLedger")
+	assert.Contains(t, out.Observation, "ext-gpu-oom-vllm-001")
+	assert.Contains(t, out.Observation, "--max-model-len", "result must carry actionable content for the agent to ground on")
 
 	// Local dispatch: the external/safe tool executor was NEVER called.
 	assert.Empty(t, exec.calls, "SearchKnowledge must dispatch locally, never via the API/safe executor")
@@ -413,7 +413,7 @@ func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
 	}
 	out := eng.executeTool(context.Background(), tc, noopStep)
 
-	result := readChunkResult(t, out)
+	result := readChunkResult(t, out.Observation)
 	ledger := result["EvidenceLedger"].(map[string]any)
 	assert.Empty(t, ledger["items"], "weak hits must not enter citable evidence before ReadChunk")
 	candidates := result["below_floor_candidates"].([]any)
@@ -424,12 +424,12 @@ func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
 		assert.Equal(t, "below_floor", candidate["strength"])
 		assert.Len(t, candidate, 3, "a weak candidate exposes only id, title and strength")
 	}
-	assert.NotContains(t, out, "候选一正文", "SearchKnowledge must not expose a below-floor body")
-	assert.NotContains(t, out, "weak-4", "only the first three weak candidates are reviewable")
-	assert.Contains(t, out, `"floor_dropped_all":true`, "the model must know why the ledger is empty")
-	assert.Contains(t, out, "ReadChunk")
-	assert.Contains(t, out, "读取前不得引用")
-	observation, ok := tools.ParseAgentToolResult(agentToolObservation("SearchKnowledge", out))
+	assert.NotContains(t, out.Observation, "候选一正文", "SearchKnowledge must not expose a below-floor body")
+	assert.NotContains(t, out.Observation, "weak-4", "only the first three weak candidates are reviewable")
+	assert.Contains(t, out.Observation, `"floor_dropped_all":true`, "the model must know why the ledger is empty")
+	assert.Contains(t, out.Observation, "ReadChunk")
+	assert.Contains(t, out.Observation, "读取前不得引用")
+	observation, ok := tools.ParseAgentToolResult(agentToolObservation("SearchKnowledge", out.Observation))
 	require.True(t, ok)
 	assert.Equal(t, "NO_CITABLE_EVIDENCE", observation.Error.Code,
 		"floor feedback must remain on the existing no-citable-evidence control plane")
@@ -546,6 +546,6 @@ func TestExecuteSearchKnowledge_RerankerFallbackKeepsHits(t *testing.T) {
 	out := eng.executeTool(context.Background(), tc, noopStep)
 
 	// The chunk survives to the agent's ledger — no reranker-fallback blackout.
-	assert.Contains(t, out, "v2-resource_purchase-ac94d9679403ee37", "reranker fallback must not empty the ledger")
+	assert.Contains(t, out.Observation, "v2-resource_purchase-ac94d9679403ee37", "reranker fallback must not empty the ledger")
 	assert.Len(t, eng.searchKnowledgeHitsThisTurn, 1, "the fused hit is kept as grounding evidence on fallback")
 }

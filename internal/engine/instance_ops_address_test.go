@@ -38,7 +38,6 @@ func TestInstanceOps_SSHPreflightUnreachableReturnsStructuredVantageObservation(
 	raw := newInstanceOpsEngine(
 		&fakeInstanceOpsRunner{err: ErrInstanceOpsSSHPreflightUnreachable}, alwaysConfirm,
 	).executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", "call-1", instanceOpsArgs(), noopStep)
-	require.False(t, strings.HasPrefix(raw, finalReplyPrefix), "the central Agent must receive this observation")
 
 	result, ok := tools.ParseAgentToolResult(raw)
 	require.True(t, ok, raw)

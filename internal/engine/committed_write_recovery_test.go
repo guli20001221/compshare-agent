@@ -35,9 +35,11 @@ func TestCommittedCreateIsRecordedWhenTheWorkflowCommits(t *testing.T) {
 		"a committed create must leave a model-free record; without it no later exit can report the write")
 	assert.Contains(t, eng.committedWriteRepliesThisTurn[0], "uhost-good1",
 		"the record must carry the id the workflow returned, not a generic success")
-	assert.Contains(t, reply, "尚未取得完整的创建后状态",
+	assert.Equal(t, deliverFinal, reply.Delivery,
+		"a committed create whose readback is incomplete must not be narrated by the model")
+	assert.Contains(t, reply.Reply, "尚未取得完整的创建后状态",
 		"an optional readback miss must not be narrated as a fully delivered instance")
-	assert.Contains(t, reply, "请勿重复创建")
+	assert.Contains(t, reply.Reply, "请勿重复创建")
 	state, _, hydrated := eng.SessionStateSnapshot()
 	require.True(t, hydrated)
 	assert.Equal(t, "uhost-good1", state.SelectedInstanceID,

@@ -53,10 +53,18 @@ func captureSteps(dst *[]StepEvent) func(StepEvent) {
 
 func requireInstanceOpsObservation(t *testing.T, out string) tools.AgentToolResult {
 	t.Helper()
-	require.False(t, strings.HasPrefix(out, finalReplyPrefix))
 	result, ok := tools.ParseAgentToolResult(out)
 	require.True(t, ok, out)
 	return result
+}
+
+// The lane's verdict is an ordinary observation the central Agent reads, never
+// a delivered reply: it must be free to reconcile the report against a platform
+// read before answering.
+func requireInstanceOpsOutcome(t *testing.T, out toolOutcome) tools.AgentToolResult {
+	t.Helper()
+	require.False(t, out.deliversToUser(), "the central Agent must be able to use other observation layers")
+	return requireInstanceOpsObservation(t, out.Observation)
 }
 
 func newInstanceOpsEngine(runner InstanceOpsRunner, confirm ConfirmFunc) *Engine {
@@ -596,7 +604,6 @@ func TestInstanceOps_NoSSHTargetReturnsStructuredBoundaryObservation(t *testing.
 	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", "call-1", instanceOpsArgs(), captureSteps(&steps))
 
 	require.Equal(t, 1, runner.calls, "the card was authorized, so the runner is reached")
-	require.False(t, strings.HasPrefix(out, finalReplyPrefix), "the central Agent must be able to use other observation layers")
 	result, ok := tools.ParseAgentToolResult(out)
 	require.True(t, ok, out)
 	require.Equal(t, tools.AgentToolStatusFailed, result.Status)
@@ -672,8 +679,8 @@ func TestInstanceOps_SecondTargetRunsInTheSameTurn(t *testing.T) {
 	out2 := execToolInTurn(eng, toolCall("call-2", "DiagnoseInstanceInternals",
 		`{"UHostId":"uhost-2","Task":"排查掉卡问题"}`), noopStep)
 
-	requireInstanceOpsObservation(t, out1)
-	requireInstanceOpsObservation(t, out2)
+	requireInstanceOpsOutcome(t, out1)
+	requireInstanceOpsOutcome(t, out2)
 	require.Equal(t, 2, runner.calls)
 }
 

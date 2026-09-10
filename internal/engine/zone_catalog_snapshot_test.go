@@ -96,8 +96,8 @@ func TestExecuteWorkflow_ZoneCatalogFailureAbortsCreateBeforeConfirm(t *testing.
 			t.Error("the real create API must never be called on an unavailable catalog")
 		}
 	}
-	if !strings.Contains(reply, "可用区目录当前不可用") {
-		t.Errorf("reply should carry the catalog-unavailable error, got: %s", reply)
+	if !strings.Contains(outcomeText(reply), "可用区目录当前不可用") {
+		t.Errorf("reply should carry the catalog-unavailable error, got: %#v", reply)
 	}
 }
 
