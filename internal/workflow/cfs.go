@@ -7,13 +7,6 @@ import (
 	"github.com/compshare-agent/internal/cfsbilling"
 )
 
-// CFS create size bounds (GB). Upstream exposes no limits API, so these values
-// are pinned to the CreateCFS contract and mirrored in the tool descriptions.
-const (
-	minCFSSizeGB = 50
-	maxCFSSizeGB = 2048
-)
-
 func CreateCFSDef() *Definition {
 	return &Definition{
 		Name: "CreateCFSWorkflow",
@@ -205,6 +198,12 @@ func stepQueryCFSForResize() Step {
 			if targetSize <= 0 {
 				return nil, NewMissingSlotError("扩容 CFS 需要指定目标容量（GB）。", "target_size_gb")
 			}
+			// Create checks this bound before its first upstream call; resize used to
+			// carry it all the way to the API and come back with a range error the
+			// model cannot repair from. Same product limit, same place in the flow.
+			if !cfsbilling.SizeInRange(int(targetSize)) {
+				return nil, NewMissingSlotError(cfsbilling.SizeRangeHint(), "target_size_gb")
+			}
 			wfCtx.Params["CfsId"] = cfsID
 			wfCtx.Params["Size"] = targetSize
 			args := map[string]any{"CfsId": cfsID}
@@ -302,8 +301,8 @@ func normalizeCreateCFSParams(wfCtx *Context) error {
 		return NewMissingSlotError("创建 CFS 需要指定名称。", "name")
 	}
 	size := paramNum(wfCtx.Params, "Size", 0)
-	if size < minCFSSizeGB || size > maxCFSSizeGB {
-		return NewMissingSlotError(fmt.Sprintf("CFS 容量需在 %dGB 到 %dGB 之间。", minCFSSizeGB, maxCFSSizeGB), "size_gb")
+	if !cfsbilling.SizeInRange(int(size)) {
+		return NewMissingSlotError(cfsbilling.SizeRangeHint(), "size_gb")
 	}
 	zone := strings.TrimSpace(paramStr(wfCtx.Params, "Zone", ""))
 	if zone == "" {

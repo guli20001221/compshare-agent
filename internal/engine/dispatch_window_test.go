@@ -207,10 +207,30 @@ func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {
 		// demonstrated behavior improvement. Do not cite it as one.
 		//
 		// Measured max after the change is 36646 (production shape).
-		require.LessOrEqual(t, len(toolJSON), 36800, "model-visible tool window grew past its reviewed byte budget")
-		// 41000 -> 41900 (2026-09-10): follows the tool-window raise above; the
-		// system prompt is unchanged. Measured max is 41734 (production shape).
-		require.LessOrEqual(t, len(system)+len(toolJSON), 41900,
+		//
+		// 36800 -> 37000 (2026-09-10): the same pass left the VALUE half of the
+		// quote-to-order mapping unchecked, and it was already broken.
+		// ReadCapability_image_list.source offered only `shared`;
+		// RequestCreateInstance.ImageSource accepted only `sharing`, and
+		// actionresolver.CodecEnum matches members exactly — so a value carried
+		// straight from the listing was refused before the workflow's alias fold ran.
+		// RequestReinstallInstance.ImageSource had carried both spellings since
+		// 1172013d for exactly this reason; #607 widened create's enum and did not
+		// bring the compatibility value along. These bytes are that value, the CFS
+		// capacity bound now stated where upstream enforces it, and Schedule.timezone
+		// finally naming the default its read-side twin already states.
+		//
+		// Unlike the raise above, this one has a demonstrated defect behind it:
+		// TestIdentityReferencesCarryValuesTheTargetFieldAccepts reproduces the
+		// rejection when the value is removed. It is still not a measured model
+		// improvement — no probe was run against a model. Do not cite it as one.
+		//
+		// Measured max after the change is 36850 (production shape).
+		require.LessOrEqual(t, len(toolJSON), 37000, "model-visible tool window grew past its reviewed byte budget")
+		// 41000 -> 41900 -> 42100 (2026-09-10): both raises follow the tool-window
+		// numbers above; the system prompt is unchanged throughout. Measured max is
+		// 41938 (production shape).
+		require.LessOrEqual(t, len(system)+len(toolJSON), 42100,
 			"static prompt plus tool schemas grew past its reviewed byte budget")
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/compshare-agent/internal/cfsbilling"
 	"github.com/compshare-agent/internal/platform"
 )
 
@@ -105,6 +106,14 @@ func cfsRefParam() schemaNode {
 	return objectParam(map[string]schemaNode{
 		"id": stringParam().described("完整 CFS ID，以 cfs- 开头。"),
 	}, "id").described(cfsRefDoc)
+}
+
+// cfsSizeParam carries the product's capacity bound in the schema rather than in
+// prose, so a value upstream would refuse is rejected here as INVALID_TOOL_ARGUMENTS
+// and the model is told the range, instead of spending a round trip to learn it
+// from an upstream error it cannot repair from.
+func cfsSizeParam() schemaNode {
+	return boundedIntegerParam(cfsbilling.MinSizeGB, cfsbilling.MaxSizeGB)
 }
 
 func metricsParam() schemaNode {

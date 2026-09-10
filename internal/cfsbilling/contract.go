@@ -4,6 +4,8 @@
 // neither is a currently purchasable CFS billing mode.
 package cfsbilling
 
+import "fmt"
+
 const (
 	Day     = "Day"
 	Month   = "Month"
@@ -12,6 +14,30 @@ const (
 	Postpay = "Postpay"
 	Spot    = "Spot"
 )
+
+// MinSizeGB and MaxSizeGB bound every CFS capacity the upstream API accepts —
+// create, resize, and both quotes all run the same validator, so a value outside
+// them is refused there rather than priced. They are the single producer of the
+// numbers the schemas and the workflow state.
+const (
+	MinSizeGB = 50
+	MaxSizeGB = 2048
+)
+
+// SizeInRange reports whether a requested capacity can reach the upstream API at
+// all. A caller that skips this hands the model an upstream range error instead
+// of a bound it could have read in the tool window.
+func SizeInRange(sizeGB int) bool {
+	return sizeGB >= MinSizeGB && sizeGB <= MaxSizeGB
+}
+
+// SizeRangeHint is the one sentence every CFS capacity parameter appends, so the
+// model reads the same bound whichever tool it is filling. It is formatted from
+// the constants rather than written out, so the prose cannot drift from what
+// SizeInRange enforces.
+func SizeRangeHint() string {
+	return fmt.Sprintf("容量 %d-%dGB。", MinSizeGB, MaxSizeGB)
+}
 
 // NewPurchaseTypes returns the complete public CFS create/quote contract.
 // Return a fresh slice so a schema builder cannot mutate process-wide state.

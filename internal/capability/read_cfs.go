@@ -119,7 +119,7 @@ func cfsCreatePriceReadSpec() ReadCapabilitySpec[CFSCreatePriceRequest, CFSRespo
 		Description: "查询拟创建云存储 Pro（CFS 共享文件存储）在指定可用区和容量下的实时账号净报价。不用于普通实例数据盘；上游接口不返回免费额度字段。",
 		Params: objectParam(map[string]schemaNode{
 			"zone":           stringParam().described("精确可用区 ID。当前只有上游标记为 Pod 的区域支持该询价。下单时同一取值填 RequestCreateCFS.Zone。"),
-			"target_size_gb": integerParam(1).described("目标容量 GB。下单时同一取值填 RequestCreateCFS.Size。"),
+			"target_size_gb": cfsSizeParam().described("目标容量 GB。下单时同一取值填 RequestCreateCFS.Size。"),
 			"charge_type":    enumParam(cfsbilling.NewPurchaseTypes()...).described("计费周期：包月、包年或包日。CFS 当前不支持新购按量/后付费；省略时默认为包月。下单时同一取值填 RequestCreateCFS.ChargeType。"),
 		}, "zone", "target_size_gb"),
 		Handle: cfsCreatePriceHandle,
@@ -188,7 +188,7 @@ func cfsUpgradePriceReadSpec() ReadCapabilitySpec[CFSUpgradePriceRequest, CFSRes
 		Description: "估算指定已有 CFS 扩容到目标总容量的价格差额。只读，不执行扩容；新建 CFS 报价使用 CFS 创建报价能力。",
 		Params: objectParam(map[string]schemaNode{
 			"cfs": cfsRefParam(),
-			"target_size_gb": integerParam(1).
+			"target_size_gb": cfsSizeParam().
 				described("扩容后的目标总容量 GB，必须大于当前容量；确认扩容时同一取值填 RequestResizeCFS.Size。"),
 		}, "cfs", "target_size_gb"),
 		Handle: cfsUpgradePriceHandle,
