@@ -1527,7 +1527,7 @@ func (e *Engine) runToolCallsRound(ctx context.Context, userMsg string, resp *ll
 			e.verbatimBlocksThisTurn = append(e.verbatimBlocksThisTurn, block)
 			e.messages = append(e.messages, openai.ChatCompletionMessage{
 				Role:       openai.ChatMessageRoleTool,
-				Content:    agentToolObservation(tc.Function.Name, fmt.Sprintf(`{"observation":%q,"verbatim_delivered":true}`, verbatimBlockObservation)),
+				Content:    agentToolObservation(tc.Function.Name, outcome.Observation),
 				ToolCallID: tc.ID,
 			})
 			continue
@@ -2183,6 +2183,15 @@ const verbatimBlockObservation = "费用卡已向用户完整展示上游返回�
 	"本工具范围是当前配置报价及接口明确返回的停机保留项，不代表已回答一般计费规则或历史实际扣款。" +
 	"不要复述、重算或推断金额；未覆盖的规则问题继续检索知识，其他问题用适用工具处理。全部问题已回答时直接结束本回合、不要再输出文字。"
 
+// verbatimBillingObservationPayload is the model-visible half of a verbatim
+// billing delivery. It is the outcome's Observation, which makes it both what
+// the loop writes to history and what the reuse cache replays for an identical
+// repeat — so re-asking the same question cannot launder the withheld figures
+// into context, and does not re-enter the pricing chain to produce a second card.
+func verbatimBillingObservationPayload() string {
+	return fmt.Sprintf(`{"observation":%q,"verbatim_delivered":true}`, verbatimBlockObservation)
+}
+
 // verbatimBillingHistoryCompletion closes a pure billing exchange in the
 // model-only transcript. It never reaches the browser or messages.content: the
 // user already has the byte-exact card. Its purpose is to preserve the same
@@ -2583,10 +2592,12 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 				return observed(result)
 			}
 			outcome := e.executeToolOnce(ctx, tc, onStep)
-			// Only an ordinary observation can be replayed. A delivered reply ends
-			// or interrupts the turn on its own terms and has no model-visible
-			// result to hand back a second time.
-			if !outcome.deliversToUser() && cacheableAgentToolObservation(action, outcome.Observation) {
+			// What gets replayed is the model-visible observation, never the text
+			// delivered to the user: a verbatim card's figures are withheld from the
+			// model on purpose, and replaying them here would hand them back through
+			// the cache. A terminating outcome is not cached at all — it ends the
+			// turn, so there is no later round to replay it into.
+			if !outcome.terminatesTurn() && cacheableAgentToolObservation(action, outcome.Observation) {
 				e.toolResultsByCallThisTurn[key] = outcome.Observation
 			}
 			return outcome
@@ -3921,7 +3932,7 @@ func (e *Engine) executeDiagnosisWithOutcome(ctx context.Context, action string,
 		if suggestion := strings.TrimSpace(result.Suggestion); suggestion != "" {
 			reply += "\n\n" + suggestion
 		}
-		return verbatimReply(reply), intent.HandlerFailureNone
+		return verbatimReply(reply, verbatimBillingObservationPayload()), intent.HandlerFailureNone
 	}
 
 	b, _ := json.Marshal(result)

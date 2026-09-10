@@ -49,8 +49,13 @@ func deterministicReply(reply string) toolOutcome {
 // verbatimReply delivers text exactly as written without ending the turn. Use
 // it for figures rendered from structured fields, which the model must not
 // restate or recompute.
-func verbatimReply(reply string) toolOutcome {
-	return toolOutcome{Reply: reply, Delivery: deliverVerbatim}
+//
+// Observation is what the model gets in place of the text: it must say that the
+// user already has the authoritative detail without repeating any of it. That
+// note is also what a repeat of the same call replays, so re-asking cannot
+// launder the withheld figures into context through the reuse cache.
+func verbatimReply(reply, observation string) toolOutcome {
+	return toolOutcome{Observation: observation, Reply: reply, Delivery: deliverVerbatim}
 }
 
 func (o toolOutcome) terminatesTurn() bool { return o.Delivery == deliverFinal }

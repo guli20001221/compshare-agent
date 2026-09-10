@@ -50,10 +50,12 @@ func TestToolOutcomeDeliveryClassification(t *testing.T) {
 	require.False(t, ordinary.terminatesTurn())
 	require.Equal(t, `{"status":"success"}`, ordinary.Observation)
 
-	verbatim := verbatimReply("本月账单 12.34 元")
+	verbatim := verbatimReply("本月账单 12.34 元", `{"observation":"用户已收到明细"}`)
 	require.True(t, verbatim.deliversToUser())
 	require.False(t, verbatim.terminatesTurn(),
 		"a verbatim block must not end the turn: the question may have other parts")
+	require.NotContains(t, verbatim.Observation, "12.34",
+		"the model-visible half must not carry the figures the delivery exists to withhold")
 
 	final := deterministicReply("好的，关机操作未执行。")
 	require.True(t, final.deliversToUser())
@@ -62,6 +64,45 @@ func TestToolOutcomeDeliveryClassification(t *testing.T) {
 	// An empty deterministic reply still ends the turn. The prefix encoding made
 	// this ambiguous, because an empty payload and a missing prefix looked alike.
 	require.True(t, deterministicReply("").terminatesTurn())
+}
+
+// DiagnoseBilling is a repeatable tool with no per-turn call budget, so the
+// reuse cache is the only thing standing between a repeated question and a
+// second run of the pricing chain. What it replays has to be the model-visible
+// observation: caching the delivered text instead would hand the model the very
+// figures verbatim delivery withholds, and not caching at all would re-enter
+// the chain and push a second card at the user.
+func TestRepeatedVerbatimCallReplaysTheObservationNotTheFigures(t *testing.T) {
+	executor := &mockExecutor{results: map[string]map[string]any{
+		"DescribeCompShareInstance": {
+			"UHostSet": []any{map[string]any{
+				"UHostId": "uhost-bill-001", "State": "Running", "ChargeType": "Dynamic",
+				"InstancePrice": float64(1), "DiskPrice": float64(0.1),
+			}},
+		},
+	}}
+	eng := NewWithDeps(&mockLLM{}, executor, nil)
+	eng.rateLimiter = &scriptedRateLimiter{}
+	eng.rateLimitSubject = "sha256:subject"
+
+	first := eng.executeTool(context.Background(),
+		toolCall("bill", "DiagnoseBilling", `{"UHostId":"uhost-bill-001"}`), noopStep)
+	require.Equal(t, deliverVerbatim, first.Delivery)
+	require.Contains(t, first.Reply, "¥1.00/时", "the user gets the rendered card")
+	require.NotContains(t, first.Observation, "¥1.00", "the model does not")
+	upstreamAfterFirst := len(executor.calls)
+
+	second := eng.executeTool(context.Background(),
+		toolCall("bill-again", "DiagnoseBilling", `{"UHostId":"uhost-bill-001"}`), noopStep)
+
+	require.Equal(t, deliverToModel, second.Delivery,
+		"a repeat must not push a second card at a user who already has one")
+	require.Empty(t, second.Reply)
+	require.Len(t, executor.calls, upstreamAfterFirst,
+		"a repeat must not re-enter the pricing chain")
+	require.Contains(t, second.Observation, "reused_observation")
+	require.NotContains(t, second.Observation, "¥1.00",
+		"replaying the delivered text would launder the withheld figures into model context")
 }
 
 // A tool that must keep its delivered text out of model history says so on the
