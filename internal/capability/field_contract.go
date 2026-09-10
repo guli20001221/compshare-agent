@@ -86,17 +86,31 @@ func targetRefParam(extraTypes ...platform.TargetRefType) schemaNode {
 	}, "type", "value")
 }
 
+// targetRefsDoc is the shape every targets list shares: which ref type carries
+// which kind of value, and that an ID is passed through untouched. Whether an
+// omitted list is legal differs per capability, so a capability that accepts one
+// restates this doc plus its own omission rule at its call site.
+const targetRefsDoc = "逐个列出目标实例：type=name 用对话中出现的精确实例名，type=uhost_id_user_input 用用户逐字给出的完整实例 ID，原样传入不截断。"
+
 func targetRefsParam(extraTypes ...platform.TargetRefType) schemaNode {
-	return arrayParam(targetRefParam(extraTypes...))
+	return arrayParam(targetRefParam(extraTypes...)).described(targetRefsDoc)
 }
+
+// cfsRefDoc names where a CFS ID comes from. The id child already states the
+// format; this states the source, so a capability that also accepts an omitted
+// ref restates it with its own omission rule.
+const cfsRefDoc = "目标 CFS，取实时 CFS 列表返回的条目。"
 
 func cfsRefParam() schemaNode {
 	return objectParam(map[string]schemaNode{
 		"id": stringParam().described("完整 CFS ID，以 cfs- 开头。"),
-	}, "id")
+	}, "id").described(cfsRefDoc)
 }
 
-func metricsParam() schemaNode { return arrayParam(enumParam(platform.MetricValues()...)) }
+func metricsParam() schemaNode {
+	return arrayParam(enumParam(platform.MetricValues()...)).
+		described("要返回的监控指标；省略时返回全部可用指标。")
+}
 
 func timeWindowParam() schemaNode {
 	return objectParam(map[string]schemaNode{
@@ -107,7 +121,7 @@ func timeWindowParam() schemaNode {
 		"start":    stringParam().described("仅 type=absolute；格式为 RFC3339 或 YYYY-MM-DD HH:MM。"),
 		"end":      stringParam().described("仅 type=absolute；格式为 RFC3339 或 YYYY-MM-DD HH:MM。"),
 		"timezone": enumParam("Asia/Shanghai", "UTC").described("可省略，默认 Asia/Shanghai。"),
-	}, "type")
+	}, "type").described("查询的时间范围：先选 type，再只填该 type 对应的字段。")
 }
 
 // jsonSchema renders the model-facing JSON parameter schema.

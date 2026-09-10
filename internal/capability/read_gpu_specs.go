@@ -41,9 +41,14 @@ func gpuSpecsReadSpec() ReadCapabilitySpec[GPUSpecsRequest, GPUSpecsResponse] {
 	return ReadCapabilitySpec[GPUSpecsRequest, GPUSpecsResponse]{
 		Label:       gpuSpecsCapabilityLabel,
 		Description: "查询平台 GPU 机型的结构化规格，包括显存、算力、最大卡数和可选 CPU/内存组合。用于规格比较，不代表当前实时库存。",
-		Params:      objectParam(map[string]schemaNode{"gpu_type": stringParam(), "detail_level": enumParam(platform.DetailLevelValues()...)}),
-		Handle:      gpuSpecsHandle,
-		Render:      gpuSpecsRender,
+		Params: objectParam(map[string]schemaNode{
+			"gpu_type": stringParam().
+				described("精确 GPU 机型名称，取实时机型目录原值；省略时返回全部可售机型。下单时同一取值填 RequestCreateInstance.GpuType。"),
+			"detail_level": enumParam(platform.DetailLevelValues()...).
+				described("full=返回每个机型的完整规格字段；省略或 summary=只返回规格要点。"),
+		}),
+		Handle: gpuSpecsHandle,
+		Render: gpuSpecsRender,
 	}
 }
 

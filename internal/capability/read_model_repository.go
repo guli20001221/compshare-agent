@@ -45,10 +45,10 @@ func modelRepositoryReadSpec() ReadCapabilitySpec[ModelRepositoryRequest, ModelR
 		Description: "查询公共模型目录、路径和目标可用区的副本状态。目录记录不等于目标实例已预置；只有工具明确返回目标可用区副本健康时，才能判断对应路径可直接使用。它不是可创建的镜像目录，也不能证明平台已支持部署。",
 		Params: objectParam(map[string]schemaNode{
 			"query":          stringParam().described("模型/仓库名关键词，不查分类。"),
-			"source":         enumParam("Unspecified", "HuggingFace", "ModelScope", "Internal"),
+			"source":         enumParam("Unspecified", "HuggingFace", "ModelScope", "Internal").described("模型来源；Unspecified 表示不按来源筛选。"),
 			"tags":           arrayParam(stringParam()).described("精确 Tags（大小写敏感），取实时目录原值。"),
 			"categories":     arrayParam(stringParam()).described("精确 Category（大小写敏感），取模型目录原值；未知先浏览。"),
-			"status":         enumParam("Unspecified", "Active", "Offline", "Draft"),
+			"status":         enumParam("Unspecified", "Active", "Offline", "Draft").described("仓库状态；Unspecified 表示不按状态筛选。"),
 			"replica_status": enumParam("Unspecified", "Healthy", "Offline", "Incomplete", "Missing").described("副本状态；指定 zone 时按该区筛选。未指定 zone 时 Healthy 表示上游未发现任何区的副本问题，其余状态表示任一区存在该问题。"),
 			"zone":           stringParam().described("仅在用户明确指定目标可用区，或当前实例事实已给出可用区时填写实时目录中的 Zone；不要猜测。"),
 			"offset":         integerParam(0).described("分页偏移，默认 0；继续浏览时使用结果给出的下一页偏移。"),

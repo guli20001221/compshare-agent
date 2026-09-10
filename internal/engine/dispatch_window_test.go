@@ -190,8 +190,27 @@ func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {
 		// and the four upstream billing modes; pricing remains outside the tool's
 		// contract. Keep the schema explicit instead of recovering bytes by deleting
 		// unrelated tool guidance or merging tools without production selection data.
-		require.LessOrEqual(t, len(toolJSON), 36000, "model-visible tool window grew past its reviewed byte budget")
-		require.LessOrEqual(t, len(system)+len(toolJSON), 41000,
+		//
+		// 36000 -> 36800 (2026-09-10): twenty model-visible parameters carried a
+		// name and a type and nothing else — `port` did not say it applies only to
+		// custom_port, the monitor `targets` did not say an omitted list means the
+		// selected instance, `source` did not say an omitted value means the
+		// platform catalog. Each now states its own fill and omission rule. The
+		// same bytes carry the quote-to-order field mapping (`gpu_type` ->
+		// RequestCreateInstance.GpuType and seven more), which is checked rather
+		// than merely written: see TestToolDescriptionsOnlyNameFieldsTheirTargetToolHas.
+		//
+		// Be honest about what these bytes buy: nothing here was measured against a
+		// model. The recorded gate that could have measured it was retired the same
+		// day as model-stale, so this is a contract-completeness change — the model
+		// could not previously have known these rules from the window — not a
+		// demonstrated behavior improvement. Do not cite it as one.
+		//
+		// Measured max after the change is 36646 (production shape).
+		require.LessOrEqual(t, len(toolJSON), 36800, "model-visible tool window grew past its reviewed byte budget")
+		// 41000 -> 41900 (2026-09-10): follows the tool-window raise above; the
+		// system prompt is unchanged. Measured max is 41734 (production shape).
+		require.LessOrEqual(t, len(system)+len(toolJSON), 41900,
 			"static prompt plus tool schemas grew past its reviewed byte budget")
 	}
 }
