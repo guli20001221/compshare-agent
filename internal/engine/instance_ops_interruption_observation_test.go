@@ -18,7 +18,7 @@ func TestInterruptedInvocationReturnsItsOwnSettledWorkToParent(t *testing.T) {
 	// loop does: a retry after an interruption is the model repeating itself, and
 	// each attempt must report its own run.
 	const args = `{"UHostId":"uhost-1","Task":"repair service"}`
-	first, ok := tools.ParseAgentToolResult(execToolInTurn(eng, toolCall("first", "DiagnoseInstanceInternals", args), noopStep))
+	first, ok := tools.ParseAgentToolResult(execToolInTurn(eng, toolCall("first", "DiagnoseInstanceInternals", args), noopStep).Observation)
 	require.True(t, ok)
 	firstData := first.Data.(map[string]any)
 	require.Equal(t, float64(1), firstData["commands_ran"])
@@ -28,7 +28,7 @@ func TestInterruptedInvocationReturnsItsOwnSettledWorkToParent(t *testing.T) {
 	// A retry that fails before any callback must not borrow the first run's
 	// pending interruption notice and claim it executed those commands again.
 	runner.progress = nil
-	second, ok := tools.ParseAgentToolResult(execToolInTurn(eng, toolCall("second", "DiagnoseInstanceInternals", args), noopStep))
+	second, ok := tools.ParseAgentToolResult(execToolInTurn(eng, toolCall("second", "DiagnoseInstanceInternals", args), noopStep).Observation)
 	require.True(t, ok)
 	secondData := second.Data.(map[string]any)
 	require.Equal(t, float64(0), secondData["commands_ran"])
@@ -46,7 +46,7 @@ func TestPreflightFailureReportsNoGuestWork(t *testing.T) {
 	eng.toolResultsByCallThisTurn = map[string]string{}
 
 	out, ok := tools.ParseAgentToolResult(execToolInTurn(eng, toolCall("only", "DiagnoseInstanceInternals",
-		`{"UHostId":"uhost-1","Task":"repair service"}`), noopStep))
+		`{"UHostId":"uhost-1","Task":"repair service"}`), noopStep).Observation)
 	require.True(t, ok)
 	data := out.Data.(map[string]any)
 	require.Equal(t, false, data["guest_commands_executed"])

@@ -72,7 +72,7 @@ func TestCPUOnlyStartFailureReadsBackTheObservedResult(t *testing.T) {
 			}, zoneRefData(nil)), onStep)
 
 			for _, want := range tt.contains {
-				assert.Contains(t, reply, want)
+				assert.Contains(t, outcomeText(reply), want)
 			}
 			assert.Equal(t, []string{"DescribeCompShareInstance", "StartCompShareInstance", "DescribeCompShareInstance"}, executor.calls)
 			var workflowFailure *StepEvent
@@ -101,9 +101,9 @@ func TestOrdinaryStartFailureAlsoReadsBackTheObservedResult(t *testing.T) {
 		"UHostId": "uhost-1", "StartMode": "normal",
 	}, zoneRefData(nil)), onStep)
 
-	assert.Contains(t, reply, "截至本次回读仍处于已关机")
-	assert.Contains(t, reply, "未观察到启动完成")
-	assert.Contains(t, reply, "请勿重复提交")
+	assert.Contains(t, outcomeText(reply), "截至本次回读仍处于已关机")
+	assert.Contains(t, outcomeText(reply), "未观察到启动完成")
+	assert.Contains(t, outcomeText(reply), "请勿重复提交")
 	assert.Equal(t, []string{"DescribeCompShareInstance", "StartCompShareInstance", "DescribeCompShareInstance"}, executor.calls)
 	var failure *StepEvent
 	for i := range *events {
@@ -137,9 +137,9 @@ func TestOrdinaryStartFailureReportsACommittedGPUReactivation(t *testing.T) {
 		"UHostId": "uhost-1", "StartMode": "normal",
 	}, zoneRefData(nil)), noopStep)
 
-	assert.Contains(t, reply, "GPU 规格恢复已发生")
-	assert.Contains(t, reply, "启动尚未完成")
-	assert.Contains(t, reply, "请勿重复提交")
+	assert.Contains(t, outcomeText(reply), "GPU 规格恢复已发生")
+	assert.Contains(t, outcomeText(reply), "启动尚未完成")
+	assert.Contains(t, outcomeText(reply), "请勿重复提交")
 	assert.Equal(t, []string{"DescribeCompShareInstance", "StartCompShareInstance", "DescribeCompShareInstance"}, executor.calls)
 }
 

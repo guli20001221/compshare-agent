@@ -71,7 +71,7 @@ func (e *Engine) finishResponseDelivery(userMsg, originalDraft, content string) 
 
 	if strings.TrimSpace(content) == "" {
 		// A turn that already handed the user a verbatim block (the billing card,
-		// see verbatimReplyPrefix) is NOT an empty turn — the block is the answer and
+		// see deliverVerbatim) is NOT an empty turn — the block is the answer and
 		// the Agent correctly had nothing to add. Without this, "本次没有生成有效回复"
 		// would be appended underneath a complete answer, which is why the Agent
 		// padded with generic prose instead of stopping: silence was not a legal

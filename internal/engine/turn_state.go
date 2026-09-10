@@ -190,7 +190,7 @@ type turnState struct {
 	// consumes it are the same goroutine.
 	lastConfirmationTerminalReason string
 	// verbatimBlocksThisTurn holds text that must reach the user byte-identical
-	// (see verbatimReplyPrefix) without ending the turn. Accumulated as tools
+	// (see deliverVerbatim) without ending the turn. Accumulated as tools
 	// return it and composed in front of the Agent's reply at the turn exit.
 	verbatimBlocksThisTurn []string
 }

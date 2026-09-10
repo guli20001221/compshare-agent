@@ -90,8 +90,8 @@ func TestRealPipelineReportsTheGenericFormatterMeasurements(t *testing.T) {
 		completion.ToolResultVisibleRunes == nil || completion.ToolResultTruncated == nil {
 		t.Fatalf("generic formatter observation missing from tool completion: %#v", completion)
 	}
-	if *completion.ToolResultVisibleRunes != utf8.RuneCountInString(out) {
-		t.Fatalf("visible runes = %d, actual model-visible output = %d", *completion.ToolResultVisibleRunes, utf8.RuneCountInString(out))
+	if *completion.ToolResultVisibleRunes != utf8.RuneCountInString(out.Observation) {
+		t.Fatalf("visible runes = %d, actual model-visible output = %d", *completion.ToolResultVisibleRunes, utf8.RuneCountInString(out.Observation))
 	}
 	if !*completion.ToolResultTruncated {
 		t.Fatal("precondition: the post-projection fixture must exercise generic truncation")

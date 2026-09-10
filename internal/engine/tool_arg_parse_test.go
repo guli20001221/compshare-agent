@@ -42,8 +42,8 @@ func TestExecuteTool_MalformedArgsReturnsCorrectiveHint(t *testing.T) {
 			got := (&Engine{}).executeTool(context.Background(), tool, onStep)
 
 			// (1) Model-facing tool result: stable P2 control plane + corrective hint.
-			result, ok := tools.ParseAgentToolResult(got)
-			require.Truef(t, ok, "returned result must use the agent tool-result contract, got %q", got)
+			result, ok := tools.ParseAgentToolResult(got.Observation)
+			require.Truef(t, ok, "returned result must use the agent tool-result contract, got %q", got.Observation)
 			assert.Equal(t, tools.AgentToolStatusNeedsInput, result.Status)
 			assert.Equal(t, "INVALID_TOOL_ARGUMENTS", result.Error.Code)
 			assert.Contains(t, result.Error.Message, "JSON")

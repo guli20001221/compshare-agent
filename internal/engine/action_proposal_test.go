@@ -97,7 +97,7 @@ func TestProposeActionRejectsSubstringTarget(t *testing.T) {
 	out := eng.executeTool(context.Background(), toolCall("proposal", tools.ProposeActionName,
 		`{"turn_id":"turn-2","operation":"StopInstanceWorkflow","slots":[{"name":"UHostId","value":"test"}]}`), noopStep)
 	var resolved actionresolver.ResolvedAction
-	require.NoError(t, json.Unmarshal([]byte(out), &resolved))
+	require.NoError(t, json.Unmarshal([]byte(out.Observation), &resolved))
 	require.False(t, resolved.ReadyForConfirmation)
 	require.NotEmpty(t, resolved.Rejected)
 }
@@ -179,10 +179,10 @@ func TestOrdinaryStartModeNeverSendsNoGPUWireValue(t *testing.T) {
 		},
 	}, noopStep)
 
-	require.Equal(t, 1, confirmCount, reply)
+	require.Equal(t, 1, confirmCount, outcomeText(reply))
 	require.NotContains(t, confirmSummary, "规格变更")
 	require.NotContains(t, startArgs, "WithoutGpuSpec")
-	require.Contains(t, reply, "执行开机")
+	require.Contains(t, outcomeText(reply), "执行开机")
 }
 
 func TestOrdinaryStartStockShortageStopsWithoutNoGPUFallback(t *testing.T) {
@@ -222,9 +222,11 @@ func TestOrdinaryStartStockShortageStopsWithoutNoGPUFallback(t *testing.T) {
 
 	require.Equal(t, 1, startCalls)
 	require.NotContains(t, startArgs, "WithoutGpuSpec")
-	require.Contains(t, reply, "库存不足")
-	require.Contains(t, reply, "本次没有启动")
-	require.Contains(t, reply, "不会自动改成无卡规格")
+	require.Equal(t, deliverFinal, reply.Delivery,
+		"a stock shortage after an authorized start must not be narrated by the model")
+	require.Contains(t, reply.Reply, "库存不足")
+	require.Contains(t, reply.Reply, "本次没有启动")
+	require.Contains(t, reply.Reply, "不会自动改成无卡规格")
 }
 
 func TestProposeActionNeverEchoesSensitiveValues(t *testing.T) {
@@ -236,7 +238,7 @@ func TestProposeActionNeverEchoesSensitiveValues(t *testing.T) {
 	var events []StepEvent
 	out := eng.executeTool(context.Background(), toolCall("proposal", tools.ProposeActionName,
 		`{"turn_id":"turn-secret","operation":"ResetPasswordWorkflow","slots":[{"name":"UHostId","value":"uhost-1"},{"name":"Password","value":"SecurePass123!"}]}`), func(event StepEvent) { events = append(events, event) })
-	require.NotContains(t, out, "SecurePass123!")
+	require.NotContains(t, outcomeText(out), "SecurePass123!")
 	for _, event := range events {
 		payload, _ := json.Marshal(event.TraceResult)
 		require.False(t, strings.Contains(string(payload), "SecurePass123!"))
@@ -269,7 +271,7 @@ func TestCentralAgentProposalExecutesOnlyThroughExistingWorkflowGate(t *testing.
 	out := eng.executeTool(context.Background(), toolCall("proposal", tools.ProposeActionName,
 		`{"turn_id":"turn-write","operation":"StopInstanceWorkflow","slots":[{"name":"UHostId","value":"uhost-1"}]}`), noopStep)
 
-	require.Contains(t, out, "提交关机请求")
+	require.Contains(t, outcomeText(out), "提交关机请求")
 	require.Equal(t, 1, confirmCalls)
 	require.Contains(t, executor.calls, "StopCompShareInstance")
 }
@@ -292,7 +294,7 @@ func TestNonexistentProposedTargetIsRefusedBeforeConfirmation(t *testing.T) {
 	out := eng.executeTool(context.Background(), toolCall("proposal", tools.ProposeActionName,
 		`{"turn_id":"turn-unverified","operation":"StopInstanceWorkflow","slots":[{"name":"UHostId","value":"uhost-invented"}]}`), noopStep)
 
-	require.Contains(t, out, "target existence could not be confirmed")
+	require.Contains(t, out.Observation, "target existence could not be confirmed")
 	require.NotContains(t, executor.calls, "StopCompShareInstance", "a nonexistent target must not mutate")
 }
 
@@ -696,7 +698,7 @@ func TestConfirmedFollowUpExecutesThroughResolvedTargetAuthority(t *testing.T) {
 		"slots":     []any{map[string]any{"name": "UHostId", "value": "uhost-1"}},
 	}, noopStep)
 
-	require.Contains(t, out, "提交关机请求")
+	require.Contains(t, outcomeText(out), "提交关机请求")
 	require.Contains(t, executor.calls, "StopCompShareInstance")
 }
 
@@ -759,7 +761,7 @@ func TestAdditionalProposalStillUsesItsOwnResolverAfterACommittedWrite(t *testin
 		"operation": "NoSuchWorkflow",
 	}, noopStep)
 
-	require.False(t, strings.HasPrefix(reply, finalReplyPrefix))
+	require.False(t, reply.terminatesTurn())
 	require.Equal(t, "rejected:_op=unknown_operation", eng.actionProposalDispositionThisTurn)
 	require.Equal(t, []string{"✅ 已创建实例 uhost-good1，正在初始化。"}, eng.committedWriteRepliesThisTurn)
 }
@@ -771,7 +773,7 @@ func TestAnUncommittedProposalDoesNotConsumeTheTurnWriteSlot(t *testing.T) {
 		reply := eng.executeActionProposal(context.Background(), map[string]any{
 			"operation": "NoSuchWorkflow",
 		}, noopStep)
-		require.NotContains(t, reply, "随后提出")
+		require.NotContains(t, outcomeText(reply), "随后提出")
 		require.Equal(t, "rejected:_op=unknown_operation", eng.actionProposalDispositionThisTurn)
 	}
 }
@@ -859,7 +861,7 @@ func TestBlankWriteTargetStillBlocksTheCard(t *testing.T) {
 		`{"turn_id":"turn-blank-target","operation":"StopInstanceWorkflow","slots":[{"name":"UHostId","value":""}]}`), noopStep)
 
 	var resolved actionresolver.ResolvedAction
-	require.NoError(t, json.Unmarshal([]byte(out), &resolved))
+	require.NoError(t, json.Unmarshal([]byte(out.Observation), &resolved))
 	require.False(t, resolved.ReadyForConfirmation, "a blank target must never reach the confirmation card")
 	require.False(t, resolved.ReadyForIntake, "stop declares no guided form; a blank target must not open one")
 	require.Equal(t, []string{"UHostId"}, resolved.Missing, "unsaid, not invalid — but still refused")

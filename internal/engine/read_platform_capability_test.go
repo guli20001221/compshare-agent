@@ -34,17 +34,16 @@ func TestOrdinaryReadReturnsObservationAndDoesNotEndTurn(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, executor, nil)
 	out := eng.executeTool(context.Background(), toolCall("read", capability.ReadToolName(intent.IntentResourceInfo),
 		`{}`), noopStep)
-	_, ok := isFinalReply(out)
-	require.False(t, ok, "a read capability is an observation and must never end the turn")
+	require.False(t, out.deliversToUser(), "a read capability is an observation and must never end the turn")
 	var observation ReadCapabilityObservation
-	require.NoError(t, json.Unmarshal([]byte(out), &observation))
+	require.NoError(t, json.Unmarshal([]byte(out.Observation), &observation))
 	require.Equal(t, platform.ReadStatusHandled, observation.Status)
 	require.NotNil(t, observation.Envelope)
 	// Byte-identity guard for the engine-bridge migration (intent -> platform
 	// status/route types): the wire strings are unchanged from the pre-migration
 	// intent-typed observation, so the model sees the same JSON.
-	assert.Contains(t, out, `"status":"handled"`)
-	assert.Contains(t, out, `"route_status":"dispatched"`)
+	assert.Contains(t, out.Observation, `"status":"handled"`)
+	assert.Contains(t, out.Observation, `"route_status":"dispatched"`)
 }
 
 func TestResourceInfoReceivesTheDeclaredLiveZoneCatalog(t *testing.T) {
@@ -69,7 +68,7 @@ func TestResourceInfoReceivesTheDeclaredLiveZoneCatalog(t *testing.T) {
 		capability.ReadToolName(intent.IntentResourceInfo), `{}`), noopStep)
 
 	var observation ReadCapabilityObservation
-	require.NoError(t, json.Unmarshal([]byte(out), &observation), out)
+	require.NoError(t, json.Unmarshal([]byte(out.Observation), &observation), out.Observation)
 	require.Equal(t, platform.ReadStatusHandled, observation.Status)
 	require.NotNil(t, observation.Envelope)
 	assert.Equal(t, []string{"DescribeCompShareInstance", "DescribeCompShareSupportZone"}, observation.Envelope.SourceActions)
@@ -114,7 +113,7 @@ func TestResourceInfoStillReturnsRawZoneWhenTheCatalogIsUnavailable(t *testing.T
 		capability.ReadToolName(intent.IntentResourceInfo), `{}`), noopStep)
 
 	var observation ReadCapabilityObservation
-	require.NoError(t, json.Unmarshal([]byte(out), &observation), out)
+	require.NoError(t, json.Unmarshal([]byte(out.Observation), &observation), out.Observation)
 	require.Equal(t, platform.ReadStatusHandled, observation.Status,
 		"a display-name dependency outage must not hide otherwise valid instance facts")
 	require.NotNil(t, observation.Envelope)
@@ -152,10 +151,9 @@ func TestInstanceAccessDiagnosisCanContinueToAgentAndKnowledge(t *testing.T) {
 		capability.ReadToolName(intent.IntentInstanceAccess),
 		`{"targets":[{"type":"uhost_id_user_input","value":"cpod-1"}],"access_type":"custom_port","protocol":"tcp","port":8188}`), noopStep)
 
-	_, final := isFinalReply(out)
-	require.False(t, final, "a diagnosis is evidence for the Agent, not a reason to terminate its turn")
+	require.False(t, out.deliversToUser(), "a diagnosis is evidence for the Agent, not a reason to terminate its turn")
 	var observation ReadCapabilityObservation
-	require.NoError(t, json.Unmarshal([]byte(out), &observation))
+	require.NoError(t, json.Unmarshal([]byte(out.Observation), &observation))
 	require.Equal(t, platform.ReadStatusHandled, observation.Status)
 	require.NotNil(t, observation.Envelope)
 	require.Len(t, eng.platformReadEvidenceThisTurn, 1)
@@ -181,13 +179,12 @@ func TestJupyterTokenReturnsOpaqueObservation(t *testing.T) {
 		capability.ReadToolName(intent.IntentInstanceAccess),
 		`{"targets":[{"type":"uhost_id_user_input","value":"uhost-1"}],"access_type":"jupyter_token"}`), noopStep)
 
-	_, final := isFinalReply(out)
-	require.False(t, final, "an opaque value must not terminate the central Agent")
+	require.False(t, out.deliversToUser(), "an opaque value must not terminate the central Agent")
 	var observation ReadCapabilityObservation
-	require.NoError(t, json.Unmarshal([]byte(out), &observation))
+	require.NoError(t, json.Unmarshal([]byte(out.Observation), &observation))
 	require.Equal(t, platform.ReadStatusHandled, observation.Status)
 	require.Contains(t, observation.Guidance, "敏感访问凭据")
-	require.NotContains(t, out, token, "the opaque value must not pass through the model")
+	require.NotContains(t, out.Observation, token, "the opaque value must not pass through the model")
 	require.Len(t, eng.platformReadEvidenceThisTurn, 1)
 	require.Contains(t, eng.sensitiveRepliesThisTurn[0], token)
 }
@@ -198,12 +195,12 @@ func TestConcreteReadReturnsStructuredMissingFieldsBeforeHandler(t *testing.T) {
 	out := eng.executeTool(context.Background(), toolCall("read", capability.ReadToolName(intent.IntentPricingQuery), `{}`), noopStep)
 
 	var observation ReadCapabilityObservation
-	require.NoError(t, json.Unmarshal([]byte(out), &observation))
+	require.NoError(t, json.Unmarshal([]byte(out.Observation), &observation))
 	require.Equal(t, platform.ReadStatusNeedsInput, observation.Status)
 	require.Equal(t, []capability.MissingField{{Name: "gpu_type", Reason: "required"}}, observation.MissingFields)
 	require.Empty(t, executor.calls, "缺失字段必须在能力边界返回，不能进入 handler 或上游 API")
 
-	result, ok := tools.ParseAgentToolResult(agentToolObservation(capability.ReadToolName(intent.IntentPricingQuery), out))
+	result, ok := tools.ParseAgentToolResult(agentToolObservation(capability.ReadToolName(intent.IntentPricingQuery), out.Observation))
 	require.True(t, ok)
 	require.Equal(t, tools.AgentToolNextAskUser, result.NextStep,
 		"a real missing user field must stay on the user-clarification branch")
@@ -265,8 +262,8 @@ func TestRejectedReadArgumentsAskTheModelToCorrectItsOwnCall(t *testing.T) {
 			eng.lastUserMsg = tc.lastUser
 
 			raw := eng.executeTool(context.Background(), toolCall("read", tc.action, tc.arguments), noopStep)
-			result, ok := tools.ParseAgentToolResult(agentToolObservation(tc.action, raw))
-			require.True(t, ok, raw)
+			result, ok := tools.ParseAgentToolResult(agentToolObservation(tc.action, raw.Observation))
+			require.True(t, ok, raw.Observation)
 			require.Equal(t, tools.AgentToolStatusNeedsInput, result.Status)
 			require.Equal(t, tools.AgentToolCodeInvalidArguments, result.Error.Code)
 			require.Equal(t, tools.AgentToolNextCorrectToolCall, result.NextStep,
@@ -314,8 +311,8 @@ func TestStockQueriesUseLiveCatalogWithoutCurrentTurnLiteralProof(t *testing.T) 
 
 	first := eng.executeTool(context.Background(), toolCall("stock-raw", action,
 		`{"gpu_type":"H20","zone_mentions":["华北2a"],"inventory_pool":"Unspecified"}`), noopStep)
-	correction, ok := tools.ParseAgentToolResult(first)
-	require.True(t, ok, first)
+	correction, ok := tools.ParseAgentToolResult(first.Observation)
+	require.True(t, ok, first.Observation)
 	require.Equal(t, tools.AgentToolNextCorrectToolCall, correction.NextStep)
 	require.Equal(t, tools.AgentToolCodeInvalidArguments, correction.Error.Code)
 	data, ok := correction.Data.(map[string]any)
@@ -329,7 +326,7 @@ func TestStockQueriesUseLiveCatalogWithoutCurrentTurnLiteralProof(t *testing.T) 
 	second := eng.executeTool(context.Background(), toolCall("stock-canonical", action,
 		`{"gpu_type":"H20","zone_mentions":["cn-wlcb-01"],"inventory_pool":"Unspecified"}`), noopStep)
 	var observation ReadCapabilityObservation
-	require.NoError(t, json.Unmarshal([]byte(second), &observation), second)
+	require.NoError(t, json.Unmarshal([]byte(second.Observation), &observation), second.Observation)
 	require.Equal(t, platform.ReadStatusHandled, observation.Status)
 	require.NotNil(t, observation.Envelope)
 	require.Contains(t, executor.calls, "CheckCompShareResourceCapacity",
@@ -339,7 +336,7 @@ func TestStockQueriesUseLiveCatalogWithoutCurrentTurnLiteralProof(t *testing.T) 
 	eng.lastUserMsg = "同一个区 H20 呢"
 	followUp := eng.executeTool(context.Background(), toolCall("stock-followup", action,
 		`{"gpu_type":"H20","zone_mentions":["cn-wlcb-01"],"inventory_pool":"Unspecified"}`), noopStep)
-	require.NoError(t, json.Unmarshal([]byte(followUp), &observation), followUp)
+	require.NoError(t, json.Unmarshal([]byte(followUp.Observation), &observation), followUp.Observation)
 	require.Equal(t, platform.ReadStatusHandled, observation.Status,
 		"canonical parameters remain valid when the user does not repeat a zone literal")
 }
@@ -354,11 +351,11 @@ func TestAccountFinanceUnavailableReturnsStructuredUnavailable(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, executor, nil)
 	out := eng.executeTool(context.Background(), toolCall("read", capability.ReadToolName(intent.Intent("account_finance_status")), `{}`), noopStep)
 
-	if _, ok := isFinalReply(out); ok {
+	if out.deliversToUser() {
 		t.Fatal("an unavailable capability is an observation and must never end the turn")
 	}
 	var observation UnavailableCapabilityObservation
-	require.NoError(t, json.Unmarshal([]byte(out), &observation))
+	require.NoError(t, json.Unmarshal([]byte(out.Observation), &observation))
 	require.Equal(t, "unavailable", observation.Status)
 	require.Equal(t, "account_finance_status", observation.Capability)
 	require.Contains(t, observation.Reason, "不支持直接查询账号余额")
@@ -383,20 +380,19 @@ func TestStockReadLeavesNoCrossTurnReferent(t *testing.T) {
 
 	named := eng.executeTool(context.Background(),
 		toolCall("read", capability.ReadToolName(intent.IntentStockAvailability), `{"gpu_type":"4090"}`), noopStep)
-	_, ok := isFinalReply(named)
-	require.False(t, ok, "a read capability is an observation and must never end the turn")
-	require.Contains(t, named, "4090", "premise: the named turn resolved to a single card")
-	require.NotContains(t, named, "A100", "premise: and filtered the other one out")
+	require.False(t, named.deliversToUser(), "a read capability is an observation and must never end the turn")
+	require.Contains(t, named.Observation, "4090", "premise: the named turn resolved to a single card")
+	require.NotContains(t, named.Observation, "A100", "premise: and filtered the other one out")
 
 	// The subject-eliding follow-up, as the model would send it when it did NOT
 	// carry the card forward: no gpu_type at all.
 	followUp := eng.executeTool(context.Background(),
 		toolCall("read", capability.ReadToolName(intent.IntentStockAvailability), `{}`), noopStep)
 
-	assert.Contains(t, followUp, "A100",
+	assert.Contains(t, followUp.Observation, "A100",
 		"the unfiltered follow-up was still filtered to the previous turn's card; the server is "+
 			"remembering what the user meant and editing the model's arguments to match")
-	assert.Contains(t, followUp, "4090", "an unfiltered listing includes everything")
+	assert.Contains(t, followUp.Observation, "4090", "an unfiltered listing includes everything")
 
 	// A minimal freshness record may exist, but it has no model argument to
 	// substitute. The unfiltered response above is the observable contract.

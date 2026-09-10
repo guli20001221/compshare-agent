@@ -512,9 +512,11 @@ func TestExecuteWorkflowCreateCFSRejectsNonPodZoneDeterministically(t *testing.T
 		"Zone": "cn-wlcb-01",
 	}, zoneRefData(eng.zoneCatalogSnapshot(zoneUserCtx()))), noopStep)
 
-	assert.Contains(t, reply, "CFS 创建没有成功")
-	assert.Contains(t, reply, "只支持 Pod")
-	assert.NotContains(t, reply, "cn-pod-01")
+	assert.Equal(t, deliverFinal, reply.Delivery,
+		"a deterministic zone refusal is the answer itself, not something for the model to restate")
+	assert.Contains(t, reply.Reply, "CFS 创建没有成功")
+	assert.Contains(t, reply.Reply, "只支持 Pod")
+	assert.NotContains(t, reply.Reply, "cn-pod-01")
 }
 
 func TestExecuteWorkflowEnableNetOptimizerResolvesAzGroup(t *testing.T) {

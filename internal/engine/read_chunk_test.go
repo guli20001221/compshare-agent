@@ -161,7 +161,7 @@ func TestReadChunk_ReusesFullBodiesWithoutRefetchWithinBudgets(t *testing.T) {
 	execToolInTurn(eng, toolCall("search", "SearchKnowledge", `{"query":"完整章节"}`), noopStep)
 	read := toolCall("read", "ReadChunk", `{"chunk_ids":["a","b","c"]}`)
 	for call := 0; call < maxReadChunkCallsPerTurn; call++ {
-		out := readChunkResult(t, execToolInTurn(eng, read, noopStep))
+		out := readChunkResult(t, execToolInTurn(eng, read, noopStep).Observation)
 		items := out["chunks"].([]any)
 		require.Len(t, items, maxReadChunkIDsPerCall)
 		runes := 0
@@ -181,7 +181,7 @@ func TestReadChunk_ReusesFullBodiesWithoutRefetchWithinBudgets(t *testing.T) {
 	}
 	require.Len(t, retriever.reads, 1, "all repeated bodies come from the existing complete-evidence ledger")
 	require.Equal(t, maxReadChunkCallsPerTurn, eng.agentToolCallsThisTurn("ReadChunk"))
-	require.Contains(t, execToolInTurn(eng, read, noopStep), `"read_limit_reached":true`)
+	require.Contains(t, execToolInTurn(eng, read, noopStep).Observation, `"read_limit_reached":true`)
 	require.Len(t, retriever.reads, 1)
 }
 
@@ -193,7 +193,7 @@ func TestReadChunk_ReusedBodySharesBatchBudgetWithFreshBody(t *testing.T) {
 	)
 	execToolInTurn(eng, toolCall("read-a", "ReadChunk", `{"chunk_ids":["a"]}`), noopStep)
 
-	repeated := readChunkResult(t, execToolInTurn(eng, toolCall("read-both", "ReadChunk", `{"chunk_ids":["a","b"]}`), noopStep))
+	repeated := readChunkResult(t, execToolInTurn(eng, toolCall("read-both", "ReadChunk", `{"chunk_ids":["a","b"]}`), noopStep).Observation)
 	items := repeated["chunks"].([]any)
 	require.Len(t, items, 2)
 	require.Equal(t, readChunkStatusAlreadyRead, items[0].(map[string]any)["status"])
@@ -202,7 +202,7 @@ func TestReadChunk_ReusedBodySharesBatchBudgetWithFreshBody(t *testing.T) {
 	require.Empty(t, items[1].(map[string]any)["content"], "cached bodies consume the same batch budget as newly read bodies")
 	require.NotContains(t, eng.readChunkIDsThisTurn, "b")
 
-	next := readChunkResult(t, execToolInTurn(eng, toolCall("read-b", "ReadChunk", `{"chunk_ids":["b"]}`), noopStep))
+	next := readChunkResult(t, execToolInTurn(eng, toolCall("read-b", "ReadChunk", `{"chunk_ids":["b"]}`), noopStep).Observation)
 	require.Equal(t, bodyB, next["chunks"].([]any)[0].(map[string]any)["content"])
 }
 

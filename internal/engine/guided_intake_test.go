@@ -74,8 +74,8 @@ func TestIncompleteCreateWithoutGuidedBouncesToModel(t *testing.T) {
 		"turn_id": "turn-nobounce", "operation": "CreateInstanceWorkflow", "slots": []any{},
 	}, onStep)
 
-	require.Contains(t, out, "ready_for_confirmation", "the resolved action is handed back to the model")
-	require.Contains(t, out, "GpuType", "the bounce names the missing field the model should ask about")
+	require.Contains(t, out.Observation, "ready_for_confirmation", "the resolved action is handed back to the model")
+	require.Contains(t, out.Observation, "GpuType", "the bounce names the missing field the model should ask about")
 	for _, ev := range *events {
 		require.NotContains(t, ev.Message, "提案进入引导式表单收集", "no guided form → no intake routing")
 	}

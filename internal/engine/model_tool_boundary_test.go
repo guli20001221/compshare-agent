@@ -16,7 +16,7 @@ func TestModelToolBoundaryRejectsRawActionsMissingFromTheExactWindow(t *testing.
 		t.Run(action, func(t *testing.T) {
 			require.False(t, toolListContainsFunction(window, action), "raw action unexpectedly advertised")
 			out := eng.executeModelTool(context.Background(), toolCall("hidden", action, `{}`), window, noopStep)
-			require.Contains(t, out, `"code":"TOOL_NOT_ALLOWED"`)
+			require.Contains(t, out.Observation, `"code":"TOOL_NOT_ALLOWED"`)
 		})
 	}
 }
@@ -30,8 +30,8 @@ func TestModelToolBoundaryLetsAnAdvertisedNameReachTheNormalDispatcher(t *testin
 	// window boundary and reached the ordinary parser without needing a live
 	// retriever or platform executor.
 	out := eng.executeModelTool(context.Background(), toolCall("visible", "SearchKnowledge", `{`), window, noopStep)
-	require.Contains(t, out, `"code":"INVALID_TOOL_ARGUMENTS"`)
-	require.NotContains(t, out, "TOOL_NOT_ALLOWED")
+	require.Contains(t, out.Observation, `"code":"INVALID_TOOL_ARGUMENTS"`)
+	require.NotContains(t, out.Observation, "TOOL_NOT_ALLOWED")
 }
 
 func TestModelToolBoundaryRecordsTheRawSelectionOnlyOnce(t *testing.T) {

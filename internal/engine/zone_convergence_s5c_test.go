@@ -58,7 +58,7 @@ func TestExecuteWorkflow_RunsAgainstThreadedSnapshotNotASelfBuild(t *testing.T) 
 		mustConfirmable("CreateInstanceWorkflow", map[string]any{"GpuType": "4090", "ImageName": "PyTorch"},
 			zoneRefData(deployment.NewZoneCatalogSnapshot(false, nil))), noopStep)
 
-	assert.Contains(t, reply, "可用区目录当前不可用",
+	assert.Contains(t, reply.Observation, "可用区目录当前不可用",
 		"executeWorkflow must run against the THREADED (unavailable) snapshot, not self-build a healthy one")
 	assert.Equal(t, 0, confirmCalls, "the create must refuse before the confirmation gate on the threaded snapshot")
 }

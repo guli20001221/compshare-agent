@@ -239,7 +239,7 @@ func TestKnowledgeOnlyExecutionBlocksUnadvertisedToolCall(t *testing.T) {
 		step = event
 	})
 	require.Equal(t, StepBlocked, step.Type)
-	require.Contains(t, result, "仅允许查询知识库或转接人工客服")
+	require.Contains(t, result.Observation, "仅允许查询知识库或转接人工客服")
 }
 
 func TestPublicPlatformReadOnlyWindowExposesEveryPublicQueryAndNothingElse(t *testing.T) {
@@ -320,7 +320,7 @@ func TestPublicPlatformReadOnlyExecutionBoundaryIsFailClosed(t *testing.T) {
 		step = event
 	})
 	require.Equal(t, StepBlocked, step.Type)
-	require.Contains(t, result, publicPlatformReadOnlyBoundary)
+	require.Contains(t, result.Observation, publicPlatformReadOnlyBoundary)
 
 	result = eng.executeTool(context.Background(), openai.ToolCall{Function: openai.FunctionCall{
 		Name: priceName, Arguments: `{"price_kind":"account"}`,
@@ -328,7 +328,7 @@ func TestPublicPlatformReadOnlyExecutionBoundaryIsFailClosed(t *testing.T) {
 		step = event
 	})
 	require.Equal(t, StepBlocked, step.Type)
-	require.Contains(t, result, "价格仅限目录价")
+	require.Contains(t, result.Observation, "价格仅限目录价")
 }
 
 func TestChatWithOptionsUsesPublicPlatformWindowWithKnowledgeOnlyPrecedence(t *testing.T) {

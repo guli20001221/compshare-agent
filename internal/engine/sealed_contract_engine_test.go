@@ -2,7 +2,6 @@ package engine
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/workflow"
@@ -93,7 +92,7 @@ func TestExecuteWorkflow_SealedParamsIgnoreContradictoryLastUserMsg(t *testing.T
 		mustConfirmable("CreateInstanceWorkflow", map[string]any{"GpuType": "4090", "ImageName": "PyTorch"}, zoneRefData(eng.zoneCatalogSnapshot(context.Background()))), noopStep)
 
 	assert.Equal(t, "4090", cardGpu, "the confirm card must show the resolved GPU, not the one named in lastUserMsg")
-	assert.NotContains(t, reply, "5090", "lastUserMsg must not reach the confirmed/executed contract")
+	assert.NotContains(t, outcomeText(reply), "5090", "lastUserMsg must not reach the confirmed/executed contract")
 }
 
 // An edit to A100 is revalidated against live inventory. If unavailable, return
@@ -121,7 +120,7 @@ func TestExecuteWorkflow_FailureNarrationUsesSealedNotPreEditParams(t *testing.T
 	assert.Equal(t, 1, confirmCalls, "the edit to a sold-out GPU fails on revalidation, before any second card")
 	assert.NotEqual(t, "A100", exec.createArgs["GpuType"],
 		"a sold-out edit must never reach the create call at all")
-	assert.Contains(t, reply, "A100 1 卡 / 16C / 64GB 当前库存不足")
-	assert.False(t, strings.HasPrefix(reply, finalReplyPrefix), "the Agent receives the failure on the edited draft")
-	assert.NotContains(t, reply, "当前可创建的其他机型")
+	assert.Contains(t, reply.Observation, "A100 1 卡 / 16C / 64GB 当前库存不足")
+	assert.False(t, reply.terminatesTurn(), "the Agent receives the failure on the edited draft")
+	assert.NotContains(t, reply.Observation, "当前可创建的其他机型")
 }

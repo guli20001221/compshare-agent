@@ -3,7 +3,6 @@ package engine
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/tools"
@@ -72,9 +71,9 @@ func TestUnavailableCreateImageDoesNotSubstituteAnotherImage(t *testing.T) {
 			"GpuType": "4090", "ImageName": "PyTorch", "CompShareImageId": "img-bad",
 		}, zoneRefData(eng.zoneCatalogSnapshot(context.Background()))), noopStep)
 
-	require.False(t, strings.HasPrefix(reply, finalReplyPrefix), "a pre-confirmation validation failure must return to the Agent")
+	require.False(t, reply.terminatesTurn(), "a pre-confirmation validation failure must return to the Agent")
 	var result workflow.Result
-	require.NoError(t, json.Unmarshal([]byte(reply), &result))
+	require.NoError(t, json.Unmarshal([]byte(reply.Observation), &result))
 	assert.False(t, result.Success)
 	assert.Contains(t, result.Message, "请求参数不符合接口要求或存在冲突")
 	assert.Equal(t, "检查库存", result.StoppedAt)

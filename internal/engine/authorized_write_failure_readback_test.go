@@ -268,9 +268,9 @@ func TestRebootFailureUsesThePreConfirmStartTimeToConfirmACompletedReboot(t *tes
 		"UHostId": "uhost-1",
 	}, zoneRefData(nil)), noopStep)
 
-	assert.Contains(t, reply, "已重新运行")
-	assert.Contains(t, reply, "启动时间已经更新")
-	assert.Contains(t, reply, "请勿重复提交")
+	assert.Contains(t, reply.Reply, "已重新运行")
+	assert.Contains(t, reply.Reply, "启动时间已经更新")
+	assert.Contains(t, reply.Reply, "请勿重复提交")
 	assert.Equal(t, []string{
 		"DescribeCompShareInstance", "DescribeCompShareSupportZone", "RebootCompShareInstance", "DescribeCompShareInstance",
 	}, executor.calls)
