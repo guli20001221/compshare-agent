@@ -44,7 +44,7 @@ func TestSearchKnowledgeMainAgentOwnsContextAndFollowUpQueries(t *testing.T) {
 		{question: "Windows noVNC 剪贴板支持", productArea: "浏览器连接 Windows 实例"},
 		{question: "Windows 远程桌面客户端剪贴板"},
 	}, retriever.calls, "execute exactly the queries the main Agent selected")
-	assert.Equal(t, 2, eng.searchKnowledgeCallsThisTurn)
+	assert.Equal(t, 2, eng.agentToolCallsThisTurn("SearchKnowledge"))
 	assert.Equal(t, "Windows noVNC 剪贴板支持", eng.searchKnowledgeLedgerThisTurn.Query)
 	assert.Len(t, eng.searchKnowledgeLedgerThisTurn.Items, 2)
 	assert.NotContains(t, reply, "[[", "citation display behavior remains unchanged")
@@ -74,7 +74,7 @@ func TestSearchKnowledgeMainAgentBudgetPreservesAllAllowedCalls(t *testing.T) {
 	}
 	assert.Contains(t, toolNames(model.calls[0].Tools), "SearchKnowledge")
 	assert.NotContains(t, toolNames(model.calls[1].Tools), "SearchKnowledge", "the exhausted tool is removed from the next main Agent request")
-	assert.Equal(t, maxSearchKnowledgeCallsPerTurn, eng.searchKnowledgeQueriesThisTurn)
+	assert.Equal(t, maxSearchKnowledgeCallsPerTurn, len(eng.searchKnowledgeActivitiesThisTurn))
 
 	extra := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "再检索一次"}, noopStep)
 	assert.Contains(t, extra, `"search_limit_reached":true`)

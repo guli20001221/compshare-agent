@@ -13,8 +13,12 @@ func TestInterruptedInvocationReturnsItsOwnSettledWorkToParent(t *testing.T) {
 		Kind: InstanceOpsProgressCommand, Command: "first invocation mutation", Tier: "mutating", Disposition: "ran",
 	}}}
 	eng := newInstanceOpsEngine(runner, nil)
-	args := map[string]any{"UHostId": "uhost-1", "Task": "repair service"}
-	first, ok := tools.ParseAgentToolResult(eng.executeInstanceOpsInvocation(context.Background(), "DiagnoseInstanceInternals", args, "first", noopStep))
+	eng.toolResultsByCallThisTurn = map[string]string{}
+	// Identical arguments on every attempt, reaching the lane the way the ReAct
+	// loop does: a retry after an interruption is the model repeating itself, and
+	// each attempt must report its own run.
+	const args = `{"UHostId":"uhost-1","Task":"repair service"}`
+	first, ok := tools.ParseAgentToolResult(execToolInTurn(eng, toolCall("first", "DiagnoseInstanceInternals", args), noopStep))
 	require.True(t, ok)
 	firstData := first.Data.(map[string]any)
 	require.Equal(t, float64(1), firstData["commands_ran"])
@@ -24,17 +28,27 @@ func TestInterruptedInvocationReturnsItsOwnSettledWorkToParent(t *testing.T) {
 	// A retry that fails before any callback must not borrow the first run's
 	// pending interruption notice and claim it executed those commands again.
 	runner.progress = nil
-	second, ok := tools.ParseAgentToolResult(eng.executeInstanceOpsInvocation(context.Background(), "DiagnoseInstanceInternals", args, "second", noopStep))
+	second, ok := tools.ParseAgentToolResult(execToolInTurn(eng, toolCall("second", "DiagnoseInstanceInternals", args), noopStep))
 	require.True(t, ok)
 	secondData := second.Data.(map[string]any)
 	require.Equal(t, float64(0), secondData["commands_ran"])
 	require.NotContains(t, secondData["report"], "first invocation mutation")
 	require.Equal(t, "interrupted", second.Meta.SourceStatus)
 
-	runner.err = ErrInstanceOpsSSHPreflightUnreachable
-	third, ok := tools.ParseAgentToolResult(eng.executeInstanceOpsInvocation(context.Background(), "DiagnoseInstanceInternals", args, "third", noopStep))
+	require.Equal(t, 2, runner.calls, "the retry re-entered rather than replaying the first attempt")
+}
+
+// A failure before the instance is reached carries no report at all: there is
+// nothing to tell the user about a box that was never entered.
+func TestPreflightFailureReportsNoGuestWork(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{err: ErrInstanceOpsSSHPreflightUnreachable}
+	eng := newInstanceOpsEngine(runner, nil)
+	eng.toolResultsByCallThisTurn = map[string]string{}
+
+	out, ok := tools.ParseAgentToolResult(execToolInTurn(eng, toolCall("only", "DiagnoseInstanceInternals",
+		`{"UHostId":"uhost-1","Task":"repair service"}`), noopStep))
 	require.True(t, ok)
-	thirdData := third.Data.(map[string]any)
-	require.Equal(t, false, thirdData["guest_commands_executed"])
-	require.NotContains(t, thirdData, "report")
+	data := out.Data.(map[string]any)
+	require.Equal(t, false, data["guest_commands_executed"])
+	require.NotContains(t, data, "report")
 }

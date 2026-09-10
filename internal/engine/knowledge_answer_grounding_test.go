@@ -53,8 +53,8 @@ func syntheticGroundedEngine(t *testing.T) (*Engine, *mockLLM) {
 	}}
 	mock := &mockLLM{}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.knowledgeQAAgentLoopThisTurn = true
-	eng.searchKnowledgeRanThisTurn = true
+	seedKnowledgeTurn(eng)
+	seedRetrievalRan(eng)
 	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
 	eng.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger("端口默认状态", []knowledge.RetrievalHit{hit}, 3, 0)
 	require.NotEmpty(t, eng.searchKnowledgeLedgerThisTurn.Items, "precondition: the kept hit produced a ledger item")
@@ -124,8 +124,8 @@ func TestKnowledgeGrounding_WrongChunkIdShipsNotDestroyed(t *testing.T) {
 
 func TestKnowledgeGrounding_PriorOnlyScopeDoesNotRestampUncitedCurrentEvidence(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.knowledgeQAAgentLoopThisTurn = true
-	eng.searchKnowledgeRanThisTurn = true
+	seedKnowledgeTurn(eng)
+	seedRetrievalRan(eng)
 	eng.searchKnowledgeLedgerThisTurn = groundingTestLedger("怎么安装驱动", "current-driver", "current-cuda")
 	eng.sessionState.VerifiedEvidence = []VerifiedEvidenceTurn{{
 		Question: "4090 价格",
@@ -148,8 +148,8 @@ func TestKnowledgeGrounding_PriorOnlyScopeDoesNotRestampUncitedCurrentEvidence(t
 
 func TestKnowledgeGrounding_MixedScopeStoresOnlyCitedCurrentSubset(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.knowledgeQAAgentLoopThisTurn = true
-	eng.searchKnowledgeRanThisTurn = true
+	seedKnowledgeTurn(eng)
+	seedRetrievalRan(eng)
 	eng.searchKnowledgeLedgerThisTurn = groundingTestLedger(
 		"混合问题", "current-1", "current-2", "current-3", "current-4", "current-5",
 	)
@@ -170,8 +170,8 @@ func TestKnowledgeGrounding_MixedScopeStoresOnlyCitedCurrentSubset(t *testing.T)
 
 func TestKnowledgeGrounding_CurrentOnlyCitationPastPersistCapIsRemembered(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.knowledgeQAAgentLoopThisTurn = true
-	eng.searchKnowledgeRanThisTurn = true
+	seedKnowledgeTurn(eng)
+	seedRetrievalRan(eng)
 	eng.searchKnowledgeLedgerThisTurn = groundingTestLedger(
 		"第九项", "item-1", "item-2", "item-3", "item-4", "item-5", "item-6", "item-7", "item-8", "item-9",
 	)
@@ -236,8 +236,8 @@ func TestKnowledgeGrounding_CitedFabricationShips_AcceptedResidualRisk(t *testin
 func TestKnowledgeGrounding_NoEvidenceShipsStableGeneral(t *testing.T) {
 	mock := &mockLLM{}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.knowledgeQAAgentLoopThisTurn = true
-	eng.searchKnowledgeRanThisTurn = true // ran, but retrieved nothing
+	seedKnowledgeTurn(eng)
+	seedRetrievalRan(eng) // ran, but retrieved nothing
 	answer := "在常见 Linux 终端中可使用 Ctrl+Shift+V 粘贴。"
 	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "Linux 终端怎么粘贴", answer)
 	assert.Equal(t, answer, got)
@@ -253,8 +253,8 @@ func TestKnowledgeGrounding_IrrelevantSearchDoesNotEraseStableAnswer(t *testing.
 	}}
 	answer := "在常见 Linux 终端中可使用 Ctrl+Shift+V 粘贴。"
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.knowledgeQAAgentLoopThisTurn = true
-	eng.searchKnowledgeRanThisTurn = true
+	seedKnowledgeTurn(eng)
+	seedRetrievalRan(eng)
 	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
 	eng.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger("Linux 终端怎么粘贴", []knowledge.RetrievalHit{hit}, 3, 0)
 
@@ -274,8 +274,8 @@ func TestKnowledgeGrounding_VerbatimDumpShipsAndIsRecorded(t *testing.T) {
 	}}
 	dump := "资料原文：" + record.Evidence
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: dump}}}, &mockExecutor{}, nil)
-	eng.knowledgeQAAgentLoopThisTurn = true
-	eng.searchKnowledgeRanThisTurn = true
+	seedKnowledgeTurn(eng)
+	seedRetrievalRan(eng)
 	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
 	eng.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger(record.ResolvedQuestion, []knowledge.RetrievalHit{hit}, 3, 0)
 	var traces []observability.RetrievalTrace
@@ -298,8 +298,8 @@ func TestKnowledgeGrounding_ParaphraseRecordsNoEcho(t *testing.T) {
 		ChunkID: record.ChunkID, KBVersion: "sanitized.prod.fixture", Title: record.Name, Content: record.Evidence,
 	}}
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
-	eng.knowledgeQAAgentLoopThisTurn = true
-	eng.searchKnowledgeRanThisTurn = true
+	seedKnowledgeTurn(eng)
+	seedRetrievalRan(eng)
 	eng.searchKnowledgeHitsThisTurn = []knowledge.RetrievalHit{hit}
 	eng.searchKnowledgeLedgerThisTurn = knowledge.BuildSubstantiveEvidenceLedger(record.ResolvedQuestion, []knowledge.RetrievalHit{hit}, 3, 0)
 
@@ -314,7 +314,7 @@ func TestKnowledgeGrounding_ParaphraseRecordsNoEcho(t *testing.T) {
 func TestKnowledgeGrounding_NotAgentLoopIsPassThrough(t *testing.T) {
 	mock := &mockLLM{}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	eng.knowledgeQAAgentLoopThisTurn = false
+	// No SearchKnowledge call in the turn: the transcript is what says so.
 	answer := "任意回答，可能带 [[fake]] 标记。"
 	got := eng.finalizeAgentLoopKnowledgeAnswer(context.Background(), "q", answer)
 	assert.Equal(t, answer, got)

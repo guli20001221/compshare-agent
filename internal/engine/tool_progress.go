@@ -10,6 +10,7 @@ import (
 	"github.com/compshare-agent/internal/diagnosis"
 	"github.com/compshare-agent/internal/intent"
 	"github.com/compshare-agent/internal/knowledge"
+	openai "github.com/sashabaranov/go-openai"
 )
 
 // repeatableAgentTool identifies reads that may legitimately run more than once
@@ -22,11 +23,12 @@ func repeatableAgentTool(action string) bool {
 	return ok
 }
 
-// maxUniqueAgentToolCalls caps only capabilities whose upstream facts do not
-// become more authoritative when the model keeps changing equivalent arguments.
-// Two attempts leave room for one genuine correction without allowing a monitor
-// turn to consume the whole ReAct budget.
-func maxUniqueAgentToolCalls(action string) int {
+// maxAgentToolCallsPerTurn caps only capabilities whose upstream facts do not
+// become more authoritative when the model keeps asking. It counts calls, not
+// distinct arguments: a round spent re-asking costs the same whether or not the
+// arguments changed. Two attempts leave room for one genuine correction without
+// allowing a monitor turn to consume the whole ReAct budget.
+func maxAgentToolCallsPerTurn(action string) int {
 	if action == "DiagnoseInstanceInternals" {
 		return MaxInstanceOpsRunsPerTurn
 	}
@@ -70,22 +72,48 @@ func completedAgentToolCall(results map[string]string, action string) bool {
 	return false
 }
 
-func uniqueAgentToolCalls(results map[string]string, action string) int {
-	count := 0
-	for key := range results {
-		recordedAction, _, found := strings.Cut(key, ":")
-		if found && recordedAction == action {
-			count++
+// agentToolCallsThisTurn counts the current turn's calls to action that already
+// produced a tool result, reading the canonical transcript rather than a side
+// counter. Same authority as turnReturnedToolResults: the conversation records
+// what was asked and answered, while a cache records only what may be replayed.
+//
+// Counting settled calls rather than every call in the transcript keeps the
+// answer independent of where the caller sits. One assistant message can carry
+// several calls to the same capability; charging them all before the first one
+// runs would refuse a batch the budget is meant to allow.
+func (e *Engine) agentToolCallsThisTurn(action string) int {
+	start := currentTurnStart(e.messages)
+	if start < 0 {
+		return 0
+	}
+	callIDs := map[string]struct{}{}
+	for _, message := range e.messages[start:] {
+		for _, call := range message.ToolCalls {
+			if call.Function.Name == action {
+				callIDs[call.ID] = struct{}{}
+			}
 		}
 	}
-	return count
+	if len(callIDs) == 0 {
+		return 0
+	}
+	settled := 0
+	for _, message := range e.messages[start:] {
+		if message.Role != openai.ChatMessageRoleTool {
+			continue
+		}
+		if _, ok := callIDs[message.ToolCallID]; ok {
+			settled++
+		}
+	}
+	return settled
 }
 
 func toolCallBudgetObservation(action string, limit int) string {
 	payload, _ := json.Marshal(map[string]any{
 		"status":                 "call_budget_exhausted",
 		"action":                 action,
-		"max_unique_calls":       limit,
+		"max_calls_per_turn":     limit,
 		"required_next_decision": "answer from the existing observations or ask the user for one specific missing field; do not call this capability again this turn",
 	})
 	return string(payload)
@@ -119,14 +147,23 @@ type searchKnowledgeCacheObservation struct {
 
 // An unavailable search is not a reusable observation. A later attempt still
 // passes through SearchKnowledge's existing per-turn retrieval budget.
+//
+// A Guest run is never a reusable observation either, for a stronger reason: the
+// observation describes a machine that the run itself may have changed. Replaying
+// one would answer a retry after a dropped SSH connection with the previous
+// attempt's partial command list, and tell the model not to repeat itself. How
+// often a turn may enter a Guest is bounded by maxAgentToolCallsPerTurn instead.
 func cacheableAgentToolObservation(action, raw string) bool {
-	if action != "SearchKnowledge" {
-		return true
+	switch action {
+	case "DiagnoseInstanceInternals":
+		return false
+	case "SearchKnowledge":
+		var observation searchKnowledgeCacheObservation
+		return json.Unmarshal([]byte(raw), &observation) == nil &&
+			observation.EvidenceLedger != nil && !observation.KnowledgeUnavailable &&
+			!observation.AutoExpansionUnavailable && len(observation.Error) == 0
 	}
-	var observation searchKnowledgeCacheObservation
-	return json.Unmarshal([]byte(raw), &observation) == nil &&
-		observation.EvidenceLedger != nil && !observation.KnowledgeUnavailable &&
-		!observation.AutoExpansionUnavailable && len(observation.Error) == 0
+	return true
 }
 
 // Expiry removes the capability and only cached searches exposing its IDs.

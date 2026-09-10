@@ -164,7 +164,7 @@ func TestExecuteSearchKnowledge_LocalDispatchSubstantive(t *testing.T) {
 	exec := &mockExecutor{}
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, exec, nil)
 	eng.SetKnowledgeRetriever(retriever)
-	eng.knowledgeQAAgentLoopThisTurn = true
+	seedKnowledgeTurn(eng)
 
 	tc := openai.ToolCall{
 		ID:   "call-sk",
@@ -187,7 +187,7 @@ func TestExecuteSearchKnowledge_LocalDispatchSubstantive(t *testing.T) {
 	// Retriever ran with the query; hits recorded for the synthesis guard.
 	require.Len(t, retriever.calls, 1)
 	assert.Equal(t, "vllm 显存不足", retriever.calls[0].question)
-	assert.True(t, eng.searchKnowledgeRanThisTurn)
+	assert.NotEmpty(t, eng.searchKnowledgeActivitiesThisTurn)
 	assert.Len(t, eng.searchKnowledgeHitsThisTurn, 1)
 }
 
@@ -211,7 +211,7 @@ func TestExecuteSearchKnowledge_RemoteUnavailableIsDistinctFromEmpty(t *testing.
 
 	assert.Contains(t, out, `"knowledge_unavailable":true`)
 	assert.Contains(t, out, "知识库服务暂时不可用")
-	assert.True(t, eng.searchKnowledgeRanThisTurn)
+	assert.NotEmpty(t, eng.searchKnowledgeActivitiesThisTurn)
 	require.Len(t, traces, 1)
 	assert.True(t, traces[0].Unavailable)
 	assert.Equal(t, "mcp_unavailable", traces[0].FailureReason)
@@ -295,7 +295,7 @@ func TestExecuteSearchKnowledge_MultipleCallsPreserveActivityIDsInCitationTrace(
 	}}
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
 	eng.SetKnowledgeRetriever(retriever)
-	eng.knowledgeQAAgentLoopThisTurn = true
+	seedKnowledgeTurn(eng)
 	var traces []observability.RetrievalTrace
 	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) {
 		traces = append(traces, trace)
@@ -342,8 +342,10 @@ func TestExecuteSearchKnowledge_CallPastTheBudgetIsRejectedWithoutRetrieval(t *t
 	eng.SetKnowledgeRetriever(retriever)
 
 	for i := 0; i < maxSearchKnowledgeCallsPerTurn; i++ {
-		_ = eng.executeSearchKnowledge(context.Background(), map[string]any{"query": fmt.Sprintf("q%d", i)}, noopStep)
+		query := fmt.Sprintf("q%d", i)
+		_ = execToolInTurn(eng, toolCall(query, "SearchKnowledge", `{"query":"`+query+`"}`), noopStep)
 	}
+	// The internal entry is not a way around the budget the transcript records.
 	past := eng.executeSearchKnowledge(context.Background(), map[string]any{"query": "past-budget"}, noopStep)
 
 	require.Len(t, retriever.calls, maxSearchKnowledgeCallsPerTurn)
@@ -359,7 +361,7 @@ func TestSearchKnowledgeTurnTraceEmitsFullTurnEvidenceWithoutCitations(t *testin
 	}}
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
 	eng.SetKnowledgeRetriever(retriever)
-	eng.knowledgeQAAgentLoopThisTurn = true
+	seedKnowledgeTurn(eng)
 	var traces []observability.RetrievalTrace
 	eng.SetRetrievalTraceObserver(func(trace observability.RetrievalTrace) { traces = append(traces, trace) })
 
@@ -402,7 +404,7 @@ func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
 	exec := &mockExecutor{}
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, exec, nil)
 	eng.SetKnowledgeRetriever(retriever)
-	eng.knowledgeQAAgentLoopThisTurn = true
+	seedKnowledgeTurn(eng)
 
 	tc := openai.ToolCall{
 		ID:       "call-sk",
@@ -442,7 +444,7 @@ func TestExecuteSearchKnowledge_RelevanceFloorDropsWeakHits(t *testing.T) {
 	// would otherwise be judged against content the agent never received).
 	assert.Empty(t, eng.searchKnowledgeHitsThisTurn, "weak hits must not be recorded as grounding evidence")
 	// SearchKnowledge still ran (the raw retrieval is traced as weak for observability).
-	assert.True(t, eng.searchKnowledgeRanThisTurn)
+	assert.NotEmpty(t, eng.searchKnowledgeActivitiesThisTurn)
 }
 
 func TestExecuteSearchKnowledge_TrueEmptyDoesNotClaimTheFloorDroppedCandidates(t *testing.T) {
@@ -534,7 +536,7 @@ func TestExecuteSearchKnowledge_RerankerFallbackKeepsHits(t *testing.T) {
 	}}}
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
 	eng.SetKnowledgeRetriever(retriever)
-	eng.knowledgeQAAgentLoopThisTurn = true
+	seedKnowledgeTurn(eng)
 
 	tc := openai.ToolCall{
 		ID:       "call-sk",

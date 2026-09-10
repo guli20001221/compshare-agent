@@ -201,11 +201,15 @@ inside the manifest-bound workdir and removes unreceipted fork JSONLs.
 
 An SSH report returns to the central Agent as an ordinary tool observation, so
 platform workflows and further Guest verification can compose within one turn.
-A repeated canonical tool-call ID reuses its result; a new invocation is not
-blocked just because a previous invocation ran. Audit deduplication uses that
-call ID within the existing turn identity, with Task hashing for legacy callers.
-If parent synthesis fails, already obtained reports remain deliverable without
-replaying Guest commands.
+How many runs one turn may start is bounded by the shared per-turn call budget
+and read from the turn's own transcript; the lane keeps no side table of its own,
+and a Guest report is never replayed from the reuse cache — it describes a
+machine the run itself may have changed, so a retry re-enters instead of
+receiving the previous attempt's partial command list. Durable replay refusal
+lives in audit, keyed by the canonical tool-call ID within the existing turn
+identity, with Task hashing for callers that supply no call ID. If parent
+synthesis fails, already obtained reports remain deliverable without replaying
+Guest commands.
 
 ## Configuration
 

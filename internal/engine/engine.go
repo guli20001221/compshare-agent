@@ -215,22 +215,21 @@ type Engine struct {
 	rateLimitObserver                func(governance.Decision)
 	readExpensiveCallsThisTurn       int
 	lastConfirmationAcceptedThisCall bool
-	// searchKnowledgeRanThisTurn / searchKnowledgeHitsThisTurn track the
-	// SearchKnowledge tool so the final-answer citation check runs against
-	// exactly the evidence the agent was shown. Reset per turn.
-	searchKnowledgeRanThisTurn  bool
+	// searchKnowledgeHitsThisTurn holds the raw hits behind this turn's evidence
+	// so the final-answer citation check runs against exactly what the agent was
+	// shown. Whether retrieval ran at all is len(searchKnowledgeActivitiesThisTurn),
+	// not a separate flag. Reset per turn.
 	searchKnowledgeHitsThisTurn []knowledge.RetrievalHit
 	// answerEchoedChunkIDThisTurn names the chunk whose body the final answer
 	// reproduced verbatim, or "" for none. TELEMETRY ONLY — it is carried into the
 	// turn-aggregate retrieval trace and must never gate, rewrite or replace an
 	// answer (see finalizeAgentLoopKnowledgeAnswer).
 	answerEchoedChunkIDThisTurn string
-	// readChunkCallsThisTurn / readChunkIDsThisTurn bound the full-body ReadChunk
-	// tool: the call budget withdraws it once spent, and the id set makes a
-	// re-read of the same chunk a no-op instead of a second copy in context.
-	// Per-session/per-turn for the same reason as the hits above. Reset every turn.
-	readChunkCallsThisTurn int
-	readChunkIDsThisTurn   map[string]struct{}
+	// readChunkIDsThisTurn records which ledger snippets hold a complete body
+	// rather than a search excerpt, so a re-read re-projects that text instead of
+	// fetching a second copy into context. How many reads the turn has spent is
+	// counted from the transcript. Reset every turn.
+	readChunkIDsThisTurn map[string]struct{}
 	// automaticKnowledgeBodyIDsThisTurn deduplicates automatic body-read attempts
 	// across SearchKnowledge calls, including failed attempts. Each search has its
 	// own bounded body batch, separate from the model-visible ReadChunk budget.
@@ -244,23 +243,12 @@ type Engine struct {
 	// explicitly exposed for optional full-body review. They are not evidence
 	// until ReadChunk succeeds, and then remain low-confidence.
 	belowFloorKnowledgeIDsThisTurn map[string]struct{}
-	// searchKnowledgeCallsThisTurn counts how many times the agent chose to call
-	// SearchKnowledge this turn. The ReAct loop withdraws the capability at
-	// maxSearchKnowledgeCallsPerTurn, preventing search thrash.
-	searchKnowledgeCallsThisTurn int
-	// searchKnowledgeQueriesThisTurn numbers actual retrieval activities. Calls
-	// made with no query/retriever consume the call budget but produce no activity.
-	searchKnowledgeQueriesThisTurn int
 	// searchKnowledgeLedgerThisTurn is the per-turn ChunkID-keyed, deduped
 	// evidence ledger: the union of every SearchKnowledge call's items this turn.
 	// The grounded-answer validator accepts only ChunkIDs present here.
 	searchKnowledgeLedgerThisTurn       knowledge.EvidenceLedger
 	searchKnowledgeActivitiesThisTurn   []observability.RetrievalActivity
 	searchKnowledgeActivityIDsByChunkID map[string][]string
-	// knowledgeQAAgentLoopThisTurn records that SearchKnowledge ran because the
-	// Agent chose it. Citation finalization uses this post-hoc fact; there is no
-	// pre-turn knowledge classifier. Reset per turn.
-	knowledgeQAAgentLoopThisTurn bool
 	// directAnswerToolRetryPending is local to the current ReAct run. It keeps
 	// the retry in the sole Agent loop and is never persisted as semantic state.
 	directAnswerToolRetryPending bool
@@ -412,10 +400,6 @@ type Engine struct {
 	// settable, so a session can hold a different runner than its siblings — it is
 	// not treated as a shared singleton.
 	instanceOps InstanceOpsRunner
-	// A tool-call identity is one invocation, not one user turn. Preserve its
-	// result against delivery replay while allowing the Agent to continue a task
-	// after a platform operation or to work on another explicitly chosen instance.
-	instanceOpsResultsThisTurn map[string]string
 
 	// pendingInstanceOpsInterruption is a user-facing notice left by a diagnosis that ended without
 	// delivering its verdict, drained by the next turn. It is session state, not turn state, so it
@@ -1254,16 +1238,12 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.verifiedEvidenceUpdateThisTurn = evidenceUpdateNone
 	e.groundingOutcomeThisTurn = "unavailable"
 	e.groundingCitationScopeThisTurn = ""
-	e.searchKnowledgeRanThisTurn = false
 	e.searchKnowledgeHitsThisTurn = nil
 	e.answerEchoedChunkIDThisTurn = ""
-	e.readChunkCallsThisTurn = 0
 	e.readChunkIDsThisTurn = nil
 	e.automaticKnowledgeBodyIDsThisTurn = nil
 	e.searchKnowledgeCapabilitiesThisTurn = nil
 	e.belowFloorKnowledgeIDsThisTurn = nil
-	e.searchKnowledgeCallsThisTurn = 0
-	e.searchKnowledgeQueriesThisTurn = 0
 	e.searchKnowledgeLedgerThisTurn = knowledge.EvidenceLedger{}
 	e.searchKnowledgeActivitiesThisTurn = nil
 	e.searchKnowledgeActivityIDsByChunkID = nil
@@ -1273,10 +1253,8 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.committedWriteRepliesThisTurn = nil
 	e.toolResultsByCallThisTurn = map[string]string{}
 	e.actionProposalDispositionThisTurn = ""
-	e.knowledgeQAAgentLoopThisTurn = false
 	e.directAnswerToolRetryPending = false
 	e.directAnswerToolRetryOutcomeThisTurn = ""
-	e.instanceOpsResultsThisTurn = nil
 	e.instanceOpsInterruptionIncludedInReplyThisTurn = false
 	// Deliver any notice left by a diagnosis that ended without a verdict. It goes to the USER, on
 	// the activity stream, and is never appended to e.messages — the model must not restate,
@@ -1454,12 +1432,14 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		// observations already in the conversation are sufficient for the Agent's
 		// next decision; injecting another policy prompt here would create a second
 		// and potentially conflicting knowledge contract.
-		if e.searchKnowledgeCallsThisTurn >= maxSearchKnowledgeCallsPerTurn &&
+		// The window is built before the next assistant message, so the transcript
+		// holds exactly the calls that completed.
+		if e.agentToolCallsThisTurn("SearchKnowledge") >= maxSearchKnowledgeCallsPerTurn &&
 			toolListContainsFunction(toolWindow, "SearchKnowledge") {
 			toolWindow = toolListWithoutFunction(toolWindow, "SearchKnowledge")
 		}
 		// Same rule for full-body reads, on their own budget.
-		if e.readChunkCallsThisTurn >= maxReadChunkCallsPerTurn &&
+		if e.agentToolCallsThisTurn("ReadChunk") >= maxReadChunkCallsPerTurn &&
 			toolListContainsFunction(toolWindow, "ReadChunk") {
 			toolWindow = toolListWithoutFunction(toolWindow, "ReadChunk")
 		}
@@ -2475,20 +2455,19 @@ func (e *Engine) executeSearchKnowledge(ctx context.Context, args map[string]any
 		Type: StepToolCall, Action: "SearchKnowledge", Source: knowledgeSource,
 		Args: map[string]any{"answer_question": answerQuestion, "queries": []string{query}},
 	})
-	if e.searchKnowledgeCallsThisTurn >= maxSearchKnowledgeCallsPerTurn {
+	if e.agentToolCallsThisTurn("SearchKnowledge") >= maxSearchKnowledgeCallsPerTurn {
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: knowledgeSource, Message: "本轮检索次数已达上限"})
 		return "{\"EvidenceLedger\":{\"items\":[]},\"empty\":true,\"search_limit_reached\":true}"
 	}
-	e.searchKnowledgeCallsThisTurn++
 	if e.knowledgeRetriever == nil || query == "" {
 		onStep(StepEvent{Type: StepToolResult, Action: "SearchKnowledge", Source: knowledgeSource, Message: "知识库不可用"})
 		return searchKnowledgeResultJSON(knowledge.EvidenceLedger{Query: answerQuestion}, "", nil)
 	}
 
-	e.searchKnowledgeQueriesThisTurn++
-	activityID := fmt.Sprintf("search_%d", e.searchKnowledgeQueriesThisTurn)
+	// One activity is recorded per retrieval below, so the activity list numbers
+	// the queries; a call with no query or retriever returned above and adds none.
+	activityID := fmt.Sprintf("search_%d", len(e.searchKnowledgeActivitiesThisTurn)+1)
 	retrieved := e.knowledgeRetriever.RetrieveContext(ctx, query, hint)
-	e.searchKnowledgeRanThisTurn = true
 	rawHits := retrieved.HitItems
 	if retrieved.Unavailable {
 		rawHits = nil
@@ -2821,10 +2800,15 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 				onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "相同参数复用已有观察", TraceResult: map[string]any{"status": "reused_observation", "same_call_blocked": true}})
 				return result
 			}
-			if limit := maxUniqueAgentToolCalls(action); limit > 0 &&
-				uniqueAgentToolCalls(e.toolResultsByCallThisTurn, action) >= limit {
+			// The conversation is the authority for how many times this turn has
+			// already spent the capability — the reuse cache above answers a
+			// different question and deliberately withholds some observations, so
+			// counting its keys made the budget depend on what happened to be
+			// cacheable.
+			if limit := maxAgentToolCallsPerTurn(action); limit > 0 &&
+				e.agentToolCallsThisTurn(action) >= limit {
 				result := toolCallBudgetObservation(action, limit)
-				onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "本轮该能力调用次数已达上限", TraceResult: map[string]any{"status": "call_budget_exhausted", "max_unique_calls": limit}})
+				onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "本轮该能力调用次数已达上限", TraceResult: map[string]any{"status": "call_budget_exhausted", "max_calls_per_turn": limit}})
 				return result
 			}
 			result := e.executeToolOnce(ctx, tc, onStep)
@@ -2873,7 +2857,6 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	// check above is the authorization boundary and rejects calls invented outside
 	// that lane.
 	if action == "SearchKnowledge" {
-		e.knowledgeQAAgentLoopThisTurn = true
 		args = e.safeExecutor.FilterArgs(action, args)
 		return e.executeSearchKnowledge(ctx, args, onStep)
 	}
@@ -2944,7 +2927,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	// without this branch it would fall through to the mutating handler and be
 	// blocked. executeInstanceOps fails closed when the lane is off (nil runner).
 	if action == "DiagnoseInstanceInternals" {
-		return e.executeInstanceOpsInvocation(ctx, action, args, tc.ID, onStep)
+		return e.executeInstanceOps(ctx, action, tc.ID, args, onStep)
 	}
 
 	// Registered diagnosis meta-tools delegate to the diagnosis engine. Instance

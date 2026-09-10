@@ -259,7 +259,7 @@ func TestAKilledRunStashesWhatItSawForTheNextTurn(t *testing.T) {
 	eng := newInstanceOpsEngine(runner, alwaysConfirm)
 
 	var steps []StepEvent
-	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&steps))
+	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", "call-1", instanceOpsArgs(), captureSteps(&steps))
 
 	require.NotNil(t, eng.pendingInstanceOpsInterruption, "a killed run must leave the user an account of it")
 	require.Equal(t, "uhost-1", eng.pendingInstanceOpsInterruption.InstanceID)
@@ -287,7 +287,7 @@ func TestAPreflightFailureStashesNothing(t *testing.T) {
 	eng := newInstanceOpsEngine(runner, alwaysConfirm)
 
 	var steps []StepEvent
-	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&steps))
+	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", "call-1", instanceOpsArgs(), captureSteps(&steps))
 
 	require.Nil(t, eng.pendingInstanceOpsInterruption)
 }
@@ -304,7 +304,7 @@ func TestACompletedRunStashesNothing(t *testing.T) {
 	eng := newInstanceOpsEngine(runner, alwaysConfirm)
 
 	var steps []StepEvent
-	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&steps))
+	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", "call-1", instanceOpsArgs(), captureSteps(&steps))
 
 	require.Nil(t, eng.pendingInstanceOpsInterruption)
 }
@@ -355,7 +355,7 @@ func TestBackgroundJobSurvivesAnInterruptedTurnAndOnlyPollsOnTheSameInstance(t *
 	}
 	eng := newInstanceOpsEngine(runner, alwaysConfirm)
 
-	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), func(StepEvent) {})
+	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", "call-1", instanceOpsArgs(), func(StepEvent) {})
 
 	require.Len(t, eng.sessionState.PersistedInstanceOpsJobs, 1)
 	job := eng.sessionState.PersistedInstanceOpsJobs[0]
@@ -376,8 +376,7 @@ func TestBackgroundJobSurvivesAnInterruptedTurnAndOnlyPollsOnTheSameInstance(t *
 	}}
 	runner.err = nil
 	runner.verdict = InstanceOpsVerdict{Text: "后台任务已完成", Ran: 1}
-	eng.instanceOpsResultsThisTurn = nil
-	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), func(StepEvent) {})
+	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", "call-2", instanceOpsArgs(), func(StepEvent) {})
 
 	require.Len(t, runner.lastReq.Context.PendingBackgroundJobs, 1)
 	require.Equal(t, jobID, runner.lastReq.Context.PendingBackgroundJobs[0].JobID)
@@ -417,7 +416,7 @@ func TestBackgroundJobOnAnotherInstanceConsumesCapacityWithoutBlockingIndependen
 	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: eng.lastUserMsg}
 	eng.turnContextViewReady = true
 
-	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", "call-1", map[string]any{
 		"UHostId": "uhost-2", "Task": "排查服务", "Mode": "repair",
 	}, func(StepEvent) {})
 
@@ -438,7 +437,7 @@ func TestNotFoundClearsMatchingBackgroundJobAndReleasesSlot(t *testing.T) {
 	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: eng.lastUserMsg}
 	eng.turnContextViewReady = true
 
-	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", "call-1", map[string]any{
 		"UHostId": "uhost-gone", "Task": "检查后台任务", "Mode": "repair",
 	}, func(StepEvent) {})
 
@@ -448,11 +447,10 @@ func TestNotFoundClearsMatchingBackgroundJobAndReleasesSlot(t *testing.T) {
 
 	runner.err = nil
 	runner.verdict = InstanceOpsVerdict{Text: "另一实例可以继续"}
-	eng.instanceOpsResultsThisTurn = nil
 	eng.lastUserMsg = "排查 uhost-next"
 	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: eng.lastUserMsg}
 	eng.turnContextViewReady = true
-	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", map[string]any{
+	eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", "call-1", map[string]any{
 		"UHostId": "uhost-next", "Task": "排查服务", "Mode": "repair",
 	}, func(StepEvent) {})
 

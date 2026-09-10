@@ -229,21 +229,18 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		"lastUserMsg":                      true,
 		"readExpensiveCallsThisTurn":       true,
 		"lastConfirmationAcceptedThisCall": true,
-		// Per-turn agentic SearchKnowledge state (P3): whether the tool ran this
-		// turn and the hits it returned, used by the final-answer citation check.
-		// Per-session by design — sharing would check one tenant's answer against
-		// another tenant's retrieved evidence. Reset every turn.
-		"searchKnowledgeRanThisTurn":  true,
+		// Per-turn agentic SearchKnowledge state (P3): the hits the tool returned,
+		// used by the final-answer citation check. Per-session by design — sharing
+		// would check one tenant's answer against another tenant's retrieved
+		// evidence. Reset every turn.
 		"searchKnowledgeHitsThisTurn": true,
 		// Per-turn verbatim-echo telemetry: which chunk this turn's answer copied.
 		// Per-session for the same reason as the hits it is derived from. Reset
 		// every turn.
 		"answerEchoedChunkIDThisTurn": true,
-		// Per-turn ReadChunk budget + already-read set. Per-session by design —
-		// a shared read budget would let one tenant withdraw the tool from
-		// another's turn, and a shared read set would suppress a chunk body the
-		// other tenant never saw. Reset every turn.
-		"readChunkCallsThisTurn":            true,
+		// Per-turn already-read set. Per-session by design — sharing it would
+		// suppress a chunk body the other tenant never saw. The read budget itself
+		// is counted from the turn's transcript. Reset every turn.
 		"readChunkIDsThisTurn":              true,
 		"automaticKnowledgeBodyIDsThisTurn": true,
 		// Remote search capabilities are short-lived and must never leave the
@@ -251,10 +248,6 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// ReadChunk against another user's search result.
 		"searchKnowledgeCapabilitiesThisTurn": true,
 		"belowFloorKnowledgeIDsThisTurn":      true,
-		// Per-turn SearchKnowledge budget. A shared counter would let one
-		// tenant's searches withdraw the tool from another tenant's turn.
-		"searchKnowledgeCallsThisTurn":   true,
-		"searchKnowledgeQueriesThisTurn": true,
 		// Per-turn ChunkID-keyed evidence ledger (#126), the union of this turn's
 		// SearchKnowledge items, consumed by the grounded-answer cite validator.
 		// Per-session by design — same cross-tenant-leak reasoning as the hits
@@ -264,13 +257,8 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// activity ids and which chunks came from each activity. Sharing would
 		// cross-link one tenant's citations to another tenant's retrieval trace.
 		// Reset every turn.
-		"searchKnowledgeActivitiesThisTurn":   true,
-		"searchKnowledgeActivityIDsByChunkID": true,
-		// Per-turn knowledge_qa route marker.
-		// Per-session by design — it carries the turn-scoped cite-or-refuse coupling and
-		// the runtime-form projection; sharing it would cross one tenant's route decision
-		// into another's. Reset every turn.
-		"knowledgeQAAgentLoopThisTurn":         true,
+		"searchKnowledgeActivitiesThisTurn":    true,
+		"searchKnowledgeActivityIDsByChunkID":  true,
 		"directAnswerToolRetryPending":         true,
 		"directAnswerToolRetryOutcomeThisTurn": true,
 		// Optional deploy preference extractor injection + its per-turn result.
@@ -357,13 +345,11 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// In-instance SSH diagnosis lane (INV-9/INV-11). instanceOps is copied from
 		// SharedDeps but is per-session-overridable via SetInstanceOps for tests,
 		// so a session can hold a different runner than its siblings — classified
-		// per-session, not shared like externalExecutor. The two *ThisTurn fields are
-		// turn-local: sharing them would let one tenant's in-instance run (or its
-		// one-per-turn slot) bleed into another tenant's turn. All reset per turn /
-		// cleared on return.
-		"instanceOps":                true,
-		"instanceOpsResultsThisTurn": true,
-		"currentTurnID":              true,
+		// per-session, not shared like externalExecutor. How many runs one turn may
+		// start is read from the turn's own transcript, so the lane keeps no
+		// per-turn side table of its own.
+		"instanceOps":   true,
+		"currentTurnID": true,
 		// The notice left by a diagnosis that ended without a verdict, drained by the
 		// next turn. Per-session and NOT turn-local — it deliberately outlives the turn
 		// that created it, which is the whole point — and emphatically not shared: it
@@ -380,8 +366,7 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 		// Why the most recent authorization card in THIS turn ended, used to phrase
 		// the refusal. Turn-local and per-session for the obvious reason: inheriting
 		// another session's reason would tell this user their card timed out when
-		// they declined it, or the reverse. Reset at turn entry beside
-		// instanceOpsResultsThisTurn.
+		// they declined it, or the reverse. Reset at turn entry.
 		"lastConfirmationTerminalReason": true,
 		// Verbatim user blocks accumulated this turn (see verbatimReplyPrefix).
 		// Turn-local: sharing it would splice one tenant's rendered billing figures
@@ -416,12 +401,12 @@ func TestSessionIsolation_AllEngineFieldsClassified(t *testing.T) {
 	if want, got := 6, len(sharedFields); want != got {
 		t.Fatalf("shared whitelist count drift: expected %d, got %d", want, got)
 	}
-	if want, got := 87, len(perSessionFields); want != got {
+	if want, got := 81, len(perSessionFields); want != got {
 		t.Fatalf("per-session whitelist count drift: expected %d, got %d", want, got)
 	}
 
 	typ := reflect.TypeOf(Engine{})
-	if want, got := 93, typ.NumField(); want != got {
+	if want, got := 87, typ.NumField(); want != got {
 		t.Fatalf("Engine field count drift: expected %d, got %d. "+
 			"Update this test's whitelists to match.", want, got)
 	}

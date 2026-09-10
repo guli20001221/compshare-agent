@@ -23,7 +23,7 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 	// SearchKnowledge validates only the Agent-authored draft. Ordinary read
 	// facts already reached the Agent as tool evidence, and no second read block
 	// is composed afterwards by this boundary.
-	if e.searchKnowledgeRanThisTurn {
+	if len(e.searchKnowledgeActivitiesThisTurn) > 0 {
 		content = e.finalizeAgentLoopKnowledgeAnswer(ctx, userMsg, content)
 	} else {
 		e.groundingOutcomeThisTurn = groundingUnavailable
