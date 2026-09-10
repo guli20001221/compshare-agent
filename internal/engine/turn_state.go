@@ -66,9 +66,20 @@ type turnState struct {
 	// directAnswerToolRetryPending is local to the current ReAct run. It keeps
 	// the retry in the sole Agent loop and is never persisted as semantic state.
 	directAnswerToolRetryPending bool
+	// directAnswerToolRetryDraft holds the already-paid first-round answer while
+	// that one retry runs. It is the other half of the pending flag: a non-empty
+	// draft is what a recovery exit delivers instead of a refusal, so the two
+	// must begin and end the turn together.
+	directAnswerToolRetryDraft string
 	// directAnswerToolRetryOutcomeThisTurn is content-free telemetry for the
 	// bounded retry. Empty means the retry did not run.
 	directAnswerToolRetryOutcomeThisTurn string
+	// A length-stopped provider response is not part of semantic history.
+	// truncatedOutputRecoveries counts how many times this turn re-asked, and
+	// recoverTruncatedOutput arms the next request with the recovery
+	// instruction. Neither is persisted, and neither is a second memory.
+	truncatedOutputRecoveries int
+	recoverTruncatedOutput    bool
 	// turnTokensConsumed accumulates tokenUsageTotal(usage) across every LLM call
 	// within the current Chat() invocation. Read at ReAct loop iteration
 	// boundaries to enforce maxTokensPerTurn — never mid tool_call / tool_result
