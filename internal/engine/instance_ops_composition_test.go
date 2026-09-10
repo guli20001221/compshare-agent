@@ -154,7 +154,7 @@ func TestInstanceOpsDifferentTargetsUseDifferentInvocations(t *testing.T) {
 	eng := newInstanceOpsEngine(runner, nil)
 	for _, id := range []string{"uhost-1", "cpod-2", "uhost-1"} {
 		callID := []string{"first", "second", "third"}[runner.calls]
-		requireInstanceOpsObservation(t, eng.executeInstanceOpsInvocation(context.Background(), "DiagnoseInstanceInternals", map[string]any{"UHostId": id, "Task": "检查服务"}, callID, noopStep))
+		requireInstanceOpsObservation(t, eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", callID, map[string]any{"UHostId": id, "Task": "检查服务"}, noopStep))
 		require.Equal(t, id, runner.lastReq.InstanceID)
 	}
 	require.Equal(t, 3, runner.calls)

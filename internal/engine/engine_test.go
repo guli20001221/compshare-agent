@@ -179,6 +179,22 @@ func toolCall(id, name, argsJSON string) openai.ToolCall {
 	}
 }
 
+// execToolInTurn mirrors runToolCallsRound: a user message opens the turn and the
+// assistant's tool_calls message enters the transcript before the tool executes.
+// The per-turn call budget counts that transcript, so a test that reaches
+// executeTool without it is not exercising the budget at all.
+func execToolInTurn(eng *Engine, tc openai.ToolCall, onStep func(StepEvent)) string {
+	if currentTurnStart(eng.messages) < 0 {
+		eng.messages = append(eng.messages, openai.ChatCompletionMessage{
+			Role: openai.ChatMessageRoleUser, Content: "帮我排查一下",
+		})
+	}
+	eng.messages = append(eng.messages, openai.ChatCompletionMessage{
+		Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{tc},
+	})
+	return eng.executeTool(context.Background(), tc, onStep)
+}
+
 func toolNames(registry []openai.Tool) []string {
 	names := make([]string, 0, len(registry))
 	for _, tool := range registry {

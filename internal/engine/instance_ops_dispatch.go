@@ -92,13 +92,13 @@ func instanceOpsNoSSHTargetObservation(action string) string {
 //   - nil-runner  → feature disabled, inert refusal (INV-10)
 //   - write grant → the deployment must have enabled autonomous mutating tools
 //   - param check → UHostId + Task required
-//   - invocation replay → return the existing observation, without rerunning commands
 //   - Run         → tenant-scoped exact-ID lookup, fixed credentials/scope, audited execution
-func (e *Engine) executeInstanceOps(ctx context.Context, action string, args map[string]any, onStep func(StepEvent)) string {
-	return e.executeInstanceOpsInvocation(ctx, action, args, "", onStep)
-}
-
-func (e *Engine) executeInstanceOpsInvocation(ctx context.Context, action string, args map[string]any, invocationID string, onStep func(StepEvent)) (result string) {
+//
+// invocationID is the canonical tool-call ID. It carries no dedup logic here:
+// how often one turn may enter a Guest is bounded by the caller's per-turn call
+// budget, and a delivery replay of one invocation is refused durably by the
+// audit identity in internal/sshops.
+func (e *Engine) executeInstanceOps(ctx context.Context, action, invocationID string, args map[string]any, onStep func(StepEvent)) (result string) {
 	// INV-10: with no runner the lane is off. The tool is absent from the window,
 	// so a well-behaved model cannot reach here; a replayed/hallucinated call gets
 	// an inert refusal without entering a Guest.
@@ -138,20 +138,6 @@ func (e *Engine) executeInstanceOpsInvocation(ctx context.Context, action string
 	// The central Agent owns semantic target selection. Pass its ID unchanged;
 	// the runner verifies that exact ID under the request's tenant-scoped STS
 	// identity before fetching credentials or entering the fixed instance scope.
-	// Canonical call IDs distinguish an intentional next step from delivery replay.
-	// Direct compatibility callers without an ID reuse identical target/task calls.
-	key := invocationID
-	if key == "" {
-		key = instanceID + "\x00" + task
-	}
-	if previous, ok := e.instanceOpsResultsThisTurn[key]; ok {
-		onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: "复用本次调用的已有结果，未重复执行实例内命令。"})
-		return previous
-	}
-	if e.instanceOpsResultsThisTurn == nil {
-		e.instanceOpsResultsThisTurn = make(map[string]string)
-	}
-	defer func() { e.instanceOpsResultsThisTurn[key] = result }()
 
 	// Connected and command progress become bounded activity events. Command
 	// output never enters this stream; only metadata does.

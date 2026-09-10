@@ -412,10 +412,6 @@ type Engine struct {
 	// settable, so a session can hold a different runner than its siblings — it is
 	// not treated as a shared singleton.
 	instanceOps InstanceOpsRunner
-	// A tool-call identity is one invocation, not one user turn. Preserve its
-	// result against delivery replay while allowing the Agent to continue a task
-	// after a platform operation or to work on another explicitly chosen instance.
-	instanceOpsResultsThisTurn map[string]string
 
 	// pendingInstanceOpsInterruption is a user-facing notice left by a diagnosis that ended without
 	// delivering its verdict, drained by the next turn. It is session state, not turn state, so it
@@ -1276,7 +1272,6 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	e.knowledgeQAAgentLoopThisTurn = false
 	e.directAnswerToolRetryPending = false
 	e.directAnswerToolRetryOutcomeThisTurn = ""
-	e.instanceOpsResultsThisTurn = nil
 	e.instanceOpsInterruptionIncludedInReplyThisTurn = false
 	// Deliver any notice left by a diagnosis that ended without a verdict. It goes to the USER, on
 	// the activity stream, and is never appended to e.messages — the model must not restate,
@@ -2821,10 +2816,16 @@ func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep fun
 				onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "相同参数复用已有观察", TraceResult: map[string]any{"status": "reused_observation", "same_call_blocked": true}})
 				return result
 			}
-			if limit := maxUniqueAgentToolCalls(action); limit > 0 &&
-				uniqueAgentToolCalls(e.toolResultsByCallThisTurn, action) >= limit {
+			// The conversation is the authority for how many times this turn has
+			// already called the capability — the reuse cache above answers a
+			// different question and deliberately withholds some observations, so
+			// counting its keys made the budget depend on what happened to be
+			// cacheable. runToolCallsRound appends the assistant tool_calls message
+			// before executing it, so the in-flight call is already included.
+			if limit := maxAgentToolCallsPerTurn(action); limit > 0 &&
+				e.agentToolCallsThisTurn(action) > limit {
 				result := toolCallBudgetObservation(action, limit)
-				onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "本轮该能力调用次数已达上限", TraceResult: map[string]any{"status": "call_budget_exhausted", "max_unique_calls": limit}})
+				onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "本轮该能力调用次数已达上限", TraceResult: map[string]any{"status": "call_budget_exhausted", "max_calls_per_turn": limit}})
 				return result
 			}
 			result := e.executeToolOnce(ctx, tc, onStep)
@@ -2944,7 +2945,7 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 	// without this branch it would fall through to the mutating handler and be
 	// blocked. executeInstanceOps fails closed when the lane is off (nil runner).
 	if action == "DiagnoseInstanceInternals" {
-		return e.executeInstanceOpsInvocation(ctx, action, args, tc.ID, onStep)
+		return e.executeInstanceOps(ctx, action, tc.ID, args, onStep)
 	}
 
 	// Registered diagnosis meta-tools delegate to the diagnosis engine. Instance

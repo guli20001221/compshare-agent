@@ -19,7 +19,7 @@ func TestInstanceOps_AddressUnavailableReportsTheUnresolvedEntryFailure(t *testi
 	eng := newInstanceOpsEngine(runner, alwaysConfirm)
 
 	var steps []StepEvent
-	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), captureSteps(&steps))
+	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", "call-1", instanceOpsArgs(), captureSteps(&steps))
 
 	result := requireInstanceOpsObservation(t, out)
 	require.Equal(t, "SSH_ADDRESS_UNAVAILABLE", result.Error.Code)
@@ -37,7 +37,7 @@ func TestInstanceOps_AddressUnavailableReportsTheUnresolvedEntryFailure(t *testi
 func TestInstanceOps_SSHPreflightUnreachableReturnsStructuredVantageObservation(t *testing.T) {
 	raw := newInstanceOpsEngine(
 		&fakeInstanceOpsRunner{err: ErrInstanceOpsSSHPreflightUnreachable}, alwaysConfirm,
-	).executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", instanceOpsArgs(), noopStep)
+	).executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", "call-1", instanceOpsArgs(), noopStep)
 	require.False(t, strings.HasPrefix(raw, finalReplyPrefix), "the central Agent must receive this observation")
 
 	result, ok := tools.ParseAgentToolResult(raw)
