@@ -214,6 +214,9 @@ func (e *Engine) expireStaleSelectedInstance(now time.Time) {
 }
 
 func (e *Engine) markRegistryInvalidated(action string) {
+	if policy, ok := e.safeExecutor.PolicyForAction(action); ok && policy.Class == tools.ActionClassMutating {
+		e.invalidateLiveToolObservations()
+	}
 	if e.registry == nil {
 		return
 	}

@@ -166,6 +166,18 @@ func cacheableAgentToolObservation(action, raw string) bool {
 	return true
 }
 
+// A write or Guest run can change facts a previous read observed. Keep the
+// transcript as the account of that earlier state, but let a later read obtain
+// fresh evidence. Knowledge and the turn's immutable catalog remain reusable.
+func (e *Engine) invalidateLiveToolObservations() {
+	for key := range e.toolResultsByCallThisTurn {
+		action, _, _ := strings.Cut(key, ":")
+		if action != "SearchKnowledge" && !singleShotAgentTool(action) {
+			delete(e.toolResultsByCallThisTurn, key)
+		}
+	}
+}
+
 // Expiry removes the capability and only cached searches exposing its IDs.
 // Unrelated successful searches remain reusable; the model chooses whether to
 // spend another search call to obtain a fresh capability.

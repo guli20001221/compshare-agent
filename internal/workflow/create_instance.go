@@ -1275,10 +1275,21 @@ func buildImageCandidateSet(params map[string]any, images map[string]any, gpuTyp
 }
 
 // buildImageCandidateSetForRequest ranks the supplied structured request against
-// the live catalog and applies the selected form facets.
+// the live catalog, retains a viable exact selection and applies the form facets.
 func buildImageCandidateSetForRequest(params map[string]any, images map[string]any, taxonomy *deployment.ImageTaxonomy, request deployment.ImageRequest) imageCandidateSet {
 	snap := formImageCatalog(images, paramStr(params, "ImageSource", "platform"))
 	base := deployment.RankImages(snap, request)
+	if id := strings.TrimSpace(paramStr(params, "CompShareImageId", "")); id != "" {
+		// An exact catalog identity is not a name-similarity preference. Reuse
+		// the resolver's status and zone/container checks before offering it,
+		// without removing the other versions the user could select.
+		request.ID = id
+		if resolved := deployment.ResolveImage(snap, request); resolved.Status == deployment.ResolutionResolved {
+			base = append([]deployment.ImageSelection{resolved.Selection}, filterSelections(base, func(sel deployment.ImageSelection) bool {
+				return sel.ID != id
+			})...)
+		}
+	}
 	wantType := strings.TrimSpace(paramStr(params, "ImageType", ""))
 	wantTag := strings.TrimSpace(paramStr(params, "ImageTag", ""))
 	wantCategory := strings.TrimSpace(paramStr(params, "ImageCategory", ""))

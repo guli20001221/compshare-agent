@@ -3,6 +3,7 @@ package engine
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/compshare-agent/internal/opscontext"
@@ -280,4 +281,141 @@ func conversationRoles(messages []opscontext.ConversationMessage) []string {
 		out = append(out, message.Role)
 	}
 	return out
+}
+
+func TestInstanceOpsContextCarriesCompletedPlatformResultsBeforeFirstSSH(t *testing.T) {
+	const user = "创建 CFS 后核实这台实例能使用新文件系统"
+	eng := &Engine{
+		turnState: turnState{lastUserMsg: user},
+		messages: []openai.ChatCompletionMessage{
+			{Role: openai.ChatMessageRoleUser, Content: user},
+			{Role: openai.ChatMessageRoleTool, ToolCallID: "orphan", Content: "unpaired-result"},
+			{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{
+				toolCall("create", "CreateCFSWorkflow", `{"Name":"shared"}`),
+			}},
+			{Role: openai.ChatMessageRoleTool, ToolCallID: "create",
+				Content: `{"success":true,"data":{"CfsId":"cfs-created-42","Password":"must-stay-private-012345"}}`},
+			{Role: openai.ChatMessageRoleAssistant, Content: "尚未执行的计划", ToolCalls: []openai.ToolCall{
+				toolCall("chunk", "ReadChunk", `{"id":"chunk-1"}`),
+				toolCall("ssh-pending", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"错误重写 cfs-wrong-99"}`),
+			}},
+			{Role: openai.ChatMessageRoleTool, ToolCallID: "chunk", Content: "Verify the CFS mount from the guest."},
+		},
+	}
+
+	history := eng.instanceOpsModelContext().ConversationHistory
+	require.Equal(t, []string{"user", "tool", "tool"}, conversationRoles(history))
+	require.Equal(t, user, history[0].Content)
+	require.Contains(t, history[1].Content, "CreateCFSWorkflow:\n")
+	require.Contains(t, history[1].Content, "cfs-created-42")
+	require.NotContains(t, history[1].Content, "must-stay-private")
+	require.Equal(t, "ReadChunk:\nVerify the CFS mount from the guest.", history[2].Content)
+	raw, err := json.Marshal(history)
+	require.NoError(t, err)
+	for _, absent := range []string{"cfs-wrong-99", "尚未执行的计划", "unpaired-result", "ssh-pending"} {
+		require.NotContains(t, string(raw), absent)
+	}
+}
+
+func TestInstanceOpsContextResumeIncludesOnlyNewCompletedObservations(t *testing.T) {
+	const user = "创建共享文件系统，然后检查挂载"
+	eng := &Engine{turnState: turnState{lastUserMsg: user}, messages: []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: user},
+		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{
+			toolCall("create", "CreateCFSWorkflow", `{}`),
+		}},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: "create", Content: `{"CfsId":"cfs-created-42"}`},
+	}}
+	first := eng.instanceOpsModelContext().ConversationHistory
+	anchor := opscontext.ConversationAnchor(first)
+	eng.messages = append(eng.messages,
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{
+			toolCall("verify", "ReadCapability_cfs_info", `{"CfsId":"cfs-created-42"}`),
+		}},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleTool, ToolCallID: "verify",
+			Content: `{"CfsId":"cfs-created-42","MountStatus":"Mounted"}`},
+		openai.ChatCompletionMessage{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{
+			toolCall("ssh-next", "DiagnoseInstanceInternals", `{"Task":"verify"}`),
+		}},
+	)
+	next := eng.instanceOpsModelContext().ConversationHistory
+	delta, ok := opscontext.ConversationAfterAnchor(next, anchor)
+	require.True(t, ok)
+	require.Equal(t, next[len(first):], delta)
+	require.Len(t, delta, 1)
+	require.Equal(t, "tool", delta[0].Role)
+	require.Contains(t, delta[0].Content, "ReadCapability_cfs_info:")
+	require.Contains(t, delta[0].Content, "Mounted")
+	require.NotContains(t, delta[0].Content, "CreateCFSWorkflow")
+	unchanged, ok := opscontext.ConversationAfterAnchor(next, opscontext.ConversationAnchor(next))
+	require.True(t, ok)
+	require.Empty(t, unchanged)
+}
+
+func TestInstanceOpsContextRestoresCompletedObservationsAfterColdRebuild(t *testing.T) {
+	const firstUser = "创建 CFS 后核实挂载"
+	const followup = "继续检查刚创建的那个"
+	firstMessages := []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: firstUser},
+		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{
+			toolCall("create", "CreateCFSWorkflow", `{}`),
+		}},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: "create", Content: `{"CfsId":"cfs-created-42"}`},
+	}
+	first := &Engine{turnState: turnState{lastUserMsg: firstUser}, messages: firstMessages}
+	before := first.instanceOpsModelContext().ConversationHistory
+	anchor := opscontext.ConversationAnchor(before)
+	transcript := buildTranscriptV1(firstMessages)
+	metadata, err := marshalTranscriptMetadata(transcript)
+	require.NoError(t, err)
+	first.recordTurn(recordedTurn{User: firstUser, Transcript: transcript})
+	first.messages = append(stripHistoricalToolTranscript(firstMessages), openai.ChatCompletionMessage{
+		Role: openai.ChatMessageRoleUser, Content: followup,
+	})
+	first.lastUserMsg = followup
+	hot := first.instanceOpsModelContext().ConversationHistory
+
+	cold := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
+	cold.RehydrateHistory([]HistoryMessage{
+		{Role: openai.ChatMessageRoleUser, Content: firstUser},
+		{Role: openai.ChatMessageRoleAssistant, Transcript: metadata},
+	})
+	cold.lastUserMsg = followup
+	rebuilt := cold.instanceOpsModelContext().ConversationHistory
+	require.Equal(t, hot, rebuilt)
+	require.Equal(t, before, rebuilt[:len(before)])
+	require.Contains(t, rebuilt[1].Content, "cfs-created-42")
+	delta, ok := opscontext.ConversationAfterAnchor(rebuilt, anchor)
+	require.True(t, ok)
+	require.Equal(t, []opscontext.ConversationMessage{{Role: "user", Content: followup}}, delta)
+}
+
+func TestInstanceOpsContextBoundsToolDetailWithoutDroppingUserIntent(t *testing.T) {
+	const user = "只检查这台实例，不修改"
+	eng := &Engine{turnState: turnState{lastUserMsg: user}, messages: []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: user},
+		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{toolCall("read", "ReadChunk", `{}`)}},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: "read", Content: strings.Repeat("x", maxTranscriptMessageRunes+100)},
+	}}
+	history := eng.instanceOpsModelContext().ConversationHistory
+	require.Equal(t, user, history[0].Content)
+	require.Len(t, history, 2)
+	require.Contains(t, history[1].Content, truncationNotice(maxTranscriptMessageRunes+100))
+	require.Less(t, len(history[1].Content), maxReplayedHistoryRunes)
+}
+
+func TestInstanceOpsContextKeepsCurrentObservationsAlongsideFullHistory(t *testing.T) {
+	const user = "创建 CFS 后核实挂载"
+	eng := &Engine{turnState: turnState{lastUserMsg: user}, messages: []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleUser, Content: strings.Repeat("u", maxReplayedHistoryRunes/2-20)},
+		{Role: openai.ChatMessageRoleAssistant, Content: strings.Repeat("a", maxReplayedHistoryRunes/2-20)},
+		{Role: openai.ChatMessageRoleUser, Content: user},
+		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{toolCall("create", "CreateCFSWorkflow", `{}`)}},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: "create", Content: `{"CfsId":"cfs-created-42"}`},
+	}}
+	history := eng.instanceOpsModelContext().ConversationHistory
+	require.Equal(t, []string{"user", "assistant", "user", "tool"}, conversationRoles(history))
+	require.Equal(t, user, history[2].Content)
+	require.Contains(t, history[3].Content, "cfs-created-42",
+		"current work is not optional historical detail; use the existing active transcript bound")
 }

@@ -91,7 +91,7 @@ func targetRefParam(extraTypes ...platform.TargetRefType) schemaNode {
 // which kind of value, and that an ID is passed through untouched. Whether an
 // omitted list is legal differs per capability, so a capability that accepts one
 // restates this doc plus its own omission rule at its call site.
-const targetRefsDoc = "逐个列出目标实例：type=name 用对话中出现的精确实例名，type=uhost_id_user_input 用用户逐字给出的完整实例 ID，原样传入不截断。"
+const targetRefsDoc = "逐个列出目标实例：type=name 用精确实例名；type=uhost_id_user_input 用对话或已有工具结果中的完整实例 ID，原样传入不截断。"
 
 func targetRefsParam(extraTypes ...platform.TargetRefType) schemaNode {
 	return arrayParam(targetRefParam(extraTypes...)).described(targetRefsDoc)

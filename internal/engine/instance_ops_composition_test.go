@@ -18,7 +18,7 @@ func TestInstanceOpsCanContinueAcrossOtherToolsInOneTurn(t *testing.T) {
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("guest-first", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"检查服务"}`)}},
 		{ToolCalls: []openai.ToolCall{toolCall("other-facts", "SearchKnowledge", `{"queries":["平台入口验证"]}`)}},
-		{ToolCalls: []openai.ToolCall{toolCall("guest-verify", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"验证平台入口"}`)}},
+		{ToolCalls: []openai.ToolCall{toolCall("guest-verify", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"验证平台入口，本次未完成计划不是观察"}`)}},
 		{Content: "已完成检查，未验证项仍以实际报告为准。"},
 	}}
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
@@ -42,6 +42,25 @@ func TestInstanceOpsCanContinueAcrossOtherToolsInOneTurn(t *testing.T) {
 		}
 	}
 	require.True(t, reportSeen)
+	history := runner.lastReq.Context.ConversationHistory
+	require.Equal(t, []string{"user", "tool", "tool"}, conversationRoles(history))
+	require.Equal(t, "请检查 uhost-1 的服务并验证平台入口", history[0].Content)
+	require.Contains(t, history[1].Content, "DiagnoseInstanceInternals:\n")
+	require.Contains(t, history[1].Content, runner.verdict.Text,
+		"the next SSH invocation receives the first run's actual completed report")
+	require.Contains(t, history[2].Content, "SearchKnowledge:\n")
+	var interveningResult string
+	for _, msg := range model.calls[2].Messages {
+		if msg.Role == openai.ChatMessageRoleTool && msg.ToolCallID == "other-facts" {
+			interveningResult = msg.Content
+		}
+	}
+	require.NotEmpty(t, interveningResult)
+	require.Contains(t, history[2].Content, interveningResult,
+		"the intervening tool result crosses the same bridge as the report")
+	for _, msg := range history {
+		require.NotContains(t, msg.Content, "本次未完成计划不是观察")
+	}
 }
 
 type reportThenErrorLLM struct{ calls int }

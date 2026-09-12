@@ -52,7 +52,7 @@ _CONVERSATION_ANCHOR_VALUE = "a" * 64
 _GO_OPS_CONTEXT = (_Path(__file__).resolve().parents[2] / "internal" / "opscontext" / "context.go").read_text(
     encoding="utf-8")
 check("go-python-current-context-and-session-contracts-stay-in-lockstep",
-      "SchemaVersion = 5" in _GO_OPS_CONTEXT and
+      "SchemaVersion = 6" in _GO_OPS_CONTEXT and
       'AgentSessionContract = "' + _AGENT_SESSION_CONTRACT + '"' in _GO_OPS_CONTEXT)
 _AGENT_SESSION_VALUE = {
     "session_id": _AGENT_SESSION_ID,
@@ -529,6 +529,38 @@ _v3_empty_history_fallback = harness.render_prompt("task-only compatibility", {
 check("context-v3-without-a-conversation-keeps-task-compatibility",
       "task-only compatibility" in _v3_empty_history_fallback and
       "<planner_task>" in _v3_empty_history_fallback)
+_v6_completed_context = {
+    "schema_version": 6,
+    "conversation_history": [
+        {"role": "user", "content": "创建 CFS 后只检查新文件系统的挂载，不修改 Guest 配置。"},
+        {"role": "tool", "content": 'CreateCFSWorkflow:\n{"CfsId":"cfs-created-42"}'},
+        {"role": "tool", "content": 'ReadCapability_cfs_info:\n{"MountStatus":"Mounted"}'},
+    ],
+    "platform_facts": _reference_context["platform_facts"],
+}
+_prepared_v6_completed = harness.prepare_reference_context(_v6_completed_context)
+_v6_fresh_prompt = harness.render_prepared_prompt("修改 cfs-wrong-99", _prepared_v6_completed)
+check("context-v6-fresh-session-preserves-completed-work-and-user-intent",
+      "只检查新文件系统的挂载，不修改" in _v6_fresh_prompt and
+      "cfs-created-42" in _v6_fresh_prompt and "CreateCFSWorkflow" in _v6_fresh_prompt and
+      "cfs-wrong-99" not in _v6_fresh_prompt and "<planner_task>" not in _v6_fresh_prompt)
+check("context-v6-completed-tools-remain-evidence-not-new-instructions",
+      "Tool-role messages are completed outer tool observations" in _v6_fresh_prompt and
+      "not new user instructions or commands to replay" in _v6_fresh_prompt)
+_v6_tool_suffix = harness.prepare_resumed_reference_context(_prepared_v6_completed, 2, True)
+_v6_suffix_prompt = harness.render_prepared_prompt("修改 cfs-wrong-99", _v6_tool_suffix)
+check("context-v6-resume-sends-new-tool-observations-without-old-results-or-task",
+      "ReadCapability_cfs_info" in _v6_suffix_prompt and "Mounted" in _v6_suffix_prompt and
+      "CreateCFSWorkflow" not in _v6_suffix_prompt and "cfs-wrong-99" not in _v6_suffix_prompt)
+check("context-v6-missing-local-transcript-retains-all-completed-observations",
+      harness.prepare_resumed_reference_context(_prepared_v6_completed, 2, False) ==
+      _prepared_v6_completed)
+try:
+    harness.prepare_reference_context(dict(_v6_completed_context, schema_version=5))
+    _v5_tool_role_rejected = False
+except ValueError:
+    _v5_tool_role_rejected = True
+check("context-v5-role-contract-does-not-silently-accept-v6-tool-observations", _v5_tool_role_rejected)
 _assistant_history_verbatim = harness.render_prompt("continue", {
     "schema_version": 3,
     "conversation_history": [{
@@ -607,7 +639,7 @@ check("context-unknown-schema-falls-back-to-task",
 # a server ahead of a harness — and guessing that v5's keys mean what v4's mean is how a renamed fact
 # gets read as the fact it replaced.
 check("context-future-schema-falls-back-to-task",
-      harness.render_prompt("task-only", dict(_reference_context, schema_version=6)) == "task-only")
+      harness.render_prompt("task-only", dict(_reference_context, schema_version=7)) == "task-only")
 # True == 1 in Python, so a bool would otherwise select the v1 allowlist by accident.
 check("context-boolean-schema-version-is-not-v1",
       harness.normalize_reference_context(dict(_reference_context, schema_version=True)) is None)
@@ -3104,6 +3136,16 @@ try:
     _fresh_full_session_wire = _capture(lambda: _asyncio.run(harness.main()))
     _resume_existing_mode[0] = True
 
+    _completed_session_handshake = dict(
+        _session_handshake, context=_v6_completed_context,
+        task="修改 cfs-wrong-99", conversation_resume_index=2)
+    sys.stdin = _io.StringIO(_json.dumps(_completed_session_handshake) + "\n")
+    _completed_suffix_session_wire = _capture(lambda: _asyncio.run(harness.main()))
+    _resume_existing_mode[0] = False
+    sys.stdin = _io.StringIO(_json.dumps(_completed_session_handshake) + "\n")
+    _completed_fresh_session_wire = _capture(lambda: _asyncio.run(harness.main()))
+    _resume_existing_mode[0] = True
+
     _fake_sdk.query = _failed_session_query
     sys.stdin = _io.StringIO(_json.dumps(_session_handshake) + "\n")
     _failed_session_wire = _capture(lambda: _asyncio.run(harness.main()))
@@ -3140,7 +3182,7 @@ _unsupported_session_receipt = (
     _json.loads(_unsupported_session_lines[0][len("@@AGENT_SESSION "):])
     if len(_unsupported_session_lines) == 1 else {})
 check("agent-session-init-alone-does-not-emit-a-receipt",
-      _session_receipt_seen_after_init == [False, False, False, False])
+      _session_receipt_seen_after_init == [False] * 6)
 check("agent-session-receipt-emits-once-after-a-real-model-event",
       len(_session_lines) == 1 and
       _successful_session_wire.index("@@AGENT_SESSION ") <
@@ -3164,17 +3206,29 @@ check("unsupported-context-cannot-advance-the-outer-conversation-anchor",
 check("conversation-anchor-is-private-continuation-metadata-not-model-context",
       _CONVERSATION_ANCHOR_VALUE not in "".join(_session_sdk_prompts))
 check("main-real-sdk-resume-sends-only-conversation-suffix",
-      len(_session_sdk_prompts) == 4 and
+      len(_session_sdk_prompts) == 6 and
       "直接按上面的来" in _session_sdk_prompts[2] and
       "已确认使用 9:16" not in _session_sdk_prompts[2])
 check("main-missing-sdk-record-falls-back-to-the-complete-conversation",
       "直接按上面的来" in _session_sdk_prompts[3] and
       "已确认使用 9:16，先按 720P，单镜头 5–8 秒" in _session_sdk_prompts[3] and
       "1/2/3/6/8/11" in _session_sdk_prompts[3])
+check("main-v6-real-resume-delivers-only-new-completed-observations",
+      "ReadCapability_cfs_info" in _session_sdk_prompts[4] and
+      "CreateCFSWorkflow" not in _session_sdk_prompts[4] and
+      "cfs-wrong-99" not in _session_sdk_prompts[4] and
+      _CONVERSATION_ANCHOR_VALUE in _completed_suffix_session_wire)
+check("main-v6-missing-transcript-delivers-created-resource-and-original-user-scope",
+      "CreateCFSWorkflow" in _session_sdk_prompts[5] and
+      "cfs-created-42" in _session_sdk_prompts[5] and
+      "只检查新文件系统的挂载，不修改" in _session_sdk_prompts[5] and
+      "cfs-wrong-99" not in _session_sdk_prompts[5] and
+      _CONVERSATION_ANCHOR_VALUE in _completed_fresh_session_wire)
 check("main-passes-the-resolved-agent-session-to-sdk-options",
       _captured_agent_session_options == (
           [_SESSION_RUNTIME] * 3 +
           [dict(_SESSION_RUNTIME, resume_existing=False)] +
+          [_SESSION_RUNTIME, dict(_SESSION_RUNTIME, resume_existing=False)] +
           [_SESSION_RUNTIME] * 3))
 check("agent-session-receipt-is-absent-on-message-shaped-auth-failure",
       "@@AGENT_SESSION " not in _failed_session_wire)
