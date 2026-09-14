@@ -193,6 +193,9 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action, invocationID st
 		Task:         task,
 		Context:      modelContext,
 	}, onProgress)
+	// Even an interrupted run may have changed live state before its final
+	// command receipt arrived. Subsequent reads must obtain current evidence.
+	e.invalidateLiveToolObservations()
 	if err != nil {
 		// A control-plane NotFound result is authoritative for this target: its guest job can no
 		// longer be polled and must not occupy the conversation's job capacity forever.

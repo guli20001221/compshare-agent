@@ -189,8 +189,11 @@ SessionState V11 also keeps a same-instance opaque Agent SDK session UUID,
 a stable opaque workdir UUID, and a content-free SHA-256 high-water mark for the outer conversation already
 bridged into it. The SDK transcript stays in its existing local ephemeral store
 and never enters PostgreSQL. A fresh inner session receives the canonical bounded
-user/assistant conversation plus the current user turn; a resume receives only
-the new role-labelled suffix. A different instance, changed prompt/tool contract,
+conversation — user and assistant endpoints plus the completed tool observations
+of each turn, in order and already redacted — and the current user turn; a resume
+receives only the new role-labelled suffix. The current turn's unanswered
+`DiagnoseInstanceInternals` call and its planner arguments are never part of that
+stream. A different instance, changed prompt/tool contract,
 changed model, missing local transcript or a compacted-away anchor
 starts fresh with the complete currently available snapshot.
 Every resume forks the committed transcript into a new attempt UUID. Only a genuine

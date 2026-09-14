@@ -128,6 +128,49 @@ func TestOnAPodZoneTheCountDropsVmOnlyImagesToo(t *testing.T) {
 	assert.Equal(t, 1, population)
 }
 
+func TestExactImageCandidateStillRequiresUsableStatusAndZoneCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     string
+		container  bool
+		pod        bool
+		selectable bool
+	}{
+		{"available VM", "Available", false, false, true},
+		{"available container in pod", "Available", true, true, true},
+		{"offline container", "Offline", true, true, false},
+		{"VM in pod", "Available", false, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			params := map[string]any{"CompShareImageId": "img-exact", "ImageName": "v3.6.1"}
+			catalog := map[string]any{"ImageSet": []any{map[string]any{
+				"CompShareImageId": "img-exact", "Name": "FaceFusion", "ImageType": "App",
+				"Status": tc.status, "Container": tc.container,
+			}}}
+			current, options, count := guidedImageFormOptions(params, catalog, "", nil, tc.pod)
+			if tc.selectable {
+				assert.Equal(t, "img-exact", current)
+				assert.Equal(t, []string{"img-exact"}, optionValues(&ConfirmFormField{Options: options}))
+				assert.Equal(t, 1, count)
+			} else {
+				assert.Empty(t, current)
+				assert.Empty(t, options)
+				assert.Zero(t, count)
+			}
+		})
+	}
+}
+
+func TestExactImageCandidateKeepsOtherMatchingVersionsSelectable(t *testing.T) {
+	params := map[string]any{
+		"ImageSource": "community", "CompShareImageId": "live-v1", "ImageName": "LiveTalking",
+	}
+	current, options, count := guidedImageFormOptions(params, familyPickerCommunityCatalog(), "", nil, false)
+	assert.Equal(t, "live-v1", current)
+	assert.Equal(t, []string{"live-v1", "live-v2"}, optionValues(&ConfirmFormField{Options: options}))
+	assert.Equal(t, 2, count, "an exact preselection must neither hide other matching versions nor count itself twice")
+}
+
 // TestThePickerStatesWhatItIsNotShowing covers the half a shared candidate set does
 // not fix by itself. 55 really is the honest population and the card really can only
 // list maxGuidedImageOptions of them, so both available silences are wrong: saying

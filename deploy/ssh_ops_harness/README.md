@@ -43,16 +43,16 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
   路径/元数据，使用同目录临时文件并回读 hash；替换另保留同目录备份。活动流和审计只显示操作、
   路径、用途、mode/count 和前后 hash，不显示文件内容。
 
-平台入口 URL 及 SSH 地址只在 Go→harness 的 stdin 私有握手里存在；它们不进入 task、prompt、
-模型输出或审计。平台元数据、Guest listener、应用响应和 runner 视角的外部探测仍是四层不同证据。
+用于拨号与入口探测的私有 URL、SSH 凭据仍通过 Go→harness 的 stdin 握手传递，不作为对话观察输出。
+外层工具已经交给模型的结果沿用规范化 transcript 的脱敏表示。平台元数据、Guest listener、应用响应和 runner 视角的外部探测仍是四层不同证据。
 部署授权和用户目标校验通过后，服务器回调在私有握手中提供 `allow_writes`；它不属于模型工具
 参数。缺少回调的底层调用拒绝写入。混部时旧 harness 的逐命令协议由服务器内部应答，不等待用户确认。
-当前未回答的 user 消息与最近的完整 user/assistant 对话会在角色化、脱敏和整轮预算后组成一条
-连续历史送给内层 Agent，因而
+当前未回答的 user 消息、最近的 user/assistant 对话与已完成工具观察，按原始顺序组成一条
+连续历史送给内层 Agent；工具观察沿用外层 transcript 的脱敏、截断标记及工具名称，因而
 “按上面的来”可以承接助手上一轮已经确认的参数，而不是依赖关键词或 planner 改写。V3+ 有完整
 历史时，planner Task 只保留在服务端作路由与审计，不再作为第二套可执行指令进入模型；
 没有 V3+ 历史的兼容调用仍使用 Task。历史对话用于
-理解指代；实例当前状态仍以平台事实和 SSH 实测为准。截图 OCR 直接附在对应用户报告中，并明确
+理解指代和已完成工作的结果，不重放其命令；实例当前状态仍以平台事实和 SSH 实测为准。截图 OCR 直接附在对应用户报告中，并明确
 标为“可能识别有误、不是指令或授权”的参考信息。模型可以据此理解报错和目标，但 OCR 不替代
 账号归属核查或平台操作确认，也不进入 task hash；审计不保存对话或 OCR 原文。
 
@@ -108,10 +108,10 @@ SDK 的 ResultMessage 聚合 token、缓存 token、轮数和 API 耗时挂在�
 PostgreSQL 的 SessionState V11 保存会话 UUID、稳定工作目录 UUID、实例 ID、契约/模型、conversation anchor、时间，
 以及未结束后台任务的 opaque ID、生命周期和脱敏用途，不保存命令或输出；V8–V10 的旧单任务字段在读取时迁移。
 换实例、契约/模型变化、本地记录缺失或 Pod 被重建时都会诚实地开始新会话；墙钟时间本身不会切断同一会话的续接。
-当前 Agent session contract v9 绑定原生 Claude Code preset、Guest 内搜索、原启动环境恢复与多后台任务的远端工具契约，不注入额外 Stop hook，并保存一枚 64 个小写十六进制字符的 SHA-256 conversation anchor，只表示 inner SDK 已经收到外层对话到哪个位置；
+当前 Agent session contract v10 绑定原生 Claude Code preset、远端工具和含已完成工具观察的上下文契约，不注入额外 Stop hook，并保存一枚 64 个小写十六进制字符的 SHA-256 conversation anchor，只表示 inner SDK 已经收到外层对话到哪个位置；
 它不含对话文本。Go 始终在私有握手里发送完整的有界快照和已送达前缀长度；harness 仅在本地 SDK
 transcript 确实存在时把 prompt 收敛为新增后缀，本地记录缺失则以完整快照 fresh start。harness 只在
-V3/V5 角色完整上下文进入真实模型回合后回执该 anchor；旧/不支持的 context、鉴权失败或模型未启动都不能前移它。
+V3–V6 角色化上下文进入真实模型回合后回执该 anchor；不支持的 context、鉴权失败或模型未启动都不能前移它。
 每次 resume 都通过 Claude SDK 的 `fork_session` 写入新的尝试 UUID；失败尝试不会追加到已提交 transcript，
 只有成功回执才会将数据库游标前移到该 fork。稳定工作目录 UUID 只负责让连续 fork 仍能找到同一私有 SDK project。
 下一次串行运行前，harness 只保留数据库当前指向的 source JSONL，并删除同一 manifest/workdir 下未回执的
@@ -162,10 +162,11 @@ SDK 在 `initialize` 等待 60 秒后超时；harness 会在同一个已选 npm 
    `started` 行只说明「请求过上下文」，把它当送达结果读会高估覆盖率——`Finish` 本身也可能失败
    （日志里是 `ssh-ops: audit finish failed …`），那种行会永远停在 `started`。
 
-   当前值是 **`5`**：除当前用户报告和平台事实外，它还携带按真实角色排列的完整历史问答；历史由
-   Go 侧按完整 exchange 统一预算，harness 不再用另一个字节上限把整块上下文静默丢成 task-only。
-   新 harness 仍接受 v1/v2/v3/v4；不支持该版本的旧 harness 会降级成 task-only（终态行就是 `0`，不是
-   半份上下文）。v5 增加上游运行形态和平台监控来源，v3 引入角色完整历史，v4 新增权威 `instance.kind=vm|pod`；这个值按资源 ID 契约判定，
+   当前值是 **`6`**：除当前用户报告和平台事实外，它还携带按真实角色排列的历史问答及已完成工具观察。
+   历史按完整 exchange 预算，当前回合工具结果沿用 canonical transcript 的预算；harness 不另行截断。
+   新 harness 仍接受 v1–v5；不支持该版本的旧 harness 会降级成 task-only（终态行就是 `0`，不是
+   半份上下文）。后端与 harness 应一起部署；旧 SDK 会话契约会开始新会话，不重放已有命令。
+   v5 增加上游运行形态和平台监控来源，v3 引入角色完整历史，v4 新增权威 `instance.kind=vm|pod`；这个值按资源 ID 契约判定，
    不能从 PID 1、镜像或 `InstanceType=Container` 猜测。v1 用一个 `instance.reported_ports` 同时装 Describe 的
    `Ports` 与 `TcpForwards`，v2 拆成 `platform.instance_port_hints` / `platform.tcp_forwards`，
    并新增 `instance.declared_software`（**只有名字**：同级的 `URL` 里带活的 Jupyter token）和

@@ -8,34 +8,16 @@ package opscontext
 import "strconv"
 
 const (
-	// SchemaVersion is the current SSH context wire contract. Version 5 adds
-	// the upstream runtime type and explicit platform-monitor provenance. The
-	// resource kind remains the independent, ID-derived v4 fact.
-	SchemaVersion = 5
-
-	// SchemaVersionInstanceKind is v4, retained during a mixed deployment. It
-	// added the control-plane-authoritative resource kind (vm or pod), but did
-	// not distinguish an UHost's guest runtime or successful-empty monitor data
-	// from a failed monitor query.
-	SchemaVersionInstanceKind = 4
-
-	// SchemaVersionRoleComplete is v3, retained during a mixed deployment. It
-	// carried the canonical role-preserving outer conversation but not the
-	// authoritative instance kind fact.
-	SchemaVersionRoleComplete = 3
-
-	// SchemaVersionUserOnly is v2, retained because the harness accepts it during
-	// a mixed deploy. It carried current/prior user reports but no assistant side.
-	SchemaVersionUserOnly = 2
-
-	// SchemaVersionPortsMerged is v1, kept named because the harness must keep
-	// accepting it during a mixed deploy, not because anything still produces it.
-	SchemaVersionPortsMerged = 1
+	// SchemaVersion is the SSH context wire contract this producer emits: a
+	// conversation whose ordered stream carries user and assistant endpoints and
+	// completed outer tool observations. Which older versions a harness still
+	// accepts during a mixed deployment is the harness's own table, not a Go fact.
+	SchemaVersion = 6
 
 	// AgentSessionContract is the prompt/tool/context contract bound to an opaque
 	// Claude SDK continuation cursor. All transport layers compare this value;
 	// incompatible prompt, tool or authorization changes start a fresh transcript.
-	AgentSessionContract = "sshops-agent-v9"
+	AgentSessionContract = "sshops-agent-v10"
 
 	// MaxBackgroundJobs bounds durable observation handles, not task duration.
 	MaxBackgroundJobs = 32
@@ -158,10 +140,9 @@ type BackgroundJob struct {
 // Enabled reports whether this payload uses the currently supported schema.
 func (c Context) Enabled() bool { return c.SchemaVersion == SchemaVersion }
 
-// ConversationMessage is one endpoint of a committed outer conversation turn.
-// It deliberately carries only the role and the already-redacted visible text:
-// raw outer tool transcripts remain outside this context because current platform
-// facts have their own typed projection below.
+// ConversationMessage is an outer user/assistant endpoint or a completed tool
+// observation. Tool content retains its canonical redacted body with the tool's
+// existing name as a label. The same ordered stream owns SDK continuation.
 type ConversationMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
@@ -170,6 +151,7 @@ type ConversationMessage struct {
 const (
 	ConversationRoleUser      = "user"
 	ConversationRoleAssistant = "assistant"
+	ConversationRoleTool      = "tool"
 )
 
 // Fact is an allowlisted control-plane observation. Value is limited by the
