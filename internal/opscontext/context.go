@@ -8,32 +8,11 @@ package opscontext
 import "strconv"
 
 const (
-	// SchemaVersion is the current SSH context wire contract. Version 6 carries
-	// completed outer tool observations in the same ordered conversation stream.
+	// SchemaVersion is the SSH context wire contract this producer emits: a
+	// conversation whose ordered stream carries user and assistant endpoints and
+	// completed outer tool observations. Which older versions a harness still
+	// accepts during a mixed deployment is the harness's own table, not a Go fact.
 	SchemaVersion = 6
-
-	// SchemaVersionPlatformProvenance is v5, whose platform facts remain valid
-	// while its conversation contains only user and assistant endpoints.
-	SchemaVersionPlatformProvenance = 5
-
-	// SchemaVersionInstanceKind is v4, retained during a mixed deployment. It
-	// added the control-plane-authoritative resource kind (vm or pod), but did
-	// not distinguish an UHost's guest runtime or successful-empty monitor data
-	// from a failed monitor query.
-	SchemaVersionInstanceKind = 4
-
-	// SchemaVersionRoleComplete is v3, retained during a mixed deployment. It
-	// carried the canonical role-preserving outer conversation but not the
-	// authoritative instance kind fact.
-	SchemaVersionRoleComplete = 3
-
-	// SchemaVersionUserOnly is v2, retained because the harness accepts it during
-	// a mixed deploy. It carried current/prior user reports but no assistant side.
-	SchemaVersionUserOnly = 2
-
-	// SchemaVersionPortsMerged is v1, kept named because the harness must keep
-	// accepting it during a mixed deploy, not because anything still produces it.
-	SchemaVersionPortsMerged = 1
 
 	// AgentSessionContract is the prompt/tool/context contract bound to an opaque
 	// Claude SDK continuation cursor. All transport layers compare this value;

@@ -11,9 +11,6 @@ import (
 
 func TestContextV6PreservesPlatformAndCoverageContracts(t *testing.T) {
 	assert.Equal(t, 6, SchemaVersion)
-	assert.Equal(t, 5, SchemaVersionPlatformProvenance)
-	assert.Equal(t, 4, SchemaVersionInstanceKind,
-		"v4 remains named so mixed-deployment consumers can accept it explicitly")
 	assert.Equal(t, "sshops-agent-v10", AgentSessionContract)
 	assert.Equal(t, uint32(1<<10), CoverageInstanceKind,
 		"persisted coverage meanings must never be reordered")
