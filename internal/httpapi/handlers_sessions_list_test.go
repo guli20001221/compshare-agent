@@ -53,12 +53,11 @@ func TestDispatchListSessions_OwnerScopedAndOrdered(t *testing.T) {
 	assert.Less(t, strings.Index(body, "s-new"), strings.Index(body, "s-old"))
 }
 
-func TestDispatchListSessionsRedactsHistoricalAuthorizationTitle(t *testing.T) {
-	const secret = "historical-list-title-secret-0123456789"
-	title := "Authorization: Bearer " + secret
+func TestDispatchListSessionsProjectsTheStoredTitle(t *testing.T) {
+	title := "Authorization: Bearer list-title-0123"
 	ms := &mockSessions{byID: map[string]store.Session{
-		"s-secret": {
-			ID: "s-secret", TopOrganizationID: 1, OrganizationID: 2,
+		"s-title": {
+			ID: "s-title", TopOrganizationID: 1, OrganizationID: 2,
 			Title: &title, UpdatedAt: time.Now(),
 		},
 	}}
@@ -66,8 +65,7 @@ func TestDispatchListSessionsRedactsHistoricalAuthorizationTitle(t *testing.T) {
 	rec := performGateway(h, `{"Action":"ListCSAgentSessions","top_organization_id":1,"organization_id":2}`)
 
 	require.Equal(t, http.StatusOK, rec.Code)
-	assert.NotContains(t, rec.Body.String(), secret)
-	assert.Contains(t, rec.Body.String(), "Authorization")
+	assert.Contains(t, rec.Body.String(), `"Title":"`+title+`"`, "the sidebar shows the title as stored")
 }
 
 // TestListSessionsLimitClamp asserts the handler clamps Limit to [1, max] with a
@@ -132,18 +130,10 @@ func TestDeriveSessionTitle(t *testing.T) {
 		assert.Equal(t, strings.Repeat("好", sessionTitleMaxRunes)+"…", got)
 		assert.Equal(t, sessionTitleMaxRunes+1, len([]rune(got)))
 	})
-	t.Run("ordinary information preserved consistent with stored message body", func(t *testing.T) {
-		for _, text := range []string{"我的手机13800138000", "联系 user@example.com"} {
+	t.Run("text preserved consistent with stored message body", func(t *testing.T) {
+		for _, text := range []string{"我的手机13800138000", "联系 user@example.com", "Authorization: Bearer abc123"} {
 			assert.Equal(t, text, deriveSessionTitle(text))
 		}
-	})
-	t.Run("authorization header value never reaches the sidebar", func(t *testing.T) {
-		const secret = "title-auth-secret-0123456789"
-		got := deriveSessionTitle("Authorization: " + secret)
-		assert.NotContains(t, got, secret)
-		assert.Contains(t, got, "Authorization")
-		assert.Contains(t, got, "[",
-			"the rune cap may truncate the marker, but must leave visible evidence of redaction: %q", got)
 	})
 }
 

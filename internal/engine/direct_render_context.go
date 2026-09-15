@@ -68,8 +68,8 @@ func (ContextCompiler) Compile(e *Engine, userMsg string, buildAt time.Time) Age
 
 func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt time.Time) AgentContext {
 	view := AgentContext{
-		TurnID:          safeContextText(turnID),
-		CurrentQuestion: safeContextText(userMsg),
+		TurnID:          compactContextText(turnID),
+		CurrentQuestion: compactContextText(userMsg),
 		BuiltAtUnix:     buildAt.Unix(),
 	}
 	if e != nil {

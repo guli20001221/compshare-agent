@@ -7,7 +7,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/compshare-agent/internal/knowledge"
-	"github.com/compshare-agent/internal/security"
 )
 
 const (
@@ -144,14 +143,12 @@ func (b *knowledgeBridge) handle(req KnowledgeRequest) knowledgeReply {
 }
 
 func (b *knowledgeBridge) search(req KnowledgeRequest) knowledgeReply {
-	rawQuery := strings.TrimSpace(req.Query)
-	rawHint := strings.TrimSpace(req.ContextHint)
-	if rawQuery == "" || utf8.RuneCountInString(rawQuery) > maxKnowledgeQueryRunes ||
-		utf8.RuneCountInString(rawHint) > maxKnowledgeContextHintRunes {
+	query := strings.TrimSpace(req.Query)
+	hint := strings.TrimSpace(req.ContextHint)
+	if query == "" || utf8.RuneCountInString(query) > maxKnowledgeQueryRunes ||
+		utf8.RuneCountInString(hint) > maxKnowledgeContextHintRunes {
 		return knowledgeFailure(req.ID, "invalid_request")
 	}
-	query := strings.TrimSpace(security.RedactUserConversationText(rawQuery))
-	hint := strings.TrimSpace(security.RedactUserConversationText(rawHint))
 	if b == nil || b.retriever == nil {
 		return knowledgeFailure(req.ID, "unavailable")
 	}

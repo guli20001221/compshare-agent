@@ -4,11 +4,8 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net"
-	"net/url"
 	"regexp"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/compshare-agent/internal/agentprotocol"
 	"github.com/compshare-agent/internal/guardrails"
@@ -18,7 +15,7 @@ const redactedValue = "[REDACTED]"
 
 var separatorRE = regexp.MustCompile(`[^a-z0-9]+`)
 
-// RedactForLLM removes credentials and operational tokens before values are
+// RedactForLLM replaces credential-named fields before a structured value is
 // passed into model context. It returns a deep-redacted copy and never mutates
 // the input value.
 func RedactForLLM(v any) any {
@@ -35,9 +32,9 @@ func SSHLoginCommandForLLM(raw string) (string, bool) {
 	return strings.TrimSpace(projected), true
 }
 
-// RedactForTrace removes credentials and masks/hash-stabilizes sensitive
-// telemetry before writing traces or audit logs. It returns a deep-redacted copy
-// and never mutates the input value.
+// RedactForTrace replaces credential-named fields and masks/hash-stabilizes
+// sensitive telemetry before writing traces or audit logs. It returns a
+// deep-redacted copy and never mutates the input value.
 func RedactForTrace(v any) any {
 	return redactValue(v, redactModeTrace, "")
 }
@@ -71,12 +68,8 @@ func redactValue(v any, mode redactMode, parentKey string) any {
 		}
 		return out
 	default:
-		if s, ok := typed.(string); ok {
-			s = redactOperationalTokens(s)
-			if mode == redactModeTrace && isIPKey(parentKey) {
-				return maskIPv4(s)
-			}
-			return s
+		if s, ok := typed.(string); ok && mode == redactModeTrace && isIPKey(parentKey) {
+			return maskIPv4(s)
 		}
 		return typed
 	}
@@ -85,10 +78,9 @@ func redactValue(v any, mode redactMode, parentKey string) any {
 func redactField(key string, value any, mode redactMode) any {
 	if isSecretKey(key) {
 		if mode == redactModeLLM && isPlainSSHLoginCommand(key, value) {
-			// An allowlisted login command is an endpoint, not a credential. Its
-			// value still passes through credential redaction before reaching the
-			// model; trace persistence remains unchanged.
-			return redactValue(value, mode, key)
+			// An allowlisted login command is an endpoint, not a credential;
+			// trace persistence remains unchanged.
+			return value
 		}
 		return redactedValue
 	}
@@ -242,47 +234,34 @@ func normalizeKey(key string) string {
 	return separatorRE.ReplaceAllString(key, "")
 }
 
-// RedactOperationalTokensInText removes access tokens embedded inside otherwise
-// ordinary strings, such as JupyterLab URLs. It is safe for user-visible text.
-func RedactOperationalTokensInText(s string) string {
-	return redactOperationalTokens(s)
-}
-
 // UserAuthorizationReference is a request-local secret paired with the opaque
-// marker that may safely replace it in model-visible text. Value must remain on
-// the private transport path; Reference is an identifier, not an authorization
-// grant and not valid in a later turn.
+// marker the inner probe tool accepts in its place. Value stays on the private
+// transport path; Reference is an identifier, not an authorization grant, and
+// is not valid in a later turn.
 type UserAuthorizationReference struct {
 	Reference string
 	Value     string
 }
 
-// CaptureUserAuthorizationHeaders extracts valid current-request capabilities
-// while replacing every model-visible Authorization value with the ordinary
-// redaction marker. The opaque reference itself is exposed later only by the
-// short-lived probe tool schema; it is not written into conversation text, where
-// a cold replay could mistake an expired reference for a live one.
-func CaptureUserAuthorizationHeaders(s string) (string, []UserAuthorizationReference) {
-	rewritten, extracted := guardrails.ReferenceAuthorizationHeaderValues(s)
+// UserAuthorizationHeaders extracts the current request's usable Authorization
+// header values. The text the model reads is not rewritten; a reference is
+// exposed only through the short-lived probe tool schema and is never written
+// into conversation text, where a cold replay could mistake an expired
+// reference for a live one.
+func UserAuthorizationHeaders(s string) []UserAuthorizationReference {
+	extracted := guardrails.AuthorizationHeaderValues(s)
 	refs := make([]UserAuthorizationReference, 0, len(extracted))
 	for _, item := range extracted {
 		refs = append(refs, UserAuthorizationReference{Reference: item.Reference, Value: item.Value})
-		rewritten = strings.ReplaceAll(rewritten, "[AUTHORIZATION_REF:"+item.Reference+"]", redactedValue)
 	}
-	// Unsupported, over-limit, or fifth-and-later header-shaped values mint no
-	// capability but are still removed. URL query assignments are deliberately
-	// untouched here; they belong to the established signed-URL flow.
-	rewritten = strings.ReplaceAll(rewritten, "[AUTHORIZATION_REDACTED]", redactedValue)
-	return rewritten, refs
+	return refs
 }
 
-// RedactKnownAuthorizationText removes explicit Authorization syntax and exact
-// values already captured by the request-local capability channel. It is the
-// fail-safe for planner Tasks: even if a model copied only the token rather than
-// the whole header, that value cannot reach a confirmation, inner prompt or
-// AuditWriter. Unrelated signed URLs remain intact.
+// RedactKnownAuthorizationText removes the exact values already captured by the
+// request-local capability channel. A planner Task that copied one of them, or
+// only its credential part, cannot carry it into a confirmation, inner prompt or
+// AuditWriter; the inner run reaches that value through its reference alone.
 func RedactKnownAuthorizationText(s string, authorizations []string) string {
-	s = guardrails.RedactAuthorizationHeaderValues(s, redactedValue)
 	for _, authorization := range authorizations {
 		authorization = strings.TrimSpace(authorization)
 		if len(authorization) < 4 {
@@ -299,115 +278,16 @@ func RedactKnownAuthorizationText(s string, authorizations []string) string {
 	return s
 }
 
-// RestoreUserProvidedCredentialURLs restores an exact signed URL only when it
-// was supplied by the current user and the model quoted that exact URL in its
-// draft. It lets the user copy a command built from their own one-time link
-// without creating a general credential-echo exception: any token invented by
-// a tool or the model remains redacted. Callers must still persist the result
-// through RedactAssistantConversationText.
-func RestoreUserProvidedCredentialURLs(redactedText, userText, draft string) string {
-	for _, rawURL := range credentialURLsInText(userText) {
-		// Do not turn an unrelated model sentence into an echo just because it
-		// happens to contain the same redacted placeholder.
-		if strings.ReplaceAll(draft, rawURL, "") == draft {
-			continue
-		}
-		redactedURL := RedactOperationalTokensInText(rawURL)
-		if redactedURL == rawURL {
-			continue
-		}
-		// The generic credential sanitizer intentionally accepts an opaque value
-		// up to whitespace. In a shell-quoted URL that can consume the closing
-		// quote too, so restore the one immediately-adjacent syntactic delimiter
-		// from the model's exact draft together with the user-owned URL.
-		rawFragment := rawURL
-		if _, suffix, found := strings.Cut(draft, rawURL); found {
-			rawFragment += credentialURLClosingDelimiter(suffix)
-		}
-		redactedFragment := RedactOperationalTokensInText(rawFragment)
-		redactedText = strings.ReplaceAll(redactedText, redactedFragment, rawFragment)
-		redactedText = strings.ReplaceAll(redactedText, redactedURL, rawURL)
-	}
-	return redactedText
-}
-
-func credentialURLsInText(text string) []string {
-	var urls []string
-	for len(text) > 0 {
-		beforeHTTPS, afterHTTPS, hasHTTPS := strings.Cut(text, "https://")
-		beforeHTTP, afterHTTP, hasHTTP := strings.Cut(text, "http://")
-		if !hasHTTPS && !hasHTTP {
-			break
-		}
-		scheme, after := "https://", afterHTTPS
-		if hasHTTP && (!hasHTTPS || len(beforeHTTP) < len(beforeHTTPS)) {
-			scheme, after = "http://", afterHTTP
-		}
-		candidate := scheme + after
-		if end := strings.IndexFunc(candidate, credentialURLTerminator); end >= 0 {
-			candidate = candidate[:end]
-		}
-		consumed := len(candidate) - len(scheme)
-		if consumed <= 0 {
-			break
-		}
-		parsed, err := url.ParseRequestURI(candidate)
-		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-			text = after[consumed:]
-			continue
-		}
-		if guardrails.ContainsCredential(candidate) {
-			urls = append(urls, candidate)
-		}
-		text = after[consumed:]
-	}
-	return urls
-}
-
-func credentialURLTerminator(r rune) bool {
-	return unicode.IsSpace(r) || strings.ContainsRune("'\"`<>[]{}()，。；、", r)
-}
-
-func credentialURLClosingDelimiter(text string) string {
-	r, _ := utf8.DecodeRuneInString(text)
-	switch r {
-	case '\'', '"', '`', ')', ']', '}', '>', '，', '。', '；', '、':
-		return string(r)
-	}
-	return ""
-}
-
-// RedactUserConversationText returns the persisted form of a user conversation
-// endpoint. Persisted rows and canonical history must use the same form:
-// otherwise a restart can no longer associate a valid tool transcript with the
-// conversation pair that produced it.
-func RedactUserConversationText(s string) string {
-	return RedactOperationalTokensInText(s)
-}
-
-// RedactAssistantConversationText returns the persisted form of an assistant
-// conversation endpoint. Keep this paired with RedactUserConversationText so
-// persistence and canonical history share one exact boundary rather than
-// attempting to fuzzy-match redacted text during cold reconstruction.
-func RedactAssistantConversationText(s string) string {
-	// The Feishu support marker is an adapter-private display instruction, not
-	// conversation content. Persist the semantic completion so a cold session
-	// cannot replay the marker to the model or trigger the adapter without the
-	// original handoff tool call.
-	s = strings.ReplaceAll(s, agentprotocol.FeishuCustomerSupportMarker,
+// PersistedAssistantText is the persisted form of an assistant conversation
+// endpoint. Canonical history uses the same form, so hot and cold replays share
+// one exact boundary. The Feishu support marker is an adapter-private display
+// instruction, not conversation content: the semantic completion is persisted
+// instead, so a cold session cannot replay the marker to the model or trigger
+// the adapter without the original handoff tool call.
+func PersistedAssistantText(s string) string {
+	return strings.ReplaceAll(s, agentprotocol.FeishuCustomerSupportMarker,
 		agentprotocol.CustomerSupportHistoryCompletion)
-	redacted := RedactOperationalTokensInText(s)
-	// A redacted command is not a reusable command. The live SSE response may
-	// still contain the original value, but the persisted/replayed copy cannot.
-	// Make that persistence boundary explicit instead of leaving a later reader (or
-	// the model) to mistake Authorization=[...] for something executable.
-	if guardrails.ContainsCredential(s) {
-		return redacted + redactedConversationCredentialNotice
-	}
-	return redacted
 }
-
-const redactedConversationCredentialNotice = "\n\n注：此历史记录中的敏感参数已脱敏，不能直接复制执行；需要重试时请重新提供原始链接或参数。"
 
 // ContainsToolProtocolMarkup detects provider/tool transport syntax that must
 // never be rendered as assistant prose. It does not infer user intent or parse
@@ -424,12 +304,10 @@ func ContainsToolProtocolMarkup(s string) bool {
 	return false
 }
 
-// RedactKnownSecretsInText removes operational tokens plus explicit secret
-// values already known to the caller (for example a password submitted through a
-// workflow form). It is safe for user-visible text and ignores empty/very short
-// values to avoid accidental over-redaction of common words.
+// RedactKnownSecretsInText removes explicit secret values already known to the
+// caller (for example a password submitted through a workflow form). Empty and
+// very short values are ignored to avoid over-redacting common words.
 func RedactKnownSecretsInText(s string, secrets []string) string {
-	s = RedactOperationalTokensInText(s)
 	for _, secret := range secrets {
 		secret = strings.TrimSpace(secret)
 		if len(secret) < 4 {
@@ -438,10 +316,6 @@ func RedactKnownSecretsInText(s string, secrets []string) string {
 		s = strings.ReplaceAll(s, secret, redactedValue)
 	}
 	return s
-}
-
-func redactOperationalTokens(s string) string {
-	return guardrails.RedactCredentialsWithReplacement(s, redactedValue)
 }
 
 func hashValue(v any) string {

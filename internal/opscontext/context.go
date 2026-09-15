@@ -129,8 +129,8 @@ type AgentSession struct {
 
 // BackgroundJob is the minimum state needed to continue observing a long guest operation after
 // the browser disconnected. JobID is opaque, State is only a lifecycle hint, and Purpose is a
-// redacted bounded description for continuity. None is sufficient to replay the command that
-// created the job, which is deliberately not retained here.
+// bounded description for continuity. None is sufficient to replay the command that created
+// the job, which is deliberately not retained here.
 type BackgroundJob struct {
 	JobID   string `json:"job_id"`
 	State   string `json:"state"`
@@ -141,8 +141,8 @@ type BackgroundJob struct {
 func (c Context) Enabled() bool { return c.SchemaVersion == SchemaVersion }
 
 // ConversationMessage is an outer user/assistant endpoint or a completed tool
-// observation. Tool content retains its canonical redacted body with the tool's
-// existing name as a label. The same ordered stream owns SDK continuation.
+// observation. Tool content retains its canonical body with the tool's existing
+// name as a label. The same ordered stream owns SDK continuation.
 type ConversationMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`

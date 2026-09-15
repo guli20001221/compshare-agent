@@ -122,8 +122,8 @@ type SessionState struct {
 }
 
 // PersistedInstanceOpsJob is a durable observation cursor for a
-// reviewed background job in a tenant guest. Purpose is a redacted, bounded
-// human description; it is not executable. Command text and command output are
+// reviewed background job in a tenant guest. Purpose is a bounded human
+// description; it is not executable. Command text and command output are
 // intentionally absent from this type and therefore cannot enter SessionState.
 //
 // Jobs are keyed by instance and job ID; a terminal observation removes only

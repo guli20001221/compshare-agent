@@ -362,12 +362,10 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 	model := h.cfg.Agent.LLM.Model
 	reqUUID := base.RequestUUID
 
-	// Persist the same OCR-wrapped input shape the engine saw, after applying the
-	// shared conversation redaction boundary.
+	// Persist the same OCR-wrapped input shape the engine saw, so a cold replay
+	// rebuilds the exact user endpoint.
 	persistContent := message
 	if ocrText != "" {
-		// Match the wrapper the engine saw so persisted replay has the same
-		// framing. The persistence boundary below also redacts the user text.
 		persistContent = engine.WrapScreenshotContext(ocrText, message)
 	}
 	if err := h.messages.Append(ctx, store.Message{
@@ -375,7 +373,7 @@ func (h *Handlers) prepareChat(ctx context.Context, base BaseRequest, sessionID,
 		SessionID:   sessionID,
 		RequestUUID: &reqUUID,
 		Role:        "user",
-		Content:     security.RedactUserConversationText(persistContent),
+		Content:     persistContent,
 		Status:      "ok",
 	}); err != nil {
 		clearChatTraceObservers(agent)
@@ -500,7 +498,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 			Type:    stepTypeString(ev.Type),
 			Action:  ev.Action,
 			Label:   stepActionLabel(ev.Action),
-			Message: guardrails.RedactCredentials(ev.Message),
+			Message: ev.Message,
 			Index:   stepIndex,
 		})
 		stepIndex++
@@ -585,7 +583,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		agent.MarkLastTurnInterrupted()
 		content := abortedTurnContent(agent.CommittedWriteSummary(), agent.InstanceOpsInterruptionSummary())
 		persistErr := h.persistAssistant(base.Owner, assistantMsgID,
-			store.AssistantPatch{Content: security.RedactAssistantConversationText(content), Status: "aborted"})
+			store.AssistantPatch{Content: security.PersistedAssistantText(content), Status: "aborted"})
 		h.persistTurnTranscript(base.Owner, assistantMsgID, agent, persistErr)
 		return
 	}
@@ -617,7 +615,7 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 	outputTokens := usage.CompletionTokens
 	replyPersistErr := h.persistAssistant(base.Owner, assistantMsgID,
 		store.AssistantPatch{
-			Content:      security.RedactAssistantConversationText(reply),
+			Content:      security.PersistedAssistantText(reply),
 			Status:       "ok",
 			InputTokens:  &inputTokens,
 			OutputTokens: &outputTokens,
@@ -760,8 +758,8 @@ func sanitizeConfirmArgs(args map[string]any) map[string]any {
 const maxOCRTextRunes = 1200
 
 // processOCR validates the image, calls the OCR client, and returns
-// credential-filtered, length-capped text. Returns a validation error (caller
-// should 400) or ("", nil) on API failure (graceful degradation).
+// length-capped text. Returns a validation error (caller should 400) or
+// ("", nil) on API failure (graceful degradation).
 func (h *Handlers) processOCR(ctx context.Context, requestUUID, imageDataURL string) (string, error) {
 	if _, err := ocr.ValidateImageDataURL(imageDataURL, h.cfg.Agent.OCR.MaxBytes); err != nil {
 		return "", err
@@ -773,7 +771,6 @@ func (h *Handlers) processOCR(ctx context.Context, requestUUID, imageDataURL str
 		log.Printf("warning: OCR failed for request %s: %v", requestUUID, err)
 		return "", nil
 	}
-	text = guardrails.RedactCredentials(text)
 	runes := []rune(text)
 	if len(runes) > maxOCRTextRunes {
 		text = string(runes[:maxOCRTextRunes])

@@ -29,10 +29,11 @@ type AuditEvent struct {
 	CommandsRan          int
 	CommandsRefused      int
 	FirstCommandClass    string
-	// Steps is the redacted, bounded per-command detail behind those counts, so an interrupted
-	// run can be described by name rather than only by number. It is redacted by the producer
-	// (summarizeAuditStepDetail), never by a writer, so no AuditWriter implementation — including
-	// the in-memory one — ever holds a raw command. See PersistedStepSummary for what it is not.
+	// Steps is the bounded per-command detail behind those counts, so an interrupted run can be
+	// described by name rather than only by number. It is bounded by the producer
+	// (summarizeAuditStepDetail), never by a writer, so every AuditWriter implementation —
+	// including the in-memory one — holds the same shape. See PersistedStepSummary for what it
+	// is not.
 	Steps       []PersistedStepSummary
 	ExitCode    int
 	TimedOut    bool

@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/compshare-agent/internal/observability"
-	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
 
@@ -101,7 +100,7 @@ func (e *Engine) installTurnConfirmation(opts ChatOptions) func() {
 // Target meaning belongs to the Agent reading canonical conversation, not to a
 // turn-entry name scan: nothing here reads userMsg for a target. Only confirmed
 // workflows and actual tool observations update the persisted target context.
-func (e *Engine) beginTurn(userMsg, llmCurrentUserMsg, turnID string, opts ChatOptions) {
+func (e *Engine) beginTurn(userMsg, turnID string, opts ChatOptions) {
 	continuityNow := time.Now()
 	e.expireStaleSelectedInstance(continuityNow)
 	e.turnContextViewThisTurn = (ContextCompiler{}).CompileForTurn(e, userMsg, turnID, continuityNow)
@@ -115,18 +114,14 @@ func (e *Engine) beginTurn(userMsg, llmCurrentUserMsg, turnID string, opts ChatO
 
 	e.trimHistory()
 
-	// userMsg remains the original text for argument provenance; the appended
-	// message carries image evidence into conversation history so the ReAct LLM
-	// can reference it. The recognized text is fenced as untrusted reference data
-	// (see WrapScreenshotContext) — the httpapi persist path MUST produce
-	// byte-identical text because it is rehydrated and re-fed to the LLM on later
-	// turns.
-	llmUserMsg := llmCurrentUserMsg
+	// The appended message carries image evidence into conversation history so
+	// the ReAct LLM can reference it. The recognized text is fenced as untrusted
+	// reference data (see WrapScreenshotContext) — the httpapi persist path MUST
+	// produce byte-identical text because it is rehydrated and re-fed to the LLM
+	// on later turns.
+	llmUserMsg := userMsg
 	if opts.ImageContext != "" {
-		// Screenshot OCR is fallible reference data and can never mint a private
-		// credential capability. Remove any credential/PII before it reaches the
-		// main model, matching the durable user-message boundary.
-		llmUserMsg = WrapScreenshotContext(security.RedactUserConversationText(opts.ImageContext), llmCurrentUserMsg)
+		llmUserMsg = WrapScreenshotContext(opts.ImageContext, userMsg)
 	}
 	e.messages = append(e.messages, openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleUser,

@@ -15,12 +15,12 @@ import (
 // session state does not duplicate these facts as prose summaries.
 //
 // It is deliberately NOT verbatim, and must not be "fixed" to become so. Content
-// clears the same redaction boundary as replayed history, an over-long body is
+// clears the same canonical boundary as replayed history, an over-long body is
 // truncated behind a marker, and whole rounds are shed to fit the budget. What
-// crosses a persistence boundary and is later fed back to a model is a
-// sanitized, bounded replay by design: restoring byte-parity with the live turn
-// would put a credential the assistant line already dropped back into a stored
-// row.
+// crosses a persistence boundary and is later fed back to a model is a bounded
+// replay by design: restoring byte-parity with the live turn would put a
+// credential-named field the model-visible observation already dropped back
+// into a stored row.
 //
 // Ordering and pairing are part of the contract: a stored transcript must be
 // replayable as well-formed chat messages, so an assistant message carrying
@@ -69,7 +69,8 @@ type TranscriptMessage struct {
 	Name string `json:"name,omitempty"`
 	// Truncated marks Content as shortened; OrigRunes is the pre-truncation
 	// length. Both absent means the content was not shortened — it may still
-	// differ from the live message, which is redacted on the way in.
+	// differ from the live message, which crosses the canonical boundary on the
+	// way in.
 	Truncated bool `json:"truncated,omitempty"`
 	OrigRunes int  `json:"orig_runes,omitempty"`
 }
@@ -147,12 +148,13 @@ func buildTranscriptV1(messages []openai.ChatCompletionMessage) *TranscriptV1 {
 			Role:       string(msg.Role),
 			ToolCallID: msg.ToolCallID,
 		}
-		// Redact before bounding, and before anything is persisted.
+		// Cross the canonical boundary before bounding, and before anything is
+		// persisted.
 		//
 		// Ordinary replayed history reaches the model through the same
 		// role-specific canonicalConversationText boundary. The transcript is a
 		// second road to the same place, so it must use that exact form — otherwise
-		// a Jupyter token or password stripped from the assistant line would
+		// a Password field stripped from the model-visible observation would
 		// survive verbatim in metadata and be handed back on the next turn, with
 		// different forms of the same turn sitting in one row.
 		converted.Content, converted.Truncated, converted.OrigRunes = boundContent(canonicalConversationText(msg.Role, msg.Content))
@@ -661,15 +663,15 @@ func (e *Engine) captureTurnTranscript() {
 	//
 	// This runs on the response path — the deferred call returns before the HTTP
 	// layer writes `done` — and the storage limits below do not bound it. They
-	// bound the OUTPUT: content is redacted (regexes over the whole string) and
-	// converted to []rune (a full copy) and only then bounded. A single
-	// pathological tool result therefore costs its full size in scan and copy no
-	// matter how little of it is kept, and the user waits for that.
+	// bound the OUTPUT: a tool observation is decoded whole for the field
+	// boundary, then converted to []rune (a full copy) and only then bounded. A
+	// single pathological tool result therefore costs its full size in decode and
+	// copy no matter how little of it is kept, and the user waits for that.
 	//
 	// Over the limit the turn is recorded as Oversized and nothing is persisted.
-	// Deliberately not "truncate the raw text instead": cutting a body at a byte
-	// offset before redaction can slice a credential in half and store the
-	// halves, which is the one outcome worse than storing nothing.
+	// Deliberately not "truncate the raw text instead": a JSON body cut at a byte
+	// offset no longer decodes, so its credential-named fields would be stored as
+	// plain text, which is the one outcome worse than storing nothing.
 	if oversizedRawTurn(e.messages) {
 		if start := currentTurnStart(e.messages); start >= 0 {
 			if user, assistant := turnEndpoints(e.messages[start:]); user != "" {
@@ -717,7 +719,8 @@ func (e *Engine) captureTurnTranscript() {
 // row after ChatWithOptions returns. A transport can be cancelled even when the
 // engine returned nil error; that candidate answer must not become a completed
 // answer only on the hot path. Existing tool observations stay in the canonical
-// transcript, subject to the same redaction and size limits as successful turns.
+// transcript, subject to the same field boundary and size limits as successful
+// turns.
 // This method records history only; it never dispatches or retries a tool.
 func (e *Engine) MarkLastTurnInterrupted() {
 	if e == nil {

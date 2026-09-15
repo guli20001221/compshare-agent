@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/compshare-agent/internal/agentprotocol"
 	"github.com/compshare-agent/internal/prompt"
 	"github.com/compshare-agent/internal/security"
 	openai "github.com/sashabaranov/go-openai"
@@ -115,11 +116,12 @@ func requireTranscriptWasReplayed(t *testing.T, assembled []openai.ChatCompletio
 
 func TestEndToEndHotColdParityAcrossTransforms(t *testing.T) {
 	const (
-		secret    = "abcdef0123456789abcdef0123456789"
-		secretURL = "http://10.0.0.4:8888/lab?token=" + secret
-		question  = "jupyter 打不开"
-		answer    = "已确认，见上。"
-		tailMark  = "TAIL_MARKER_MUST_NOT_SURVIVE"
+		token    = "abcdef0123456789abcdef0123456789"
+		tokenURL = "http://10.0.0.4:8888/lab?token=" + token
+		rootSecret = "instance-root-value-0123"
+		question = "jupyter 打不开"
+		answer   = "已确认，见上。"
+		tailMark = "TAIL_MARKER_MUST_NOT_SURVIVE"
 	)
 
 	cases := []struct {
@@ -131,21 +133,21 @@ func TestEndToEndHotColdParityAcrossTransforms(t *testing.T) {
 		check func(t *testing.T, assembled []openai.ChatCompletionMessage, metadata json.RawMessage)
 	}{
 		{
-			name: "redaction fires in arguments, result and answer",
+			name: "field redaction fires in arguments and result",
 			turn: []openai.ChatCompletionMessage{
 				{Role: openai.ChatMessageRoleUser, Content: question},
 				{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{
-					toolCall("c1", "DescribeCompShareInstance", `{"Note":"`+secretURL+`"}`),
+					toolCall("c1", "DescribeCompShareInstance", `{"Note":"`+tokenURL+`","Password":"`+rootSecret+`"}`),
 				}},
-				{Role: openai.ChatMessageRoleTool, ToolCallID: "c1", Content: `{"JupyterUrl":"` + secretURL + `"}`},
-				{Role: openai.ChatMessageRoleAssistant, Content: "地址是 " + secretURL},
+				{Role: openai.ChatMessageRoleTool, ToolCallID: "c1", Content: `{"JupyterUrl":"` + tokenURL + `","Password":"` + rootSecret + `"}`},
+				{Role: openai.ChatMessageRoleAssistant, Content: "地址是 " + tokenURL},
 			},
 			check: func(t *testing.T, assembled []openai.ChatCompletionMessage, metadata json.RawMessage) {
 				replayed := renderReplayedRegion(t, assembled)
-				assert.NotContains(t, string(metadata), secret, "the token must not be persisted")
-				assert.NotContains(t, renderTestMessages(assembled), secret, "nor replayed into the next request")
-				assert.Contains(t, replayed, "10.0.0.4:8888",
-					"but the address and port are what the user needs; they must survive")
+				assert.NotContains(t, string(metadata), rootSecret, "a credential-named field is not persisted")
+				assert.NotContains(t, renderTestMessages(assembled), rootSecret, "nor replayed into the next request")
+				assert.Contains(t, replayed, tokenURL,
+					"the address the user was shown survives whole; a value is never scanned for token shapes")
 			},
 		},
 		{
@@ -237,11 +239,12 @@ func TestEndToEndHotColdParityAcrossTransforms(t *testing.T) {
 	}
 }
 
-// HTTP persists user and assistant rows through role-specific credential boundaries.
-// Ordinary information remains intact; a cold reconstruction must still attach
-// the canonical transcript when either display row changed at that boundary. Otherwise the
-// session silently degrades from tool-backed history to a plain text pair after a
-// restart even though the transcript itself is present and valid.
+// HTTP persists assistant rows through the adapter-marker boundary; user rows
+// and ordinary assistant text are stored as they were. A cold reconstruction
+// must still attach the canonical transcript when the display row changed at
+// that boundary. Otherwise the session silently degrades from tool-backed
+// history to a plain text pair after a restart even though the transcript
+// itself is present and valid.
 func TestHotAndColdReplayAcrossPersistenceRedactions(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -255,10 +258,9 @@ func TestHotAndColdReplayAcrossPersistenceRedactions(t *testing.T) {
 			answer:   "已查到实例状态正常。",
 		},
 		{
-			name:        "user operational token",
-			question:    "请查 http://10.0.0.4:8888/lab?token=AKIAIOSFODNN7EXAMPLEbCDEF 对应的实例",
-			answer:      "已查到实例状态正常。",
-			changedRole: openai.ChatMessageRoleUser,
+			name:     "user operational token",
+			question: "请查 http://10.0.0.4:8888/lab?token=AKIAIOSFODNN7EXAMPLEbCDEF 对应的实例",
+			answer:   "已查到实例状态正常。",
 		},
 		{
 			name:     "assistant project UUID",
@@ -266,9 +268,14 @@ func TestHotAndColdReplayAcrossPersistenceRedactions(t *testing.T) {
 			answer:   "关联项目 12345678-1234-1234-1234-1234567890ab 当前正常。",
 		},
 		{
-			name:        "assistant credential placeholder",
-			question:    "Jupyter 为什么无法登录？",
-			answer:      "请使用 token=AKIAIOSFODNN7EXAMPLEbCDEF 重新登录。",
+			name:     "assistant token",
+			question: "Jupyter 为什么无法登录？",
+			answer:   "请使用 token=AKIAIOSFODNN7EXAMPLEbCDEF 重新登录。",
+		},
+		{
+			name:        "assistant support marker",
+			question:    "找人工",
+			answer:      "已为您转接。" + agentprotocol.FeishuCustomerSupportMarker,
 			changedRole: openai.ChatMessageRoleAssistant,
 		},
 	}
@@ -287,17 +294,12 @@ func TestHotAndColdReplayAcrossPersistenceRedactions(t *testing.T) {
 			require.True(t, stats.Attempted, "precondition: the turn must have a canonical transcript")
 			require.NotNil(t, metadata, "precondition: the transcript must persist")
 
-			persistedQuestion := security.RedactUserConversationText(tc.question)
-			persistedAnswer := security.RedactAssistantConversationText(tc.answer)
+			persistedQuestion := tc.question
+			persistedAnswer := security.PersistedAssistantText(tc.answer)
 			switch tc.changedRole {
-			case openai.ChatMessageRoleUser:
-				require.NotEqual(t, tc.question, persistedQuestion, "precondition: the HTTP user persistence boundary changed this endpoint")
-				require.Equal(t, tc.answer, persistedAnswer)
 			case openai.ChatMessageRoleAssistant:
 				require.NotEqual(t, tc.answer, persistedAnswer, "precondition: the HTTP assistant persistence boundary changed this endpoint")
-				require.Equal(t, tc.question, persistedQuestion)
 			default:
-				require.Equal(t, tc.question, persistedQuestion, "ordinary user information must remain intact")
 				require.Equal(t, tc.answer, persistedAnswer, "ordinary assistant information must remain intact")
 			}
 
@@ -315,12 +317,10 @@ func TestHotAndColdReplayAcrossPersistenceRedactions(t *testing.T) {
 			replayed := renderReplayedRegion(t, hotAssembled)
 			require.Contains(t, replayed, persistedQuestion)
 			require.Contains(t, replayed, persistedAnswer)
-			if tc.changedRole == openai.ChatMessageRoleUser {
-				require.NotContains(t, replayed, tc.question)
-			} else if tc.changedRole == openai.ChatMessageRoleAssistant {
+			if tc.changedRole == openai.ChatMessageRoleAssistant {
 				require.NotContains(t, replayed, tc.answer)
 			}
-			require.NotContains(t, replayed, "AKIAIOSFODNN7EXAMPLEbCDEF", "access credentials must not return through replay")
+			require.NotContains(t, replayed, agentprotocol.FeishuCustomerSupportMarker, "the adapter marker must not return through replay")
 		})
 	}
 }
@@ -337,7 +337,7 @@ func TestHistoryUsesPersistenceAlignedEndpointText(t *testing.T) {
 
 	on := eng.recentConversationPairs()
 	require.Equal(t, []ConversationPair{{
-		User: security.RedactUserConversationText(question), Assistant: security.RedactAssistantConversationText(answer),
+		User: question, Assistant: security.PersistedAssistantText(answer),
 	}}, on, "history uses the same endpoint forms that cold rehydration reads")
 }
 

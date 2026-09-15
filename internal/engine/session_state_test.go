@@ -240,15 +240,14 @@ func TestRetiredPendingSelectionIsIgnoredWhenLoadingExistingSessions(t *testing.
 func TestSetSessionStateNormalizesServerOwnedBackgroundJobs(t *testing.T) {
 	job := PersistedInstanceOpsJob{
 		InstanceID: " uhost-a ", JobID: "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", State: " running ",
-		Purpose: "contact user@example.com token=secret-value", UpdatedAt: "not-a-time",
+		Purpose: "  contact user@example.com\n\tdownload weights ", UpdatedAt: "not-a-time",
 	}
 	e := newEngineForSessionStateTest(t)
 	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV11, PersistedInstanceOpsJobs: []PersistedInstanceOpsJob{job}}, 1)
 	state, _, _ := e.SessionStateSnapshot()
 	require.Len(t, state.PersistedInstanceOpsJobs, 1)
 	assert.Equal(t, "uhost-a", state.PersistedInstanceOpsJobs[0].InstanceID)
-	assert.Contains(t, state.PersistedInstanceOpsJobs[0].Purpose, "user@example.com")
-	assert.NotContains(t, state.PersistedInstanceOpsJobs[0].Purpose, "secret-value")
+	assert.Equal(t, "contact user@example.com download weights", state.PersistedInstanceOpsJobs[0].Purpose)
 	assert.Empty(t, state.PersistedInstanceOpsJobs[0].UpdatedAt)
 
 	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV7, PersistedInstanceOpsJobs: []PersistedInstanceOpsJob{job}}, 2)

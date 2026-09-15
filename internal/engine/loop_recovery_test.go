@@ -63,8 +63,9 @@ func keptVLLMHit() knowledge.RetrievalHit {
 
 // vllmGroundedRepairResponse is the single-model budget/ceiling recovery reply:
 // plain text with a positional [1] citation that resolves to the gathered ledger
-// item (ext-vllm-oom-001). It also carries a model-authored operational token so
-// every caller proves that recovery still crosses the common delivery boundary.
+// item (ext-vllm-oom-001). It also carries a model-authored signed URL so every
+// caller proves that the delivery boundary strips only the cite marker and
+// hands the rest of the answer over as composed.
 const recoveryModelToken = "recovery-model-token-abcdefghijklmnopqrst"
 
 func vllmGroundedRepairResponse() llm.ChatResponse {
@@ -110,7 +111,7 @@ func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
 	assert.NotContains(t, reply, "轮次超限", "evidence was in hand — must recover, not refuse")
 	assert.Contains(t, reply, "max-model-len", "the grounded answer must flow through")
 	assert.NotContains(t, reply, "[1]", "the positional cite marker is stripped for display")
-	assert.NotContains(t, reply, recoveryModelToken, "round-ceiling recovery must cross the ordinary response redaction boundary")
+	assert.Contains(t, reply, recoveryModelToken, "round-ceiling recovery delivers the composed answer as is")
 	assert.True(t, eng.ReactCeilingHitThisTurn(),
 		"trace attribution preserved: the loop DID hit the ceiling even though the user got an answer")
 	require.Len(t, eng.searchKnowledgeHitsThisTurn, 1, "the gathered hit is what recovery grounds on")
@@ -272,7 +273,7 @@ func TestChat_LLMError_RecoversWhenEvidenceInHandAndCtxLive(t *testing.T) {
 	require.NoError(t, err, "evidence in hand + live ctx → recover, not error")
 	assert.Contains(t, reply, "max-model-len")
 	assert.NotContains(t, reply, "[1]")
-	assert.NotContains(t, reply, recoveryModelToken, "LLM-error recovery must cross the ordinary response redaction boundary")
+	assert.Contains(t, reply, recoveryModelToken, "LLM-error recovery delivers the composed answer as is")
 	assert.Equal(t, 3, mock.idx, "search, failed model attempt and final Agent response")
 }
 

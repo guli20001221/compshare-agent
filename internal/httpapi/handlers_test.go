@@ -257,23 +257,21 @@ func TestDispatchCreateSession(t *testing.T) {
 	assert.Contains(t, rec.Body.String(), `"SessionId":"sess-new"`)
 }
 
-func TestDispatchCreateSessionRedactsCallerSuppliedAuthorizationTitle(t *testing.T) {
-	const secret = "create-title-secret-0123456789"
+func TestDispatchCreateSessionStoresTheCallerSuppliedTitleAsGiven(t *testing.T) {
+	const title = "Authorization: Bearer create-title-0123"
 	sessions := &mockSessions{}
 	h := newListTestHandlers(sessions)
-	rec := performGateway(h, `{"Action":"CreateCSAgentSession","Title":"Authorization: Bearer `+secret+`","top_organization_id":1,"organization_id":2}`)
+	rec := performGateway(h, `{"Action":"CreateCSAgentSession","Title":"`+title+`","top_organization_id":1,"organization_id":2}`)
 
 	require.Equal(t, http.StatusOK, rec.Code)
-	assert.NotContains(t, rec.Body.String(), secret)
+	assert.Contains(t, rec.Body.String(), `"Title":"`+title+`"`)
 	stored := sessions.byID["sess-new"]
 	require.NotNil(t, stored.Title)
-	assert.NotContains(t, *stored.Title, secret)
-	assert.Contains(t, *stored.Title, "Authorization")
+	assert.Equal(t, title, *stored.Title)
 }
 
-func TestDispatchGetSessionRedactsHistoricalAuthorizationTitle(t *testing.T) {
-	const secret = "historical-get-title-secret-0123456789"
-	title := "Authorization: Bearer " + secret
+func TestDispatchGetSessionProjectsTheStoredTitle(t *testing.T) {
+	title := "Authorization: Bearer get-title-0123"
 	sessions := &mockSessions{byID: map[string]store.Session{
 		"sess-history": {
 			ID: "sess-history", TopOrganizationID: 1, OrganizationID: 2,
@@ -284,8 +282,7 @@ func TestDispatchGetSessionRedactsHistoricalAuthorizationTitle(t *testing.T) {
 	rec := performGateway(h, `{"Action":"GetCSAgentSession","SessionId":"sess-history","top_organization_id":1,"organization_id":2}`)
 
 	require.Equal(t, http.StatusOK, rec.Code)
-	assert.NotContains(t, rec.Body.String(), secret)
-	assert.Contains(t, rec.Body.String(), "Authorization")
+	assert.Contains(t, rec.Body.String(), `"Title":"`+title+`"`)
 }
 
 func TestDispatchGetSessionRequiresSessionID(t *testing.T) {

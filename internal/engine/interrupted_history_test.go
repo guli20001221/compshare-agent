@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/opscontext"
-	"github.com/compshare-agent/internal/security"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
 	"strings"
@@ -142,7 +141,7 @@ func TestInterruptedUserHistoryBridgeAnchorWithRepeatedContinuation(t *testing.T
 
 	cold := &Engine{turnState: turnState{lastUserMsg: "继续"}}
 	cold.RehydrateHistory([]HistoryMessage{
-		{Role: "user", Content: security.RedactUserConversationText(wrapped)},
+		{Role: "user", Content: wrapped},
 		{Role: "user", Content: "继续"},
 	})
 	for _, eng := range []*Engine{hot, cold} {
@@ -152,7 +151,8 @@ func TestInterruptedUserHistoryBridgeAnchorWithRepeatedContinuation(t *testing.T
 		delta, ok := opscontext.ConversationAfterAnchor(history, anchor)
 		require.True(t, ok)
 		require.Equal(t, []opscontext.ConversationMessage{{Role: "user", Content: "继续"}}, delta)
-		require.NotContains(t, history[0].Content, "fixture-secret")
+		require.Contains(t, history[0].Content, "Authorization: Bearer fixture-secret",
+			"hot and cold bridges carry the typed text as it was typed")
 		require.Contains(t, history[0].Content, "ocr@example.com")
 		require.Contains(t, history[0].Content, "CUDA failure")
 	}

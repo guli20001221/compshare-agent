@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/compshare-agent/internal/guardrails"
 	"github.com/compshare-agent/internal/llm"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
@@ -62,8 +61,8 @@ func rebuildColdAfterHTTPPersistence(reply string, metadata json.RawMessage) *En
 	cold := NewWithDeps(&mockLLM{}, billingHistoryExecutor(), nil)
 	cold.mutatingToolsEnabled = false
 	cold.RehydrateHistory([]HistoryMessage{
-		{Role: openai.ChatMessageRoleUser, Content: guardrails.RedactCredentials(billingQuestion)},
-		{Role: openai.ChatMessageRoleAssistant, Content: guardrails.RedactCredentials(reply), Transcript: metadata},
+		{Role: openai.ChatMessageRoleUser, Content: billingQuestion},
+		{Role: openai.ChatMessageRoleAssistant, Content: reply, Transcript: metadata},
 	})
 	return cold
 }
@@ -151,8 +150,8 @@ func TestOlderPureBillingTranscriptFailsClosedWithoutReplayingItsCard(t *testing
 	cold := NewWithDeps(&mockLLM{}, billingHistoryExecutor(), nil)
 	cold.mutatingToolsEnabled = false
 	cold.RehydrateHistory([]HistoryMessage{
-		{Role: openai.ChatMessageRoleUser, Content: guardrails.RedactCredentials(billingQuestion)},
-		{Role: openai.ChatMessageRoleAssistant, Content: guardrails.RedactCredentials("【费用明细】每小时 " + billingPrice + " 元"), Transcript: metadata},
+		{Role: openai.ChatMessageRoleUser, Content: billingQuestion},
+		{Role: openai.ChatMessageRoleAssistant, Content: "【费用明细】每小时 " + billingPrice + " 元", Transcript: metadata},
 	})
 	assembled := assembleNextTurn(cold, billingFollowUp)
 	replayed := renderReplayedRegion(t, assembled)

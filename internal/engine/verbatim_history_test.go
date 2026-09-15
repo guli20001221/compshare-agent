@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/llm"
-	"github.com/compshare-agent/internal/security"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
 )
@@ -119,31 +118,20 @@ func TestReplayedExchangeKeepsALongUserMessageIntact(t *testing.T) {
 		"the user side is squashed by the same call and needs its own gate")
 }
 
-func TestReplayedExchangeStillRedactsCredentials(t *testing.T) {
-	const secret = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwibmFtZSI6ImEifQ.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk"
-	// Assert the redactor really fires on this fixture. Without this, a test that
-	// only checks "secret absent from prompt" passes just as well when the secret
-	// was never redacted but merely truncated away, or when the pattern stopped
-	// matching — the empty-gate shape this repo keeps rediscovering.
-	//
-	// This guard calls the SECURITY primitive, deliberately not the engine wrapper
-	// under test: pointing it at safeConversationText would make the guard and the
-	// subject the same code, so removing the redaction would trip the guard instead
-	// of the assertion it is supposed to protect.
-	require.NotContains(t, security.RedactOperationalTokensInText(secret), secret,
-		"fixture must actually trigger redaction or this test proves nothing")
+func TestReplayedExchangeKeepsCredentialShapedTextVerbatim(t *testing.T) {
+	const token = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxIiwibmFtZSI6ImEifQ.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk"
 
-	reply := "已为你签发访问令牌：Authorization: Bearer " + secret + "\n" + longAssistantReply()
+	reply := "已为你签发访问令牌：Authorization: Bearer " + token + "\n" + longAssistantReply()
 	history := runOneTurnWithHistory(t, []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleUser, Content: "给我一个令牌"},
 		{Role: openai.ChatMessageRoleAssistant, Content: reply},
 	}, "刚才那台怎么启动")
 
 	joined := strings.Join(history, "\n")
-	require.NotContains(t, joined, secret,
-		"dropping the compaction must not drop the redaction with it")
+	require.Contains(t, joined, token,
+		"the model reads the answer the user was given; a placeholder would make the next question unanswerable")
 	// Proves we are on the verbatim path, so the assertion above is not passing
-	// merely because the whole reply was cut at 320 runes.
+	// on a reply that was cut at 320 runes.
 	require.Contains(t, joined, "启动时间：2026-07-19 11:35")
 }
 

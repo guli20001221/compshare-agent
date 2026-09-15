@@ -131,10 +131,10 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 		return Result{}, fmt.Errorf("sshops: resolved instance %q != requested %q, refusing (INV-13)", cred.InstanceID, instanceID)
 	}
 	modelContext = enrichInstanceOpsContext(ctx, d, modelContext, inst, cred.InstanceID)
-	// Defense at the last pre-audit/pre-prompt boundary. Engine callers already
-	// sanitize planner Tasks, but direct/live callers also reach Service. A copied
-	// Authorization value must never enter AuditEvent, task_hash or the inner
-	// prompt merely because the outer adapter was bypassed.
+	// Last pre-audit/pre-prompt boundary. Engine callers already strip the
+	// captured values from planner Tasks, but direct/live callers also reach
+	// Service. A copied Authorization value must never enter AuditEvent, task_hash
+	// or the inner prompt merely because the outer adapter was bypassed.
 	authorizations := make([]string, 0, len(modelContext.ProbeAuthorizations))
 	for _, item := range modelContext.ProbeAuthorizations {
 		authorizations = append(authorizations, item.Value)

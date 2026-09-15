@@ -20,9 +20,9 @@ func (e *Engine) instanceOpsModelContext() opscontext.Context {
 		return ctx
 	}
 	// Only the current USER-TYPED text may mint an ephemeral Authorization
-	// capability. OCR and prior turns remain reference evidence and are redacted
-	// below, never promoted into executable credentials.
-	_, authorizationRefs := security.CaptureUserAuthorizationHeaders(userAuthoredText(e.lastUserMsg))
+	// capability. OCR and prior turns remain reference evidence, never promoted
+	// into executable credentials.
+	authorizationRefs := security.UserAuthorizationHeaders(userAuthoredText(e.lastUserMsg))
 	// An HTTP request has one Authorization header. Multiple different values in
 	// one user turn have no deterministic target association, so expose none and
 	// let the agent request one unambiguous value instead of guessing.
@@ -45,7 +45,7 @@ func (e *Engine) instanceOpsConversationHistory() []opscontext.ConversationMessa
 	if e == nil || strings.TrimSpace(e.lastUserMsg) == "" {
 		return nil
 	}
-	authored, _ := security.CaptureUserAuthorizationHeaders(userAuthoredText(e.lastUserMsg))
+	authored := strings.TrimSpace(userAuthoredText(e.lastUserMsg))
 	pairs := e.attachRecordedTranscripts(conversationPairsFromMessages(e.messages))
 	// During ChatWithOptions the current user has already been appended and is the
 	// final visible endpoint while the outer Agent is invoking this tool. Do not
@@ -56,13 +56,12 @@ func (e *Engine) instanceOpsConversationHistory() []opscontext.ConversationMessa
 	if len(pairs) > 0 {
 		lastPair := pairs[len(pairs)-1]
 		if lastPair.Assistant == "" {
-			canonicalAuthored := strings.TrimSpace(historyConversationText(openai.ChatMessageRoleUser, authored))
-			currentIncluded = strings.TrimSpace(userAuthoredText(lastPair.User)) == canonicalAuthored
+			currentIncluded = strings.TrimSpace(userAuthoredText(lastPair.User)) == authored
 		}
 	}
 	if currentIncluded {
 		// The current round's Diagnose invocation has no result yet. Stop at the
-		// last settled result, then reuse canonical pairing/redaction/bounding;
+		// last settled result, then reuse canonical pairing/bounding;
 		// neither an unanswered call nor its planner arguments become evidence.
 		start := currentTurnStart(e.messages)
 		pairs[len(pairs)-1].Transcript = nil

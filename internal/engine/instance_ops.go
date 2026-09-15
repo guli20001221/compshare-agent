@@ -123,7 +123,7 @@ type InstanceOpsProgress struct {
 	JobID    string // opaque background-job handle; never the command that created it
 	JobState string // started | running | unknown | succeeded | failed | interrupted | not_found
 	// JobPurpose is a short non-executable description emitted by the structured
-	// job tool. The engine redacts and bounds it before SessionState persistence.
+	// job tool. The engine bounds it before SessionState persistence.
 	JobPurpose string
 	// AgentSession fields are populated only for Kind==InstanceOpsProgressAgentSession.
 	AgentSessionID                 string
