@@ -148,6 +148,9 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action, invocationID st
 	// able to report all settled commands over the WHOLE run — a cap on the feed must not
 	// silently become a cap on what the user is told a killed run did.
 	var settled []instanceOpsSettledStep
+	// Whether the run ever reached the instance decides how a failure may be
+	// described: a run that never connected has no command to be "interrupted".
+	connected := false
 	onProgress := func(p InstanceOpsProgress) {
 		switch p.Kind {
 		case InstanceOpsProgressBackgroundJob:
@@ -160,6 +163,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action, invocationID st
 			e.observeInstanceOpsAgentSession(instanceID, p.AgentSessionID, p.AgentSessionWorkdirID,
 				p.AgentSessionContract, p.AgentSessionModel, p.AgentSessionConversationAnchor)
 		case InstanceOpsProgressConnected:
+			connected = true
 			e.recordInstanceOpsReferent(instanceID)
 			onStep(StepEvent{
 				Type:    StepToolCall,
@@ -225,7 +229,7 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action, invocationID st
 		// A well-formed account response that omits the id is permanent for this
 		// request; tell the user to correct the target rather than retry blindly.
 		if errors.Is(err, ErrInstanceOpsNotFound) {
-			msg := fmt.Sprintf("在当前账号下找不到实例 %s，可能已被删除 / 释放，或实例 ID 有误。请到控制台核对实例 ID 后再试。", instanceID)
+			msg := fmt.Sprintf("在当前账号下找不到实例 %s：按该 ID 查询返回为空，未建立 SSH 会话、未执行任何命令。常见原因是实例已释放或重建、ID 有误，或不在当前登录账号下；请到控制台核对实例 ID 后再试。", instanceID)
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
 			return instanceOpsBoundaryObservation(action, instanceID, "INSTANCE_NOT_FOUND", msg)
 		}
@@ -258,8 +262,25 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action, invocationID st
 		// Honest bounded failure — never supply a root cause the
 		// harness did not reach. The reason class is a constant; the underlying
 		// error (already credential-free) is not surfaced to the user verbatim.
+		//
+		// A run that never connected and settled nothing has no command whose fate is
+		// unknown, so it must not be described as interrupted mid-work: say only that
+		// the instance was never entered. Retry advice stays, because every cause that
+		// lands here without a sentinel (rate limit, describe failure, missing password,
+		// audit refusal, harness spawn) is transient from the user's side.
+		timedOut := errors.Is(err, ErrInstanceOpsTimedOut)
+		if !connected && len(settled) == 0 && len(e.backgroundJobsForInstance(instanceID)) == 0 {
+			errorCode := "SSH_RUN_NOT_STARTED"
+			if timedOut {
+				errorCode = "SSH_RUN_TIMEOUT"
+			}
+			msg := "实例内排查在进入实例前结束：未建立 SSH 会话、未进入实例，也没有执行任何命令。请稍后重试，或到控制台查看实例状态。"
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal,
+				Message: msg, ErrorCode: errorCode})
+			return instanceOpsBoundaryObservation(action, instanceID, errorCode, msg)
+		}
 		errorCode := "SSH_RUN_INTERRUPTED"
-		if errors.Is(err, ErrInstanceOpsTimedOut) {
+		if timedOut {
 			errorCode = "SSH_RUN_TIMEOUT"
 		}
 		msg := "实例内排查未能完成，请稍后重试，或到控制台查看实例状态。"
