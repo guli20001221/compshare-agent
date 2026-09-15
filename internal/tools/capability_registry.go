@@ -95,6 +95,7 @@ func (r *CapabilityRegistry) Policies() map[string]ToolExecutionPolicy {
 		policy.AllowedParams = cloneStringsPreservingEmpty(policy.AllowedParams)
 		policy.InternalAllowedParams = cloneStringsPreservingEmpty(policy.InternalAllowedParams)
 		policy.RedactInResult = cloneStringsPreservingEmpty(policy.RedactInResult)
+		policy.SensitiveArgs = cloneStringsPreservingEmpty(policy.SensitiveArgs)
 		if policy.RetryOn != nil {
 			policy.RetryOn = append([]ErrorClass{}, policy.RetryOn...)
 		}

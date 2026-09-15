@@ -44,11 +44,11 @@ disable/mask、单点 chmod/chattr、swapoff、可移除的 sudoers.d drop-in �
   路径、用途、mode/count 和前后 hash，不显示文件内容。
 
 用于拨号与入口探测的私有 URL、SSH 凭据仍通过 Go→harness 的 stdin 握手传递，不作为对话观察输出。
-外层工具已经交给模型的结果沿用规范化 transcript 的脱敏表示。平台元数据、Guest listener、应用响应和 runner 视角的外部探测仍是四层不同证据。
+外层工具已经交给模型的结果沿用规范化 transcript 的表示。平台元数据、Guest listener、应用响应和 runner 视角的外部探测仍是四层不同证据。
 部署授权和用户目标校验通过后，服务器回调在私有握手中提供 `allow_writes`；它不属于模型工具
 参数。缺少回调的底层调用拒绝写入。混部时旧 harness 的逐命令协议由服务器内部应答，不等待用户确认。
 当前未回答的 user 消息、最近的 user/assistant 对话与已完成工具观察，按原始顺序组成一条
-连续历史送给内层 Agent；工具观察沿用外层 transcript 的脱敏、截断标记及工具名称，因而
+连续历史送给内层 Agent；工具观察沿用外层 transcript 的正文、截断标记及工具名称，因而
 “按上面的来”可以承接助手上一轮已经确认的参数，而不是依赖关键词或 planner 改写。V3+ 有完整
 历史时，planner Task 只保留在服务端作路由与审计，不再作为第二套可执行指令进入模型；
 没有 V3+ 历史的兼容调用仍使用 Task。历史对话用于

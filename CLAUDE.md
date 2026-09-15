@@ -245,13 +245,17 @@ business fields use the existing PascalCase API contract.
 
 Per-session engines live in `internal/agentpool` (bounded LRU with idle expiry).
 Persisted user/assistant rows rebuild a cold engine, and assistant metadata
-reattaches the canonical tool transcript. Conversation text is persisted and
-replayed as the user typed it and as the assistant delivered it; no text is
+reattaches the canonical tool transcript. Conversation text and tool
+observations are persisted and replayed as the model saw them: the account's
+own credentials returned by the platform (instance password, Jupyter token,
+SSH login line) are ordinary facts on the model-visible path, no text is
 scanned for credential-looking values, and the only rewrite of assistant text
 is the adapter-marker replacement in `security.PersistedAssistantText`.
-Credential-named fields in structured tool data are redacted by field name,
-centralized in `internal/security` and `internal/sanitizer`, with the same
-representation on hot and cold paths.
+Redaction exists on two other paths only: trace copies redact by field name
+(`security.RedactForTrace`, `internal/sanitizer`) before hashing, and
+arguments the user enters through a confirmation card
+(`ToolExecutionPolicy.SensitiveArgs`) stay off the model's proposal schema and
+are masked on cards and step frames.
 
 The store is PostgreSQL via `database/sql` and `lib/pq`. Historical names such
 as `mysql`, `MYSQL_DSN`, `OpenMySQL` and `MySQLMessageStore` remain API/config

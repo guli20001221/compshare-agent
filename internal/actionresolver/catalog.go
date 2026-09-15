@@ -26,7 +26,7 @@ func BuildCatalog() (*Catalog, error) {
 		if !ok {
 			return nil, fmt.Errorf("workflow %q has no definition", operation)
 		}
-		fields, err := fieldsFromParameters(capability.Tool.Function.Parameters, capability.Policy.RedactInResult)
+		fields, err := fieldsFromParameters(capability.Tool.Function.Parameters, capability.Policy.SensitiveArgs)
 		if err != nil {
 			return nil, fmt.Errorf("workflow %q: %w", operation, err)
 		}

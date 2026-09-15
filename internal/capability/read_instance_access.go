@@ -8,7 +8,6 @@ import (
 	"github.com/compshare-agent/internal/diagnosis"
 	"github.com/compshare-agent/internal/envelope"
 	"github.com/compshare-agent/internal/platform"
-	"github.com/compshare-agent/internal/security"
 )
 
 const (
@@ -87,8 +86,8 @@ func instanceAccessReadSpec() ReadCapabilitySpec[InstanceAccessRequest, Instance
 	return ReadCapabilitySpec[InstanceAccessRequest, InstanceAccessResponse]{
 		Label: instanceAccessCapabilityLabel,
 		Description: "核验一个实例的 SSH/Jupyter/自定义端口/平台应用声明；不连公网、不进 guest、不改配置。" +
-			"software 原样填应用名，仅返回是否声明/有入口记录，不返回 URL/凭据。SSH 以实时 SshLoginCommand 为准。" +
-			"仅明确索要 Token 用 jupyter_token；其他 Jupyter 用 jupyter；自定义端口需协议、端口。",
+			"software 原样填应用名，返回是否声明/有入口记录。SSH 以实时 SshLoginCommand 为准。" +
+			"用户要 Token 或带 Token 的访问地址时用 jupyter_token，会返回实时 Jupyter Token；其他 Jupyter 用 jupyter；自定义端口需协议、端口。",
 		Params: objectParam(map[string]schemaNode{
 			"targets": targetRefsParam(),
 			"access_type": enumParam(accessTypeSSH, accessTypeJupyter, accessTypeJupyterToken, accessTypeCustomPort, accessTypeSoftware).
@@ -158,7 +157,7 @@ func instanceAccessHandle(ctx context.Context, req InstanceAccessRequest, rt Rea
 	}
 
 	if req.AccessType == accessTypeSSH {
-		resp.SSHLoginCommand, _ = security.SSHLoginCommandForLLM(stringField(host, "SshLoginCommand"))
+		resp.SSHLoginCommand = strings.TrimSpace(stringField(host, "SshLoginCommand"))
 		diag, diagErr := diagnosis.NewEngine(rt.Executor, nil).Run(
 			ctx,
 			diagnosis.SSHFailureChainWithDescribeResult(raw),
@@ -260,15 +259,9 @@ func instanceAccessRender(resp InstanceAccessResponse) ReadResult {
 	reply := fmt.Sprintf("%s 的%s访问预检：%s。%s %s",
 		subject, accessTypeDisplay(resp.AccessType), verdict, strings.TrimSpace(detail),
 		scopeNote)
-	var sensitiveReply string
 	if resp.JupyterToken != "" {
-		sensitiveReply = fmt.Sprintf("%s 的 Jupyter Token：%s。%s",
+		reply = fmt.Sprintf("%s 的 Jupyter Token：%s。%s",
 			subject, resp.JupyterToken, strings.TrimSpace(detail))
-		// The actual token is never put in evidence for the Agent. It is a
-		// server-only delivery value; the Agent merely receives the safe fact that
-		// it was obtained and can continue with natural guidance.
-		reply = fmt.Sprintf("%s 的 Jupyter Token 已安全获取。%s",
-			subject, strings.TrimSpace(detail))
 	}
 
 	facts := []envelope.Fact{
@@ -318,7 +311,7 @@ func instanceAccessRender(resp InstanceAccessResponse) ReadResult {
 	}
 	if resp.JupyterToken != "" {
 		facts = append(facts, envelope.Fact{
-			SubjectID: resp.InstanceID, Key: "jupyter_token_present", Label: "是否已取得 Jupyter Token", Value: true, Source: envelope.FactSourceAPI,
+			SubjectID: resp.InstanceID, Key: "jupyter_token", Label: "Jupyter Token", Value: resp.JupyterToken, Source: envelope.FactSourceAPI,
 		})
 	}
 
@@ -326,7 +319,6 @@ func instanceAccessRender(resp InstanceAccessResponse) ReadResult {
 	result.ToolAction = instanceAccessDescribeAction
 	if resp.AccessType == accessTypeJupyterToken {
 		result.ToolAction = instanceAccessTokenAction
-		result.SensitiveReply = strings.TrimSpace(sensitiveReply)
 	}
 	result.Envelope = &envelope.Envelope{
 		Kind:          envelope.KindInstanceAccess,

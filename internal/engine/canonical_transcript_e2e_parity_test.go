@@ -116,12 +116,12 @@ func requireTranscriptWasReplayed(t *testing.T, assembled []openai.ChatCompletio
 
 func TestEndToEndHotColdParityAcrossTransforms(t *testing.T) {
 	const (
-		token    = "abcdef0123456789abcdef0123456789"
-		tokenURL = "http://10.0.0.4:8888/lab?token=" + token
+		token      = "abcdef0123456789abcdef0123456789"
+		tokenURL   = "http://10.0.0.4:8888/lab?token=" + token
 		rootSecret = "instance-root-value-0123"
-		question = "jupyter 打不开"
-		answer   = "已确认，见上。"
-		tailMark = "TAIL_MARKER_MUST_NOT_SURVIVE"
+		question   = "jupyter 打不开"
+		answer     = "已确认，见上。"
+		tailMark   = "TAIL_MARKER_MUST_NOT_SURVIVE"
 	)
 
 	cases := []struct {
@@ -133,7 +133,7 @@ func TestEndToEndHotColdParityAcrossTransforms(t *testing.T) {
 		check func(t *testing.T, assembled []openai.ChatCompletionMessage, metadata json.RawMessage)
 	}{
 		{
-			name: "field redaction fires in arguments and result",
+			name: "arguments, result and answer replay as the model saw them",
 			turn: []openai.ChatCompletionMessage{
 				{Role: openai.ChatMessageRoleUser, Content: question},
 				{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{
@@ -144,10 +144,10 @@ func TestEndToEndHotColdParityAcrossTransforms(t *testing.T) {
 			},
 			check: func(t *testing.T, assembled []openai.ChatCompletionMessage, metadata json.RawMessage) {
 				replayed := renderReplayedRegion(t, assembled)
-				assert.NotContains(t, string(metadata), rootSecret, "a credential-named field is not persisted")
-				assert.NotContains(t, renderTestMessages(assembled), rootSecret, "nor replayed into the next request")
+				assert.Contains(t, replayed, `"Password":"`+rootSecret+`"`,
+					"the account's own instance password is a fact the model already read; a restart must not take it away")
 				assert.Contains(t, replayed, tokenURL,
-					"the address the user was shown survives whole; a value is never scanned for token shapes")
+					"the address the user was shown survives whole")
 			},
 		},
 		{

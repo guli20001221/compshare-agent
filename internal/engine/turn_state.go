@@ -132,9 +132,6 @@ type turnState struct {
 	// renders a second user-facing answer: the Agent sees the same evidence and
 	// writes the final Markdown itself.
 	platformReadEvidenceThisTurn []platformReadEvidence
-	// sensitiveRepliesThisTurn contains credentials intentionally withheld from
-	// model context. The final delivery boundary emits each one once.
-	sensitiveRepliesThisTurn []string
 	// committedWriteRepliesThisTurn preserves truthful, model-free completion
 	// text if narration fails after an upstream write has committed.
 	committedWriteRepliesThisTurn []string

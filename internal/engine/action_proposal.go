@@ -14,7 +14,6 @@ import (
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/platform"
-	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/compshare-agent/internal/workflow"
 )
@@ -368,7 +367,7 @@ func resolvedActionForModel(resolved actionresolver.ResolvedAction) string {
 		}
 		wire["rejection_details"] = details
 	}
-	payload, _ := json.Marshal(security.RedactForLLM(wire))
+	payload, _ := json.Marshal(wire)
 	return string(payload)
 }
 

@@ -414,15 +414,13 @@ func TestInstanceAccessExplicitJupyterTokenUsesVerifiedInstance(t *testing.T) {
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
 	assert.Equal(t, instanceAccessTokenAction, result.ToolAction)
-	assert.NotContains(t, result.Reply, token)
+	assert.Contains(t, result.Reply, "Jupyter Token："+token, "the token is evidence the Agent can hand over or build a URL from")
 	assert.Contains(t, result.Reply, "需启动后")
-	assert.Contains(t, result.SensitiveReply, token)
 	require.Len(t, exec.calls, 2)
 	assert.Equal(t, instanceAccessDescribeAction, exec.calls[0].action)
 	assert.Equal(t, instanceAccessTokenAction, exec.calls[1].action)
 	assert.Equal(t, []string{instanceAccessDescribeAction, instanceAccessTokenAction}, result.Envelope.SourceActions)
-	assert.Equal(t, true, factValue(result.Envelope, "jupyter_token_present"))
-	assert.Nil(t, factValue(result.Envelope, "jupyter_token"))
+	assert.Equal(t, token, factValue(result.Envelope, "jupyter_token"))
 	for _, call := range exec.calls {
 		assert.NotEqual(t, "GetSoftwareUrl", call.action)
 		assert.NotEqual(t, "GetSoftwareURL", call.action)

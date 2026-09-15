@@ -38,7 +38,6 @@ func TestReplyWithEnvelopeIsNotDuplicatedIntoTheObservation(t *testing.T) {
 		"the model reads structured evidence, not a second prewritten answer")
 	assert.NotNil(t, observation.Envelope)
 	require.Len(t, eng.platformReadEvidenceThisTurn, 1)
-	assert.Empty(t, eng.sensitiveRepliesThisTurn)
 }
 
 func TestReplyWithoutEnvelopeIsWrappedAsEvidence(t *testing.T) {

@@ -13,15 +13,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Sensitive credentials stay outside model context and are the only read result
-// the server composes into the final response.
-func TestSensitiveReplyIsPrependedWithoutAnyAgentReference(t *testing.T) {
-	got := prependSensitiveReplies("已获取访问凭据。", []string{"Jupyter Token：opaque-token"})
-	require.Equal(t, "Jupyter Token：opaque-token\n\n已获取访问凭据。", got,
-		"the server delivers a secret once without exposing it to the Agent")
-	require.Equal(t, "普通答案。", prependSensitiveReplies("普通答案。", nil))
-}
-
 // TestResourceInfoDoesNotStapleTheWholeListOntoATargetedAnswer is the measured
 // regression: with resource_info forced, 「我那台 4090 的内存是多少」 got all ten
 // instances (three of them 5090s) above the answer, because the rendered block

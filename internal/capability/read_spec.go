@@ -75,13 +75,8 @@ type ReadRuntime struct {
 // ReadResult is the neutral outcome a typed read capability produces. Empty
 // Status inside Handle means "not terminal — render the response".
 type ReadResult struct {
-	Status platform.ReadStatus
-	Reply  string
-	// SensitiveReply is deliberately kept out of the model-visible evidence and
-	// delivered by the server once. It is only for credentials such as a Jupyter
-	// Token; ordinary read results always become evidence for the Agent to
-	// summarize in its own words.
-	SensitiveReply     string
+	Status             platform.ReadStatus
+	Reply              string
 	NeedsClarification bool
 	FailureClass       platform.ReadFailureClass
 	FallbackReason     platform.ReadFallbackReason

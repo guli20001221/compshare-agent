@@ -587,7 +587,7 @@ func TestSafeExecutorDoesNotRetryCapErrors(t *testing.T) {
 	}
 }
 
-func TestSafeExecutorFiltersArgsAndRedactsResult(t *testing.T) {
+func TestSafeExecutorFiltersArgsAndKeepsTheAccountsOwnCredentialsForTheModel(t *testing.T) {
 	inner := &spyExecutor{result: map[string]any{
 		"DataSet": []any{map[string]any{
 			"JupyterToken": "raw-jupyter-token",
@@ -596,7 +596,7 @@ func TestSafeExecutorFiltersArgsAndRedactsResult(t *testing.T) {
 				"URL":  "http://1.2.3.4:8888?token=UCloud-CompShare-AbCd1234",
 			}},
 		}},
-		"Nested": map[string]any{"Password": "raw-password"},
+		"Nested": map[string]any{"Password": "raw-password", "SshLoginCommand": "ssh root@1.2.3.4 -p 22"},
 	}}
 	safe := NewSafeToolExecutor(inner)
 
@@ -614,21 +614,16 @@ func TestSafeExecutorFiltersArgsAndRedactsResult(t *testing.T) {
 	require.Equal(t, 1, inner.calls)
 	assert.Equal(t, map[string]any{"UHostIds": []any{"uhost-1"}}, inner.args[0])
 
-	dataSet, ok := result.LLMResult["DataSet"].([]any)
-	require.True(t, ok)
-	first, ok := dataSet[0].(map[string]any)
-	require.True(t, ok)
-	assert.NotEqual(t, "raw-jupyter-token", first["JupyterToken"])
-	softwares, ok := first["Softwares"].([]any)
-	require.True(t, ok)
-	software, ok := softwares[0].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, "http://1.2.3.4:8888?token=UCloud-CompShare-AbCd1234", software["URL"],
-		"a URL field is not a credential field; its value is not scanned")
+	assert.Equal(t, inner.result, result.LLMResult,
+		"the model reads the platform's answer as returned: the account's own token, password and login line included")
+	result.LLMResult["DataSet"].([]any)[0].(map[string]any)["JupyterToken"] = "mutated-by-projection"
+	assert.Equal(t, "raw-jupyter-token", inner.result["DataSet"].([]any)[0].(map[string]any)["JupyterToken"],
+		"the model-visible copy is deep: model-side projection must not reach into RawResult")
 
-	nested, ok := result.LLMResult["Nested"].(map[string]any)
-	require.True(t, ok)
-	assert.Equal(t, "[REDACTED]", nested["Password"])
+	nested := result.TraceResult["Nested"].(map[string]any)
+	assert.Equal(t, "[REDACTED]", nested["Password"], "the trace copy still redacts by field name")
+	assert.Equal(t, "[REDACTED]", nested["SshLoginCommand"])
+	assert.Equal(t, "[REDACTED]", result.TraceResult["DataSet"].([]any)[0].(map[string]any)["JupyterToken"])
 }
 
 func TestSafeExecutorUsesPolicyForDisplayAndRedaction(t *testing.T) {
@@ -651,7 +646,7 @@ func TestSafeExecutorUsesPolicyForDisplayAndRedaction(t *testing.T) {
 		assert.Equal(t, "[REDACTED]", result.TraceResult["OneTimeCode"])
 	})
 
-	t.Run("jupyter token action is explicitly redacted", func(t *testing.T) {
+	t.Run("jupyter token is model-visible and trace-redacted", func(t *testing.T) {
 		inner := &spyExecutor{result: map[string]any{"JupyterToken": "raw-jupyter-token"}}
 		safe := NewSafeToolExecutor(inner)
 
@@ -662,8 +657,16 @@ func TestSafeExecutorUsesPolicyForDisplayAndRedaction(t *testing.T) {
 		})
 
 		require.NoError(t, err)
-		assert.Equal(t, "[REDACTED]", result.LLMResult["JupyterToken"])
+		assert.Equal(t, "raw-jupyter-token", result.LLMResult["JupyterToken"])
 		assert.Equal(t, "[REDACTED]", result.TraceResult["JupyterToken"])
+	})
+
+	t.Run("reset password keeps the user-entered argument off the model schema", func(t *testing.T) {
+		policies := DefaultToolExecutionPolicies()
+		assert.Equal(t, []string{"Password"}, policies["ResetPasswordWorkflow"].SensitiveArgs)
+		assert.Equal(t, []string{"Password"}, policies["ResetCompShareInstancePassword"].SensitiveArgs)
+		assert.Empty(t, policies["ResetPasswordWorkflow"].RedactInResult)
+		assert.Empty(t, policies["DescribeCompShareJupyterToken"].RedactInResult)
 	})
 
 	t.Run("invoice contact fields are explicitly redacted", func(t *testing.T) {

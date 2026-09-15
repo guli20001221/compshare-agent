@@ -1,10 +1,7 @@
 package engine
 
 import (
-	"encoding/json"
 	"fmt"
-	"io"
-	"reflect"
 	"strings"
 	"time"
 
@@ -37,42 +34,14 @@ func cloneEntityHints(in []SelectedEntityHint) []SelectedEntityHint {
 	return out
 }
 
-// safeToolConversationText applies the field-name redaction to a JSON
-// observation before it is replayed. Anything that is not one JSON document is
-// replayed unchanged.
-func safeToolConversationText(value string) string {
-	decoder := json.NewDecoder(strings.NewReader(value))
-	decoder.UseNumber()
-	var decoded any
-	if err := decoder.Decode(&decoded); err != nil {
-		return value
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		return value
-	}
-	redacted := security.RedactForLLM(decoded)
-	if reflect.DeepEqual(decoded, redacted) {
-		return value
-	}
-	encoded, err := json.Marshal(redacted)
-	if err != nil {
-		return value
-	}
-	return string(encoded)
-}
-
 // canonicalConversationText is the persistence-aligned form of a conversation
 // endpoint. HTTP persists assistant rows through the same boundary; using it
 // before the hot transcript is captured keeps hot and cold endpoints
-// byte-identical without any fuzzy transcript matching. User text is persisted
-// and replayed exactly as typed.
+// byte-identical without any fuzzy transcript matching. User text and tool
+// observations are persisted and replayed exactly as the model saw them.
 func canonicalConversationText(role, value string) string {
-	switch role {
-	case openai.ChatMessageRoleAssistant:
+	if role == openai.ChatMessageRoleAssistant {
 		return security.PersistedAssistantText(value)
-	case openai.ChatMessageRoleTool:
-		return safeToolConversationText(value)
 	}
 	return value
 }

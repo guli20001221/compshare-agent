@@ -58,9 +58,10 @@ func (e *Engine) finalizeHostTerminalResponse(draft string) string {
 	return e.finishResponseDelivery(draft)
 }
 
+// finishResponseDelivery composes nothing from read results: every fact stays
+// in the model's tool observation and is never appended to the final answer a
+// second time.
 func (e *Engine) finishResponseDelivery(content string) string {
-	content = prependSensitiveReplies(content, e.sensitiveRepliesThisTurn)
-
 	if strings.TrimSpace(content) == "" {
 		// A turn that already handed the user a verbatim block (the billing card,
 		// see deliverVerbatim) is NOT an empty turn — the block is the answer and
@@ -74,24 +75,4 @@ func (e *Engine) finishResponseDelivery(content string) string {
 		content = emptyReplyFallbackMessage
 	}
 	return content
-}
-
-// prependSensitiveReplies is deliberately the only server-side composition for
-// read results. All ordinary facts stay in the model's tool observation and are
-// never appended to the final answer a second time.
-func prependSensitiveReplies(reply string, sensitiveReplies []string) string {
-	var values []string
-	for _, item := range sensitiveReplies {
-		if item = strings.TrimSpace(item); item != "" {
-			values = append(values, item)
-		}
-	}
-	if len(values) > 0 {
-		prefix := strings.Join(values, "\n\n")
-		if strings.TrimSpace(reply) == "" {
-			return prefix
-		}
-		reply = prefix + "\n\n" + strings.TrimSpace(reply)
-	}
-	return reply
 }

@@ -80,7 +80,7 @@ type InstanceOpsRequest struct {
 	InvocationID string // canonical outer tool-call ID; distinguishes intentional calls within one turn
 	InstanceID   string
 	Task         string
-	// Context is the versioned, redacted reference data for the inner agent.
+	// Context is the versioned reference data for the inner agent.
 	// It is independent from Task so observations cannot change the dedup hash.
 	Context opscontext.Context
 }

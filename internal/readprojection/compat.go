@@ -36,6 +36,4 @@ const (
 // Small local aliases keep projection code focused on rendering.
 func safeValue(v any) string { return platform.SafeValue(v) }
 
-func safeValueMap(v map[string]any) map[string]any { return platform.SafeValueMap(v) }
-
 func mapSliceAt(m map[string]any, key string) []any { return platform.MapSliceAt(m, key) }

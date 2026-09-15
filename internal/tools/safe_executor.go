@@ -240,7 +240,7 @@ func (s *SafeToolExecutor) ExecuteSafe(ctx context.Context, req SafeToolRequest)
 		Action:      req.Action,
 		Args:        args,
 		RawResult:   guarded,
-		LLMResult:   redactForLLM(req.Action, policy, guarded),
+		LLMResult:   modelResult(policy, guarded),
 		TraceResult: redactForTrace(req.Action, policy, guarded),
 		Attempts:    attempts,
 		Policy:      policy,
@@ -870,12 +870,43 @@ func monitorResultHasSamples(v any) bool {
 	return false
 }
 
-func redactForLLM(action string, policy ToolExecutionPolicy, raw map[string]any) map[string]any {
-	redacted := mapFromAny(security.RedactForLLM(raw))
-	for _, field := range policy.RedactInResult {
-		redactFieldByName(redacted, field)
+// modelResult is the model-visible copy of a result. Only the policy's
+// RedactInResult fields are removed: the platform's own credential fields
+// (an instance Password, a Jupyter token, SshLoginCommand) reach the Agent as
+// returned, because the account asking is the account that owns them. The copy
+// is deep so later model-side projection cannot reach into RawResult.
+func modelResult(policy ToolExecutionPolicy, raw map[string]any) map[string]any {
+	if raw == nil {
+		return nil
 	}
-	return sanitizer.Sanitize(action, redacted)
+	out := deepCopyMap(raw)
+	for _, field := range policy.RedactInResult {
+		redactFieldByName(out, field)
+	}
+	return out
+}
+
+func deepCopyMap(in map[string]any) map[string]any {
+	out := make(map[string]any, len(in))
+	for k, v := range in {
+		out[k] = deepCopyValue(v)
+	}
+	return out
+}
+
+func deepCopyValue(v any) any {
+	switch typed := v.(type) {
+	case map[string]any:
+		return deepCopyMap(typed)
+	case []any:
+		out := make([]any, len(typed))
+		for i, item := range typed {
+			out[i] = deepCopyValue(item)
+		}
+		return out
+	default:
+		return typed
+	}
 }
 
 func redactForTrace(action string, policy ToolExecutionPolicy, raw map[string]any) map[string]any {

@@ -18,7 +18,6 @@ func TestTurnEntryReplacesTheWholeTurn(t *testing.T) {
 	eng.turnState = turnState{
 		verbatimBlocksThisTurn:            []string{"上一轮的账单明细"},
 		committedWriteRepliesThisTurn:     []string{"上一轮已创建 uhost-leak"},
-		sensitiveRepliesThisTurn:          []string{"上一轮返回的密码"},
 		lastConfirmationTerminalReason:    "declined",
 		actionProposalDispositionThisTurn: "confirmation",
 		knowledgeOnlyThisTurn:             true,
@@ -31,7 +30,6 @@ func TestTurnEntryReplacesTheWholeTurn(t *testing.T) {
 		"a previous turn's verbatim block must not be prepended to this turn's reply")
 	require.Empty(t, eng.verbatimBlocksThisTurn)
 	require.Empty(t, eng.committedWriteRepliesThisTurn)
-	require.Empty(t, eng.sensitiveRepliesThisTurn)
 	require.Empty(t, eng.lastConfirmationTerminalReason)
 	require.Empty(t, eng.actionProposalDispositionThisTurn)
 	require.False(t, eng.knowledgeOnlyThisTurn)

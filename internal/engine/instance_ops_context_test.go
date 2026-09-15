@@ -289,7 +289,7 @@ func TestInstanceOpsContextCarriesCompletedPlatformResultsBeforeFirstSSH(t *test
 				toolCall("create", "CreateCFSWorkflow", `{"Name":"shared"}`),
 			}},
 			{Role: openai.ChatMessageRoleTool, ToolCallID: "create",
-				Content: `{"success":true,"data":{"CfsId":"cfs-created-42","Password":"must-stay-private-012345"}}`},
+				Content: `{"success":true,"data":{"CfsId":"cfs-created-42","Password":"cfs-mount-value-012345"}}`},
 			{Role: openai.ChatMessageRoleAssistant, Content: "尚未执行的计划", ToolCalls: []openai.ToolCall{
 				toolCall("chunk", "ReadChunk", `{"id":"chunk-1"}`),
 				toolCall("ssh-pending", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"错误重写 cfs-wrong-99"}`),
@@ -301,9 +301,8 @@ func TestInstanceOpsContextCarriesCompletedPlatformResultsBeforeFirstSSH(t *test
 	history := eng.instanceOpsModelContext().ConversationHistory
 	require.Equal(t, []string{"user", "tool", "tool"}, conversationRoles(history))
 	require.Equal(t, user, history[0].Content)
-	require.Contains(t, history[1].Content, "CreateCFSWorkflow:\n")
-	require.Contains(t, history[1].Content, "cfs-created-42")
-	require.NotContains(t, history[1].Content, "must-stay-private")
+	require.Equal(t, "CreateCFSWorkflow:\n"+`{"success":true,"data":{"CfsId":"cfs-created-42","Password":"cfs-mount-value-012345"}}`, history[1].Content,
+		"the inner agent reads the completed observation exactly as the outer Agent did, mount credential included")
 	require.Equal(t, "ReadChunk:\nVerify the CFS mount from the guest.", history[2].Content)
 	raw, err := json.Marshal(history)
 	require.NoError(t, err)

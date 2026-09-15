@@ -8,16 +8,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestRedactForLLM_RedactsSecretsRecursively(t *testing.T) {
+func TestRedactForTrace_RedactsCredentialFieldsRecursively(t *testing.T) {
 	input := map[string]any{
 		"PublicKey":       "pub-1234567890",
 		"PrivateKey":      "priv-1234567890",
 		"api_key":         "llm-key-1234567890",
 		"Password":        "secret-password",
 		"SSHCommand":      "ssh root@1.2.3.4 -p 22",
-		"SshLoginCommand": "ssh root@1.2.3.4 -p 22", // real upstream field name (B8.3 deploy surfaces it into traces)
+		"SshLoginCommand": "ssh root@1.2.3.4 -p 22",
 		"JupyterLabToken": "token-abc",
-		"PublicIP":        "1.2.3.4",
+		"RefreshToken":    "refresh-token-value",
+		"ClientSecret":    "client-secret-value",
+		"Credential":      "credential-value",
+		"next_token":      "pagination-cursor",
 		"Nested": map[string]any{
 			"access_token": "nested-token",
 		},
@@ -26,25 +29,13 @@ func TestRedactForLLM_RedactsSecretsRecursively(t *testing.T) {
 		},
 	}
 
-	redacted := RedactForLLM(input).(map[string]any)
+	redacted := RedactForTrace(input).(map[string]any)
 
-	assert.Equal(t, "[REDACTED]", redacted["PublicKey"])
-	assert.Equal(t, "[REDACTED]", redacted["PrivateKey"])
-	assert.Equal(t, "[REDACTED]", redacted["api_key"])
-	assert.Equal(t, "[REDACTED]", redacted["Password"])
-	assert.Equal(t, "[REDACTED]", redacted["SSHCommand"])
-	// Reversed deliberately. This used to assert that the ssh+command key rule
-	// caught the login-infix name too — it does, and that was the defect: the
-	// authoritative SSH field reached the model blanked, so the agent could not
-	// answer the question that field exists for. A plain login line carries no
-	// credential (the instance Password is a separate upstream field), and the
-	// exception fails closed on anything that is not one. SSHCommand above stays
-	// redacted, which is what keeps this narrow — see
-	// ssh_connection_visibility_test.go.
-	assert.Equal(t, "ssh root@1.2.3.4 -p 22", redacted["SshLoginCommand"],
-		"the authoritative SSH login line must reach the model intact")
-	assert.Equal(t, "[REDACTED]", redacted["JupyterLabToken"])
-	assert.Equal(t, "1.2.3.4", redacted["PublicIP"], "IP is not hidden from LLM context by default")
+	for _, key := range []string{"PublicKey", "PrivateKey", "api_key", "Password", "SSHCommand", "SshLoginCommand",
+		"JupyterLabToken", "RefreshToken", "ClientSecret", "Credential"} {
+		assert.Equal(t, "[REDACTED]", redacted[key], key)
+	}
+	assert.Equal(t, "pagination-cursor", redacted["next_token"])
 	assert.Equal(t, "[REDACTED]", redacted["Nested"].(map[string]any)["access_token"])
 	assert.Equal(t, "[REDACTED]", redacted["Items"].([]any)[0].(map[string]any)["SecretKey"])
 
@@ -57,6 +48,7 @@ func TestRedactForTrace_HashesBillingAndMasksIP(t *testing.T) {
 		"BillingDetail": "gpu hourly charge",
 		"PublicIP":      "123.45.67.89",
 		"PrivateIP":     "10.9.8.7",
+		"IPs":           []any{"10.1.2.3", "not-an-ip"},
 		"Password":      "secret-password",
 		"next_token":    "pagination-cursor",
 	}
@@ -67,14 +59,15 @@ func TestRedactForTrace_HashesBillingAndMasksIP(t *testing.T) {
 	assert.Equal(t, "[HASH:093dda9cb5db57a8]", redacted["BillingDetail"])
 	assert.Equal(t, "123.45.x.x", redacted["PublicIP"])
 	assert.Equal(t, "10.9.x.x", redacted["PrivateIP"])
+	assert.Equal(t, []any{"10.1.x.x", "not-an-ip"}, redacted["IPs"])
 	assert.Equal(t, "[REDACTED]", redacted["Password"])
 	assert.Equal(t, "pagination-cursor", redacted["next_token"])
 }
 
 // Only the field name decides. A value is never scanned for credential-looking
 // text: a JupyterLab URL, a Bearer header quoted in a description or a shell
-// snippet inside a remark reach the model exactly as the platform returned them.
-func TestRedactionIsDecidedByFieldNameNotByValueShape(t *testing.T) {
+// snippet inside a remark are hashed as the platform returned them.
+func TestRedactForTraceIsDecidedByFieldNameNotByValueShape(t *testing.T) {
 	input := map[string]any{
 		"URL":         "http://1.2.3.4:8888?token=UCloud-CompShare-AbCd1234",
 		"Header":      "Authorization: Bearer " + "eyJhbGciOiJIUzI1NiIs" + "InR5cCI6IkpXVCJ9.foo.bar",
@@ -86,19 +79,14 @@ func TestRedactionIsDecidedByFieldNameNotByValueShape(t *testing.T) {
 		"Items": []any{"token: not-a-field-name"},
 	}
 
-	for name, redacted := range map[string]map[string]any{
-		"llm":   RedactForLLM(input).(map[string]any),
-		"trace": RedactForTrace(input).(map[string]any),
-	} {
-		t.Run(name, func(t *testing.T) {
-			assert.Equal(t, input["URL"], redacted["URL"])
-			assert.Equal(t, input["Header"], redacted["Header"])
-			assert.Equal(t, input["Remark"], redacted["Remark"])
-			assert.Equal(t, input["Description"], redacted["Description"])
-			assert.Equal(t, input["Nested"], redacted["Nested"])
-			assert.Equal(t, input["Items"], redacted["Items"])
-		})
-	}
+	redacted := RedactForTrace(input).(map[string]any)
+
+	assert.Equal(t, input["URL"], redacted["URL"])
+	assert.Equal(t, input["Header"], redacted["Header"])
+	assert.Equal(t, input["Remark"], redacted["Remark"])
+	assert.Equal(t, input["Description"], redacted["Description"])
+	assert.Equal(t, input["Nested"], redacted["Nested"])
+	assert.Equal(t, input["Items"], redacted["Items"])
 }
 
 func TestAssistantPersistenceRemovesThePrivateCustomerSupportMarker(t *testing.T) {
@@ -113,26 +101,6 @@ func TestPersistedAssistantTextKeepsCredentialShapedProseVerbatim(t *testing.T) 
 		"os.environ[\"OPENAI_API_KEY\"] = \"sk-example-0123456789\"，密码是 Abc12345 吗？"
 	assert.Equal(t, reply, PersistedAssistantText(reply),
 		"persistence does not rewrite prose: a reloaded command must be the command the user saw")
-}
-
-func TestRedactForLLM_RedactsOAuthStyleSecretKeys(t *testing.T) {
-	input := map[string]any{
-		"RefreshToken":  "refresh-token-value",
-		"IDToken":       "id-token-value",
-		"ClientSecret":  "client-secret-value",
-		"WebhookSecret": "webhook-secret-value",
-		"Credential":    "credential-value",
-		"next_token":    "pagination-cursor",
-	}
-
-	redacted := RedactForLLM(input).(map[string]any)
-
-	assert.Equal(t, "[REDACTED]", redacted["RefreshToken"])
-	assert.Equal(t, "[REDACTED]", redacted["IDToken"])
-	assert.Equal(t, "[REDACTED]", redacted["ClientSecret"])
-	assert.Equal(t, "[REDACTED]", redacted["WebhookSecret"])
-	assert.Equal(t, "[REDACTED]", redacted["Credential"])
-	assert.Equal(t, "pagination-cursor", redacted["next_token"])
 }
 
 func TestRedactKnownSecretsInText_RedactsOnlyTheGivenValues(t *testing.T) {

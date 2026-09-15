@@ -26,14 +26,21 @@ const (
 )
 
 type ToolExecutionPolicy struct {
-	Action                  string
-	Route                   ActionRoute
-	Class                   ActionClass
-	SecurityLevel           security.Level
-	NeedsConfirm            bool
-	AllowedParams           []string
-	InternalAllowedParams   []string
-	RedactInResult          []string
+	Action                string
+	Route                 ActionRoute
+	Class                 ActionClass
+	SecurityLevel         security.Level
+	NeedsConfirm          bool
+	AllowedParams         []string
+	InternalAllowedParams []string
+	// RedactInResult names result fields removed from every copy of the
+	// result, model-visible and trace alike. It holds third-party personal
+	// data the Agent has no use for, not the caller's own credentials.
+	RedactInResult []string
+	// SensitiveArgs names arguments the user supplies through the
+	// confirmation card rather than the model: the proposal schema does not
+	// carry them, and cards and step frames mask them.
+	SensitiveArgs           []string
 	HistoryMonitorGuard     bool
 	MaxTargetsPerCall       int
 	MaxHistoryWindowSeconds int
@@ -199,10 +206,7 @@ func policyForAction(action string) ToolExecutionPolicy {
 		policy.BackoffBaseMS = 0
 	}
 	if action == "ResetCompShareInstancePassword" || action == "ResetPasswordWorkflow" {
-		policy.RedactInResult = append(policy.RedactInResult, "Password")
-	}
-	if action == "DescribeCompShareJupyterToken" {
-		policy.RedactInResult = append(policy.RedactInResult, "JupyterToken")
+		policy.SensitiveArgs = append(policy.SensitiveArgs, "Password")
 	}
 	if action == "GetCompShareInvoiceIssued" {
 		policy.RedactInResult = append(policy.RedactInResult,

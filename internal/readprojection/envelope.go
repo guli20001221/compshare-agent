@@ -301,9 +301,8 @@ func monitorScalarFacts(metrics []Metric, payload map[string]any) []monitorScala
 	if facts, ok := monitorSemanticFacts(metrics, payload); ok {
 		return facts
 	}
-	redacted := safeValueMap(payload)
 	flat := map[string]string{}
-	flattenScalars("", redacted, flat)
+	flattenScalars("", payload, flat)
 	keys := make([]string, 0, len(flat))
 	for key := range flat {
 		if len(metrics) == 0 || matchesRequestedMetric(key, metrics) {
