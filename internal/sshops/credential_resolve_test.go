@@ -62,17 +62,44 @@ func TestFetchCredentialRefusesWhenRequestedInstanceAbsent(t *testing.T) {
 		"an absent instance must be distinguishable from a transient failure")
 }
 
-// An EMPTY response is deliberately NOT ErrInstanceNotFound: nothing came back at all, which a
-// partial upstream failure also looks like, and there retrying genuinely is the right advice.
-// This is the boundary that keeps the new sentinel honest rather than a catch-all.
-func TestFetchCredentialEmptyResponseIsNotTreatedAsNotFound(t *testing.T) {
-	d := &listDescriber{raw: map[string]any{"UHostSet": []any{}}}
+// The request filters by the one requested ID, and upstream always answers with
+// an instance set — empty when nothing in the account carries that ID. That
+// empty set is therefore the ordinary not-found response (a released or rebuilt
+// instance, a mistyped ID), and the user must be told to correct the target,
+// not to retry. In production the same empty set had been reaching users as
+// 「排查未能完成，请稍后重试」 for IDs that were simply gone.
+func TestFetchCredentialEmptyInstanceSetIsNotFound(t *testing.T) {
+	d := &listDescriber{raw: map[string]any{"UHostSet": []any{}, "TotalCount": float64(0)}}
 
-	_, err := FetchCredential(context.Background(), d, "uhost-x")
+	cred, err := FetchCredential(context.Background(), d, "uhost-x")
 
-	require.Error(t, err)
-	require.NotErrorIs(t, err, ErrInstanceNotFound,
-		"an empty response may be a transient upstream failure, not proof the instance is gone")
+	require.ErrorIs(t, err, ErrInstanceNotFound,
+		"an empty instance set answers the ID filter: the instance is not in this account")
+	require.Contains(t, err.Error(), "uhost-x")
+	require.False(t, cred.HasSecret())
+}
+
+// A response that carries no instance set at all did not answer the filter —
+// nothing distinguishes it from a partial upstream failure — so it keeps the
+// retry advice. This is the boundary that keeps the sentinel from becoming a
+// catch-all.
+func TestFetchCredentialResponseWithoutInstanceSetIsNotTreatedAsNotFound(t *testing.T) {
+	for name, raw := range map[string]map[string]any{
+		"no set key":  {"Action": "DescribeCompShareInstanceResponse", "RetCode": float64(0)},
+		"null set":    {"UHostSet": nil},
+		"empty body":  {},
+		"set not arr": {"UHostSet": "unexpected"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			d := &listDescriber{raw: raw}
+
+			_, err := FetchCredential(context.Background(), d, "uhost-x")
+
+			require.Error(t, err)
+			require.NotErrorIs(t, err, ErrInstanceNotFound,
+				"a response without an instance set may be a transient upstream failure, not proof the instance is gone")
+		})
+	}
 }
 
 func TestFetchCredentialResolvesTheRequestedRowNotTheFirst(t *testing.T) {
@@ -116,8 +143,7 @@ func TestFetchCredentialEmptyResponseAndFilterShape(t *testing.T) {
 
 	_, err := FetchCredential(context.Background(), d, "uhost-x")
 
-	require.Error(t, err)
-	require.Contains(t, err.Error(), "no instance")
+	require.ErrorIs(t, err, ErrInstanceNotFound)
 	require.Equal(t, "DescribeCompShareInstance", d.gotAct)
 	require.Equal(t, map[string]any{"UHostIds.0": "uhost-x"}, d.gotArg,
 		"the id must be sent as an upstream filter, not resolved client-side only")

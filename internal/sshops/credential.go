@@ -25,7 +25,10 @@ var ErrNoSSHTarget = errors.New("sshops: instance has no SSH target")
 var ErrInstanceNotRunning = errors.New("sshops: instance is not running")
 
 // ErrInstanceNotFound means a well-formed account response omitted the requested
-// ID. An entirely empty response remains a retryable upstream ambiguity.
+// ID. Well-formed includes an empty instance set: the describe request filters
+// by that one ID, so an empty set is the ordinary answer for an ID that is not
+// in the account. Only a response carrying no instance set at all remains a
+// retryable upstream ambiguity.
 var ErrInstanceNotFound = errors.New("sshops: instance not found in this account")
 
 // NotRunningError carries the raw upstream state so a caller can name it without
@@ -265,11 +268,14 @@ func instanceIDOf(inst map[string]any) string {
 // returned from the matched row so confirmation, SSH and audit share one source.
 func resolveInstance(raw map[string]any, instanceID string) (map[string]any, string, error) {
 	seen := 0
+	instanceSetPresent := false
 	for _, key := range []string{"UHostSet", "UHostInstanceSet", "Instances", "DataSet"} {
 		arr, ok := raw[key].([]any)
-		if !ok || len(arr) == 0 {
+		if !ok {
 			continue
 		}
+		// An empty set is still a set: the response answered the ID filter.
+		instanceSetPresent = true
 		seen += len(arr)
 		for _, it := range arr {
 			m, ok := it.(map[string]any)
@@ -285,7 +291,11 @@ func resolveInstance(raw map[string]any, instanceID string) (map[string]any, str
 		return nil, "", fmt.Errorf("%w: instance %s not present in describe response (%d returned)",
 			ErrInstanceNotFound, instanceID, seen)
 	}
-	return nil, "", fmt.Errorf("sshops: no instance in describe response")
+	if instanceSetPresent {
+		return nil, "", fmt.Errorf("%w: instance %s absent from an empty describe response",
+			ErrInstanceNotFound, instanceID)
+	}
+	return nil, "", fmt.Errorf("sshops: describe response carries no instance set")
 }
 
 // matchedID reports whether m identifies instanceID, returning the id field that

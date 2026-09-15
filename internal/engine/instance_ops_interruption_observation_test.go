@@ -27,13 +27,15 @@ func TestInterruptedInvocationReturnsItsOwnSettledWorkToParent(t *testing.T) {
 
 	// A retry that fails before any callback must not borrow the first run's
 	// pending interruption notice and claim it executed those commands again.
+	// It never reached the instance, so it carries no report at all.
 	runner.progress = nil
 	second, ok := tools.ParseAgentToolResult(execToolInTurn(eng, toolCall("second", "DiagnoseInstanceInternals", args), noopStep).Observation)
 	require.True(t, ok)
 	secondData := second.Data.(map[string]any)
-	require.Equal(t, float64(0), secondData["commands_ran"])
-	require.NotContains(t, secondData["report"], "first invocation mutation")
-	require.Equal(t, "interrupted", second.Meta.SourceStatus)
+	require.Equal(t, false, secondData["run_completed"])
+	require.NotContains(t, secondData, "report")
+	require.Equal(t, "SSH_RUN_NOT_STARTED", second.Error.Code)
+	require.Equal(t, "unavailable", second.Meta.SourceStatus)
 
 	require.Equal(t, 2, runner.calls, "the retry re-entered rather than replaying the first attempt")
 }

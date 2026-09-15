@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -665,6 +666,64 @@ func TestInstanceOps_NotFoundRefusedHonestly(t *testing.T) {
 		executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", "call-1", instanceOpsArgs(), noopStep)
 	require.Contains(t, out2, "请稍后重试", "a transient failure keeps the retry advice")
 	require.NotContains(t, out2, "找不到实例")
+}
+
+// A failure with no sentinel that happened before the lane reached the instance
+// (rate limit, describe failure, missing password, audit refusal, harness spawn)
+// has no command whose fate is unknown. It must say the instance was never
+// entered, not narrate an interruption of work that never started — the model
+// turned that narration into 「SSH 排查未能建立连接」 for an instance that was
+// simply not in the account.
+func TestInstanceOps_FailureBeforeEntryIsNotNarratedAsInterrupted(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+		code string
+	}{
+		{name: "generic pre-entry failure", err: errors.New("sshops: describe instance: upstream 500"), code: "SSH_RUN_NOT_STARTED"},
+		{name: "cancelled before connecting", err: context.Canceled, code: "SSH_RUN_NOT_STARTED"},
+		{name: "timed out before connecting", err: fmt.Errorf("%w: harness", ErrInstanceOpsTimedOut), code: "SSH_RUN_TIMEOUT"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			runner := &fakeInstanceOpsRunner{err: tc.err}
+			eng := newInstanceOpsEngine(runner, alwaysConfirm)
+
+			var steps []StepEvent
+			out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", "call-1", instanceOpsArgs(), captureSteps(&steps))
+
+			result := requireInstanceOpsObservation(t, out)
+			require.Equal(t, tc.code, result.Error.Code)
+			require.Equal(t, "unavailable", result.Meta.SourceStatus)
+			data := result.Data.(map[string]any)
+			require.Equal(t, false, data["run_completed"])
+			require.NotContains(t, data, "report", "nothing ran, so there is no run to report on")
+			require.Contains(t, out, "未进入实例")
+			require.Contains(t, out, "请稍后重试")
+			require.NotContains(t, out, "中断前", "a run that never started cannot have been interrupted")
+			require.NotContains(t, out, "无法确认", "no command is left in an unknown state")
+			require.Len(t, steps, 1)
+			require.Equal(t, tc.code, steps[0].ErrorCode)
+		})
+	}
+}
+
+// Once the lane is inside the instance, the same generic error is a genuine
+// interruption: the settled work (or its absence) is what the user needs.
+func TestInstanceOps_FailureAfterEntryStillReportsTheInterruption(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{
+		err:      errors.New("harness exited unexpectedly"),
+		progress: []InstanceOpsProgress{{Kind: InstanceOpsProgressConnected}},
+	}
+	eng := newInstanceOpsEngine(runner, alwaysConfirm)
+
+	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", "call-1", instanceOpsArgs(), noopStep)
+
+	result := requireInstanceOpsObservation(t, out)
+	require.Equal(t, "SSH_RUN_INTERRUPTED", result.Error.Code)
+	require.Equal(t, "interrupted", result.Meta.SourceStatus)
+	data := result.Data.(map[string]any)
+	require.Equal(t, float64(0), data["commands_ran"])
+	require.Contains(t, data["report"], "中断前没有命令执行成功")
 }
 
 // Two independent targets in one user turn each get their own run. Nothing in
