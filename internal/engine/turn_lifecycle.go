@@ -70,6 +70,9 @@ func (e *Engine) installTurnConfirmation(opts ChatOptions) func() {
 				Confirmed:      resolution.Confirmed,
 				TerminalReason: resolution.TerminalReason,
 			}, started, args, form)
+			// The form gate phrases its refusal from the same field as the boolean
+			// gate; a guided card that timed out must not read as a decline.
+			e.lastConfirmationTerminalReason = observability.NormalizeConfirmationTerminalReason(resolution.Confirmed, resolution.TerminalReason)
 			return resolution
 		}
 		restores = append(restores, func() { e.confirmEditsFn = origEdits })

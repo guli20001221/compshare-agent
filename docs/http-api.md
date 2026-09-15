@@ -340,7 +340,9 @@ event: error  ← 任意时刻出现，表示终止
 
 ### 客户端中断
 
-前端关闭连接（EventSource.close / 切路由 / 关 tab）后服务端会把当前 assistant 消息标记为 `aborted`，并写入中性的“本次回复已中止”说明；下次 `GetCSAgentSession` 会看到这条非空消息。
+前端关闭连接（EventSource.close / 切路由 / 关 tab）后服务端会把当前 assistant 消息标记为 `aborted`，并写入中性的“本次回复已中止”说明；下次 `GetCSAgentSession` 会看到这条非空消息。中断前已经提交成功的平台写操作（如已创建/已开机的实例）会以“本轮已完成的操作：”附在这条说明之后——写操作在断开后仍然成立，这一行是用户回来时唯一能看到它的地方；中断后模型生成的回答不会写入。
+
+WebSocket 连接上，每一帧写入和每次 keep-alive ping 都有独立的短超时（帧 30s、pong 不超过 keep-alive 间隔且至多 10s）。对端不再消费（半开连接、设备休眠）时，服务端在一个超时内按“客户端断开”结束本轮并落库，而不是等到连接寿命上限。
 
 > 中断**不会**额外发 `event: error` 或改 HTTP 状态码（SSE 已经回 200），前端只能依赖自己的连接关闭事件和后续 `GetCSAgentSession` 校对。
 

@@ -247,9 +247,9 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 	}
 
 	// An unresolved confirmation and an explicit decline share this workflow
-	// result, so state only that the operation was not executed.
+	// result; the card's terminal reason says which it was.
 	if !result.Success && result.Message == "用户取消了操作" {
-		return deterministicReply(fmt.Sprintf("好的，%s操作未执行。如需继续，请重新发送指令并确认。", friendlyActionName(action)))
+		return deterministicReply(notExecutedReply(action, e.lastConfirmationTerminalReason))
 	}
 
 	// An authorized create failure may have affected the instance. Keep its
@@ -641,6 +641,17 @@ func (e *Engine) committedWriteRecoveryReply() (string, bool) {
 		return "", false
 	}
 	return strings.Join(e.committedWriteRepliesThisTurn, "\n") + "\n\n" + committedWriteNarrationFailedNote, true
+}
+
+// CommittedWriteSummary reports this turn's committed platform writes in the
+// same host-owned sentences the deterministic replies use, or "" when nothing
+// committed. The gateway persists it when the transport ended before a reply
+// could be delivered: the write stays true after the disconnect.
+func (e *Engine) CommittedWriteSummary() string {
+	if e == nil || len(e.committedWriteRepliesThisTurn) == 0 {
+		return ""
+	}
+	return strings.Join(e.committedWriteRepliesThisTurn, "\n")
 }
 
 // committedInstanceIDs reads the created instance ids out of a workflow result.
