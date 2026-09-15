@@ -15,198 +15,57 @@ const redactedValue = "[REDACTED]"
 
 var separatorRE = regexp.MustCompile(`[^a-z0-9]+`)
 
-// RedactForLLM replaces credential-named fields before a structured value is
-// passed into model context. It returns a deep-redacted copy and never mutates
-// the input value.
-func RedactForLLM(v any) any {
-	return redactValue(v, redactModeLLM, "")
-}
-
-// SSHLoginCommandForLLM returns the upstream login command only when it matches
-// the same narrow, credential-free shape accepted by RedactForLLM.
-func SSHLoginCommandForLLM(raw string) (string, bool) {
-	projected, _ := redactField("SshLoginCommand", raw, redactModeLLM).(string)
-	if projected == redactedValue || strings.TrimSpace(projected) == "" {
-		return "", false
-	}
-	return strings.TrimSpace(projected), true
-}
-
 // RedactForTrace replaces credential-named fields and masks/hash-stabilizes
-// sensitive telemetry before writing traces or audit logs. It returns a
-// deep-redacted copy and never mutates the input value.
+// sensitive telemetry before a structured value is hashed for a trace or
+// written to an audit log. It returns a deep-redacted copy and never mutates
+// the input value. The model-visible copy of the same value is not redacted:
+// the platform's own fields reach the Agent as the platform returned them.
 func RedactForTrace(v any) any {
-	return redactValue(v, redactModeTrace, "")
+	return redactValue(v, "")
 }
 
-type redactMode int
-
-const (
-	redactModeLLM redactMode = iota
-	redactModeTrace
-)
-
-func redactValue(v any, mode redactMode, parentKey string) any {
+func redactValue(v any, parentKey string) any {
 	switch typed := v.(type) {
 	case map[string]any:
 		out := make(map[string]any, len(typed))
 		for k, child := range typed {
-			out[k] = redactField(k, child, mode)
+			out[k] = redactField(k, child)
 		}
 		return out
 	case map[any]any:
 		out := make(map[any]any, len(typed))
 		for k, child := range typed {
 			key, _ := k.(string)
-			out[k] = redactField(key, child, mode)
+			out[k] = redactField(key, child)
 		}
 		return out
 	case []any:
 		out := make([]any, len(typed))
 		for i, child := range typed {
-			out[i] = redactValue(child, mode, parentKey)
+			out[i] = redactValue(child, parentKey)
 		}
 		return out
 	default:
-		if s, ok := typed.(string); ok && mode == redactModeTrace && isIPKey(parentKey) {
+		if s, ok := typed.(string); ok && isIPKey(parentKey) {
 			return maskIPv4(s)
 		}
 		return typed
 	}
 }
 
-func redactField(key string, value any, mode redactMode) any {
-	if isSecretKey(key) {
-		if mode == redactModeLLM && isPlainSSHLoginCommand(key, value) {
-			// An allowlisted login command is an endpoint, not a credential;
-			// trace persistence remains unchanged.
-			return value
-		}
+func redactField(key string, value any) any {
+	if guardrails.IsCredentialKey(key) {
 		return redactedValue
 	}
-	if mode == redactModeTrace {
-		if isBillingOrCostKey(key) {
-			return hashValue(value)
-		}
-		if isIPKey(key) {
-			if s, ok := value.(string); ok {
-				return maskIPv4(s)
-			}
+	if isBillingOrCostKey(key) {
+		return hashValue(value)
+	}
+	if isIPKey(key) {
+		if s, ok := value.(string); ok {
+			return maskIPv4(s)
 		}
 	}
-	return redactValue(value, mode, key)
-}
-
-func isSecretKey(key string) bool {
-	return guardrails.IsCredentialKey(key)
-}
-
-// sshConnectionKeys are exact fields whose value is an SSH endpoint command.
-// Credential-like fields that merely mention SSH remain redacted.
-var sshConnectionKeys = map[string]bool{
-	"sshlogincommand": true,
-}
-
-// isPlainSSHLoginCommand reports whether this is the authoritative SSH field
-// carrying a value that is safe to show. Both halves must hold.
-//
-// The value check fails closed and accepts only the shapes the upstream returns:
-//
-//	ssh root@1.2.3.4 -p 22
-//	ssh -p 23120 root@cpod-abc.podtcp.compshare.cn
-//	ssh ubuntu@1.2.3.5
-//
-// One `ssh`, at most one `-p <port>`, exactly one `user@host`, and no other
-// tokens are allowed. Everything else falls back to [REDACTED].
-func isPlainSSHLoginCommand(key string, value any) bool {
-	if !sshConnectionKeys[normalizeKey(key)] {
-		return false
-	}
-	raw, ok := value.(string)
-	if !ok {
-		return false
-	}
-	fields := strings.Fields(strings.TrimSpace(raw))
-	if len(fields) == 0 || fields[0] != "ssh" {
-		return false
-	}
-	seenTarget, seenPort := false, false
-	for i := 1; i < len(fields); i++ {
-		switch {
-		case fields[i] == "-p":
-			// At most one. A repeated flag is not a shape this upstream emits,
-			// and an allowlist that accepts inputs its own contract excludes is
-			// not an allowlist.
-			if seenPort {
-				return false
-			}
-			seenPort = true
-			i++
-			if i >= len(fields) || !isPortToken(fields[i]) {
-				return false
-			}
-		case !seenTarget && isSSHTargetToken(fields[i]):
-			seenTarget = true
-		default:
-			return false
-		}
-	}
-	return seenTarget
-}
-
-// isPortToken accepts a decimal port in 1..65535. Range-checked rather than
-// digit-counted: "99999" and "0" are five digits and one digit of nonsense, and
-// letting them through would mean the allowlist admits values the upstream
-// cannot produce.
-func isPortToken(s string) bool {
-	if s == "" || len(s) > 5 {
-		return false
-	}
-	port := 0
-	for _, r := range s {
-		if r < '0' || r > '9' {
-			return false
-		}
-		port = port*10 + int(r-'0')
-	}
-	return port >= 1 && port <= 65535
-}
-
-// isSSHTargetToken accepts exactly one user@host with no shell metacharacters:
-// the allowed rune set is what makes "&&", quotes and redirections impossible.
-//
-// The user part may not begin with "-": ssh would read such a token as a flag,
-// so accepting it would mean this function and ssh disagree about what the
-// string says.
-func isSSHTargetToken(s string) bool {
-	at := strings.IndexByte(s, '@')
-	if at <= 0 || at == len(s)-1 {
-		return false
-	}
-	user, host := s[:at], s[at+1:]
-	if !isHostRuneSet(user) || !isHostRuneSet(host) {
-		return false
-	}
-	if user[0] == '-' {
-		return false
-	}
-	first := host[0]
-	return first >= 'a' && first <= 'z' || first >= 'A' && first <= 'Z' || first >= '0' && first <= '9'
-}
-
-func isHostRuneSet(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9':
-		case r == '.', r == '_', r == '-':
-		default:
-			return false
-		}
-	}
-	return true
+	return redactValue(value, key)
 }
 
 func isBillingOrCostKey(key string) bool {

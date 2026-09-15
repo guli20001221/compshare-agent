@@ -30,7 +30,6 @@ func TestAgentAuthorsOrdinaryReadResultWithoutServerInjection(t *testing.T) {
 	require.Contains(t, reply, "train-007")
 	require.Len(t, eng.platformReadEvidenceThisTurn, 1,
 		"ordinary reads keep proof for server-side checks without adding a server-rendered response block")
-	require.Empty(t, eng.sensitiveRepliesThisTurn)
 }
 
 func TestNaturalAssistantMessageEndsTurnWithoutFinishTool(t *testing.T) {

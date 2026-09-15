@@ -940,7 +940,6 @@ func TestChat_LLMError(t *testing.T) {
 }
 
 func TestChat_LLMRateLimitDenialSkipsLLM(t *testing.T) {
-	const sensitiveReply = "Jupyter Token：server-owned-token"
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "should not be used"}}}
 	limiter := &scriptedRateLimiter{decisions: []governance.Decision{{
 		Allowed:     false,
@@ -949,11 +948,6 @@ func TestChat_LLMRateLimitDenialSkipsLLM(t *testing.T) {
 		Err:         governance.ErrRateLimited,
 	}}}
 	eng := NewWithDeps(mock, &mockExecutor{}, nil)
-	limiter.before = func(governance.Request) {
-		// Model a protected read that completed before the next Agent call was
-		// denied. The terminal message must not discard its server-owned result.
-		eng.sensitiveRepliesThisTurn = []string{sensitiveReply}
-	}
 	eng.rateLimiter = limiter
 	eng.rateLimitSubject = "sha256:subject"
 	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
@@ -961,7 +955,7 @@ func TestChat_LLMRateLimitDenialSkipsLLM(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "hello", noopStep)
 
 	require.NoError(t, err)
-	assert.Equal(t, sensitiveReply+"\n\n请求过于频繁，请稍后再试。", reply)
+	assert.Equal(t, "请求过于频繁，请稍后再试。", reply)
 	assert.Empty(t, mock.calls, "denied LLM request must not call LLM")
 	require.Len(t, limiter.requests, 1)
 	assert.Equal(t, governance.ClassLLM, limiter.requests[0].Class)
@@ -1450,34 +1444,6 @@ func TestVerbatimBlockSurvivesALaterModelFailure(t *testing.T) {
 		"model history keeps only the amount-free completion marker")
 }
 
-func TestVerbatimBlockFailureStillDeliversServerOwnedSensitiveReply(t *testing.T) {
-	const sensitiveReply = "Jupyter Token：server-owned-token"
-	model := &verbatimThenFailingLLM{}
-	eng := NewWithDeps(model, billingStreamExecutor(), nil)
-	limiter := &scriptedRateLimiter{}
-	limiter.before = func(governance.Request) {
-		eng.sensitiveRepliesThisTurn = []string{sensitiveReply}
-	}
-	eng.rateLimiter = limiter
-	eng.messages = []openai.ChatCompletionMessage{
-		{Role: openai.ChatMessageRoleSystem, Content: "test"},
-	}
-
-	var deltas []string
-	reply, err := eng.ChatWithOptions(context.Background(), "核验费用并保留刚返回的登录信息", noopStep, ChatOptions{
-		OnTextDelta: func(d string) { deltas = append(deltas, d) },
-	})
-	require.NoError(t, err)
-	require.Len(t, eng.verbatimBlocksThisTurn, 1)
-
-	expected := eng.verbatimBlocksThisTurn[0] + verbatimBlockSeparator + sensitiveReply
-	assert.Equal(t, expected, reply)
-	assert.Equal(t, reply, strings.Join(deltas, ""),
-		"the common delivery boundary must preserve both server-owned results after the later model failure")
-	assert.Equal(t, verbatimBillingHistoryCompletion, eng.messages[len(eng.messages)-1].Content,
-		"neither the billing figures nor the sensitive reply enter model history")
-}
-
 func TestDiagnoseBillingConsumesMultipleReadExpensiveQuotaUnits(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
@@ -1882,7 +1848,7 @@ func TestChat_InstanceAccessTokenReturnsThroughTheCentralAgent(t *testing.T) {
 		{ToolCalls: []openai.ToolCall{
 			toolCall("token", "ReadCapability_instance_access", `{"targets":[{"type":"uhost_id_user_input","value":"uhost-token-001"}],"access_type":"jupyter_token"}`),
 		}},
-		{Content: "Token 已获取。"},
+		{Content: "JupyterLab 地址：http://1.2.3.4:8888/lab?token=" + token},
 	}}
 	eng := NewWithDeps(mock, executor, nil)
 	eng.messages = []openai.ChatCompletionMessage{
@@ -1892,9 +1858,10 @@ func TestChat_InstanceAccessTokenReturnsThroughTheCentralAgent(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "查询 uhost-token-001 的 Jupyter Token", noopStep)
 	require.NoError(t, err)
 	require.Len(t, mock.calls, 2)
-	assert.Contains(t, reply, token)
 	toolResult := mock.calls[1].Messages[len(mock.calls[1].Messages)-1].Content
-	assert.NotContains(t, toolResult, token, "the opaque value must not pass through the model")
+	assert.Contains(t, toolResult, token, "the token is evidence the Agent reads, so it can compose the address the user actually needs")
+	assert.Equal(t, "JupyterLab 地址：http://1.2.3.4:8888/lab?token="+token, reply,
+		"the Agent's own answer is delivered as composed; the server prepends nothing")
 	assert.Contains(t, executor.calls, "DescribeCompShareInstance")
 	assert.Contains(t, executor.calls, "DescribeCompShareJupyterToken")
 }
@@ -2072,7 +2039,6 @@ func TestNormalizeMsg(t *testing.T) {
 // A budget limit closes the tool loop after the completed call/result pair.
 // The final answer uses that same conversation, without any further tools.
 func TestChatTokenBudgetClosesToolsAfterTheCompletedObservation(t *testing.T) {
-	const sensitiveReply = "Jupyter Token：server-owned-token"
 	const finalAnswer = "实例查询暂时失败，当前无法确认配置。"
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{
@@ -2087,16 +2053,11 @@ func TestChatTokenBudgetClosesToolsAfterTheCompletedObservation(t *testing.T) {
 	eng := NewWithDeps(mock, &mockExecutorFn{fn: func(string, map[string]any) (map[string]any, error) {
 		return nil, fmt.Errorf("test upstream failure")
 	}}, nil)
-	limiter := &scriptedRateLimiter{}
-	limiter.before = func(governance.Request) {
-		eng.sensitiveRepliesThisTurn = []string{sensitiveReply}
-	}
-	eng.rateLimiter = limiter
 	eng.maxTokensPerTurn = 50000
 
 	reply, err := eng.Chat(context.Background(), "4090什么配置", onStep)
 	require.NoError(t, err)
-	assert.Equal(t, sensitiveReply+"\n\n"+finalAnswer, reply)
+	assert.Equal(t, finalAnswer, reply)
 	require.Len(t, mock.calls, 2)
 	require.Empty(t, mock.calls[1].Tools)
 	require.Contains(t, renderTestMessages(mock.calls[1].Messages), "4090什么配置")

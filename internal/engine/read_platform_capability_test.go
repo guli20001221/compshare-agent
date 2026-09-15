@@ -157,10 +157,9 @@ func TestInstanceAccessDiagnosisCanContinueToAgentAndKnowledge(t *testing.T) {
 	require.Equal(t, platform.ReadStatusHandled, observation.Status)
 	require.NotNil(t, observation.Envelope)
 	require.Len(t, eng.platformReadEvidenceThisTurn, 1)
-	require.Empty(t, eng.sensitiveRepliesThisTurn)
 }
 
-func TestJupyterTokenReturnsOpaqueObservation(t *testing.T) {
+func TestJupyterTokenIsEvidenceForTheAgent(t *testing.T) {
 	const token = "stable-console-visible-token"
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
@@ -179,14 +178,13 @@ func TestJupyterTokenReturnsOpaqueObservation(t *testing.T) {
 		capability.ReadToolName(intent.IntentInstanceAccess),
 		`{"targets":[{"type":"uhost_id_user_input","value":"uhost-1"}],"access_type":"jupyter_token"}`), noopStep)
 
-	require.False(t, out.deliversToUser(), "an opaque value must not terminate the central Agent")
+	require.False(t, out.deliversToUser(), "a read result is evidence for the Agent, not a reason to terminate its turn")
 	var observation ReadCapabilityObservation
 	require.NoError(t, json.Unmarshal([]byte(out.Observation), &observation))
 	require.Equal(t, platform.ReadStatusHandled, observation.Status)
-	require.Contains(t, observation.Guidance, "敏感访问凭据")
-	require.NotContains(t, out.Observation, token, "the opaque value must not pass through the model")
+	require.Empty(t, observation.Guidance)
+	require.Contains(t, out.Observation, token, "the token reaches the Agent like any other fact, so it can answer with the token or a URL that carries it")
 	require.Len(t, eng.platformReadEvidenceThisTurn, 1)
-	require.Contains(t, eng.sensitiveRepliesThisTurn[0], token)
 }
 
 func TestConcreteReadReturnsStructuredMissingFieldsBeforeHandler(t *testing.T) {

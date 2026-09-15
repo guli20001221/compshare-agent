@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/compshare-agent/internal/governance"
 	"github.com/compshare-agent/internal/knowledge"
 	"github.com/compshare-agent/internal/llm"
 	openai "github.com/sashabaranov/go-openai"
@@ -118,7 +117,6 @@ func TestChat_RoundCeiling_RecoversFromGatheredEvidence(t *testing.T) {
 }
 
 func TestChat_RoundCeiling_DoesNotGuessFromInstanceKeywords(t *testing.T) {
-	const sensitiveReply = "Jupyter Token：server-owned-token"
 	const finalAnswer = "尚未取得足够的目标详情，暂时不能确认该实例当前状态。"
 	responses := make([]llm.ChatResponse, maxReActRounds)
 	for i := range responses {
@@ -157,17 +155,12 @@ func TestChat_RoundCeiling_DoesNotGuessFromInstanceKeywords(t *testing.T) {
 	}}
 	model := &mockLLM{responses: responses}
 	eng := NewWithDeps(model, exec, nil)
-	limiter := &scriptedRateLimiter{}
-	limiter.before = func(governance.Request) {
-		eng.sensitiveRepliesThisTurn = []string{sensitiveReply}
-	}
-	eng.rateLimiter = limiter
 	eng.messages = []openai.ChatCompletionMessage{{Role: openai.ChatMessageRoleSystem, Content: "test"}}
 	require.NoError(t, eng.registry.SyncFromDescribe(describe, "test"))
 
 	reply, err := eng.Chat(context.Background(), "claude-write-test 这台状态怎么样", noopStep)
 	require.NoError(t, err)
-	assert.Equal(t, sensitiveReply+"\n\n"+finalAnswer, reply)
+	assert.Equal(t, finalAnswer, reply)
 	require.Len(t, model.calls, maxReActRounds+1)
 	finalRequest := model.calls[maxReActRounds]
 	require.Empty(t, finalRequest.Tools)

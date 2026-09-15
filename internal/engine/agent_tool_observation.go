@@ -158,8 +158,7 @@ func searchKnowledgeHasNoCitableEvidence(action string, object map[string]any) b
 }
 
 // toolObservationData removes competing root-level control fields. Resolver
-// validation reasons remain available so the Agent can correct its arguments;
-// resolvedActionForModel has already applied the shared credential redaction.
+// validation reasons remain available so the Agent can correct its arguments.
 func toolObservationData(object map[string]any) map[string]any {
 	data := make(map[string]any, len(object))
 	for key, value := range object {

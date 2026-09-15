@@ -1,10 +1,6 @@
 package platform
 
-import (
-	"fmt"
-
-	"github.com/compshare-agent/internal/security"
-)
+import "fmt"
 
 // mapSliceAt returns m[key].([]any) if shape matches, nil otherwise.
 func MapSliceAt(m map[string]any, key string) []any {
@@ -22,6 +18,8 @@ func MapSliceAt(m map[string]any, key string) []any {
 	return arr
 }
 
+// SafeString returns m[key] as display text, or "" when the map or key is
+// absent.
 func SafeString(m map[string]any, key string) string {
 	if m == nil {
 		return ""
@@ -30,12 +28,7 @@ func SafeString(m map[string]any, key string) string {
 	if !ok {
 		return ""
 	}
-	switch typed := v.(type) {
-	case string:
-		return SafeValue(typed)
-	default:
-		return SafeValue(typed)
-	}
+	return SafeValue(v)
 }
 
 // nestedValue extracts the "Value" field from a nested map response shape like
@@ -54,16 +47,9 @@ func NestedValue(m map[string]any, key string) string {
 	return SafeValue(v)
 }
 
+// SafeValue formats any decoded JSON value as display text without panicking
+// on nil or on a non-string scalar. The value itself is carried as the
+// platform returned it.
 func SafeValue(v any) string {
-	return fmt.Sprint(security.RedactForLLM(v))
-}
-
-// SafeValueMap redacts a whole map for LLM consumption, returning an empty map
-// when redaction does not preserve the map shape. It is the map-level companion
-// to SafeValue, used by the read-projection monitor path's raw-payload fallback.
-func SafeValueMap(v map[string]any) map[string]any {
-	if redacted, ok := security.RedactForLLM(v).(map[string]any); ok {
-		return redacted
-	}
-	return map[string]any{}
+	return fmt.Sprint(v)
 }

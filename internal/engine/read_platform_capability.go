@@ -171,11 +171,6 @@ func (e *Engine) buildReadObservation(action, capabilityLabel string, result cap
 		(result.Status == platform.ReadStatusHandled || (result.Status == platform.ReadStatusEmpty && canAssertAbsence)) {
 		e.recordPlatformReadEvidence(capabilityLabel, result)
 	}
-	if result.Status == platform.ReadStatusHandled && !result.NeedsClarification &&
-		strings.TrimSpace(result.SensitiveReply) != "" {
-		e.sensitiveRepliesThisTurn = append(e.sensitiveRepliesThisTurn, strings.TrimSpace(result.SensitiveReply))
-		observation.Guidance = "已取得敏感访问凭据，系统会安全展示给用户；不要推测、复述或要求用户再次提供该凭据。"
-	}
 	if result.Status != platform.ReadStatusHandled || result.NeedsClarification {
 		observation.Guidance = result.Reply
 	}

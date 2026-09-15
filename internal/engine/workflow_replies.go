@@ -214,10 +214,10 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 		result.Message = security.RedactKnownSecretsInText(result.Message, workflowSecretValues(finalParams))
 		missing := result.MissingSlots
 		if len(missing) > 0 {
-			payload, _ := json.Marshal(security.RedactForLLM(map[string]any{
+			payload, _ := json.Marshal(map[string]any{
 				"success": false, "operation": action, "missing_slots": missing,
 				"message": result.Message,
-			}))
+			})
 			onStep(StepEvent{Type: StepToolResult, Action: action, Source: observability.ToolSourceMainReAct, Message: "工作流返回结构化缺参结果，由中央 Agent 结合上下文处理"})
 			return observed(string(payload))
 		}

@@ -60,7 +60,7 @@ func TestMonitorSummaryRendererEmptyMetricsRendersAvailableCurrentValues(t *test
 		"Memory": float64(64),
 		"VRAM":   "20GB",
 		"Nested": map[string]any{
-			"Authorization": "Bearer " + strings.Repeat("c", 25),
+			"Remark": "Bearer " + strings.Repeat("c", 25),
 		},
 	}
 
@@ -72,7 +72,8 @@ func TestMonitorSummaryRendererEmptyMetricsRendersAvailableCurrentValues(t *test
 	assert.Contains(t, summary, "87")
 	assert.Contains(t, summary, "Memory")
 	assert.Contains(t, summary, "VRAM")
-	assert.NotContains(t, summary, strings.Repeat("c", 25))
+	assert.Contains(t, summary, "Nested.Remark：Bearer "+strings.Repeat("c", 25),
+		"the raw-payload fallback renders every scalar as the platform returned it")
 }
 
 func TestMonitorSummaryRendererFiltersRequestedMetrics(t *testing.T) {

@@ -18,9 +18,9 @@ import (
 // clears the same canonical boundary as replayed history, an over-long body is
 // truncated behind a marker, and whole rounds are shed to fit the budget. What
 // crosses a persistence boundary and is later fed back to a model is a bounded
-// replay by design: restoring byte-parity with the live turn would put a
-// credential-named field the model-visible observation already dropped back
-// into a stored row.
+// replay by design: restoring byte-parity with the live turn would put an
+// adapter marker the assistant row already replaced back into a stored row and
+// let one oversized observation crowd out the rest of the turn.
 //
 // Ordering and pairing are part of the contract: a stored transcript must be
 // replayable as well-formed chat messages, so an assistant message carrying
@@ -154,9 +154,9 @@ func buildTranscriptV1(messages []openai.ChatCompletionMessage) *TranscriptV1 {
 		// Ordinary replayed history reaches the model through the same
 		// role-specific canonicalConversationText boundary. The transcript is a
 		// second road to the same place, so it must use that exact form — otherwise
-		// a Password field stripped from the model-visible observation would
-		// survive verbatim in metadata and be handed back on the next turn, with
-		// different forms of the same turn sitting in one row.
+		// an adapter marker replaced on the assistant row would survive verbatim
+		// in metadata and be handed back on the next turn, with different forms
+		// of the same turn sitting in one row.
 		converted.Content, converted.Truncated, converted.OrigRunes = boundContent(canonicalConversationText(msg.Role, msg.Content))
 		if msg.Role == openai.ChatMessageRoleTool {
 			converted.Name = nameByCallID[msg.ToolCallID]
@@ -165,7 +165,7 @@ func buildTranscriptV1(messages []openai.ChatCompletionMessage) *TranscriptV1 {
 			converted.ToolCalls = append(converted.ToolCalls, TranscriptToolCall{
 				ID:        call.ID,
 				Name:      call.Function.Name,
-				Arguments: boundToolArguments(safeToolConversationText(call.Function.Arguments)),
+				Arguments: boundToolArguments(call.Function.Arguments),
 			})
 		}
 		out = append(out, converted)
@@ -663,15 +663,15 @@ func (e *Engine) captureTurnTranscript() {
 	//
 	// This runs on the response path — the deferred call returns before the HTTP
 	// layer writes `done` — and the storage limits below do not bound it. They
-	// bound the OUTPUT: a tool observation is decoded whole for the field
-	// boundary, then converted to []rune (a full copy) and only then bounded. A
-	// single pathological tool result therefore costs its full size in decode and
-	// copy no matter how little of it is kept, and the user waits for that.
+	// bound the OUTPUT: each message is converted to []rune (a full copy) and
+	// only then bounded. A single pathological tool result therefore costs its
+	// full size in copy no matter how little of it is kept, and the user waits
+	// for that.
 	//
 	// Over the limit the turn is recorded as Oversized and nothing is persisted.
-	// Deliberately not "truncate the raw text instead": a JSON body cut at a byte
-	// offset no longer decodes, so its credential-named fields would be stored as
-	// plain text, which is the one outcome worse than storing nothing.
+	// Deliberately not "truncate the raw text instead": a byte-offset cut can
+	// split a multibyte character and stores a body that says nothing about
+	// having been shortened, which is worse than storing nothing.
 	if oversizedRawTurn(e.messages) {
 		if start := currentTurnStart(e.messages); start >= 0 {
 			if user, assistant := turnEndpoints(e.messages[start:]); user != "" {

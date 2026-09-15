@@ -2,7 +2,6 @@ package engine
 
 import (
 	"encoding/json"
-	"strings"
 	"testing"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -10,36 +9,22 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestCanonicalToolJSONRedactsNamedFieldsWithoutBreakingEscapes(t *testing.T) {
-	const raw = `{"body":"credential.PrivateKey = \"synthetic-private-value\"\n继续阅读文档","nested":[{"Password":"synthetic-password","id":9007199254740993}],"amount":1.2300e+12}`
-
-	got := canonicalConversationText(openai.ChatMessageRoleTool, raw)
-	require.True(t, json.Valid([]byte(got)), "field redaction must not turn a valid tool observation into broken JSON")
-	assert.NotContains(t, got, "synthetic-password")
-	assert.Contains(t, got, "9007199254740993", "large numeric IDs must not pass through float64")
-	assert.Contains(t, got, "1.2300e+12", "JSON number spelling must survive required re-encoding")
-	var decoded struct {
-		Body string `json:"body"`
-	}
-	require.NoError(t, json.Unmarshal([]byte(got), &decoded))
-	assert.Equal(t, "credential.PrivateKey = \"synthetic-private-value\"\n继续阅读文档", decoded.Body,
-		"only a credential-named field is redacted; prose inside another field is not scanned")
-	assert.Equal(t, got, canonicalConversationText(openai.ChatMessageRoleTool, got), "replay redaction must be idempotent")
-}
-
-func TestCanonicalToolJSONPreservesTextWhenNoNamedFieldChanges(t *testing.T) {
+// A tool observation is replayed byte-for-byte: no field is renamed, removed or
+// re-encoded, so number spelling, key order and whitespace survive a restart and
+// the model reads on the next turn exactly what it read on this one.
+func TestCanonicalToolJSONIsReplayedVerbatim(t *testing.T) {
 	for _, raw := range []string{
+		`{"body":"credential.PrivateKey = \"synthetic-private-value\"\n继续阅读文档","nested":[{"Password":"synthetic-password","id":9007199254740993}],"amount":1.2300e+12}`,
 		" {\n  \"id\" : 9007199254740993, \"body\":\"alice@example.com 13800138000 <docs>\", \"project\":\"12345678-1234-1234-1234-1234567890ab\"\n}\n",
 		`[null,true,1.2300e+12,{"content":"C:\\models\\example"}]`,
-		`{"body":"credential.PrivateKey = \"synthetic-private-value\""}`,
 		"plain text Password=" + "synthetic-password and TCP 8188",
 		`{"body":"token=synthetic-token"} trailing prose`,
 	} {
-		assert.Equal(t, raw, canonicalConversationText(openai.ChatMessageRoleTool, raw), "an observation without a credential-named field keeps its formatting and text")
+		assert.Equal(t, raw, canonicalConversationText(openai.ChatMessageRoleTool, raw))
 	}
 }
 
-func TestCanonicalToolJSONHotColdReplayKeepsSafeArgumentsAndCompletedObservation(t *testing.T) {
+func TestCanonicalToolJSONHotColdReplayKeepsArgumentsAndCompletedObservation(t *testing.T) {
 	const question = "查 TCP 8188 的开放方法，只读"
 	const args = `{"query":"credential.PrivateKey = \"synthetic-arg-text\"","id":9007199254740993,"AccessKey":"synthetic-arg-key"}`
 	const observation = `{"action":"SearchKnowledge","data":{"body":"credential.PrivateKey = \"synthetic-result-text\"\nTCP 8188","AccessKey":"synthetic-access-key","id":9007199254740993}}`
@@ -53,9 +38,6 @@ func TestCanonicalToolJSONHotColdReplayKeepsSafeArgumentsAndCompletedObservation
 			})
 			require.True(t, stats.Attempted)
 			require.NotEmpty(t, metadata)
-			for _, secret := range []string{"synthetic-arg-key", "synthetic-access-key"} {
-				assert.NotContains(t, string(metadata), secret)
-			}
 
 			cold := rebuildCold(question, answer, metadata)
 			hotMessages := assembleNextTurn(hot, "继续刚才 TCP 8188 的问题，不执行任何命令")
@@ -70,17 +52,12 @@ func TestCanonicalToolJSONHotColdReplayKeepsSafeArgumentsAndCompletedObservation
 					}
 					calls++
 					require.True(t, json.Valid([]byte(call.Function.Arguments)))
-					assert.Contains(t, call.Function.Arguments, "9007199254740993")
-					assert.Contains(t, call.Function.Arguments, "synthetic-arg-text", "query text is not a credential field")
-					assert.NotContains(t, call.Function.Arguments, "synthetic-arg-key")
+					assert.Equal(t, args, call.Function.Arguments, "the recorded call carries the arguments the model wrote")
 				}
 				if msg.Role == openai.ChatMessageRoleTool && msg.ToolCallID == "read-only-call" {
 					results++
 					require.True(t, json.Valid([]byte(msg.Content)))
-					assert.Contains(t, msg.Content, "TCP 8188")
-					assert.Contains(t, msg.Content, "9007199254740993")
-					assert.Contains(t, msg.Content, "synthetic-result-text")
-					assert.False(t, strings.Contains(msg.Content, "synthetic-access-key"))
+					assert.Equal(t, observation, msg.Content, "the recorded observation is the one the model read")
 				}
 			}
 			assert.Equal(t, 1, calls, "the recorded call must remain visible exactly once, not disappear after broken-argument rejection")
