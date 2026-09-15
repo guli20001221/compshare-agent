@@ -36,7 +36,31 @@ const (
 	// maxWSMessageBytes must fit screenshot uploads. OCR accepts up to 10 MiB raw
 	// image bytes; base64 plus JSON framing needs extra room on the WebSocket.
 	maxWSMessageBytes int64 = 20 * 1024 * 1024
+
+	// wsFrameWriteTimeout bounds one outbound frame. Frames are small (tokens,
+	// steps, cards), so a write that does not complete in this time means the
+	// peer stopped reading, not that it is slow.
+	wsFrameWriteTimeout = 30 * time.Second
+
+	// wsMaxPongWait bounds how long a keepalive ping waits for its pong. A pong
+	// is a control frame the peer's WebSocket stack answers without application
+	// involvement, so a missing one within this time is a dead peer.
+	wsMaxPongWait = 10 * time.Second
 )
+
+// wsDeadlines bounds each outbound operation independently of the connection
+// lifetime. The pong wait never exceeds the keepalive interval: a ping must be
+// answered before the next one is due, or the pings themselves would queue on
+// the write side.
+func (h *Handlers) wsDeadlines() wsx.Deadlines {
+	pong := wsMaxPongWait
+	if h != nil && h.cfg != nil {
+		if interval := h.cfg.Agent.HTTP.SSEKeepaliveInterval; interval > 0 && interval < pong {
+			pong = interval
+		}
+	}
+	return wsx.Deadlines{Frame: wsFrameWriteTimeout, Pong: pong}
+}
 
 // wsConnLifetime is the sum of the machine budget and independent human
 // confirmation allowance. It is not clamped below the configured SSH budget.
@@ -122,7 +146,14 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 	defer h.unregisterWebSocket(wsID)
 	defer close(wsDone)
 
-	writer := wsx.New(ctx, conn)
+	// A stalled write or an unanswered ping is a peer that is gone. Ending the
+	// connection context here makes the turn observe a client disconnect within
+	// one deadline instead of holding the finished work until the lifetime
+	// backstop, where it would be recorded as a timeout with nothing to show.
+	writer := wsx.New(ctx, conn, h.wsDeadlines(), func() {
+		log.Printf("websocket %s: peer stopped consuming frames; ending the turn as a client disconnect", connBase.RequestUUID)
+		cancel()
+	})
 	// One chat turn per socket. The frontend opens a fresh WebSocket per
 	// chatStream call and closes it on done/error (service.js), and the gateway
 	// mirrors that one-to-one, so a connection serves exactly one SendCSAgentChat

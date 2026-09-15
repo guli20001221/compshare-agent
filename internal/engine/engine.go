@@ -1624,6 +1624,25 @@ func friendlyActionName(action string) string {
 	return action
 }
 
+// notExecutedReply phrases a confirmation card that did not end in approval.
+// Every such card reaches the call site as the same refusal, so the sentence
+// takes the card's terminal reason: a user who ran out of time or lost the
+// connection did not cancel, and telling them so sends them to retry rather
+// than to wonder what they clicked.
+func notExecutedReply(action, terminalReason string) string {
+	name := friendlyActionName(action)
+	switch terminalReason {
+	case observability.ConfirmationReasonTimeout:
+		return fmt.Sprintf("确认卡超时未收到回应，%s操作未执行。如需继续，请重新发送指令并确认。", name)
+	case observability.ConfirmationReasonClientDisconnect:
+		return fmt.Sprintf("连接已中断，%s操作未执行。如需继续，请重新发送指令并确认。", name)
+	case observability.ConfirmationReasonDeliveryFailed, observability.ConfirmationReasonBrokerCancelled:
+		return fmt.Sprintf("确认卡未能送达，%s操作未执行。如需继续，请重新发送指令并确认。", name)
+	default:
+		return fmt.Sprintf("好的，%s操作未执行。如需继续，请重新发送指令并确认。", name)
+	}
+}
+
 func friendlyToolErrorMessage(err error) (string, bool) {
 	var friendly friendlyEngineError
 	if errors.As(err, &friendly) {
@@ -1975,9 +1994,9 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 			return deterministicReply(msg)
 		}
 		if errors.Is(err, tools.ErrUserDeclined) {
-			// ErrUserDeclined also covers unresolved confirmations, so do not claim
-			// that the user explicitly cancelled.
-			msg := fmt.Sprintf("好的，%s操作未执行。如需继续，请重新发送指令并确认。", friendlyActionName(action))
+			// ErrUserDeclined also covers unresolved confirmations; the card's
+			// terminal reason phrases which it was.
+			msg := notExecutedReply(action, e.lastConfirmationTerminalReason)
 			agentResult := tools.AgentToolResultFromError(action, err, tools.AgentToolMeta{})
 			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceMainReAct, Message: msg, ErrorCode: agentResult.Error.Code})
 			return deterministicReply(msg)

@@ -24,6 +24,24 @@ import (
 
 const abortedAssistantMessage = "本次回复已中止，未完整生成。"
 
+// abortedTurnContent is the assistant row of a turn whose transport ended before
+// delivery. A model answer produced for a client that is gone is not delivered
+// and not recorded; the host-owned facts of the turn are. A platform write that
+// committed is still true after the disconnect and is the one thing the user
+// must find when they come back — an instance that exists and bills must not
+// read as "nothing happened". The in-instance run's settled activity follows for
+// the same reason.
+func abortedTurnContent(committedWrites, instanceOps string) string {
+	parts := []string{abortedAssistantMessage}
+	if committedWrites = strings.TrimSpace(committedWrites); committedWrites != "" {
+		parts = append(parts, "本轮已完成的操作：\n"+committedWrites)
+	}
+	if instanceOps = strings.TrimSpace(instanceOps); instanceOps != "" {
+		parts = append(parts, instanceOps)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
 // metaEvent is the first frame emitted when a chat turn starts streaming.
 type metaEvent struct {
 	RequestID string `json:"RequestId"`
@@ -551,21 +569,21 @@ func (h *Handlers) chatStream(streamCtx context.Context, sw streamWriter, base B
 		ttftMs = int(firstToken.Sub(start).Milliseconds())
 	}
 
-	// Client disconnected.
-	if errors.Is(chatErr, context.Canceled) || errors.Is(streamCtx.Err(), context.Canceled) {
+	// The transport ended before the reply could be delivered: the client went
+	// away (cancel), or the connection reached its lifetime backstop (deadline).
+	// Either way nothing more can reach this client, and a late model answer is
+	// not delivered. What stays true is what the turn already did.
+	if errors.Is(chatErr, context.Canceled) || streamCtx.Err() != nil {
 		terminalErr := chatErr
-		if errors.Is(streamCtx.Err(), context.Canceled) {
+		if streamCtx.Err() != nil {
 			// A tool may have converted its runner error into a deterministic
-			// reply. The transport still ended by cancellation, even when the
-			// engine returned nil; trace and message persistence must agree.
+			// reply. The transport still ended, even when the engine returned nil;
+			// trace and message persistence must agree.
 			terminalErr = streamCtx.Err()
 		}
 		finishTrace(terminalErr)
 		agent.MarkLastTurnInterrupted()
-		content := abortedAssistantMessage
-		if summary := agent.InstanceOpsInterruptionSummary(); summary != "" {
-			content += "\n\n" + summary
-		}
+		content := abortedTurnContent(agent.CommittedWriteSummary(), agent.InstanceOpsInterruptionSummary())
 		persistErr := h.persistAssistant(base.Owner, assistantMsgID,
 			store.AssistantPatch{Content: security.RedactAssistantConversationText(content), Status: "aborted"})
 		h.persistTurnTranscript(base.Owner, assistantMsgID, agent, persistErr)
