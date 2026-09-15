@@ -178,7 +178,7 @@ EIP is diagnostic-only and is never selected as a dial target.
 If a browser disconnects during a diagnosis, the next turn may show a bounded
 deterministic notice. Ordinary commands are never replayed. When one approved
 managed background job emits its opaque handle, SessionState V11 persists only
-the instance ID, job ID, lifecycle state, redacted purpose and timestamp. A
+the instance ID, job ID, lifecycle state, bounded purpose and timestamp. A
 later diagnosis on that instance can poll the handle after a browser disconnect,
 Engine LRU eviction or process restart; neither the command nor its output enters
 conversation/audit storage. Up to 32 unresolved handles are tracked independently;
@@ -190,7 +190,7 @@ a stable opaque workdir UUID, and a content-free SHA-256 high-water mark for the
 bridged into it. The SDK transcript stays in its existing local ephemeral store
 and never enters PostgreSQL. A fresh inner session receives the canonical bounded
 conversation — user and assistant endpoints plus the completed tool observations
-of each turn, in order and already redacted — and the current user turn; a resume
+of each turn, in order and in their canonical form — and the current user turn; a resume
 receives only the new role-labelled suffix. The current turn's unanswered
 `DiagnoseInstanceInternals` call and its planner arguments are never part of that
 stream. A different instance, changed prompt/tool contract,
@@ -245,10 +245,13 @@ business fields use the existing PascalCase API contract.
 
 Per-session engines live in `internal/agentpool` (bounded LRU with idle expiry).
 Persisted user/assistant rows rebuild a cold engine, and assistant metadata
-reattaches the canonical tool transcript. Credential redaction must remain
+reattaches the canonical tool transcript. Conversation text is persisted and
+replayed as the user typed it and as the assistant delivered it; no text is
+scanned for credential-looking values, and the only rewrite of assistant text
+is the adapter-marker replacement in `security.PersistedAssistantText`.
+Credential-named fields in structured tool data are redacted by field name,
 centralized in `internal/security` and `internal/sanitizer`, with the same
-role-specific representation on hot and cold paths. Ordinary phone numbers,
-email addresses and project IDs remain intact.
+representation on hot and cold paths.
 
 The store is PostgreSQL via `database/sql` and `lib/pq`. Historical names such
 as `mysql`, `MYSQL_DSN`, `OpenMySQL` and `MySQLMessageStore` remain API/config

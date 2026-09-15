@@ -91,13 +91,12 @@ func TestResponseGatewayNeverShipsToolProtocolMarkup(t *testing.T) {
 	require.NotContains(t, reply, "DSML")
 }
 
-func TestResponseGatewayLetsTheUserCopyOnlyTheirCurrentSignedURL(t *testing.T) {
-	const signedURL = "https://civitai.example/download?Authorization=signed-token-abcdefghijklmnopqrst"
-	user := "请给这个链接生成下载命令：" + signedURL
-	draft := "执行：curl -L '" + signedURL + "' -o model.safetensors"
+func TestResponseGatewayDeliversCommandsWithCredentialShapedValuesAsComposed(t *testing.T) {
+	const draft = "执行：curl -L 'https://civitai.example/download?Authorization=signed-token-abcdefghijklmnopqrst' -o model.safetensors\n" +
+		"然后 export OPENAI_API_KEY=\"sk-example-0123456789\"；os.environ[\"X\"] 也要设置。"
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 
-	reply := eng.finalizeResponse(context.Background(), user, draft)
+	reply := eng.finalizeResponse(context.Background(), "帮我写下载命令", draft)
 
-	require.Equal(t, draft, reply)
+	require.Equal(t, draft, reply, "a runnable command is delivered whole; nothing in it is replaced by a placeholder")
 }

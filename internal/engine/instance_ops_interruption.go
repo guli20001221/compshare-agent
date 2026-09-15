@@ -7,7 +7,6 @@ import (
 
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/opscontext"
-	"github.com/compshare-agent/internal/security"
 )
 
 // An interrupted diagnosis may already have changed the instance. The next turn
@@ -76,11 +75,11 @@ func terminalInstanceOpsJobState(state string) bool {
 	}
 }
 
-// normalizePersistedInstanceOpsJobPurpose applies the conversation persistence
-// secret/PII boundary, collapses whitespace and bounds by runes. The lifecycle
-// protocol never supplies command text to this function.
+// normalizePersistedInstanceOpsJobPurpose collapses whitespace and bounds the
+// purpose by runes. The lifecycle protocol never supplies command text to this
+// function.
 func normalizePersistedInstanceOpsJobPurpose(purpose string) string {
-	purpose = strings.Join(strings.Fields(security.RedactUserConversationText(purpose)), " ")
+	purpose = strings.Join(strings.Fields(purpose), " ")
 	runes := []rune(purpose)
 	if len(runes) > maxPersistedInstanceOpsJobPurposeRunes {
 		purpose = string(runes[:maxPersistedInstanceOpsJobPurposeRunes])

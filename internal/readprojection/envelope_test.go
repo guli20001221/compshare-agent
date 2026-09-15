@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestBuildResourceEnvelopeIsStableAndCustomerSafe(t *testing.T) {
+func TestBuildResourceEnvelopeIsStable(t *testing.T) {
 	instances := []entity.InstanceSnapshot{
 		{
 			UHostId:    "uhost-b",
@@ -67,7 +67,8 @@ func TestBuildResourceEnvelopeIsStableAndCustomerSafe(t *testing.T) {
 	assertEnvelopeFact(t, env, "uhost-a", "state", "Running")
 	assertEnvelopeFact(t, env, "uhost-a", "charge_type", "Postpay")
 	assertEnvelopeFact(t, env, "uhost-b", "auto_renew", "No")
-	assertEnvelopeFact(t, env, "uhost-b", "name", "Authorization: Bearer [REDACTED]")
+	// An instance name is a name, whatever the user typed into it.
+	assertEnvelopeFact(t, env, "uhost-b", "name", "Authorization: Bearer "+strings.Repeat("b", 25))
 	assertNoEnvelopeFact(t, env, "uhost-a", "expire_time")
 	assert.NotContains(t, hash, strings.Repeat("b", 25))
 }

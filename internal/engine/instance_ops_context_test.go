@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/opscontext"
-	"github.com/compshare-agent/internal/security"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
 )
@@ -185,7 +184,7 @@ func TestInstanceOpsConversationAnchorIsStableAcrossOCRHotAndColdContinuation(t 
 	continued := &Engine{
 		turnState: turnState{lastUserMsg: "继续修复"},
 		messages: []openai.ChatCompletionMessage{
-			{Role: openai.ChatMessageRoleUser, Content: security.RedactUserConversationText(wrapped)},
+			{Role: openai.ChatMessageRoleUser, Content: wrapped},
 			{Role: openai.ChatMessageRoleAssistant, Content: "已定位到容器设备注入异常。"},
 			{Role: openai.ChatMessageRoleUser, Content: "继续修复"},
 		},
@@ -246,14 +245,15 @@ func TestInstanceOpsModelContextCarriesOneTypedAuthorizationAsAPrivateReference(
 	require.Len(t, got.ProbeAuthorizations, 1)
 	require.Equal(t, "current-user-authorization-1", got.ProbeAuthorizations[0].Reference)
 	require.Equal(t, secret, got.ProbeAuthorizations[0].Value)
-	require.NotContains(t, got.ConversationHistory[0].Content, secret)
-	require.NotContains(t, got.ConversationHistory[0].Content, "ocr-must-not-be-a-capability")
-	require.Contains(t, got.ConversationHistory[0].Content, "Authorization: Bearer [REDACTED]")
+	require.Contains(t, got.ConversationHistory[0].Content, "Authorization: "+secret,
+		"the typed header stays readable conversation; the reference is an additional private capability")
+	require.Contains(t, got.ConversationHistory[0].Content, "ocr-must-not-be-a-capability",
+		"screenshot text is reference evidence")
 
 	raw, err := json.Marshal(got)
 	require.NoError(t, err)
-	require.NotContains(t, string(raw), secret)
-	require.NotContains(t, string(raw), "current-user-authorization")
+	require.NotContains(t, string(raw), "current-user-authorization",
+		"the reference is exposed only through the probe tool schema, not the context JSON")
 }
 
 func TestInstanceOpsModelContextRefusesAmbiguousOrHistoricalAuthorizations(t *testing.T) {
@@ -267,12 +267,7 @@ func TestInstanceOpsModelContextRefusesAmbiguousOrHistoricalAuthorizations(t *te
 	}
 	got := eng.instanceOpsModelContext()
 	require.Empty(t, got.ProbeAuthorizations,
-		"two distinct current values have no deterministic endpoint association")
-	for _, message := range got.ConversationHistory {
-		require.NotContains(t, message.Content, "first-secret")
-		require.NotContains(t, message.Content, "second-secret")
-		require.NotContains(t, message.Content, "prior-secret")
-	}
+		"two distinct current values have no deterministic endpoint association, and a prior turn never mints one")
 }
 
 func conversationRoles(messages []opscontext.ConversationMessage) []string {

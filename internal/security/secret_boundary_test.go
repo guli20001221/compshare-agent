@@ -71,89 +71,48 @@ func TestRedactForTrace_HashesBillingAndMasksIP(t *testing.T) {
 	assert.Equal(t, "pagination-cursor", redacted["next_token"])
 }
 
-func TestRedactForLLM_RedactsBearerTokensInStringValues(t *testing.T) {
-	token := "eyJhbGciOiJIUzI1NiIs" + "InR5cCI6IkpXVCJ9.foo.bar"
-	input := map[string]any{
-		"Header":      "Authorization: " + "Bearer " + token,
-		"Description": "Bearer-Class GPU image is a normal product label",
-	}
-
-	redacted := RedactForLLM(input).(map[string]any)
-
-	assert.Equal(t, "Authorization: Bearer [REDACTED]", redacted["Header"])
-	assert.Equal(t, "Bearer-Class GPU image is a normal product label", redacted["Description"])
-}
-
-func TestRedactForLLM_RedactsOperationalTokensInStringValues(t *testing.T) {
+// Only the field name decides. A value is never scanned for credential-looking
+// text: a JupyterLab URL, a Bearer header quoted in a description or a shell
+// snippet inside a remark reach the model exactly as the platform returned them.
+func TestRedactionIsDecidedByFieldNameNotByValueShape(t *testing.T) {
 	input := map[string]any{
 		"URL":         "http://1.2.3.4:8888?token=UCloud-CompShare-AbCd1234",
-		"Description": "use UCloud-CompShare-AbCd1234 as a one-time access value",
+		"Header":      "Authorization: Bearer " + "eyJhbGciOiJIUzI1NiIs" + "InR5cCI6IkpXVCJ9.foo.bar",
+		"Remark":      `export OPENAI_API_KEY="sk-remark-0123456789"; os.environ["X"]`,
+		"Description": "Bearer-Class GPU image is a normal product label",
 		"Nested": map[string]any{
 			"URL": "http://1.2.3.4:8888/lab?foo=bar&token=plain-token-123",
 		},
+		"Items": []any{"token: not-a-field-name"},
 	}
 
-	redacted := RedactForLLM(input).(map[string]any)
-
-	assert.Equal(t, "http://1.2.3.4:8888?token=[REDACTED]", redacted["URL"])
-	assert.Equal(t, "use UCloud-CompShare-[REDACTED] as a one-time access value", redacted["Description"])
-	nested := redacted["Nested"].(map[string]any)
-	assert.Equal(t, "http://1.2.3.4:8888/lab?foo=bar&token=[REDACTED]", nested["URL"])
-}
-
-func TestConversationTextPreservesOrdinaryInformationAndRedactsOnlyCredentials(t *testing.T) {
-	const ordinary = "手机 13800138000 邮箱 user@example.com 项目 12345678-1234-1234-1234-1234567890ab 身份证 110101199003078888 银行卡 4111111111111111"
-	secret := "conversation-canary-" + "0123456789"
-	for _, tc := range []struct {
-		name   string
-		redact func(string) string
-	}{
-		{"user", RedactUserConversationText},
-		{"assistant", RedactAssistantConversationText},
+	for name, redacted := range map[string]map[string]any{
+		"llm":   RedactForLLM(input).(map[string]any),
+		"trace": RedactForTrace(input).(map[string]any),
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, ordinary, tc.redact(ordinary))
-			got := tc.redact(ordinary + "\nAuthorization: Bearer " + secret)
-			assert.Contains(t, got, ordinary)
-			assert.NotContains(t, got, secret)
-			assert.Equal(t, got, tc.redact(got))
+		t.Run(name, func(t *testing.T) {
+			assert.Equal(t, input["URL"], redacted["URL"])
+			assert.Equal(t, input["Header"], redacted["Header"])
+			assert.Equal(t, input["Remark"], redacted["Remark"])
+			assert.Equal(t, input["Description"], redacted["Description"])
+			assert.Equal(t, input["Nested"], redacted["Nested"])
+			assert.Equal(t, input["Items"], redacted["Items"])
 		})
 	}
 }
 
-func TestRedactAssistantConversationTextMarksRedactedCommandsAsNonReusable(t *testing.T) {
-	const signedURL = "https://civitai.example/download?Authorization=signed-token-abcdefghijklmnopqrst"
-	raw := "直接复制执行：curl -L '" + signedURL + "' -o model.safetensors"
-
-	persisted := RedactAssistantConversationText(raw)
-
-	assert.NotContains(t, persisted, "signed-token-abcdefghijklmnopqrst")
-	assert.Contains(t, persisted, "Authorization=")
-	assert.Contains(t, persisted, redactedConversationCredentialNotice,
-		"a persisted redacted command must say that it cannot be copied after reload")
-	assert.Equal(t, persisted, RedactAssistantConversationText(persisted),
-		"the persisted notice must be idempotent across hot/cold replay boundaries")
-}
-
 func TestAssistantPersistenceRemovesThePrivateCustomerSupportMarker(t *testing.T) {
-	persisted := RedactAssistantConversationText(agentprotocol.FeishuCustomerSupportMarker)
-	assert.Equal(t, agentprotocol.CustomerSupportHistoryCompletion, persisted)
+	persisted := PersistedAssistantText("先看结论。" + agentprotocol.FeishuCustomerSupportMarker)
+	assert.Equal(t, "先看结论。"+agentprotocol.CustomerSupportHistoryCompletion, persisted)
 	assert.NotContains(t, persisted, agentprotocol.FeishuCustomerSupportMarker)
+	assert.Equal(t, persisted, PersistedAssistantText(persisted), "the persisted form is idempotent across hot/cold replay")
 }
 
-func TestRestoreUserProvidedCredentialURLsOnlyRestoresAnExactCurrentTurnEcho(t *testing.T) {
-	const signedURL = "https://civitai.example/download?Authorization=signed-token-abcdefghijklmnopqrst"
-	user := "请给我下载命令：" + signedURL
-	draft := "直接执行：curl -L '" + signedURL + "' -o model.safetensors"
-	redacted := RedactOperationalTokensInText(draft)
-
-	restored := RestoreUserProvidedCredentialURLs(redacted, user, draft)
-	assert.Equal(t, draft, restored, "the user can copy the complete command, including shell delimiters")
-
-	otherDraft := "直接执行：curl -L 'https://civitai.example/download?Authorization=other-token-abcdefghijklmnopqrst' -o model.safetensors"
-	other := RestoreUserProvidedCredentialURLs(RedactOperationalTokensInText(otherDraft), user, otherDraft)
-	assert.NotContains(t, other, signedURL, "a model-invented credential must never be replaced with the user's token")
-	assert.NotContains(t, other, "other-token-abcdefghijklmnopqrst")
+func TestPersistedAssistantTextKeepsCredentialShapedProseVerbatim(t *testing.T) {
+	const reply = "curl -L 'https://civitai.example/download?Authorization=signed-token-abcdefghijklmnopqrst' -o model.safetensors\n" +
+		"os.environ[\"OPENAI_API_KEY\"] = \"sk-example-0123456789\"，密码是 Abc12345 吗？"
+	assert.Equal(t, reply, PersistedAssistantText(reply),
+		"persistence does not rewrite prose: a reloaded command must be the command the user saw")
 }
 
 func TestRedactForLLM_RedactsOAuthStyleSecretKeys(t *testing.T) {
@@ -176,13 +135,14 @@ func TestRedactForLLM_RedactsOAuthStyleSecretKeys(t *testing.T) {
 	assert.Equal(t, "pagination-cursor", redacted["next_token"])
 }
 
-func TestRedactKnownSecretsInText_RedactsWorkflowPasswords(t *testing.T) {
-	text := "已为实例重装，root 新密码是 SecurePass123，请用 SecurePass123 登录。"
+func TestRedactKnownSecretsInText_RedactsOnlyTheGivenValues(t *testing.T) {
+	text := "已为实例重装，root 新密码是 SecurePass123，请用 SecurePass123 登录；token=other-value-0123456789 不变。"
 
-	redacted := RedactKnownSecretsInText(text, []string{"SecurePass123", ""})
+	redacted := RedactKnownSecretsInText(text, []string{"SecurePass123", "", "abc"})
 
 	assert.NotContains(t, redacted, "SecurePass123")
 	assert.Contains(t, redacted, "[REDACTED]")
+	assert.Contains(t, redacted, "token=other-value-0123456789", "values the caller did not name are not guessed at")
 }
 
 func TestContainsToolProtocolMarkup(t *testing.T) {
@@ -191,40 +151,40 @@ func TestContainsToolProtocolMarkup(t *testing.T) {
 	assert.False(t, ContainsToolProtocolMarkup("我会先查询实例，再显示确认卡。"))
 }
 
-func TestCaptureUserAuthorizationHeadersSeparatesLiveSecretFromModelText(t *testing.T) {
+func TestUserAuthorizationHeadersMintsAReferenceWithoutRewritingText(t *testing.T) {
 	const (
 		authorization = "Bear" + "er auth-canary-0123456789"
 		signedURL     = "https://models.example/file?token=signed-url-0123456789"
 	)
-	safe, refs := CaptureUserAuthorizationHeaders(
-		"请检查 " + signedURL + "\n-H 'Authorization: " + authorization + "'")
-	assert.Len(t, refs, 1)
+	refs := UserAuthorizationHeaders("请检查 " + signedURL + "\n-H 'Authorization: " + authorization + "'")
+	require.Len(t, refs, 1)
 	assert.Equal(t, "current-user-authorization-1", refs[0].Reference)
 	assert.Equal(t, authorization, refs[0].Value)
-	assert.NotContains(t, safe, authorization)
-	assert.Contains(t, safe, "Authorization: [REDACTED]")
-	assert.Contains(t, safe, signedURL,
-		"the narrow live-header boundary must not regress the existing signed-URL flow")
 }
 
-func TestCaptureUserAuthorizationHeadersNeverMintsAURLQueryCapability(t *testing.T) {
-	const query = "https://example.test/check?authorization=Bearer-secret-0123456789"
-	safe, refs := CaptureUserAuthorizationHeaders(query)
-	assert.Empty(t, refs)
-	assert.Equal(t, query, safe,
-		"a signed URL is not an Authorization header and keeps its established live-turn behavior")
-	assert.NotContains(t, RedactUserConversationText(query), "Bearer-secret-0123456789",
-		"the durable boundary still removes the URL credential")
+func TestUserAuthorizationHeadersNeverMintsAURLQueryCapability(t *testing.T) {
+	assert.Empty(t, UserAuthorizationHeaders("https://example.test/check?authorization=Bearer-secret-0123456789"),
+		"a signed URL is not an Authorization header")
 }
 
-func TestCaptureUserAuthorizationHeadersFindsAHeaderAfterASignedURL(t *testing.T) {
+func TestUserAuthorizationHeadersFindsAHeaderAfterASignedURL(t *testing.T) {
 	const (
 		query  = "https://example.test/check?Authorization=signed-url-0123456789"
 		header = "Bear" + "er auth-canary-0123456789"
 	)
-	safe, refs := CaptureUserAuthorizationHeaders("下载地址 " + query + "\nAuthorization: " + header)
+	refs := UserAuthorizationHeaders("下载地址 " + query + "\nAuthorization: " + header)
 	require.Len(t, refs, 1)
 	assert.Equal(t, header, refs[0].Value)
-	assert.Contains(t, safe, query)
-	assert.NotContains(t, safe, header)
+}
+
+func TestRedactKnownAuthorizationTextRemovesTheCapturedValueAndItsCredentialPart(t *testing.T) {
+	const header = "Bear" + "er auth-canary-0123456789"
+	task := "用 Authorization: " + header + " 验证 /v1/models；也试试只带 auth-canary-0123456789；Authorization: Bearer other-0123456789 保留"
+
+	redacted := RedactKnownAuthorizationText(task, []string{header, " ", "abc"})
+
+	assert.NotContains(t, redacted, "auth-canary-0123456789")
+	assert.Contains(t, redacted, "Authorization: [REDACTED] 验证 /v1/models")
+	assert.Contains(t, redacted, "Authorization: Bearer other-0123456789 保留",
+		"a header the request channel did not capture is not guessed at")
 }

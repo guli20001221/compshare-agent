@@ -15,7 +15,6 @@ import (
 	"github.com/compshare-agent/internal/config"
 	"github.com/compshare-agent/internal/engine"
 	"github.com/compshare-agent/internal/governance"
-	"github.com/compshare-agent/internal/guardrails"
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/security"
@@ -397,7 +396,7 @@ func TestDispatchChatWritesTraceWithTenantAndSession(t *testing.T) {
 	assert.Equal(t, "sess-trace", tenant.ConnectionID)
 }
 
-func TestDispatchChatPreservesOrdinaryUserInformationAndRedactsCredentialsBeforePersisting(t *testing.T) {
+func TestDispatchChatPersistsTheUserMessageAsTyped(t *testing.T) {
 	llmClient := &scriptedChatLLM{content: "ok"}
 	eng := engine.NewWithDeps(llmClient, tools.ToolExecutor(chatExecutor{}), denyConfirm)
 	eng.RehydrateHistory(nil)
@@ -428,14 +427,8 @@ func TestDispatchChatPreservesOrdinaryUserInformationAndRedactsCredentialsBefore
 	runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-pii","Message":"`+userMessage+`","request_uuid":"req-pii","top_organization_id":1,"organization_id":2}`)
 
 	require.Len(t, messages.appended, 2)
-	persisted := messages.appended[0].Content
-	assert.Equal(t, security.RedactUserConversationText(userMessage), persisted,
-		"HTTP persistence and canonical history must share the exact user boundary")
-	assert.Contains(t, persisted, "13800138000")
-	assert.Contains(t, persisted, "user@example.com")
-	assert.NotContains(t, persisted, "AKIAIOSFODNN7EXAMPLEbCDEF")
-	assert.Contains(t, persisted, "uhost-abc123")
-	assert.Contains(t, persisted, "4090")
+	assert.Equal(t, userMessage, messages.appended[0].Content,
+		"the persisted row is the text the model saw, so a cold replay rebuilds the same user endpoint")
 
 	require.NotEmpty(t, llmClient.messages)
 	rawUserSeen := false
@@ -447,13 +440,13 @@ func TestDispatchChatPreservesOrdinaryUserInformationAndRedactsCredentialsBefore
 	assert.True(t, rawUserSeen, "agent routing/model input must still see raw user text")
 }
 
-func TestDispatchChatRedactsAssistantCredentialsBeforeSendingAndPersistsSanitizedCopy(t *testing.T) {
+func TestDispatchChatDeliversAndPersistsTheAssistantReplyAsComposed(t *testing.T) {
 	reply := `Instance uhost-abc123 is ready on 4090.
 Public IP: 1.2.3.4
 Project: 12345678-1234-1234-1234-1234567890ab
 Contact: 13800138000 user@example.com
-AccessKey="AKIAIOSFODNN7EXAMPLE"
-token=AKIAIOSFODNN7EXAMPLEbCDEF`
+os.environ["OPENAI_API_KEY"] = "sk-example-0123456789"
+Read-Host -AsSecureString 输入的密码是否正确？`
 	llmClient := &scriptedChatLLM{content: reply}
 	eng := engine.NewWithDeps(llmClient, tools.ToolExecutor(chatExecutor{}), denyConfirm)
 	eng.RehydrateHistory(nil)
@@ -482,40 +475,23 @@ token=AKIAIOSFODNN7EXAMPLEbCDEF`
 
 	sink, _ := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-output","Message":"hi","request_uuid":"req-output","top_organization_id":1,"organization_id":2}`)
 
-	body := sink.body()
-	assert.True(t, sink.has("token"))
-	assert.Contains(t, body, "1.2.3.4")
-	assert.Contains(t, body, "12345678-1234-1234-1234-1234567890ab")
-	assert.NotContains(t, body, "AKIAIOSFODNN7EXAMPLE")
-	assert.Contains(t, body, "13800138000 user@example.com")
-	assert.True(t,
-		strings.Contains(body, guardrails.CredentialRedactedOutput) || strings.Contains(body, "[REDACTED]"),
-		"assistant output must redact credential bodies before transport, got: %s", body,
-	)
+	var streamed []string
+	for _, ev := range sink.events {
+		if ev.Event == "token" {
+			streamed = append(streamed, ev.Data.(tokenEvent).Text)
+		}
+	}
+	assert.Equal(t, reply, strings.Join(streamed, ""), "the live answer is the composed reply, code line and question included")
+	assert.NotContains(t, sink.body(), "[REDACTED]")
+	assert.NotContains(t, sink.body(), "已脱敏")
 
-	persisted := messages.patch.Content
-	assert.Equal(t, security.RedactAssistantConversationText(security.RedactOperationalTokensInText(reply)), persisted,
+	assert.Equal(t, security.PersistedAssistantText(reply), messages.patch.Content,
 		"HTTP persistence and canonical history must share the exact assistant boundary")
-	// Ordinary information must survive both live delivery and a history reload;
-	// access credentials stay redacted at both boundaries.
-	assert.Contains(t, persisted, "1.2.3.4",
-		"a reload must not turn an actionable endpoint into a placeholder")
-	assert.Contains(t, persisted, "12345678-1234-1234-1234-1234567890ab")
-	assert.Contains(t, persisted, "13800138000 user@example.com")
-	assert.True(t,
-		strings.Contains(persisted, guardrails.CredentialRedactedOutput) || strings.Contains(persisted, "[REDACTED]"),
-		"persisted assistant output must redact credential bodies, got: %s", persisted,
-	)
-	assert.True(t,
-		strings.Contains(persisted, guardrails.TokenRedactedOutput) || strings.Contains(persisted, "[REDACTED]"),
-		"persisted assistant output must redact token bodies, got: %s", persisted,
-	)
-	assert.NotContains(t, persisted, "AKIAIOSFODNN7EXAMPLE")
-	assert.Contains(t, persisted, "uhost-abc123")
-	assert.Contains(t, persisted, "4090")
+	assert.Equal(t, reply, messages.patch.Content,
+		"a reload shows the same code line and the same question the user answered live")
 }
 
-func TestDispatchChatLetsUserCopyTheirCurrentSignedURLButPersistsOnlyTheRedactedForm(t *testing.T) {
+func TestDispatchChatPersistsACommandBuiltFromTheUsersSignedURLAsDelivered(t *testing.T) {
 	const signedURL = "https://civitai.example/download?Authorization=signed-token-abcdefghijklmnopqrst"
 	const reply = "直接执行：curl -L '" + signedURL + "' -o model.safetensors"
 	llmClient := &scriptedChatLLM{content: reply}
@@ -540,10 +516,9 @@ func TestDispatchChatLetsUserCopyTheirCurrentSignedURLButPersistsOnlyTheRedacted
 
 	sink, _ := runChatJSON(t, h, `{"Action":"SendCSAgentChat","SessionId":"sess-signed-url","Message":"请给这个链接生成下载命令：https://civitai.example/download?Authorization=signed-token-abcdefghijklmnopqrst","request_uuid":"req-signed-url","top_organization_id":1,"organization_id":2}`)
 
-	assert.Contains(t, sink.body(), signedURL, "the live answer may echo only the link the user just supplied")
-	persisted := messages.patch.Content
-	assert.NotContains(t, persisted, "signed-token-abcdefghijklmnopqrst")
-	assert.Contains(t, persisted, "不能直接复制执行", "reloaded history must not present a redacted command as runnable")
+	assert.Contains(t, sink.body(), reply, "the live answer carries the runnable command")
+	assert.Equal(t, reply, messages.patch.Content,
+		"reloaded history shows the same runnable command, with no placeholder and no footnote")
 }
 
 func TestDispatchChatDoesNotPersistPartialAssistantContentOnError(t *testing.T) {

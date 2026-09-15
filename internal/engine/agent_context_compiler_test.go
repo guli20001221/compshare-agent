@@ -40,7 +40,7 @@ func TestContextCompilerPreservesCompleteFollowupContextAndLiveSelection(t *test
 	require.Equal(t, "Windows 终端怎么复制？", view.RecentConversation[0].User)
 }
 
-func TestContextCompilerRedactsSecretsAndNeverCarriesPriorRawToolJSON(t *testing.T) {
+func TestContextCompilerCarriesConversationVerbatimAndNeverPriorRawToolJSON(t *testing.T) {
 	token := "http://1.2.3.4:8888/lab?token=plain-token-123"
 	eng := &Engine{
 		sessionStateHydrated: true,
@@ -48,7 +48,7 @@ func TestContextCompilerRedactsSecretsAndNeverCarriesPriorRawToolJSON(t *testing
 			{Role: openai.ChatMessageRoleSystem, Content: "system"},
 			{Role: openai.ChatMessageRoleUser, Content: "打开 " + token},
 			{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{{ID: "old-tool"}}},
-			{Role: openai.ChatMessageRoleTool, ToolCallID: "old-tool", Content: `{"huge_secret_payload":"must-not-survive"}`},
+			{Role: openai.ChatMessageRoleTool, ToolCallID: "old-tool", Content: `{"huge_payload":"must-not-survive"}`},
 			{Role: openai.ChatMessageRoleAssistant, Content: "已处理 " + token},
 		},
 		sessionState: SessionState{VerifiedEvidence: []VerifiedEvidenceTurn{{
@@ -61,8 +61,9 @@ func TestContextCompilerRedactsSecretsAndNeverCarriesPriorRawToolJSON(t *testing
 	eng.messages = append(eng.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "继续"})
 	rendered := renderTestMessages(messagesFromAgentContext(eng.messages, view, true))
 	require.NotContains(t, rendered, "must-not-survive")
-	require.NotContains(t, rendered, "plain-token-123")
-	require.Contains(t, rendered, "[REDACTED]")
+	require.Contains(t, rendered, "打开 "+token, "the user's own link is replayed as typed")
+	require.Contains(t, rendered, "已处理 "+token, "the answer the user saw is replayed as delivered")
+	require.NotContains(t, rendered, "[REDACTED]")
 }
 
 func TestContextCompilerHotColdSemanticEquivalence(t *testing.T) {

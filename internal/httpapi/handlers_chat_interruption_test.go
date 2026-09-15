@@ -196,7 +196,8 @@ func TestChatInterruptedDiagnosisPersistsObservedWorkAndCancellation(t *testing.
 				require.Contains(t, messages.patch.Content, "可能不完整")
 				require.Contains(t, messages.patch.Content, jobID)
 				require.Contains(t, messages.patch.Content, "不会自动重放原启动命令")
-				require.NotContains(t, messages.patch.Content, secret)
+				require.Contains(t, messages.patch.Content, "curl -H 'Authorization: Bearer "+secret+"' http://127.0.0.1/status",
+					"the refused command is listed as the command it was")
 				require.NotEmpty(t, eng.InstanceOpsInterruptionSummary(), "persistence must not consume the existing next-turn notice")
 			} else {
 				require.Equal(t, "ok", messages.patch.Status)

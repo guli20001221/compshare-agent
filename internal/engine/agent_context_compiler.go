@@ -27,39 +27,29 @@ func cloneAgentContext(in AgentContext) AgentContext {
 func cloneEntityHints(in []SelectedEntityHint) []SelectedEntityHint {
 	out := make([]SelectedEntityHint, 0, len(in))
 	for _, hint := range in {
-		hint.Kind = safeContextText(hint.Kind)
-		hint.ID = safeContextText(hint.ID)
-		hint.Name = safeContextText(hint.Name)
-		hint.Source = safeContextText(hint.Source)
-		hint.Freshness = safeContextText(hint.Freshness)
+		hint.Kind = compactContextText(hint.Kind)
+		hint.ID = compactContextText(hint.ID)
+		hint.Name = compactContextText(hint.Name)
+		hint.Source = compactContextText(hint.Source)
+		hint.Freshness = compactContextText(hint.Freshness)
 		out = append(out, hint)
 	}
 	return out
 }
 
-func safeContextText(value string) string {
-	return compactContextText(security.RedactOperationalTokensInText(value))
-}
-
-// safeConversationText redacts replayed content without altering whitespace or
-// truncating a message. History size is bounded by whole exchanges elsewhere.
-func safeConversationText(value string) string {
-	return security.RedactOperationalTokensInText(value)
-}
-
-// safeToolConversationText redacts JSON values before encoding them. Applying a
-// credential regexp to serialized JSON can consume an escape rather than the
-// secret it precedes, both breaking the JSON and retaining the credential.
+// safeToolConversationText applies the field-name redaction to a JSON
+// observation before it is replayed. Anything that is not one JSON document is
+// replayed unchanged.
 func safeToolConversationText(value string) string {
 	decoder := json.NewDecoder(strings.NewReader(value))
 	decoder.UseNumber()
 	var decoded any
 	if err := decoder.Decode(&decoded); err != nil {
-		return safeConversationText(value)
+		return value
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
-		return safeConversationText(value)
+		return value
 	}
 	redacted := security.RedactForLLM(decoded)
 	if reflect.DeepEqual(decoded, redacted) {
@@ -67,29 +57,24 @@ func safeToolConversationText(value string) string {
 	}
 	encoded, err := json.Marshal(redacted)
 	if err != nil {
-		return safeConversationText(value)
+		return value
 	}
 	return string(encoded)
 }
 
 // canonicalConversationText is the persistence-aligned form of a conversation
-// endpoint. HTTP persists user and
-// assistant rows through different redaction boundaries; using those same
-// boundaries before the hot transcript is captured keeps hot and cold endpoints
-// byte-identical without any fuzzy transcript matching.
-//
-// This applies only to historical conversation. The current user turn remains
-// raw for routing and tool selection, as required by the input boundary.
+// endpoint. HTTP persists assistant rows through the same boundary; using it
+// before the hot transcript is captured keeps hot and cold endpoints
+// byte-identical without any fuzzy transcript matching. User text is persisted
+// and replayed exactly as typed.
 func canonicalConversationText(role, value string) string {
 	switch role {
-	case openai.ChatMessageRoleUser:
-		return security.RedactUserConversationText(value)
 	case openai.ChatMessageRoleAssistant:
-		return security.RedactAssistantConversationText(value)
+		return security.PersistedAssistantText(value)
 	case openai.ChatMessageRoleTool:
 		return safeToolConversationText(value)
 	}
-	return safeConversationText(value)
+	return value
 }
 
 func historyConversationText(role, value string) string {
@@ -123,7 +108,7 @@ func renderAgentContextCard(view AgentContext) string {
 		}
 		label := strings.TrimSpace(entity.Name + " " + entity.ID)
 		if label != "" {
-			lines = append(lines, fmt.Sprintf("相关对象：%s（类型=%s，来源=%s，新鲜度=%s）", safeContextText(label), safeContextText(entity.Kind), safeContextText(entity.Source), safeContextText(entity.Freshness)))
+			lines = append(lines, fmt.Sprintf("相关对象：%s（类型=%s，来源=%s，新鲜度=%s）", compactContextText(label), compactContextText(entity.Kind), compactContextText(entity.Source), compactContextText(entity.Freshness)))
 		}
 	}
 	if len(lines) == 1 {

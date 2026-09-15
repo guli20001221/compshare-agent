@@ -71,9 +71,9 @@ func TestChat_OCRTextInjectedViaImageContext(t *testing.T) {
 
 	messages := &recordingMessages{}
 	h := NewHandlers(ocrTestConfig(), ocrTestSession(), messages, mockFeedback{}, fakePool{eng: eng}, nil)
-	secret := "ocr-canary-" + "0123456789"
-	const visibleFacts = "nvidia-smi output 手机 13800138000 邮箱 user@example.com 项目 12345678-1234-1234-1234-1234567890ab"
-	h.SetOCRClient(&mockOCR{text: visibleFacts + "\napi_key=" + secret})
+	const recognized = "nvidia-smi output 手机 13800138000 邮箱 user@example.com 项目 12345678-1234-1234-1234-1234567890ab\n" +
+		`os.environ["OPENAI_API_KEY"] = "sk-ocr-example-0123456789"`
+	h.SetOCRClient(&mockOCR{text: recognized})
 
 	imgURL := makeTestDataURL([]byte("fake-img"))
 	body := `{"Action":"SendCSAgentChat","SessionId":"sess-ocr","Message":"看看这个","Image":"` + imgURL + `","top_organization_id":1,"organization_id":2}`
@@ -86,8 +86,7 @@ func TestChat_OCRTextInjectedViaImageContext(t *testing.T) {
 	require.True(t, len(messages.appended) >= 1, "expected at least user row")
 	userContent := messages.appended[0].Content
 	assert.Contains(t, userContent, "用户上传了一张截图，系统自动识别到以下内容")
-	assert.Contains(t, userContent, visibleFacts)
-	assert.NotContains(t, userContent, secret)
+	assert.Contains(t, userContent, recognized, "the recognized text is carried as read; a code line in a screenshot stays a code line")
 	assert.Contains(t, userContent, "看看这个")
 }
 

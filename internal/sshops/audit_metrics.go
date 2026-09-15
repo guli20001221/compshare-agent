@@ -1,10 +1,6 @@
 package sshops
 
-import (
-	"strings"
-
-	"github.com/compshare-agent/internal/guardrails"
-)
+import "strings"
 
 const auditFirstCommandNone = "none"
 
@@ -26,18 +22,13 @@ const auditTruncationMarker = "…[截断]"
 // prefix here must never make CommandsRan or CommandsRefused lose the tail.
 const maxAuditStepRows = 120
 
-// PersistedStepSummary is the persisted, redacted projection of one Step. It exists so an
+// PersistedStepSummary is the persisted, bounded projection of one Step. It exists so an
 // interrupted run can be described afterwards by NAME — which commands ran and how they ended —
 // instead of only by count.
 //
-// Deliberately absent:
-//
-//   - command OUTPUT. INV-6 keeps output off every wire but the model's own; a column carrying it
-//     would be a second copy of the box's contents in a table nobody reads that way.
-//   - the RAW command. summarizeAuditSteps has always refused it ("raw commands can carry paths,
-//     tokens or user-provided arguments"), and a new column does not change that reasoning. What
-//     is stored is the credential-redacted DISPLAY form, using the same credential
-//     rules as the live activity stream.
+// Deliberately absent: command OUTPUT. INV-6 keeps output off every wire but the model's own; a
+// column carrying it would be a second copy of the box's contents in a table nobody reads that
+// way. The command itself is stored as it ran, bounded by maxAuditStepCommandRunes.
 //
 // It is also NOT a resume cursor, and must not become one. It records what a past run did so a
 // human can be told; feeding it to a new harness as "already done, skip these" would need a
@@ -52,10 +43,8 @@ type PersistedStepSummary struct {
 	Bytes       int    `json:"bytes,omitempty"`
 }
 
-// summarizeAuditStepDetail redacts and bounds the steps for persistence. Redaction happens HERE,
-// at the producer, rather than in the SQL writer where the task's redaction lives: AuditEvent is
-// handed to every AuditWriter including the in-memory one, so a raw command must never be inside
-// it in the first place.
+// summarizeAuditStepDetail bounds the steps for persistence. Output never enters
+// the summary: only the command text, its classification and its outcome do.
 func summarizeAuditStepDetail(steps []Step) []PersistedStepSummary {
 	if len(steps) == 0 {
 		return nil
@@ -67,7 +56,7 @@ func summarizeAuditStepDetail(steps []Step) []PersistedStepSummary {
 	out := make([]PersistedStepSummary, 0, limit)
 	for _, step := range steps[:limit] {
 		out = append(out, PersistedStepSummary{
-			Command:     truncateRunes(guardrails.RedactCredentials(step.Command), maxAuditStepCommandRunes),
+			Command:     truncateRunes(step.Command, maxAuditStepCommandRunes),
 			Tier:        step.Tier,
 			Disposition: step.Disposition,
 			Reason:      step.Reason,

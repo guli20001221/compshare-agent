@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/compshare-agent/internal/guardrails"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/workflow"
 )
@@ -68,8 +67,7 @@ func confirmationArgText(args map[string]any, key string) string {
 	if !ok || value == nil {
 		return ""
 	}
-	text := strings.TrimSpace(fmt.Sprint(value))
-	return guardrails.RedactCredentials(text)
+	return strings.TrimSpace(fmt.Sprint(value))
 }
 
 func confirmationArgInt(args map[string]any, key string) int {

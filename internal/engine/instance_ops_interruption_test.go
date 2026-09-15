@@ -457,22 +457,21 @@ func TestNotFoundClearsMatchingBackgroundJobAndReleasesSlot(t *testing.T) {
 	require.Zero(t, runner.lastReq.Context.BackgroundJobsTracked)
 }
 
-func TestBackgroundJobPurposeIsRedactedAndRuneBounded(t *testing.T) {
+func TestBackgroundJobPurposeIsWhitespaceCollapsedAndRuneBounded(t *testing.T) {
 	jobID := "job-" + strings.Repeat("e", 32)
 	eng := &Engine{}
 	eng.observeInstanceOpsBackgroundJob("uhost-1", jobID, "running",
-		"联系 user@example.com token=secret-value "+strings.Repeat("长", 240))
+		"联系 user@example.com\n\t下载 "+strings.Repeat("长", 240))
 	purpose := eng.sessionState.PersistedInstanceOpsJobs[0].Purpose
 	require.LessOrEqual(t, len([]rune(purpose)), maxPersistedInstanceOpsJobPurposeRunes)
-	require.Contains(t, purpose, "user@example.com")
-	require.NotContains(t, purpose, "secret-value")
+	require.True(t, strings.HasPrefix(purpose, "联系 user@example.com 下载 长"), purpose)
 }
 
 func TestBackgroundJobRoundTripsAcrossEngineRebuildWithoutCommand(t *testing.T) {
 	jobID := "job-" + strings.Repeat("c", 32)
 	hot := &Engine{sessionStateHydrated: true, sessionStateVersion: 7,
 		sessionState: SessionState{SchemaVersion: SessionStateSchemaV7}}
-	hot.observeInstanceOpsBackgroundJob("uhost-1", jobID, "running", "下载 token=secret-value 模型")
+	hot.observeInstanceOpsBackgroundJob("uhost-1", jobID, "running", "下载 token=example-value\n  模型权重")
 	state, version, hydrated := hot.SessionStateSnapshot()
 	require.True(t, hydrated)
 	require.Equal(t, SessionStateSchemaCurrent, state.SchemaVersion)
@@ -480,7 +479,6 @@ func TestBackgroundJobRoundTripsAcrossEngineRebuildWithoutCommand(t *testing.T) 
 	raw, err := json.Marshal(PersistedContext{AgentSessionState: state})
 	require.NoError(t, err)
 	require.NotContains(t, string(raw), "command")
-	require.NotContains(t, string(raw), "secret-value")
 
 	persisted, err := ParsePersistedContext(raw)
 	require.NoError(t, err)
@@ -490,7 +488,8 @@ func TestBackgroundJobRoundTripsAcrossEngineRebuildWithoutCommand(t *testing.T) 
 	resumed := cold.backgroundJobsForInstance("uhost-1")
 	require.Len(t, resumed, 1)
 	require.Equal(t, jobID, resumed[0].JobID)
-	require.Contains(t, resumed[0].Purpose, "[REDACTED]")
+	require.Equal(t, "下载 token=example-value 模型权重", resumed[0].Purpose,
+		"the purpose round-trips as stated, whitespace collapsed")
 	require.Empty(t, cold.backgroundJobsForInstance("uhost-2"))
 
 	// A whole-session reset clears the slot; normal HTTP hydration restores it

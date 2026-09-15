@@ -31,7 +31,7 @@ func (e *Engine) finalizeResponse(ctx context.Context, userMsg, draft string) st
 		// did not retrieve new evidence; stripping them does not verify a claim.
 		content = knowledge.StripCiteMarkers(content)
 	}
-	return e.finishResponseDelivery(userMsg, draft, content)
+	return e.finishResponseDelivery(content)
 }
 
 func (e *Engine) prepareResponseDraft(draft string) (string, bool) {
@@ -48,26 +48,18 @@ func (e *Engine) prepareResponseDraft(draft string) (string, bool) {
 	if !e.feishuConsoleHandoffThisTurn {
 		draft = strings.ReplaceAll(draft, agentprotocol.FeishuConsoleHandoffMarker, "")
 	}
-	content := draft
-	content = security.RedactOperationalTokensInText(content)
-	return content, true
+	return draft, true
 }
 
 // finalizeHostTerminalResponse applies the same delivery boundary to text the
 // server owns (for example a committed-write recovery). It deliberately skips
 // knowledge grounding because this text was not authored by the model.
-func (e *Engine) finalizeHostTerminalResponse(userMsg, draft string) string {
-	content := security.RedactOperationalTokensInText(draft)
-	return e.finishResponseDelivery(userMsg, draft, content)
+func (e *Engine) finalizeHostTerminalResponse(draft string) string {
+	return e.finishResponseDelivery(draft)
 }
 
-func (e *Engine) finishResponseDelivery(userMsg, originalDraft, content string) string {
+func (e *Engine) finishResponseDelivery(content string) string {
 	content = prependSensitiveReplies(content, e.sensitiveRepliesThisTurn)
-	// A user may deliberately paste a short-lived signed download URL and ask
-	// for the exact command to run. Preserve only that exact current-turn URL;
-	// arbitrary model/tool credentials remain redacted, and HTTP persistence
-	// immediately redacts this reply again for history.
-	content = security.RestoreUserProvidedCredentialURLs(content, userMsg, originalDraft)
 
 	if strings.TrimSpace(content) == "" {
 		// A turn that already handed the user a verbatim block (the billing card,

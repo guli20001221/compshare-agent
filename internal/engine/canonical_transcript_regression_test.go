@@ -130,30 +130,31 @@ func TestAttachRecordedTranscripts_DoesNotReuseOneRecordForRepeatedExchanges(t *
 	assert.Contains(t, second, "uhost-bbb")
 }
 
-// TestBuildTranscriptV1_RedactsOperationalTokens pins that the transcript
-// carrier does not route around the cross-turn redaction boundary. Ordinary
-// replayed history goes through safeConversationText; the transcript stored the
-// same text raw, so a Jupyter token redacted out of the assistant line survived
-// verbatim in metadata and came back on the next turn.
-func TestBuildTranscriptV1_RedactsOperationalTokens(t *testing.T) {
-	const secret = "abcdef0123456789abcdef0123456789"
-	const secretURL = "http://10.0.0.4:8888/lab?token=" + secret
+// TestBuildTranscriptV1_RedactsCredentialFields pins that the transcript carrier
+// does not route around the field-name boundary replayed history uses: a
+// Password field stripped from the model-visible observation must not survive
+// verbatim in metadata and come back on the next turn. Text is never scanned,
+// so the Jupyter address in the same observation is stored whole.
+func TestBuildTranscriptV1_RedactsCredentialFields(t *testing.T) {
+	const tokenURL = "http://10.0.0.4:8888/lab?token=abcdef0123456789abcdef0123456789"
+	const rootSecret = "instance-root-value-0123"
 	turn := []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleUser, Content: "jupyter 地址是多少"},
 		{Role: openai.ChatMessageRoleAssistant, ToolCalls: []openai.ToolCall{
-			toolCall("c1", "DescribeCompShareInstance", `{"Note":"`+secretURL+`"}`),
+			toolCall("c1", "DescribeCompShareInstance", `{"Note":"`+tokenURL+`","Password":"`+rootSecret+`"}`),
 		}},
-		{Role: openai.ChatMessageRoleTool, ToolCallID: "c1", Content: `{"JupyterUrl":"` + secretURL + `"}`},
-		{Role: openai.ChatMessageRoleAssistant, Content: "地址是 " + secretURL},
+		{Role: openai.ChatMessageRoleTool, ToolCallID: "c1", Content: `{"JupyterUrl":"` + tokenURL + `","Password":"` + rootSecret + `"}`},
+		{Role: openai.ChatMessageRoleAssistant, Content: "地址是 " + tokenURL},
 	}
 
 	transcript := buildTranscriptV1(turn)
 	require.NotNil(t, transcript)
 
-	assert.NotContains(t, renderTranscript(transcript), secret,
-		"the stored transcript must clear the same redaction boundary as replayed history")
-	assert.NotContains(t, renderTestMessages(ProjectTranscript(transcript)), secret,
-		"and so must anything projected back into model context")
+	for _, rendered := range []string{renderTranscript(transcript), renderTestMessages(ProjectTranscript(transcript))} {
+		assert.NotContains(t, rendered, rootSecret,
+			"the stored transcript must clear the same field boundary as replayed history")
+		assert.Contains(t, rendered, tokenURL, "the address the user was given is stored as delivered")
+	}
 }
 
 // TestProjectTranscript_SurfacesTruncation pins that a shortened body is

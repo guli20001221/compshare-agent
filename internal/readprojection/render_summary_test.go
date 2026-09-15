@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestResourceSummaryRendererIsDeterministicAndRedactsSensitiveFields(t *testing.T) {
+func TestResourceSummaryRendererIsDeterministicAndRendersNamesAsGiven(t *testing.T) {
 	instances := []entity.InstanceSnapshot{
 		{
 			UHostId:    "uhost-b",
@@ -49,8 +49,8 @@ func TestResourceSummaryRendererIsDeterministicAndRedactsSensitiveFields(t *test
 	assert.Contains(t, first, "vCPU")
 	assert.NotContains(t, first, "Name=")
 	assert.NotContains(t, first, "State=")
-	assert.NotContains(t, first, strings.Repeat("b", 25))
-	assert.Contains(t, first, "Bearer [REDACTED]")
+	assert.Contains(t, first, "Authorization: Bearer "+strings.Repeat("b", 25)+"（uhost-b）",
+		"an instance name is rendered as the user named it")
 }
 
 func TestMonitorSummaryRendererEmptyMetricsRendersAvailableCurrentValues(t *testing.T) {

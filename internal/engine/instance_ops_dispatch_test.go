@@ -13,7 +13,6 @@ import (
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/opscontext"
-	"github.com/compshare-agent/internal/security"
 	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
@@ -253,7 +252,7 @@ func TestInstanceOpsAuthorizationUsesPrivateContextAndNeverTheTaskOrConfirmCallb
 		return true
 	})
 	eng.lastUserMsg = "请排查 uhost-1\n**Authorization**: " + secret
-	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: security.RedactOperationalTokensInText(eng.lastUserMsg)}
+	eng.turnContextViewThisTurn = AgentContext{CurrentQuestion: eng.lastUserMsg}
 
 	out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", "call-1", map[string]any{
 		"UHostId": "uhost-1",
@@ -276,8 +275,6 @@ func TestInstanceOpsAuthorizationUsesPrivateContextAndNeverTheTaskOrConfirmCallb
 func TestInstanceOps_VerdictReturnsToTheCentralAgent(t *testing.T) {
 	sentinel := "根因：GPU 驱动与内核版本不匹配，建议重装驱动后重启实例。"
 	const screenshotError = "CUDA driver initialization failed\nNVIDIA_VISIBLE_DEVICES=void"
-	require.Equal(t, sentinel, security.RedactOperationalTokensInText(sentinel),
-		"sentinel must be redaction-invariant so this test proves rewrite-survival, not redaction")
 
 	runner := &fakeInstanceOpsRunner{verdict: InstanceOpsVerdict{Text: sentinel, Ran: 2}}
 	model := &mockLLM{responses: []llm.ChatResponse{
@@ -412,7 +409,7 @@ func TestInstanceOps_AggregateUsageStaysOnTheTerminalStep(t *testing.T) {
 	}
 }
 
-func TestInstanceOpsAuthorizationNeverEntersTheMainAgentPrompt(t *testing.T) {
+func TestInstanceOpsAuthorizationIsReadableByTheMainAgentAndMintedOnlyFromTypedText(t *testing.T) {
 	const (
 		secret    = "Bear" + "er auth-canary-0123456789"
 		ocrSecret = "Bear" + "er ocr-secret-0123456789"
@@ -432,21 +429,16 @@ func TestInstanceOpsAuthorizationNeverEntersTheMainAgentPrompt(t *testing.T) {
 		noopStep, ChatOptions{ImageContext: "截图报错\nAuthorization: " + ocrSecret})
 	require.NoError(t, err)
 	require.Len(t, model.calls, 2)
-	for _, message := range model.calls[0].Messages {
-		require.NotContains(t, message.Content, secret)
-		require.NotContains(t, message.Content, ocrSecret)
-	}
 	joined := renderTestMessages(model.calls[0].Messages)
-	require.Contains(t, joined, signedURL,
-		"narrow header capture must not regress a user-provided signed URL")
-	require.Len(t, runner.lastReq.Context.ProbeAuthorizations, 1)
+	require.Contains(t, joined, "**Authorization:** "+secret, "the model reads the header the user typed")
+	require.Contains(t, joined, signedURL)
+	require.Contains(t, joined, ocrSecret, "screenshot text is reference evidence")
+	require.Len(t, runner.lastReq.Context.ProbeAuthorizations, 1,
+		"only the typed header mints a probe capability; screenshot text never does")
 	require.Equal(t, secret, runner.lastReq.Context.ProbeAuthorizations[0].Value)
-	current := runner.lastReq.Context.ConversationHistory[len(runner.lastReq.Context.ConversationHistory)-1]
-	require.NotContains(t, current.Content, ocrSecret,
-		"OCR is reference evidence only and never a credential source")
 }
 
-func TestAuthorizationNeverEntersMainAgentWhenInstanceOpsIsUnavailable(t *testing.T) {
+func TestAuthorizationReachesTheMainAgentVerbatimWhenInstanceOpsIsUnavailable(t *testing.T) {
 	const (
 		secret    = "Bear" + "er main-only-secret-0123456789"
 		signedURL = "https://models.example/file?Authorization=signed-url-0123456789"
@@ -458,7 +450,7 @@ func TestAuthorizationNeverEntersMainAgentWhenInstanceOpsIsUnavailable(t *testin
 	require.NoError(t, err)
 	require.Len(t, model.calls, 1)
 	joined := renderTestMessages(model.calls[0].Messages)
-	require.NotContains(t, joined, secret)
+	require.Contains(t, joined, secret)
 	require.Contains(t, joined, signedURL)
 }
 

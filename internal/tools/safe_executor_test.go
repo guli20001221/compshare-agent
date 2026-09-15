@@ -623,7 +623,8 @@ func TestSafeExecutorFiltersArgsAndRedactsResult(t *testing.T) {
 	require.True(t, ok)
 	software, ok := softwares[0].(map[string]any)
 	require.True(t, ok)
-	assert.Equal(t, "http://1.2.3.4:8888?token=[REDACTED]", software["URL"])
+	assert.Equal(t, "http://1.2.3.4:8888?token=UCloud-CompShare-AbCd1234", software["URL"],
+		"a URL field is not a credential field; its value is not scanned")
 
 	nested, ok := result.LLMResult["Nested"].(map[string]any)
 	require.True(t, ok)

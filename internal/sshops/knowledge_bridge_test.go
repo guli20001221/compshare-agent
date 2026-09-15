@@ -55,8 +55,10 @@ func bridgeHits(count int, content string) []knowledge.RetrievalHit {
 
 func TestKnowledgeBridgeBoundsSearchAndKeepsCapabilityPrivate(t *testing.T) {
 	secretCapability := "search-capability-must-stay-in-go"
-	secretAuthorization := "Bearer-secret-must-not-reach-kb"
-	secretHint := "hint-secret-must-not-reach-kb"
+	const (
+		query = "容器监控 Authorization: Bearer 头怎么配置"
+		hint  = "monitor Authorization header"
+	)
 	retriever := &bridgeRetriever{result: knowledge.RetrievalResult{
 		Enabled: true, KBVersion: "kb-v1", SearchID: secretCapability,
 		HybridMode: knowledge.RetrievalModeHybridCosine,
@@ -65,8 +67,8 @@ func TestKnowledgeBridgeBoundsSearchAndKeepsCapabilityPrivate(t *testing.T) {
 	bridge := newKnowledgeBridge(context.Background(), retriever)
 	reply := bridge.handle(KnowledgeRequest{
 		ID: "search-1", Operation: "search",
-		Query:       "容器监控 Authorization: Bearer " + secretAuthorization,
-		ContextHint: "monitor Authorization: Bearer " + secretHint,
+		Query:       "  " + query + "\n",
+		ContextHint: hint + " ",
 	})
 	if !reply.OK {
 		t.Fatalf("search failed: %+v", reply)
@@ -80,11 +82,11 @@ func TestKnowledgeBridgeBoundsSearchAndKeepsCapabilityPrivate(t *testing.T) {
 			t.Fatalf("snippet exceeded %d runes: %d", knowledge.DefaultEvidenceSnippetMaxRunes, utf8.RuneCountInString(hit.Snippet))
 		}
 	}
-	if len(retriever.queries) != 1 || strings.Contains(retriever.queries[0], secretAuthorization) {
-		t.Fatalf("knowledge query was not redacted before leaving the broker: %#v", retriever.queries)
+	if len(retriever.queries) != 1 || retriever.queries[0] != query {
+		t.Fatalf("the inner agent's query must reach the retriever as asked, trimmed: %#v", retriever.queries)
 	}
-	if len(retriever.hints) != 1 || strings.Contains(retriever.hints[0], secretHint) {
-		t.Fatalf("knowledge context hint was not redacted before leaving the broker: %#v", retriever.hints)
+	if len(retriever.hints) != 1 || retriever.hints[0] != hint {
+		t.Fatalf("the context hint must reach the retriever as given, trimmed: %#v", retriever.hints)
 	}
 	wire, err := json.Marshal(reply)
 	if err != nil {

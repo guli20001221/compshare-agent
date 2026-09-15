@@ -89,8 +89,8 @@ type TraceRecord struct {
 	Outcome             OutcomeTrace         `json:"outcome"`
 	// Confirmations records every human confirmation gate that reached a terminal
 	// outcome during this turn. Guided cards add only their bounded step metadata;
-	// an approved final create card also carries a redacted fixed-field projection
-	// of the contract shown to the user. Confirmation ids, full forms and card
+	// an approved final create card also carries a fixed-field projection of the
+	// contract shown to the user. Confirmation ids, full forms and card
 	// prose stay out of the trace.
 	Confirmations []ConfirmationTrace `json:"confirmations,omitempty"`
 	// Authorizations holds the per-target dual-proof audit record for each write a
@@ -282,7 +282,7 @@ type ConfirmationTrace struct {
 
 // ConfirmedCreateContract is the bounded, typed projection of the final create
 // card the user approved. Values are copied from that card's Summary rather than
-// recalculated, then passed through the existing text redactors.
+// recalculated; only these fixed spec fields are carried.
 type ConfirmedCreateContract struct {
 	GPUType        string `json:"gpu_type,omitempty"`
 	GPU            int    `json:"gpu,omitempty"`
