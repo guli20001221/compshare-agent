@@ -46,10 +46,16 @@ agent:
     api_key: "HpiGXzD7p1cuChPiCe8e5841-048D-4e73-9675-E83dD0D1"
     # Production answer model.
     model: "gpt-5.6-terra"
-    # Same endpoint and key, separate account pool. A request the primary fails
-    # upstream (429/5xx, a broken stream, an error event inside the stream) is
-    # re-sent here, and a primary that just failed is skipped for a few minutes.
-    fallback_model: "gpt-5.6-luna"
+    # Tried in this order when a request fails upstream (429/5xx, a broken
+    # stream, an error event inside the stream); a model that just failed is
+    # skipped for a few minutes. base_url/api_key default to the primary's.
+    fallbacks:
+      # Same endpoint and key as the primary, separate account pool.
+      - model: "gpt-5.6-luna"
+      # The answer key is not authorized for DeepSeek; this is the screenshot
+      # model's key (agent.ocr.api_key), which is.
+      - model: "deepseek-v4.1-flash"
+        api_key: "Q1J7v8S9PewEW16c2e84171e-cBb5-4763-929D-6c03Fe44"
 
   # Runtime authorization. Agent execution behavior has no rollout switch.
   authorization:

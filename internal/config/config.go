@@ -174,12 +174,19 @@ type LLMConfig struct {
 	BaseURL string `yaml:"base_url"`
 	APIKey  string `yaml:"api_key"`
 	Model   string `yaml:"model"`
-	// FallbackModel is a second model on the same endpoint and key. When set,
-	// a chat call whose request to Model fails upstream (429/5xx, a transport
-	// or stream break, or an error event inside the stream) is re-sent to it,
-	// and later calls skip a Model that just failed for a few minutes. Empty
-	// keeps every request on Model.
-	FallbackModel string `yaml:"fallback_model"`
+	// Fallbacks are tried in this order after a request to Model fails
+	// upstream (429/5xx, a transport or stream break, or an error event inside
+	// the stream); a model that just failed is skipped by later calls for a
+	// few minutes. Empty keeps every request on Model.
+	Fallbacks []LLMFallbackConfig `yaml:"fallbacks"`
+}
+
+// LLMFallbackConfig is one more model to try. BaseURL and APIKey default to
+// the primary's; a model the primary key is not authorized for names its own.
+type LLMFallbackConfig struct {
+	Model   string `yaml:"model"`
+	BaseURL string `yaml:"base_url"`
+	APIKey  string `yaml:"api_key"`
 }
 
 // OCRConfig holds settings for the optional screenshot-understanding feature
@@ -274,7 +281,7 @@ func Load(path string) (*Config, error) {
 	if err := resolveRequiredSecret(&cfg.Agent.LLM.APIKey, "agent.llm.api_key", "LLM_API_KEY"); err != nil {
 		return nil, err
 	}
-	if err := validateLLMConfig(&cfg.Agent.LLM); err != nil {
+	if err := resolveLLMFallbacks(&cfg.Agent.LLM); err != nil {
 		return nil, err
 	}
 	// SSH-ops may use a dedicated ModelVerse Anthropic key. Empty inherits the
@@ -458,14 +465,36 @@ func negativeValueError(yamlPath string) error {
 	return fmt.Errorf("%s must be non-negative (0 or omit to use default)", yamlPath)
 }
 
-// validateLLMConfig keeps the fallback a genuinely different pool: the same
-// model name twice would re-send every failed request to the pool that just
-// failed while the trace reports a switch that never happened.
-func validateLLMConfig(l *LLMConfig) error {
+// resolveLLMFallbacks fills each fallback's endpoint and key from the primary
+// when omitted and keeps every tier a genuinely different pool: the same
+// model on the same endpoint and key twice would re-send a failed request to
+// the pool that just failed while the trace reports a switch that never
+// happened. Keys are compared, never reported.
+func resolveLLMFallbacks(l *LLMConfig) error {
 	l.Model = strings.TrimSpace(l.Model)
-	l.FallbackModel = strings.TrimSpace(l.FallbackModel)
-	if l.FallbackModel != "" && l.FallbackModel == l.Model {
-		return fmt.Errorf("agent.llm.fallback_model must name a different model than agent.llm.model (%q)", l.Model)
+	type pool struct{ baseURL, apiKey, model string }
+	seen := map[pool]string{{l.BaseURL, l.APIKey, l.Model}: "agent.llm.model"}
+	for i := range l.Fallbacks {
+		tier := &l.Fallbacks[i]
+		path := fmt.Sprintf("agent.llm.fallbacks[%d]", i)
+		tier.Model = strings.TrimSpace(tier.Model)
+		if tier.Model == "" {
+			return fmt.Errorf("%s.model is required", path)
+		}
+		if err := resolveOptionalCredential(&tier.APIKey, path+".api_key"); err != nil {
+			return err
+		}
+		if strings.TrimSpace(tier.BaseURL) == "" {
+			tier.BaseURL = l.BaseURL
+		}
+		if strings.TrimSpace(tier.APIKey) == "" {
+			tier.APIKey = l.APIKey
+		}
+		key := pool{tier.BaseURL, tier.APIKey, tier.Model}
+		if previous, dup := seen[key]; dup {
+			return fmt.Errorf("%s repeats %s (%q on the same endpoint and key)", path, previous, tier.Model)
+		}
+		seen[key] = path
 	}
 	return nil
 }

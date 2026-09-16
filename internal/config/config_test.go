@@ -35,28 +35,66 @@ func TestProductionConfigUsesProductionKnowledgeService(t *testing.T) {
 	assert.Equal(t, "2003:da8:2004:1000:0a3c:7623:2712:f9c0", cfg.Agent.MySQL.HostOverride)
 }
 
-func TestProductionConfigRoutesUpstreamModelFailuresToLuna(t *testing.T) {
+func TestProductionConfigRoutesUpstreamModelFailuresToLunaThenDeepSeek(t *testing.T) {
 	cfg, err := Load(filepath.Join("..", "..", "deploy", "conf", "config.prod.yaml"))
 	require.NoError(t, err)
-	assert.Equal(t, "gpt-5.6-terra", cfg.Agent.LLM.Model)
-	assert.Equal(t, "gpt-5.6-luna", cfg.Agent.LLM.FallbackModel)
+	llm := cfg.Agent.LLM
+	assert.Equal(t, "gpt-5.6-terra", llm.Model)
+	require.Len(t, llm.Fallbacks, 2)
+	// luna: same endpoint and key as the primary, a separate account pool.
+	assert.Equal(t, "gpt-5.6-luna", llm.Fallbacks[0].Model)
+	assert.Equal(t, llm.BaseURL, llm.Fallbacks[0].BaseURL)
+	assert.Equal(t, llm.APIKey, llm.Fallbacks[0].APIKey)
+	// DeepSeek: the answer key is not authorized for it; it rides on the key
+	// that already carries the screenshot model.
+	assert.Equal(t, "deepseek-v4.1-flash", llm.Fallbacks[1].Model)
+	assert.Equal(t, llm.BaseURL, llm.Fallbacks[1].BaseURL)
+	assert.NotEqual(t, llm.APIKey, llm.Fallbacks[1].APIKey)
+	assert.Equal(t, cfg.Agent.OCR.APIKey, llm.Fallbacks[1].APIKey)
 }
 
-func TestLoad_RejectsFallbackModelEqualToModel(t *testing.T) {
+func TestLoad_RejectsFallbackRepeatingThePrimaryPool(t *testing.T) {
 	setRequiredSecretEnv(t)
 	path := writeConfig(t, baseConfig(`
-    fallback_model: " gpt-5.6-terra "
+    fallbacks:
+      - model: "gpt-5.6-luna"
+      - model: " gpt-5.6-terra "
 `))
 	_, err := Load(path)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "agent.llm.fallback_model")
+	assert.Contains(t, err.Error(), "agent.llm.fallbacks[1]")
+	assert.Contains(t, err.Error(), "agent.llm.model")
 }
 
-func TestLoad_OmittedFallbackModelKeepsOneModel(t *testing.T) {
+func TestLoad_FallbackOnAnotherKeyMayRepeatTheModelName(t *testing.T) {
+	setRequiredSecretEnv(t)
+	t.Setenv("SECOND_LLM_KEY", "second-key-from-env")
+	cfg, err := Load(writeConfig(t, baseConfig(`
+    fallbacks:
+      - model: "gpt-5.6-terra"
+        api_key: "${SECOND_LLM_KEY}"
+`)))
+	require.NoError(t, err)
+	require.Len(t, cfg.Agent.LLM.Fallbacks, 1)
+	assert.Equal(t, "second-key-from-env", cfg.Agent.LLM.Fallbacks[0].APIKey)
+	assert.Equal(t, cfg.Agent.LLM.BaseURL, cfg.Agent.LLM.Fallbacks[0].BaseURL)
+}
+
+func TestLoad_RejectsFallbackWithoutModel(t *testing.T) {
+	setRequiredSecretEnv(t)
+	_, err := Load(writeConfig(t, baseConfig(`
+    fallbacks:
+      - api_key: "only-a-key"
+`)))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent.llm.fallbacks[0].model")
+}
+
+func TestLoad_OmittedFallbacksKeepsOneModel(t *testing.T) {
 	setRequiredSecretEnv(t)
 	cfg, err := Load(writeConfig(t, baseConfig("")))
 	require.NoError(t, err)
-	assert.Equal(t, "", cfg.Agent.LLM.FallbackModel)
+	assert.Empty(t, cfg.Agent.LLM.Fallbacks)
 }
 
 func TestProductionConfigOnlyAutoRepliesToAllowlistedTopicRoots(t *testing.T) {
