@@ -518,9 +518,14 @@ func TestInventoryToolDescriptionsSetRoutingBoundaries(t *testing.T) {
 	mustContain(t, descriptions["CreateInstanceWorkflow"], "不会安装镜像外软件")
 	mustNotContain(t, descriptions["CreateInstanceWorkflow"], "必须使用此工具")
 	mustContain(t, descriptions["ResizeInstanceWorkflow"], "修改已有实例")
+	// Upstream ResizeCompShareInstance takes Cpu/Memory/Gpu counts under the
+	// current GpuType and has no GpuType parameter; the contract must say so, or
+	// a turn whose retrieval missed the resize doc invents a card-swap flow.
+	mustContain(t, descriptions["ResizeInstanceWorkflow"], "GPU 型号不可更换，换型号只能新建实例")
 	mustContain(t, descriptions["ResizeInstanceWorkflow"], "服务端核验")
 	mustContain(t, descriptions["ResizeInstanceWorkflow"], "满足条件才出确认卡")
 	mustContain(t, descriptions["DiagnoseInstanceInternals"], "根据完整对话确定目标实例 ID")
+	mustContain(t, descriptions["DiagnoseInstanceInternals"], "无法确定时先查实例列表，多台再澄清")
 	mustContain(t, descriptions["DiagnoseInstanceInternals"], "核查该 ID 的账号归属")
 	mustNotContain(t, descriptions["DiagnoseInstanceInternals"], "user_selected")
 	mustContain(t, descriptions["DiagnoseBilling"], "再次询问当前报价时重新调用本工具")

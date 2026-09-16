@@ -179,6 +179,23 @@ func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {
 		//
 		// Measured max after the change is 5531 (read-only shape), so the number is
 		// the measurement plus a small margin, not a round number chosen to be safe.
+		//
+		// 2026-09-16, no raise: +254 bytes (read-only shape 5258 -> 5512) for the
+		// list-before-asking rule. A user who says 「我的实例」 without an ID is
+		// located from the account's own instance list; only a multi-instance
+		// account is asked which one, and 「现在还有实例吗」 lists everything
+		// instead of re-checking a remembered ID. The repair-lane section had
+		// been teaching the opposite ("没有明确目标才询问实例 ID") and is rewritten
+		// in the same change.
+		//
+		// Be honest about what these bytes buy: a live probe against the real
+		// model (five bare no-ID questions x4, an account with two instances,
+		// SSH lane off so only the behavior bullet was in the prompt) asked for
+		// an ID before listing 6/20 on unmodified main and 2/20 with this rule
+		// present. Both remaining misses are the how-to question 「怎么关闭实例」,
+		// which does not say 「我的实例」: the model answers with console steps
+		// and then asks for the ID to operate (once offering to list instead).
+		// That is the rule's edge, not a wording gap to spend more bytes on.
 		require.LessOrEqual(t, len(system), 5600, "central system prompt grew past its reviewed byte budget")
 		require.NotContains(t, system, "更新任务状态",
 			"the retired semantic-memory tool must not remain as a model instruction")
@@ -226,11 +243,31 @@ func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {
 		// improvement — no probe was run against a model. Do not cite it as one.
 		//
 		// Measured max after the change is 36850 (production shape).
-		require.LessOrEqual(t, len(toolJSON), 37000, "model-visible tool window grew past its reviewed byte budget")
+		//
+		// 37000 -> 37100 (2026-09-16): +125 bytes (36857 -> 36982, production
+		// shape). ResizeInstanceWorkflow now says the GPU model cannot be changed
+		// and a different model means a new instance: upstream
+		// ResizeCompShareInstance takes Cpu/Memory/Gpu counts under the current
+		// GpuType and has no GpuType parameter, so a turn whose retrieval missed
+		// the resize doc no longer invents a card-swap flow.
+		// DiagnoseInstanceInternals says "list the account's instances first,
+		// ask if several" instead of "clarify first", matching the prompt rule
+		// above.
+		//
+		// Be honest about what these bytes buy: the resize sentence is a contract
+		// correction pinned by TestInventoryToolDescriptionsSetRoutingBoundaries,
+		// not a measured model improvement. The diagnose wording was not in the
+		// probe's tool window (SSH lane off), so it was not exercised at all.
+		//
+		// Measured max after the change is 36982 (production shape).
+		require.LessOrEqual(t, len(toolJSON), 37100, "model-visible tool window grew past its reviewed byte budget")
 		// 41000 -> 41900 -> 42100 (2026-09-10): both raises follow the tool-window
 		// numbers above; the system prompt is unchanged throughout. Measured max is
 		// 41938 (production shape).
-		require.LessOrEqual(t, len(system)+len(toolJSON), 42100,
+		//
+		// 42100 -> 42400 (2026-09-16): the system-prompt and tool-window entries
+		// dated above, together. Measured max is 42324 (production shape).
+		require.LessOrEqual(t, len(system)+len(toolJSON), 42400,
 			"static prompt plus tool schemas grew past its reviewed byte budget")
 	}
 }

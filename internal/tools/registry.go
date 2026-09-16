@@ -1039,7 +1039,7 @@ var Registry = []openai.Tool{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{
 			Name:        "ResizeInstanceWorkflow",
-			Description: "修改已有实例 CPU、GPU 或内存。服务端核验类型、状态、规格、容量和价格；满足条件才出确认卡。磁盘扩容不用。",
+			Description: "修改已有实例的 CPU 核数、GPU 数量或内存；GPU 型号不可更换，换型号只能新建实例。服务端核验类型、状态、规格、容量和价格；满足条件才出确认卡。磁盘扩容不用。",
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -1053,7 +1053,7 @@ var Registry = []openai.Tool{
 					},
 					"Gpu": map[string]any{
 						"type":        "number",
-						"description": "目标 GPU 数量",
+						"description": "目标 GPU 数量，型号沿用当前实例",
 					},
 					"Memory": map[string]any{
 						"type":        "number",
