@@ -174,6 +174,12 @@ type LLMConfig struct {
 	BaseURL string `yaml:"base_url"`
 	APIKey  string `yaml:"api_key"`
 	Model   string `yaml:"model"`
+	// FallbackModel is a second model on the same endpoint and key. When set,
+	// a chat call whose request to Model fails upstream (429/5xx, a transport
+	// or stream break, or an error event inside the stream) is re-sent to it,
+	// and later calls skip a Model that just failed for a few minutes. Empty
+	// keeps every request on Model.
+	FallbackModel string `yaml:"fallback_model"`
 }
 
 // OCRConfig holds settings for the optional screenshot-understanding feature
@@ -266,6 +272,9 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	if err := resolveRequiredSecret(&cfg.Agent.LLM.APIKey, "agent.llm.api_key", "LLM_API_KEY"); err != nil {
+		return nil, err
+	}
+	if err := validateLLMConfig(&cfg.Agent.LLM); err != nil {
 		return nil, err
 	}
 	// SSH-ops may use a dedicated ModelVerse Anthropic key. Empty inherits the
@@ -447,6 +456,18 @@ func applyRateLimitDefaults(rateLimit *RateLimitConfig) error {
 
 func negativeValueError(yamlPath string) error {
 	return fmt.Errorf("%s must be non-negative (0 or omit to use default)", yamlPath)
+}
+
+// validateLLMConfig keeps the fallback a genuinely different pool: the same
+// model name twice would re-send every failed request to the pool that just
+// failed while the trace reports a switch that never happened.
+func validateLLMConfig(l *LLMConfig) error {
+	l.Model = strings.TrimSpace(l.Model)
+	l.FallbackModel = strings.TrimSpace(l.FallbackModel)
+	if l.FallbackModel != "" && l.FallbackModel == l.Model {
+		return fmt.Errorf("agent.llm.fallback_model must name a different model than agent.llm.model (%q)", l.Model)
+	}
+	return nil
 }
 
 // validateHTTPConfig rejects any explicitly-set negative numeric values.

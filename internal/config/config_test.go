@@ -35,6 +35,30 @@ func TestProductionConfigUsesProductionKnowledgeService(t *testing.T) {
 	assert.Equal(t, "2003:da8:2004:1000:0a3c:7623:2712:f9c0", cfg.Agent.MySQL.HostOverride)
 }
 
+func TestProductionConfigRoutesUpstreamModelFailuresToLuna(t *testing.T) {
+	cfg, err := Load(filepath.Join("..", "..", "deploy", "conf", "config.prod.yaml"))
+	require.NoError(t, err)
+	assert.Equal(t, "gpt-5.6-terra", cfg.Agent.LLM.Model)
+	assert.Equal(t, "gpt-5.6-luna", cfg.Agent.LLM.FallbackModel)
+}
+
+func TestLoad_RejectsFallbackModelEqualToModel(t *testing.T) {
+	setRequiredSecretEnv(t)
+	path := writeConfig(t, baseConfig(`
+    fallback_model: " gpt-5.6-terra "
+`))
+	_, err := Load(path)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "agent.llm.fallback_model")
+}
+
+func TestLoad_OmittedFallbackModelKeepsOneModel(t *testing.T) {
+	setRequiredSecretEnv(t)
+	cfg, err := Load(writeConfig(t, baseConfig("")))
+	require.NoError(t, err)
+	assert.Equal(t, "", cfg.Agent.LLM.FallbackModel)
+}
+
 func TestProductionConfigOnlyAutoRepliesToAllowlistedTopicRoots(t *testing.T) {
 	cfg, err := Load(filepath.Join("..", "..", "deploy", "conf", "config.prod.yaml"))
 	require.NoError(t, err)

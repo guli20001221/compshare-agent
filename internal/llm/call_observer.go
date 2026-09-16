@@ -25,6 +25,13 @@ type OutboundCall struct {
 // including retries and requests that fail before a stream is established.
 type OutboundCallObserver func(OutboundCall)
 
+// The error classes read the provider's typed signals only. A provider that
+// refuses a request before the stream opens answers with an HTTP status; one
+// that fails after the stream opened writes an error event into it, and that
+// event's OpenAI error type classifies the same way (rate_limit_error is
+// rate_limited, a request-rejection type is upstream_4xx, anything else is
+// upstream_5xx). A stream that ends without a terminal choice reason is
+// "stream"; "other" is reserved for failures with no typed signal at all.
 const (
 	OutboundAttemptSuccess = "success"
 	OutboundAttemptError   = "error"

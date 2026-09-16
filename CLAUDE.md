@@ -226,6 +226,7 @@ Only genuine operational or authorization choices remain configurable:
 | Setting | Purpose |
 |---|---|
 | `agent.authorization.mutating_tools` | authorize confirmation-gated product writes |
+| `agent.llm.fallback_model` | second model on the same endpoint for requests the primary fails upstream |
 | `agent.retrieval.mcp_*` | remote knowledge MCP endpoint/token/timeout |
 | `agent.trace.*` | completed-turn trace sink and retention inputs |
 | `agent.ssh_ops.*` | optional in-instance lane, permissions and network routing |
@@ -266,6 +267,13 @@ migrations in lexical order before deployment. See
 SSE final answers are attempt-atomic and final-answer-atomic, not true upstream
 token streaming: failed retries and incomplete output must never leak as a
 prefix. Tool/confirmation activity uses separate step frames.
+
+One model call makes at most two actual requests. With `agent.llm.fallback_model`
+set, the second goes to the other model instead of the pool that just failed,
+and a primary that failed upstream is skipped by later calls for a few minutes;
+a request rejection (4xx, or an in-stream `invalid_request_error`) is never
+routed. Each attempt is traced with the model it went to; there is no
+turn-level "fallback used" field.
 
 ## Observability
 
