@@ -46,6 +46,10 @@ agent:
     api_key: "HpiGXzD7p1cuChPiCe8e5841-048D-4e73-9675-E83dD0D1"
     # Production answer model.
     model: "gpt-5.6-terra"
+    # Same endpoint and key, separate account pool. A request the primary fails
+    # upstream (429/5xx, a broken stream, an error event inside the stream) is
+    # re-sent here, and a primary that just failed is skipped for a few minutes.
+    fallback_model: "gpt-5.6-luna"
 
   # Runtime authorization. Agent execution behavior has no rollout switch.
   authorization:

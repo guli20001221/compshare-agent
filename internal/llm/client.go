@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/compshare-agent/internal/config"
@@ -23,12 +24,26 @@ import (
 
 // Client wraps go-openai to talk to ModelVerse (OpenAI-compatible).
 type Client struct {
-	client   *openai.Client
-	model    string
-	provider string
+	client        *openai.Client
+	model         string
+	fallbackModel string
+	provider      string
+	// primaryUnhealthyUntil is a UnixNano instant. While it lies in the future a
+	// call starts on the fallback model: the gateway fails slowly and per model
+	// pool, so a call that already paid that wait must not make the next call
+	// pay it again just to rediscover the same outage.
+	primaryUnhealthyUntil atomic.Int64
 }
 
+// maxChatAttempts bounds the actual requests one Chat call makes for one
+// response, not counting the re-sends that only narrow the request shape.
 const maxChatAttempts = 2
+
+// primaryCooldown is how long a call skips the primary model after a request
+// to it failed upstream. Long enough that a turn with several model calls
+// pays the gateway's wait once, short enough that a healthy primary is back
+// in use within minutes without an operator action.
+const primaryCooldown = 5 * time.Minute
 
 func NewClient(cfg config.LLMConfig) *Client {
 	ocfg := openai.DefaultConfig(cfg.APIKey)
@@ -41,11 +56,28 @@ func NewClient(cfg config.LLMConfig) *Client {
 	// bound. The only special transport behavior here is the local proxy bypass.
 	ocfg.HTTPClient = chatHTTPClient(cfg.BaseURL)
 
-	return &Client{
+	client := &Client{
 		client:   openai.NewClientWithConfig(ocfg),
 		model:    cfg.Model,
 		provider: ProviderOpenAICompatible,
 	}
+	if fallback := strings.TrimSpace(cfg.FallbackModel); fallback != "" && fallback != cfg.Model {
+		client.fallbackModel = fallback
+	}
+	return client
+}
+
+// modelOrder is the preference order for one call: the primary first unless a
+// recent request to it failed upstream, in which case the fallback goes first
+// and the primary remains the last resort.
+func (c *Client) modelOrder(now time.Time) []string {
+	if c.fallbackModel == "" {
+		return []string{c.model}
+	}
+	if now.UnixNano() < c.primaryUnhealthyUntil.Load() {
+		return []string{c.fallbackModel, c.model}
+	}
+	return []string{c.model, c.fallbackModel}
 }
 
 func chatHTTPClient(baseURL string) *http.Client {
@@ -143,34 +175,147 @@ type TokenUsage struct {
 
 // Chat sends a streaming request and assembles the full response.
 // Streaming is required because the proxy drops content in non-streaming mode.
+//
+// One call makes at most maxChatAttempts actual requests. With a fallback
+// model configured the second request goes to the other model rather than
+// back to the pool that just failed; a primary that failed upstream is then
+// skipped by later calls for primaryCooldown. Every actual request is
+// observed with the model it went to, so the trace shows the switch.
 func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
+	order := c.modelOrder(time.Now())
+	shape := requestShape{includeUsage: true}
 	attempt := 0
-	resp, err := c.chat(ctx, req, true, &attempt, func(err error) bool {
-		return isUsageUnsupportedChatError(err) ||
-			(isForcedToolChoice(req.ToolChoice) && isForcedToolChoiceUnsupportedError(err))
-	})
-	if err != nil && isUsageUnsupportedChatError(err) {
-		resp, err = c.chat(ctx, req, false, &attempt, func(err error) bool {
-			return isForcedToolChoice(req.ToolChoice) && isForcedToolChoiceUnsupportedError(err)
-		})
-	}
-	// Some thinking-mode providers reject forced tool_choice. Retry only that
-	// specific rejection with auto; absent-tool and other 4xx errors still fail.
-	if err != nil && isForcedToolChoice(req.ToolChoice) && isForcedToolChoiceUnsupportedError(err) {
-		log.Printf("runtime: upstream rejected forced tool_choice in thinking mode; retrying with auto (configure a forced-tool-capable LLM key for deterministic forcing)")
-		auto := req
-		auto.ToolChoice = nil
-		resp, err = c.chat(ctx, auto, true, &attempt, isUsageUnsupportedChatError)
-		if err != nil && isUsageUnsupportedChatError(err) {
-			resp, err = c.chat(ctx, auto, false, &attempt, nil)
+	var lastErr error
+	for slot := 0; slot < maxChatAttempts; slot++ {
+		model := order[slot%len(order)]
+		resp, failed := c.chatWithModel(ctx, req, model, &shape, &attempt)
+		if failed == nil {
+			return resp, nil
 		}
-		// Signal the silent degrade so a caller that relied on the forcing being
-		// honored can fall back instead of trusting an unforced response.
-		if err == nil && resp != nil {
-			resp.ForcedToolChoiceDegraded = true
+		lastErr = failed.err
+		if !isTransientChatError(ctx, failed.err) {
+			observeOutboundCallResult(ctx, failed.record(false))
+			return nil, failed.err
+		}
+		if model == c.model && c.fallbackModel != "" {
+			c.primaryUnhealthyUntil.Store(time.Now().Add(primaryCooldown).UnixNano())
+		}
+		// Only pause when another attempt actually follows — sleeping before
+		// returning the final error just delays the user's error by a second.
+		if slot+1 >= maxChatAttempts {
+			observeOutboundCallResult(ctx, failed.record(false))
+			break
+		}
+		next := order[(slot+1)%len(order)]
+		if next != model {
+			log.Printf("runtime: %s failed upstream (%s); routing this call to %s", model, failed.errorClass, next)
+		} else if _, overloaded := providerOverloadStatus(failed.err); overloaded {
+			// Re-sending to the same pool: an immediate retry mostly re-hits the
+			// same exhausted pool, a short wait is what makes it worth making.
+			select {
+			case <-ctx.Done():
+				observeOutboundCallResult(ctx, failed.record(false))
+				return nil, failed.err
+			case <-time.After(providerOverloadBackoff):
+			}
+		}
+		// The next request begins immediately after this point. In the overload
+		// case the observation is deliberately delayed until after the
+		// cancellable backoff, so Retried never claims a request that did not run.
+		observeOutboundCallResult(ctx, failed.record(true))
+	}
+	return nil, lastErr
+}
+
+// requestShape is what the endpoint has been found to accept. Both narrowings
+// are deterministic properties of the endpoint, not of one request, so a
+// shape learned on one attempt is kept for the requests that follow it.
+type requestShape struct {
+	// includeUsage asks for stream_options.include_usage.
+	includeUsage bool
+	// forcingDegraded sends tool_choice as auto although the caller forced a
+	// tool, after the provider rejected forcing in thinking mode.
+	forcingDegraded bool
+}
+
+// chatWithModel makes the requests for one attempt slot on one model: the
+// request as currently shaped, re-sent with a narrower shape when the provider
+// rejects stream_options or a forced tool_choice. The terminal failure is
+// returned unobserved because the caller decides whether another request
+// follows before recording it.
+func (c *Client) chatWithModel(ctx context.Context, req ChatRequest, model string, shape *requestShape, attempt *int) (*ChatResponse, *failedAttempt) {
+	for {
+		resp, failed := c.attemptOnce(ctx, req, model, *shape, attempt)
+		if failed == nil {
+			// Signal the silent degrade so a caller that relied on the forcing
+			// being honored can fall back instead of trusting an unforced response.
+			resp.ForcedToolChoiceDegraded = shape.forcingDegraded
+			return resp, nil
+		}
+		switch {
+		case shape.includeUsage && isUsageUnsupportedChatError(failed.err):
+			shape.includeUsage = false
+		// Some thinking-mode providers reject forced tool_choice. Retry only that
+		// specific rejection with auto; absent-tool and other 4xx errors still fail.
+		case !shape.forcingDegraded && isForcedToolChoice(req.ToolChoice) && isForcedToolChoiceUnsupportedError(failed.err):
+			log.Printf("runtime: upstream rejected forced tool_choice in thinking mode; retrying with auto (configure a forced-tool-capable LLM key for deterministic forcing)")
+			shape.forcingDegraded = true
+		default:
+			return nil, failed
+		}
+		observeOutboundCallResult(ctx, failed.record(true))
+	}
+}
+
+// failedAttempt is one actual request that ended in an error, held until the
+// caller knows whether a further request follows it.
+type failedAttempt struct {
+	err        error
+	errorClass string
+	result     OutboundCallResult
+}
+
+func (f *failedAttempt) record(retried bool) OutboundCallResult {
+	result := f.result
+	result.Retried = retried
+	return result
+}
+
+// attemptOnce makes one actual request. Deltas are buffered per attempt and
+// published only after a terminal choice reason and a clean EOF: the engine
+// persists only the response a later request produces, so a failed stream
+// must never leak a partial prefix ahead of it.
+func (c *Client) attemptOnce(ctx context.Context, req ChatRequest, model string, shape requestShape, attempt *int) (*ChatResponse, *failedAttempt) {
+	attemptReq := req
+	if shape.forcingDegraded {
+		attemptReq.ToolChoice = nil
+	}
+	var attemptDeltas []string
+	if req.OnTextDelta != nil {
+		attemptReq.OnTextDelta = func(delta string) {
+			attemptDeltas = append(attemptDeltas, delta)
 		}
 	}
-	return resp, err
+	*attempt++
+	resp, timing, err := c.chatOnce(ctx, attemptReq, model, shape.includeUsage)
+	result := OutboundCallResult{
+		Call: OutboundCall{Provider: c.provider, Model: model}, AttemptInCall: *attempt,
+		LatencyMS: timing.latencyMS, ProviderFirstChunkMS: timing.firstChunkMS,
+		PromptTokens: timing.promptTokens, CachedPromptTokens: timing.cachedPromptTokens,
+		ToolCount: timing.toolCount, ToolWindowRunes: timing.toolWindowRunes, ToolWindowHash: timing.toolWindowHash,
+	}
+	if err != nil {
+		result.Outcome = OutboundAttemptError
+		result.ErrorClass = traceOutboundErrorClass(ctx, err)
+		return nil, &failedAttempt{err: err, errorClass: result.ErrorClass, result: result}
+	}
+	result.Outcome = OutboundAttemptSuccess
+	result.StopReason = TraceFinishReason(resp.StopReason)
+	observeOutboundCallResult(ctx, result)
+	for _, delta := range attemptDeltas {
+		req.OnTextDelta(delta)
+	}
+	return resp, nil
 }
 
 // isForcedToolChoice reports whether tc forces a specific tool — "required" or an
@@ -198,79 +343,6 @@ func isForcedToolChoiceUnsupportedError(err error) bool {
 	return strings.Contains(msg, "tool_choice") && strings.Contains(msg, "thinking mode")
 }
 
-func (c *Client) chat(ctx context.Context, req ChatRequest, includeUsage bool, attemptCounter *int, terminalRetry func(error) bool) (*ChatResponse, error) {
-	var lastErr error
-	for attempt := 0; attempt < maxChatAttempts; attempt++ {
-		// A retry is one logical model response. Do not let a failed stream leak
-		// a partial prefix to the caller and then append a successful retry behind
-		// it: the engine persists only the retry's response, while the browser
-		// would have displayed two incompatible answers. Buffer deltas per attempt
-		// and publish them only after a terminal choice reason and successful EOF.
-		attemptReq := req
-		var attemptDeltas []string
-		if req.OnTextDelta != nil {
-			attemptReq.OnTextDelta = func(delta string) {
-				attemptDeltas = append(attemptDeltas, delta)
-			}
-		}
-		*attemptCounter++
-		attemptNumber := *attemptCounter
-		resp, timing, err := c.chatOnce(ctx, attemptReq, includeUsage)
-		if err == nil {
-			observeOutboundCallResult(ctx, OutboundCallResult{
-				Call: OutboundCall{Provider: c.provider, Model: c.model}, AttemptInCall: attemptNumber,
-				LatencyMS: timing.latencyMS, Outcome: OutboundAttemptSuccess,
-				StopReason: TraceFinishReason(resp.StopReason), ProviderFirstChunkMS: timing.firstChunkMS,
-				PromptTokens: timing.promptTokens, CachedPromptTokens: timing.cachedPromptTokens,
-				ToolCount: timing.toolCount, ToolWindowRunes: timing.toolWindowRunes, ToolWindowHash: timing.toolWindowHash,
-			})
-			if req.OnTextDelta != nil {
-				for _, delta := range attemptDeltas {
-					req.OnTextDelta(delta)
-				}
-			}
-			return resp, nil
-		}
-		lastErr = err
-		transient := isTransientChatError(ctx, err)
-		errorClass := traceOutboundErrorClass(ctx, err)
-		observeFailure := func(retried bool) {
-			observeOutboundCallResult(ctx, OutboundCallResult{
-				Call: OutboundCall{Provider: c.provider, Model: c.model}, AttemptInCall: attemptNumber,
-				LatencyMS: timing.latencyMS, Outcome: OutboundAttemptError,
-				ErrorClass: errorClass, Retried: retried,
-				ProviderFirstChunkMS: timing.firstChunkMS,
-				PromptTokens:         timing.promptTokens, CachedPromptTokens: timing.cachedPromptTokens,
-				ToolCount: timing.toolCount, ToolWindowRunes: timing.toolWindowRunes, ToolWindowHash: timing.toolWindowHash,
-			})
-		}
-		fallbackRetry := terminalRetry != nil && terminalRetry(err)
-		if !transient {
-			observeFailure(fallbackRetry)
-			return nil, err
-		}
-		// Only pause when another attempt actually follows — sleeping before
-		// returning the final error just delays the user's error by a second.
-		if attempt+1 >= maxChatAttempts {
-			observeFailure(fallbackRetry)
-			break
-		}
-		if _, overloaded := providerOverloadStatus(err); overloaded {
-			select {
-			case <-ctx.Done():
-				observeFailure(false)
-				return nil, err
-			case <-time.After(providerOverloadBackoff):
-			}
-		}
-		// The next loop iteration begins immediately after this point. In the
-		// overload case the observation is deliberately delayed until after the
-		// cancellable backoff, so Retried never claims a request that did not run.
-		observeFailure(true)
-	}
-	return nil, lastErr
-}
-
 type outboundAttemptTiming struct {
 	latencyMS          int64
 	firstChunkMS       *int64
@@ -295,9 +367,9 @@ func wireTemperature(requested float32) float32 {
 	return requested
 }
 
-func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage bool) (response *ChatResponse, timing outboundAttemptTiming, err error) {
+func (c *Client) chatOnce(ctx context.Context, req ChatRequest, model string, includeUsage bool) (response *ChatResponse, timing outboundAttemptTiming, err error) {
 	ccReq := openai.ChatCompletionRequest{
-		Model:    c.model,
+		Model:    model,
 		Messages: req.Messages,
 		Stream:   true,
 	}
@@ -323,9 +395,9 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, includeUsage boo
 	timing.toolCount, timing.toolWindowRunes, timing.toolWindowHash = observeToolWindow(ccReq.Tools)
 
 	// Count at the last boundary before the SDK attempts the upstream request.
-	// Putting this in Chat or chat would miss internal retries or count logical
-	// calls that never became requests.
-	call := OutboundCall{Provider: c.provider, Model: c.model}
+	// Putting this in Chat would miss internal retries or count logical calls
+	// that never became requests.
+	call := OutboundCall{Provider: c.provider, Model: model}
 	started := time.Now()
 	defer func() { timing.latencyMS = time.Since(started).Milliseconds() }()
 	observeOutboundCall(ctx, call)
@@ -476,15 +548,7 @@ func traceOutboundErrorClass(ctx context.Context, err error) string {
 	case errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return OutboundErrorDeadline
 	}
-	var apiErr *openai.APIError
-	var requestErr *openai.RequestError
-	status := 0
-	switch {
-	case errors.As(err, &apiErr):
-		status = apiErr.HTTPStatusCode
-	case errors.As(err, &requestErr):
-		status = requestErr.HTTPStatusCode
-	}
+	status, _ := providerStatus(err)
 	switch {
 	case status == http.StatusTooManyRequests:
 		return OutboundErrorRateLimited
@@ -522,18 +586,48 @@ func isUsageUnsupportedChatError(err error) bool {
 	return false
 }
 
-// providerOverloadStatus recognizes retryable 429/5xx responses. Deterministic
-// 4xx rejections are never retried.
-func providerOverloadStatus(err error) (int, bool) {
-	status := 0
+// providerStatus is the HTTP status of a typed provider error. An error event
+// the provider writes into an already-open stream carries no status — go-openai
+// surfaces it as an *APIError with HTTPStatusCode 0 — so its OpenAI error type
+// is read as the status the provider sends for the same condition before a
+// stream opens. Every classifier here then reasons in one vocabulary; none of
+// them inspects the message text.
+func providerStatus(err error) (int, bool) {
 	var apiErr *openai.APIError
 	var reqErr *openai.RequestError
 	switch {
 	case errors.As(err, &apiErr):
-		status = apiErr.HTTPStatusCode
+		if apiErr.HTTPStatusCode == 0 {
+			return streamErrorEventStatus(apiErr.Type), true
+		}
+		return apiErr.HTTPStatusCode, true
 	case errors.As(err, &reqErr):
-		status = reqErr.HTTPStatusCode
+		return reqErr.HTTPStatusCode, reqErr.HTTPStatusCode != 0
+	}
+	return 0, false
+}
+
+// streamErrorEventStatus maps the OpenAI error type of an in-stream error
+// event to its pre-stream status. The types that describe the request or the
+// caller are the closed set below; anything else — rate limits aside — is the
+// provider failing to produce the response, which is what a 503 says.
+func streamErrorEventStatus(errorType string) int {
+	switch strings.ToLower(strings.TrimSpace(errorType)) {
+	case "rate_limit_error":
+		return http.StatusTooManyRequests
+	case "invalid_request_error", "authentication_error", "permission_error", "not_found_error", "insufficient_quota":
+		return http.StatusBadRequest
 	default:
+		return http.StatusServiceUnavailable
+	}
+}
+
+// providerOverloadStatus recognizes retryable 429/5xx responses, whether they
+// arrive as the HTTP status or as an error event inside a 200 stream.
+// Deterministic 4xx rejections are never retried.
+func providerOverloadStatus(err error) (int, bool) {
+	status, ok := providerStatus(err)
+	if !ok {
 		return 0, false
 	}
 	switch status {
@@ -554,6 +648,9 @@ func providerOverloadStatus(err error) (int, bool) {
 // inside the card the user is looking at.
 const providerOverloadBackoff = 900 * time.Millisecond
 
+// isTransientChatError reports whether the failure belongs to the upstream
+// rather than to the request or the caller, so that another request — to the
+// same model after a pause, or to the fallback model — is worth making.
 func isTransientChatError(ctx context.Context, err error) bool {
 	if err == nil {
 		return false
