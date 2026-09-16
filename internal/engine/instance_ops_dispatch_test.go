@@ -699,6 +699,36 @@ func TestInstanceOps_FailureBeforeEntryIsNotNarratedAsInterrupted(t *testing.T) 
 	}
 }
 
+// Each pre-entry boundary is one closed code in two places: the observation the
+// model reads and the step event the trace records. Trace keeps no message
+// text, so a step without the code makes every boundary look the same there.
+func TestInstanceOps_PreEntryBoundaryStepCarriesTheObservationCode(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		err  error
+	}{
+		{name: "no ssh entrypoint", err: ErrInstanceOpsNoSSHTarget},
+		{name: "not in the account", err: ErrInstanceOpsNotFound},
+		{name: "address unavailable", err: ErrInstanceOpsAddressUnavailable},
+		{name: "preflight unreachable", err: ErrInstanceOpsSSHPreflightUnreachable},
+		{name: "not running", err: fmt.Errorf("%w: Stopped", ErrInstanceOpsNotRunning)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := newInstanceOpsEngine(&fakeInstanceOpsRunner{err: tc.err}, alwaysConfirm)
+
+			var steps []StepEvent
+			out := eng.executeInstanceOps(context.Background(), "DiagnoseInstanceInternals", "call-1", instanceOpsArgs(), captureSteps(&steps))
+
+			result := requireInstanceOpsObservation(t, out)
+			require.NotEmpty(t, result.Error.Code)
+			require.Len(t, steps, 1)
+			require.Equal(t, StepBlocked, steps[0].Type)
+			require.Equal(t, result.Error.Code, steps[0].ErrorCode,
+				"the trace must record the same boundary the model was shown")
+		})
+	}
+}
+
 // Once the lane is inside the instance, the same generic error is a genuine
 // interruption: the settled work (or its absence) is what the user needs.
 func TestInstanceOps_FailureAfterEntryStillReportsTheInterruption(t *testing.T) {

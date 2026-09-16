@@ -39,6 +39,18 @@ type instanceOpsEntryBoundaryData struct {
 	EvidenceBoundary      string `json:"evidence_boundary"`
 }
 
+// A pre-entry boundary carries one code in two places: the observation the
+// model reads and the step event the trace records. The trace copy is what
+// tells "not in the account" from "not running" from "no SSH entrypoint" once
+// the message text is gone.
+const (
+	instanceOpsCodeNoSSHTarget          = "INSTANCE_GUEST_SSH_UNAVAILABLE"
+	instanceOpsCodeNotFound             = "INSTANCE_NOT_FOUND"
+	instanceOpsCodeAddressUnavailable   = "SSH_ADDRESS_UNAVAILABLE"
+	instanceOpsCodePreflightUnreachable = "SSH_DIAGNOSTIC_VANTAGE_UNREACHABLE"
+	instanceOpsCodeNotRunning           = "INSTANCE_NOT_RUNNING"
+)
+
 func instanceOpsPreflightFailureObservation(action string) string {
 	return tools.MarshalAgentToolResult(tools.AgentToolFailureWithLimits(action,
 		instanceOpsEntryBoundaryData{
@@ -52,7 +64,7 @@ func instanceOpsPreflightFailureObservation(action string) string {
 			EvidenceBoundary: "This observation is limited to the diagnostic service path. " +
 				"It does not confirm or contradict connectivity or SSH-handshake evidence observed from another vantage point.",
 		},
-		"SSH_DIAGNOSTIC_VANTAGE_UNREACHABLE",
+		instanceOpsCodePreflightUnreachable,
 		"诊断服务未能与候选 SSH 地址建立 TCP 连接；该结果仅描述诊断服务的网络视角，不能据此否定用户从其他位置观察到的连通性或 SSH 握手证据。",
 		tools.AgentToolMeta{SourceStatus: "preflight_failed"}))
 }
@@ -74,7 +86,7 @@ func instanceOpsNoSSHTargetObservation(action string) string {
 			EvidenceBoundary: "This observation only proves that the instance has no SSH entrypoint available to this diagnostic lane. " +
 				"It does not prevent the central agent from using platform read capabilities or knowledge evidence.",
 		},
-		"INSTANCE_GUEST_SSH_UNAVAILABLE",
+		instanceOpsCodeNoSSHTarget,
 		"该实例没有可用的 SSH 登录入口；未建立 SSH 会话、未进入 Guest，也没有执行 Guest 命令。仍可继续查询平台实时事实和知识证据。",
 		tools.AgentToolMeta{SourceStatus: "no_ssh_target"}))
 }
@@ -223,23 +235,26 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action, invocationID st
 		// and knowledge retrieval remain available; never imply that Guest commands ran.
 		if errors.Is(err, ErrInstanceOpsNoSSHTarget) {
 			msg := "该实例没有可用的 SSH 登录入口；未建立 SSH 会话、未进入 Guest，也没有执行 Guest 命令。"
-			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal,
+				Message: msg, ErrorCode: instanceOpsCodeNoSSHTarget})
 			return instanceOpsNoSSHTargetObservation(action)
 		}
 		// A well-formed account response that omits the id is permanent for this
 		// request; tell the user to correct the target rather than retry blindly.
 		if errors.Is(err, ErrInstanceOpsNotFound) {
 			msg := fmt.Sprintf("在当前账号下找不到实例 %s：按该 ID 查询返回为空，未建立 SSH 会话、未执行任何命令。常见原因是实例已释放或重建、ID 有误，或不在当前登录账号下；请到控制台核对实例 ID 后再试。", instanceID)
-			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
-			return instanceOpsBoundaryObservation(action, instanceID, "INSTANCE_NOT_FOUND", msg)
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal,
+				Message: msg, ErrorCode: instanceOpsCodeNotFound})
+			return instanceOpsBoundaryObservation(action, instanceID, instanceOpsCodeNotFound, msg)
 		}
 		// Address derivation failed before the lane entered the instance. Report only
 		// that observable boundary: it does not identify the underlying cause or prove
 		// whether the instance itself is healthy.
 		if errors.Is(err, ErrInstanceOpsAddressUnavailable) {
 			msg := "无法换算该实例的内网地址，本次没有进入实例，也没有执行任何实例内命令。当前只能确认诊断入口未建立，尚无法判断根因，也不能据此判断实例本身是否异常。请稍后重试；如需立即验证，可按控制台显示的登录地址、端口和用户名尝试登录。"
-			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
-			return instanceOpsBoundaryObservation(action, instanceID, "SSH_ADDRESS_UNAVAILABLE", msg)
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal,
+				Message: msg, ErrorCode: instanceOpsCodeAddressUnavailable})
+			return instanceOpsBoundaryObservation(action, instanceID, instanceOpsCodeAddressUnavailable, msg)
 		}
 		// Candidate addresses were available, but the TCP prerequisite for SSH did
 		// not connect. This is still pre-entry: no authentication and no guest command.
@@ -249,15 +264,17 @@ func (e *Engine) executeInstanceOps(ctx context.Context, action, invocationID st
 		// to overwrite that evidence before the Agent could reconcile it.
 		if errors.Is(err, ErrInstanceOpsSSHPreflightUnreachable) {
 			msg := "诊断服务未能与候选 SSH 地址建立 TCP 连接；未建立 SSH 会话、未进入实例，也没有执行任何命令。"
-			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal,
+				Message: msg, ErrorCode: instanceOpsCodePreflightUnreachable})
 			return instanceOpsPreflightFailureObservation(action)
 		}
 		// The state is a current platform fact, so return it instead of a generic retry.
 		if errors.Is(err, ErrInstanceOpsNotRunning) {
 			msg := fmt.Sprintf("该实例当前状态为 %s，不是运行中（Running），无法进入实例排查。等实例恢复运行后可以再试。",
 				instanceOpsStateFromError(err))
-			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal, Message: msg})
-			return instanceOpsBoundaryObservation(action, instanceID, "INSTANCE_NOT_RUNNING", msg)
+			onStep(StepEvent{Type: StepBlocked, Action: action, Source: observability.ToolSourceDiagnosisInternal,
+				Message: msg, ErrorCode: instanceOpsCodeNotRunning})
+			return instanceOpsBoundaryObservation(action, instanceID, instanceOpsCodeNotRunning, msg)
 		}
 		// Honest bounded failure — never supply a root cause the
 		// harness did not reach. The reason class is a constant; the underlying
