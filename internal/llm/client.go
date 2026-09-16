@@ -15,7 +15,6 @@ import (
 	"net/url"
 	"sort"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/compshare-agent/internal/config"
@@ -24,7 +23,9 @@ import (
 
 // Client wraps go-openai to talk to ModelVerse (OpenAI-compatible).
 type Client struct {
-	// tiers is the configured preference order; tiers[0] is the primary.
+	// tiers is the order every call tries, tiers[0] first. The client keeps no
+	// health state between calls: a tier that failed is tried again by the
+	// very next call, so the configured preference always wins over recency.
 	tiers    []*modelTier
 	provider string
 }
@@ -33,23 +34,12 @@ type Client struct {
 type modelTier struct {
 	model  string
 	client *openai.Client
-	// unhealthyUntil is a UnixNano instant. While it lies in the future a call
-	// starts on the next healthy tier: the gateway fails slowly and per model
-	// pool, so a call that already paid that wait must not make the next call
-	// pay it again just to rediscover the same outage.
-	unhealthyUntil atomic.Int64
 }
 
 // minChatAttempts bounds the actual requests one Chat call makes for one
 // response, not counting the re-sends that only narrow the request shape. A
 // deployment with more tiers than this gets one request per tier instead.
 const minChatAttempts = 2
-
-// tierCooldown is how long a call skips a tier after a request to it failed
-// upstream. Long enough that a turn with several model calls pays the
-// gateway's wait once, short enough that a healthy tier is back in use within
-// minutes without an operator action.
-const tierCooldown = 5 * time.Minute
 
 func NewClient(cfg config.LLMConfig) *Client {
 	client := &Client{provider: ProviderOpenAICompatible}
@@ -92,24 +82,6 @@ func (c *Client) maxChatAttempts() int {
 		return len(c.tiers)
 	}
 	return minChatAttempts
-}
-
-// tierOrder is the preference order for one call: the configured order with
-// the tiers that recently failed upstream moved behind the healthy ones, in
-// their own configured order, so they remain the last resort.
-func (c *Client) tierOrder(now time.Time) []*modelTier {
-	order := make([]*modelTier, 0, len(c.tiers))
-	for _, tier := range c.tiers {
-		if now.UnixNano() >= tier.unhealthyUntil.Load() {
-			order = append(order, tier)
-		}
-	}
-	for _, tier := range c.tiers {
-		if now.UnixNano() < tier.unhealthyUntil.Load() {
-			order = append(order, tier)
-		}
-	}
-	return order
 }
 
 func chatHTTPClient(baseURL string) *http.Client {
@@ -208,13 +180,12 @@ type TokenUsage struct {
 // Chat sends a streaming request and assembles the full response.
 // Streaming is required because the proxy drops content in non-streaming mode.
 //
-// One call makes at most maxChatAttempts actual requests, one per tier in
-// tierOrder: the next request goes to the next model rather than back to the
-// pool that just failed, and a tier that failed upstream is skipped by later
-// calls for tierCooldown. Every actual request is observed with the model it
-// went to, so the trace shows the switch.
+// One call makes at most maxChatAttempts actual requests, one per tier in the
+// configured order: the next request goes to the next model rather than back
+// to the pool that just failed. Every actual request is observed with the
+// model it went to, so the trace shows the switch.
 func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
-	order := c.tierOrder(time.Now())
+	order := c.tiers
 	budget := c.maxChatAttempts()
 	shape := requestShape{includeUsage: true}
 	attempt := 0
@@ -229,9 +200,6 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 		if !isTransientChatError(ctx, failed.err) {
 			observeOutboundCallResult(ctx, failed.record(false))
 			return nil, failed.err
-		}
-		if len(c.tiers) > 1 {
-			tier.unhealthyUntil.Store(time.Now().Add(tierCooldown).UnixNano())
 		}
 		// Only pause when another attempt actually follows — sleeping before
 		// returning the final error just delays the user's error by a second.

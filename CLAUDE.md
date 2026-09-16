@@ -271,8 +271,8 @@ prefix. Tool/confirmation activity uses separate step frames.
 One model call makes one actual request per configured model (at least two,
 so a single model keeps its retry). Each `agent.llm.fallbacks` entry is a
 further model, optionally on its own endpoint and key; a request that fails
-upstream goes to the next one instead of the pool that just failed, and a
-model that failed upstream is moved behind the healthy ones for a few minutes.
+upstream goes to the next one instead of the pool that just failed. The client
+keeps no health state between calls: every call starts on the primary again.
 A request rejection (4xx, or an in-stream `invalid_request_error`) is never
 routed. Each attempt is traced with the model it went to; there is no
 turn-level "fallback used" field.
