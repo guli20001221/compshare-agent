@@ -31,48 +31,6 @@ type job struct {
 	imageKeys []string
 }
 
-// topicParticipant preserves every stable identifier supplied by the receive
-// event. An external-group event normally carries open_id, but keeping the
-// other fields lets us fail closed without assuming a particular ID format.
-type topicParticipant struct {
-	openID  string
-	userID  string
-	unionID string
-}
-
-func participantFromSender(sender *larkim.EventSender) topicParticipant {
-	if sender == nil || sender.SenderId == nil {
-		return topicParticipant{}
-	}
-	return topicParticipant{
-		openID:  stringValue(sender.SenderId.OpenId),
-		userID:  stringValue(sender.SenderId.UserId),
-		unionID: stringValue(sender.SenderId.UnionId),
-	}
-}
-
-func (participant topicParticipant) present() bool {
-	return participant.openID != "" || participant.userID != "" || participant.unionID != ""
-}
-
-func (participant topicParticipant) matches(other topicParticipant) bool {
-	// Do not fall back to a less-specific identifier when both events contain
-	// different open IDs. That could accidentally attribute an external member's
-	// message to the topic owner if a tenant-scoped ID happened to overlap.
-	if participant.openID != "" || other.openID != "" {
-		return participant.openID != "" && participant.openID == other.openID
-	}
-	if participant.userID != "" || other.userID != "" {
-		return participant.userID != "" && participant.userID == other.userID
-	}
-	return participant.unionID != "" && participant.unionID == other.unionID
-}
-
-type topicOwner struct {
-	participant   topicParticipant
-	rootMessageID string
-}
-
 var errExternalGroupImageResourceUnsupported = errors.New("Feishu does not support downloading message images in external groups")
 
 type Service struct {
@@ -92,9 +50,6 @@ type Service struct {
 	sessionsMu sync.Mutex
 	sessions   map[string]string
 	topicLocks sync.Map
-
-	topicOwnersMu sync.RWMutex
-	topicOwners   map[string]topicOwner
 
 	seenMu sync.Mutex
 	seen   map[string]time.Time
@@ -137,7 +92,7 @@ func NewService(ctx context.Context, cfg config.FeishuConfig, options ...Service
 		cfg: cfg, agent: agent, api: api, botOpenID: bot.OpenID, botUserID: bot.UserID, allowed: allowed,
 		queue:             make(chan job, maxConcurrent*16),
 		customerSupportQR: customerSupportQR,
-		sessions:          make(map[string]string), topicOwners: make(map[string]topicOwner), seen: make(map[string]time.Time),
+		sessions:          make(map[string]string), seen: make(map[string]time.Time),
 	}
 	for _, option := range options {
 		if option != nil {
@@ -238,13 +193,9 @@ func (s *Service) onMessage(_ context.Context, event *larkim.P2MessageReceiveV1)
 		messageID,
 	)
 	topicKey := chatID + ":" + topicID
-	if isNewTopicRoot(message) {
-		s.rememberTopicOwner(topicKey, participantFromSender(sender), messageID)
-	}
 	botMentioned := mentionedBot(message.Mentions, s.botOpenID, s.botUserID)
 	nonBotMentioned := mentionedNonBot(message.Mentions, s.botOpenID, s.botUserID)
-	ownerDirectFollowup := !nonBotMentioned && s.cfg.AutoReplyNewTopics && s.isTopicOwnerDirectFollowup(topicKey, message, participantFromSender(sender))
-	if !shouldRespond(message, botMentioned, nonBotMentioned, s.cfg.AutoReplyNewTopics, s.cfg.AutoReplyAllMessages) && !ownerDirectFollowup {
+	if !shouldRespond(message, botMentioned, nonBotMentioned, s.cfg.AutoReplyNewTopics, s.cfg.AutoReplyAllMessages) {
 		return nil
 	}
 	input, ok := inputFromMessage(message)
@@ -276,39 +227,10 @@ func shouldRespond(message *larkim.EventMessage, botMentioned, nonBotMentioned, 
 	if nonBotMentioned {
 		return false
 	}
+	// Only the root post of a topic answers itself. Every later message in the
+	// topic, including the initiator's own next question, is a reply the bot
+	// joins only when it is mentioned; the topic session is reused either way.
 	return autoReplyAllMessages || (autoReplyNewTopics && isNewTopicRoot(message))
-}
-
-// rememberTopicOwner records the author and message ID of a newly-created
-// topic. A later direct follow-up is accepted only if it is from this author
-// and replies to the topic root itself, never to another participant's reply.
-func (s *Service) rememberTopicOwner(topicKey string, participant topicParticipant, rootMessageID string) {
-	if topicKey == "" || rootMessageID == "" || !participant.present() {
-		return
-	}
-	s.topicOwnersMu.Lock()
-	defer s.topicOwnersMu.Unlock()
-	if s.topicOwners == nil {
-		s.topicOwners = make(map[string]topicOwner)
-	}
-	s.topicOwners[topicKey] = topicOwner{participant: participant, rootMessageID: rootMessageID}
-}
-
-func (s *Service) isTopicOwnerDirectFollowup(topicKey string, message *larkim.EventMessage, participant topicParticipant) bool {
-	if message == nil || !participant.present() {
-		return false
-	}
-	s.topicOwnersMu.RLock()
-	owner, ok := s.topicOwners[topicKey]
-	s.topicOwnersMu.RUnlock()
-	if !ok || !owner.participant.matches(participant) {
-		return false
-	}
-	// A direct continuation of the topic has both IDs set to the root. A
-	// comment below another member's message has a different parent_id and is
-	// intentionally left to an explicit @ mention.
-	return stringValue(message.RootId) == owner.rootMessageID &&
-		stringValue(message.ParentId) == owner.rootMessageID
 }
 
 func (s *Service) worker(ctx context.Context) {

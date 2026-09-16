@@ -19,10 +19,10 @@ agent:
     user_email: "feishu-bot@compshare.local"
     # 必填白名单。首次联调可临时写 ["*"]，从日志取得 chat_id 后立即收紧。
     allowed_chat_ids: ["oc_2b31629a0c15e04e41fc53e74c270084"]
-    # 新话题首帖及发起者对话题根消息的后续提问免 @。
-    # 发起者在其他用户评论下的回复不会自动触发。
+    # 仅新话题根消息（即发起者点击“+”后的首帖）免 @。
+    # 同一话题中的后续消息，包括发起者自己的追问，都只有显式 @机器人 才会触发。
     auto_reply_new_topics: true
-    # 关闭全消息模式：其他成员评论和嵌套评论只有显式 @机器人 时才会进入话题会话。
+    # 关闭全消息模式：话题内的评论只有显式 @机器人 时才会进入话题会话。
     auto_reply_all_messages: false
     # Agent 选择转人工后，由飞书适配器上传并回复此企微客服二维码。
     customer_support_qr_path: "deploy/assets/customer-support-wecom.jpg"

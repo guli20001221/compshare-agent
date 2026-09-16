@@ -10,13 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestTopicParticipantMatchFailsClosedWhenOpenIDsDiffer(t *testing.T) {
-	owner := topicParticipant{openID: "ou_owner", userID: "tenant_user"}
-	other := topicParticipant{openID: "ou_other", userID: "tenant_user"}
-	require.False(t, owner.matches(other))
-}
-
-func TestTopicFollowupWithoutRootSenderIdentityFailsClosed(t *testing.T) {
+func TestNewTopicIsQueuedWithoutMentionButReplyIsNot(t *testing.T) {
 	service := &Service{
 		cfg:     config.FeishuConfig{AutoReplyNewTopics: true},
 		allowed: map[string]struct{}{"oc_topic": {}},
@@ -56,15 +50,17 @@ func TestTopicFollowupWithoutRootSenderIdentityFailsClosed(t *testing.T) {
 		},
 	}
 	require.NoError(t, service.onMessage(context.Background(), replyEvent))
-	require.Empty(t, service.queue, "without the root sender identity, a follow-up must not be attributed to the topic creator")
+	require.Empty(t, service.queue, "topic replies without @bot must not trigger automatic chatter")
 }
 
-func TestOnlyTopicCreatorDirectFollowupAutoReplies(t *testing.T) {
+func TestTopicCreatorFollowupNeedsExplicitBotMention(t *testing.T) {
+	botOpenID := "ou_bot"
 	service := &Service{
-		cfg:     config.FeishuConfig{AutoReplyNewTopics: true},
-		allowed: map[string]struct{}{"oc_topic": {}},
-		queue:   make(chan job, 4),
-		seen:    make(map[string]time.Time),
+		cfg:       config.FeishuConfig{AutoReplyNewTopics: true},
+		botOpenID: botOpenID,
+		allowed:   map[string]struct{}{"oc_topic": {}},
+		queue:     make(chan job, 4),
+		seen:      make(map[string]time.Time),
 	}
 	chatType := "group"
 	chatID := "oc_topic"
@@ -73,9 +69,9 @@ func TestOnlyTopicCreatorDirectFollowupAutoReplies(t *testing.T) {
 	threadID := "omt_topic"
 	rootMessageID := "om_root"
 	ownerOpenID := "ou_topic_owner"
-	otherOpenID := "ou_other_member"
 	ownerID := &larkim.UserId{OpenId: &ownerOpenID}
-	otherID := &larkim.UserId{OpenId: &otherOpenID}
+	botMentionKey := "@_user_1"
+	botMention := []*larkim.MentionEvent{{Key: &botMentionKey, Id: &larkim.UserId{OpenId: &botOpenID}}}
 
 	rootContent := `{"text":"第一个问题"}`
 	rootEvent := &larkim.P2MessageReceiveV1{
@@ -88,59 +84,59 @@ func TestOnlyTopicCreatorDirectFollowupAutoReplies(t *testing.T) {
 		},
 	}
 	require.NoError(t, service.onMessage(context.Background(), rootEvent))
-	require.Len(t, service.queue, 1)
+	require.Len(t, service.queue, 1, "the topic's first question answers itself")
 	<-service.queue
 
-	// Another member can write directly in the topic, but it must not create
-	// an automatic answer because that member did not create the topic.
-	otherDirectMessageID := "om_other_direct"
-	otherDirectContent := `{"text":"我也想知道"}`
-	otherDirect := &larkim.P2MessageReceiveV1{
+	// The same person continuing directly under their own root post is the
+	// shape a "one question, one answer" chat would produce. It stays silent.
+	ownerFollowupID := "om_owner_followup"
+	ownerFollowupContent := `{"text":"我的后续问题"}`
+	ownerFollowup := &larkim.P2MessageReceiveV1{
 		Event: &larkim.P2MessageReceiveV1Data{
-			Sender: &larkim.EventSender{SenderId: otherID, SenderType: &senderType},
+			Sender: &larkim.EventSender{SenderId: ownerID, SenderType: &senderType},
 			Message: &larkim.EventMessage{
-				MessageId: &otherDirectMessageID, RootId: &rootMessageID, ParentId: &rootMessageID,
-				ChatId: &chatID, ChatType: &chatType, MessageType: &messageType, Content: &otherDirectContent,
+				MessageId: &ownerFollowupID, RootId: &rootMessageID, ParentId: &rootMessageID,
+				ChatId: &chatID, ChatType: &chatType, MessageType: &messageType, Content: &ownerFollowupContent,
 				ThreadId: &threadID,
 			},
 		},
 	}
-	require.NoError(t, service.onMessage(context.Background(), otherDirect))
-	require.Empty(t, service.queue)
+	require.NoError(t, service.onMessage(context.Background(), ownerFollowup))
+	require.Empty(t, service.queue, "the creator's own follow-up must wait for an explicit @bot")
 
 	otherCommentID := "om_other_comment"
-	creatorCommentID := "om_creator_comment"
-	creatorCommentContent := `{"text":"回复其他成员"}`
-	creatorComment := &larkim.P2MessageReceiveV1{
+	ownerNestedID := "om_owner_nested"
+	ownerNestedContent := `{"text":"回复其他成员"}`
+	ownerNested := &larkim.P2MessageReceiveV1{
 		Event: &larkim.P2MessageReceiveV1Data{
 			Sender: &larkim.EventSender{SenderId: ownerID, SenderType: &senderType},
 			Message: &larkim.EventMessage{
-				MessageId: &creatorCommentID, RootId: &rootMessageID, ParentId: &otherCommentID,
-				ChatId: &chatID, ChatType: &chatType, MessageType: &messageType, Content: &creatorCommentContent,
+				MessageId: &ownerNestedID, RootId: &rootMessageID, ParentId: &otherCommentID,
+				ChatId: &chatID, ChatType: &chatType, MessageType: &messageType, Content: &ownerNestedContent,
 				ThreadId: &threadID,
 			},
 		},
 	}
-	require.NoError(t, service.onMessage(context.Background(), creatorComment))
+	require.NoError(t, service.onMessage(context.Background(), ownerNested))
 	require.Empty(t, service.queue, "a nested reply from the creator must not automatically trigger")
 
-	creatorFollowupMessageID := "om_creator_followup"
-	creatorFollowupContent := `{"text":"我的后续问题"}`
-	creatorFollowup := &larkim.P2MessageReceiveV1{
+	mentionedFollowupID := "om_owner_mentioned"
+	mentionedFollowupContent := `{"text":"@_user_1 那这个呢"}`
+	mentionedFollowup := &larkim.P2MessageReceiveV1{
 		Event: &larkim.P2MessageReceiveV1Data{
 			Sender: &larkim.EventSender{SenderId: ownerID, SenderType: &senderType},
 			Message: &larkim.EventMessage{
-				MessageId: &creatorFollowupMessageID, RootId: &rootMessageID, ParentId: &rootMessageID,
-				ChatId: &chatID, ChatType: &chatType, MessageType: &messageType, Content: &creatorFollowupContent,
-				ThreadId: &threadID,
+				MessageId: &mentionedFollowupID, RootId: &rootMessageID, ParentId: &rootMessageID,
+				ChatId: &chatID, ChatType: &chatType, MessageType: &messageType, Content: &mentionedFollowupContent,
+				ThreadId: &threadID, Mentions: botMention,
 			},
 		},
 	}
-	require.NoError(t, service.onMessage(context.Background(), creatorFollowup))
-	require.Len(t, service.queue, 1)
+	require.NoError(t, service.onMessage(context.Background(), mentionedFollowup))
+	require.Len(t, service.queue, 1, "@bot is the only way to continue a topic")
 	queued := <-service.queue
-	require.Equal(t, "我的后续问题", queued.question)
-	require.Equal(t, "oc_topic:omt_topic", queued.topicKey)
+	require.Equal(t, "那这个呢", queued.question)
+	require.Equal(t, "oc_topic:omt_topic", queued.topicKey, "a mentioned follow-up stays in the topic's session")
 }
 
 func TestTopicReplyIsQueuedWithoutMentionWhenAllMessagesEnabled(t *testing.T) {
