@@ -8,7 +8,6 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/compshare-agent/internal/config"
 	openai "github.com/sashabaranov/go-openai"
@@ -94,16 +93,6 @@ func newFallbackClient(srv *modelServer) *Client {
 	})
 }
 
-func (c *Client) primary() *modelTier { return c.tiers[0] }
-
-func tierModels(order []*modelTier) []string {
-	models := make([]string, len(order))
-	for i, tier := range order {
-		models[i] = tier.model
-	}
-	return models
-}
-
 func observedChat(t *testing.T, client *Client, req ChatRequest) (*ChatResponse, error, []OutboundCallResult) {
 	t.Helper()
 	var attempts []OutboundCallResult
@@ -164,10 +153,10 @@ func TestChatRoutesToFallbackModelWhenPrimaryFailsUpstream(t *testing.T) {
 	}
 }
 
-// A call that just watched the primary fail must not make the next call pay
-// the same wait: for primaryCooldown later calls start on the fallback, and
-// the primary comes back into first place once the cooldown has lapsed.
-func TestChatSkipsPrimaryWhileItIsCoolingDown(t *testing.T) {
+// The configured preference always wins over recency: a call that routed to
+// the fallback leaves no mark, so the very next call tries the primary first
+// and takes its answer the moment it is back.
+func TestEveryCallStartsOnThePrimary(t *testing.T) {
 	primaryDown := true
 	srv := newModelServer(t, func(w http.ResponseWriter, req wireRequest, _ int) {
 		if req.Model == primaryModel && primaryDown {
@@ -178,65 +167,27 @@ func TestChatSkipsPrimaryWhileItIsCoolingDown(t *testing.T) {
 	})
 	client := newFallbackClient(srv)
 
-	if _, err, _ := observedChat(t, client, ChatRequest{}); err != nil {
-		t.Fatalf("first call error = %v", err)
-	}
-	resp, err, attempts := observedChat(t, client, ChatRequest{})
-	if err != nil {
-		t.Fatalf("second call error = %v", err)
-	}
-	if resp.Content != "ok-"+fallbackModel {
-		t.Fatalf("second call Content = %q, want the fallback's answer without touching the primary", resp.Content)
-	}
-	if len(attempts) != 1 || attempts[0].Call.Model != fallbackModel || attempts[0].AttemptInCall != 1 {
-		t.Fatalf("second call attempts = %#v, want one first-attempt request to the fallback", attempts)
-	}
-	if got := srv.models(); !sameStrings(got, []string{primaryModel, fallbackModel, fallbackModel}) {
-		t.Fatalf("requests went to %v, want the primary skipped on the second call", got)
-	}
-
-	primaryDown = false
-	client.primary().unhealthyUntil.Store(time.Now().Add(-time.Second).UnixNano())
-	resp, err, attempts = observedChat(t, client, ChatRequest{})
-	if err != nil {
-		t.Fatalf("third call error = %v", err)
-	}
-	if resp.Content != "ok-"+primaryModel || len(attempts) != 1 || attempts[0].Call.Model != primaryModel {
-		t.Fatalf("after the cooldown the primary must be first again: Content = %q, attempts = %#v", resp.Content, attempts)
-	}
-}
-
-// While the primary cools down the fallback goes first, but a fallback that
-// also fails upstream still leaves the primary as the last resort.
-func TestChatKeepsPrimaryAsLastResortWhileCoolingDown(t *testing.T) {
-	srv := newModelServer(t, func(w http.ResponseWriter, req wireRequest, _ int) {
-		if req.Model == fallbackModel {
-			writeStatus(w, http.StatusTooManyRequests, "Rate limit error.")
-			return
+	for call := 1; call <= 2; call++ {
+		resp, err, attempts := observedChat(t, client, ChatRequest{})
+		if err != nil || resp.Content != "ok-"+fallbackModel {
+			t.Fatalf("call %d = (%v, %v), want the fallback's answer", call, resp, err)
 		}
-		writeAnswer(w, "from-terra")
-	})
-	client := newFallbackClient(srv)
-	client.primary().unhealthyUntil.Store(time.Now().Add(time.Minute).UnixNano())
-
+		if len(attempts) != 2 || attempts[0].Call.Model != primaryModel || attempts[1].Call.Model != fallbackModel {
+			t.Fatalf("call %d attempts = %#v, want the primary tried first every call", call, attempts)
+		}
+	}
+	primaryDown = false
 	resp, err, attempts := observedChat(t, client, ChatRequest{})
-	if err != nil {
-		t.Fatalf("Chat error = %v, want the primary's answer as the last resort", err)
+	if err != nil || resp.Content != "ok-"+primaryModel || len(attempts) != 1 || attempts[0].Call.Model != primaryModel {
+		t.Fatalf("recovered primary: Content = %q, err = %v, attempts = %#v", resp.Content, err, attempts)
 	}
-	if resp.Content != "from-terra" {
-		t.Fatalf("Content = %q, want from-terra", resp.Content)
-	}
-	if got := srv.models(); !sameStrings(got, []string{fallbackModel, primaryModel}) {
-		t.Fatalf("requests went to %v, want fallback then primary", got)
-	}
-	if len(attempts) != 2 || attempts[0].ErrorClass != OutboundErrorRateLimited || !attempts[0].Retried ||
-		attempts[1].Call.Model != primaryModel || attempts[1].Outcome != OutboundAttemptSuccess {
-		t.Fatalf("attempts = %#v", attempts)
+	if got := srv.models(); !sameStrings(got, []string{primaryModel, fallbackModel, primaryModel, fallbackModel, primaryModel}) {
+		t.Fatalf("requests went to %v", got)
 	}
 }
 
 // A rejection of the request is not an upstream failure: the fallback would
-// refuse the same request, so it is neither tried nor does the primary cool down.
+// refuse the same request, so it is not tried.
 func TestChatDoesNotRouteRequestRejectionsToFallback(t *testing.T) {
 	srv := newModelServer(t, func(w http.ResponseWriter, req wireRequest, n int) {
 		if n == 1 {
@@ -255,7 +206,7 @@ func TestChatDoesNotRouteRequestRejectionsToFallback(t *testing.T) {
 		t.Fatalf("attempts = %#v, want one unretried upstream_4xx attempt", attempts)
 	}
 	if _, err, attempts := observedChat(t, client, ChatRequest{}); err != nil || attempts[0].Call.Model != primaryModel {
-		t.Fatalf("a rejection must not open the cooldown: err = %v, attempts = %#v", err, attempts)
+		t.Fatalf("the next call still starts on the primary: err = %v, attempts = %#v", err, attempts)
 	}
 	if got := srv.models(); !sameStrings(got, []string{primaryModel, primaryModel}) {
 		t.Fatalf("requests went to %v, want the primary only", got)
@@ -442,36 +393,29 @@ func TestChatTriesEveryTierInOrderWithItsOwnKey(t *testing.T) {
 	}
 }
 
-// Both tiers that failed cool down: the next call starts on the third tier,
-// and the configured order returns as each cooldown lapses.
-func TestChatCoolsDownEveryTierThatFailed(t *testing.T) {
-	srv := newModelServer(t, func(w http.ResponseWriter, req wireRequest, n int) {
-		if n <= 2 {
-			writeStatus(w, http.StatusBadGateway, "upstream unresponsive")
+// Two failed tiers leave no mark either: the next call walks the configured
+// order from the top again and reaches the third tier the same way.
+func TestChatWalksTheConfiguredOrderOnEveryCall(t *testing.T) {
+	srv := newModelServer(t, func(w http.ResponseWriter, req wireRequest, _ int) {
+		if req.Model == thirdModel {
+			writeAnswer(w, "ok-"+req.Model)
 			return
 		}
-		writeAnswer(w, "ok-"+req.Model)
+		writeStatus(w, http.StatusBadGateway, "upstream unresponsive")
 	})
 	client := newThreeTierClient(srv)
 
-	if _, err, _ := observedChat(t, client, ChatRequest{}); err != nil {
-		t.Fatalf("first call error = %v", err)
+	for call := 1; call <= 2; call++ {
+		resp, err, attempts := observedChat(t, client, ChatRequest{})
+		if err != nil || resp.Content != "ok-"+thirdModel {
+			t.Fatalf("call %d = (%v, %v), want the third tier's answer", call, resp, err)
+		}
+		if len(attempts) != 3 || attempts[0].Call.Model != primaryModel || attempts[1].Call.Model != fallbackModel || attempts[2].Call.Model != thirdModel {
+			t.Fatalf("call %d attempts = %#v, want primary, fallback, third on every call", call, attempts)
+		}
 	}
-	if got := tierModels(client.tierOrder(time.Now())); !sameStrings(got, []string{thirdModel, primaryModel, fallbackModel}) {
-		t.Fatalf("order after two failures = %v, want the healthy tier first and the failed ones in their own order", got)
-	}
-	resp, err, attempts := observedChat(t, client, ChatRequest{})
-	if err != nil || resp.Content != "ok-"+thirdModel || len(attempts) != 1 || attempts[0].Call.Model != thirdModel {
-		t.Fatalf("second call = (%v, %v, %#v), want one request straight to the third tier", resp, err, attempts)
-	}
-
-	client.tiers[1].unhealthyUntil.Store(time.Now().Add(-time.Second).UnixNano())
-	if got := tierModels(client.tierOrder(time.Now())); !sameStrings(got, []string{fallbackModel, thirdModel, primaryModel}) {
-		t.Fatalf("order after the second tier recovered = %v", got)
-	}
-	client.tiers[0].unhealthyUntil.Store(time.Now().Add(-time.Second).UnixNano())
-	if got := tierModels(client.tierOrder(time.Now())); !sameStrings(got, []string{primaryModel, fallbackModel, thirdModel}) {
-		t.Fatalf("order after every tier recovered = %v, want the configured order", got)
+	if got := srv.models(); !sameStrings(got, []string{primaryModel, fallbackModel, thirdModel, primaryModel, fallbackModel, thirdModel}) {
+		t.Fatalf("requests went to %v", got)
 	}
 }
 

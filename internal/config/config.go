@@ -176,8 +176,8 @@ type LLMConfig struct {
 	Model   string `yaml:"model"`
 	// Fallbacks are tried in this order after a request to Model fails
 	// upstream (429/5xx, a transport or stream break, or an error event inside
-	// the stream); a model that just failed is skipped by later calls for a
-	// few minutes. Empty keeps every request on Model.
+	// the stream). Every call starts on Model again. Empty keeps every request
+	// on Model.
 	Fallbacks []LLMFallbackConfig `yaml:"fallbacks"`
 }
 

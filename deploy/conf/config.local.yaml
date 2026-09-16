@@ -47,8 +47,8 @@ agent:
     # Production answer model.
     model: "gpt-5.6-terra"
     # Tried in this order when a request fails upstream (429/5xx, a broken
-    # stream, an error event inside the stream); a model that just failed is
-    # skipped for a few minutes. base_url/api_key default to the primary's.
+    # stream, an error event inside the stream); every call starts on the
+    # primary again. base_url/api_key default to the primary's.
     fallbacks:
       # Same endpoint and key as the primary, separate account pool.
       - model: "gpt-5.6-luna"
