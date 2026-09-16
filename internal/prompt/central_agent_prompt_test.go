@@ -44,3 +44,26 @@ func TestCentralAgentPromptHasOneRuntimeContract(t *testing.T) {
 		require.Contains(t, text, required)
 	}
 }
+
+// A user who says 「我的实例」 without an ID is answered from the account's own
+// instance list, not with a request for the ID. Every prompt shape carries the
+// rule, and no shape may keep the older "ask for the ID when the target is
+// unclear" instruction that contradicts it.
+func TestEveryPromptShapeListsInstancesBeforeAskingForAnID(t *testing.T) {
+	for name, opts := range map[string]BuildOptions{
+		"read_only":  {},
+		"mutating":   {MutatingToolsEnabled: true},
+		"production": {MutatingToolsEnabled: true, InstanceOpsEnabled: true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			text := BuildSystemWithOptions("ctx", opts)
+			require.Contains(t, text, "先列出账号下的实例再定位：只有一台就直接用，多台再请用户指明，不要先索要 ID")
+			require.Contains(t, text, "问账号里现在有没有实例时列全部，不按旧 ID 定点查")
+			require.NotContains(t, text, "才询问实例 ID")
+			if opts.InstanceOpsEnabled {
+				require.Contains(t, text, "目标不明确时先列账号实例定位，多台再询问",
+					"the repair lane must not reintroduce the ask-first rule for guest-state questions")
+			}
+		})
+	}
+}
