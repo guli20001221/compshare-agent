@@ -24,60 +24,92 @@ import (
 
 // Client wraps go-openai to talk to ModelVerse (OpenAI-compatible).
 type Client struct {
-	client        *openai.Client
-	model         string
-	fallbackModel string
-	provider      string
-	// primaryUnhealthyUntil is a UnixNano instant. While it lies in the future a
-	// call starts on the fallback model: the gateway fails slowly and per model
-	// pool, so a call that already paid that wait must not make the next call
-	// pay it again just to rediscover the same outage.
-	primaryUnhealthyUntil atomic.Int64
+	// tiers is the configured preference order; tiers[0] is the primary.
+	tiers    []*modelTier
+	provider string
 }
 
-// maxChatAttempts bounds the actual requests one Chat call makes for one
-// response, not counting the re-sends that only narrow the request shape.
-const maxChatAttempts = 2
+// modelTier is one model on one endpoint and key.
+type modelTier struct {
+	model  string
+	client *openai.Client
+	// unhealthyUntil is a UnixNano instant. While it lies in the future a call
+	// starts on the next healthy tier: the gateway fails slowly and per model
+	// pool, so a call that already paid that wait must not make the next call
+	// pay it again just to rediscover the same outage.
+	unhealthyUntil atomic.Int64
+}
 
-// primaryCooldown is how long a call skips the primary model after a request
-// to it failed upstream. Long enough that a turn with several model calls
-// pays the gateway's wait once, short enough that a healthy primary is back
-// in use within minutes without an operator action.
-const primaryCooldown = 5 * time.Minute
+// minChatAttempts bounds the actual requests one Chat call makes for one
+// response, not counting the re-sends that only narrow the request shape. A
+// deployment with more tiers than this gets one request per tier instead.
+const minChatAttempts = 2
+
+// tierCooldown is how long a call skips a tier after a request to it failed
+// upstream. Long enough that a turn with several model calls pays the
+// gateway's wait once, short enough that a healthy tier is back in use within
+// minutes without an operator action.
+const tierCooldown = 5 * time.Minute
 
 func NewClient(cfg config.LLMConfig) *Client {
-	ocfg := openai.DefaultConfig(cfg.APIKey)
-	ocfg.BaseURL = cfg.BaseURL
+	client := &Client{provider: ProviderOpenAICompatible}
+	client.tiers = append(client.tiers, newModelTier(cfg.BaseURL, cfg.APIKey, cfg.Model))
+	for _, fallback := range cfg.Fallbacks {
+		model := strings.TrimSpace(fallback.Model)
+		if model == "" {
+			continue
+		}
+		baseURL, apiKey := fallback.BaseURL, fallback.APIKey
+		if strings.TrimSpace(baseURL) == "" {
+			baseURL = cfg.BaseURL
+		}
+		if strings.TrimSpace(apiKey) == "" {
+			apiKey = cfg.APIKey
+		}
+		client.tiers = append(client.tiers, newModelTier(baseURL, apiKey, model))
+	}
+	return client
+}
+
+func newModelTier(baseURL, apiKey, model string) *modelTier {
+	ocfg := openai.DefaultConfig(apiKey)
+	ocfg.BaseURL = baseURL
 
 	// A streaming response may legitimately run for minutes. http.Client.Timeout
 	// covers reading the entire response body, so putting a fixed timeout here
 	// turns a healthy long answer into a synthetic stream failure. The request
 	// context supplied by the HTTP/WS owner remains the authoritative lifecycle
 	// bound. The only special transport behavior here is the local proxy bypass.
-	ocfg.HTTPClient = chatHTTPClient(cfg.BaseURL)
+	ocfg.HTTPClient = chatHTTPClient(baseURL)
 
-	client := &Client{
-		client:   openai.NewClientWithConfig(ocfg),
-		model:    cfg.Model,
-		provider: ProviderOpenAICompatible,
-	}
-	if fallback := strings.TrimSpace(cfg.FallbackModel); fallback != "" && fallback != cfg.Model {
-		client.fallbackModel = fallback
-	}
-	return client
+	return &modelTier{model: model, client: openai.NewClientWithConfig(ocfg)}
 }
 
-// modelOrder is the preference order for one call: the primary first unless a
-// recent request to it failed upstream, in which case the fallback goes first
-// and the primary remains the last resort.
-func (c *Client) modelOrder(now time.Time) []string {
-	if c.fallbackModel == "" {
-		return []string{c.model}
+// maxChatAttempts is the request budget of one Chat call: every tier gets a
+// request, and a single-tier deployment keeps its same-model retry.
+func (c *Client) maxChatAttempts() int {
+	if len(c.tiers) > minChatAttempts {
+		return len(c.tiers)
 	}
-	if now.UnixNano() < c.primaryUnhealthyUntil.Load() {
-		return []string{c.fallbackModel, c.model}
+	return minChatAttempts
+}
+
+// tierOrder is the preference order for one call: the configured order with
+// the tiers that recently failed upstream moved behind the healthy ones, in
+// their own configured order, so they remain the last resort.
+func (c *Client) tierOrder(now time.Time) []*modelTier {
+	order := make([]*modelTier, 0, len(c.tiers))
+	for _, tier := range c.tiers {
+		if now.UnixNano() >= tier.unhealthyUntil.Load() {
+			order = append(order, tier)
+		}
 	}
-	return []string{c.model, c.fallbackModel}
+	for _, tier := range c.tiers {
+		if now.UnixNano() < tier.unhealthyUntil.Load() {
+			order = append(order, tier)
+		}
+	}
+	return order
 }
 
 func chatHTTPClient(baseURL string) *http.Client {
@@ -176,19 +208,20 @@ type TokenUsage struct {
 // Chat sends a streaming request and assembles the full response.
 // Streaming is required because the proxy drops content in non-streaming mode.
 //
-// One call makes at most maxChatAttempts actual requests. With a fallback
-// model configured the second request goes to the other model rather than
-// back to the pool that just failed; a primary that failed upstream is then
-// skipped by later calls for primaryCooldown. Every actual request is
-// observed with the model it went to, so the trace shows the switch.
+// One call makes at most maxChatAttempts actual requests, one per tier in
+// tierOrder: the next request goes to the next model rather than back to the
+// pool that just failed, and a tier that failed upstream is skipped by later
+// calls for tierCooldown. Every actual request is observed with the model it
+// went to, so the trace shows the switch.
 func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, error) {
-	order := c.modelOrder(time.Now())
+	order := c.tierOrder(time.Now())
+	budget := c.maxChatAttempts()
 	shape := requestShape{includeUsage: true}
 	attempt := 0
 	var lastErr error
-	for slot := 0; slot < maxChatAttempts; slot++ {
-		model := order[slot%len(order)]
-		resp, failed := c.chatWithModel(ctx, req, model, &shape, &attempt)
+	for slot := 0; slot < budget; slot++ {
+		tier := order[slot%len(order)]
+		resp, failed := c.chatWithTier(ctx, req, tier, &shape, &attempt)
 		if failed == nil {
 			return resp, nil
 		}
@@ -197,18 +230,18 @@ func (c *Client) Chat(ctx context.Context, req ChatRequest) (*ChatResponse, erro
 			observeOutboundCallResult(ctx, failed.record(false))
 			return nil, failed.err
 		}
-		if model == c.model && c.fallbackModel != "" {
-			c.primaryUnhealthyUntil.Store(time.Now().Add(primaryCooldown).UnixNano())
+		if len(c.tiers) > 1 {
+			tier.unhealthyUntil.Store(time.Now().Add(tierCooldown).UnixNano())
 		}
 		// Only pause when another attempt actually follows — sleeping before
 		// returning the final error just delays the user's error by a second.
-		if slot+1 >= maxChatAttempts {
+		if slot+1 >= budget {
 			observeOutboundCallResult(ctx, failed.record(false))
 			break
 		}
 		next := order[(slot+1)%len(order)]
-		if next != model {
-			log.Printf("runtime: %s failed upstream (%s); routing this call to %s", model, failed.errorClass, next)
+		if next != tier {
+			log.Printf("runtime: %s failed upstream (%s); routing this call to %s", tier.model, failed.errorClass, next.model)
 		} else if _, overloaded := providerOverloadStatus(failed.err); overloaded {
 			// Re-sending to the same pool: an immediate retry mostly re-hits the
 			// same exhausted pool, a short wait is what makes it worth making.
@@ -238,14 +271,14 @@ type requestShape struct {
 	forcingDegraded bool
 }
 
-// chatWithModel makes the requests for one attempt slot on one model: the
+// chatWithTier makes the requests for one attempt slot on one tier: the
 // request as currently shaped, re-sent with a narrower shape when the provider
 // rejects stream_options or a forced tool_choice. The terminal failure is
 // returned unobserved because the caller decides whether another request
 // follows before recording it.
-func (c *Client) chatWithModel(ctx context.Context, req ChatRequest, model string, shape *requestShape, attempt *int) (*ChatResponse, *failedAttempt) {
+func (c *Client) chatWithTier(ctx context.Context, req ChatRequest, tier *modelTier, shape *requestShape, attempt *int) (*ChatResponse, *failedAttempt) {
 	for {
-		resp, failed := c.attemptOnce(ctx, req, model, *shape, attempt)
+		resp, failed := c.attemptOnce(ctx, req, tier, *shape, attempt)
 		if failed == nil {
 			// Signal the silent degrade so a caller that relied on the forcing
 			// being honored can fall back instead of trusting an unforced response.
@@ -285,7 +318,7 @@ func (f *failedAttempt) record(retried bool) OutboundCallResult {
 // published only after a terminal choice reason and a clean EOF: the engine
 // persists only the response a later request produces, so a failed stream
 // must never leak a partial prefix ahead of it.
-func (c *Client) attemptOnce(ctx context.Context, req ChatRequest, model string, shape requestShape, attempt *int) (*ChatResponse, *failedAttempt) {
+func (c *Client) attemptOnce(ctx context.Context, req ChatRequest, tier *modelTier, shape requestShape, attempt *int) (*ChatResponse, *failedAttempt) {
 	attemptReq := req
 	if shape.forcingDegraded {
 		attemptReq.ToolChoice = nil
@@ -297,9 +330,9 @@ func (c *Client) attemptOnce(ctx context.Context, req ChatRequest, model string,
 		}
 	}
 	*attempt++
-	resp, timing, err := c.chatOnce(ctx, attemptReq, model, shape.includeUsage)
+	resp, timing, err := c.chatOnce(ctx, attemptReq, tier, shape.includeUsage)
 	result := OutboundCallResult{
-		Call: OutboundCall{Provider: c.provider, Model: model}, AttemptInCall: *attempt,
+		Call: OutboundCall{Provider: c.provider, Model: tier.model}, AttemptInCall: *attempt,
 		LatencyMS: timing.latencyMS, ProviderFirstChunkMS: timing.firstChunkMS,
 		PromptTokens: timing.promptTokens, CachedPromptTokens: timing.cachedPromptTokens,
 		ToolCount: timing.toolCount, ToolWindowRunes: timing.toolWindowRunes, ToolWindowHash: timing.toolWindowHash,
@@ -367,9 +400,9 @@ func wireTemperature(requested float32) float32 {
 	return requested
 }
 
-func (c *Client) chatOnce(ctx context.Context, req ChatRequest, model string, includeUsage bool) (response *ChatResponse, timing outboundAttemptTiming, err error) {
+func (c *Client) chatOnce(ctx context.Context, req ChatRequest, tier *modelTier, includeUsage bool) (response *ChatResponse, timing outboundAttemptTiming, err error) {
 	ccReq := openai.ChatCompletionRequest{
-		Model:    model,
+		Model:    tier.model,
 		Messages: req.Messages,
 		Stream:   true,
 	}
@@ -397,11 +430,11 @@ func (c *Client) chatOnce(ctx context.Context, req ChatRequest, model string, in
 	// Count at the last boundary before the SDK attempts the upstream request.
 	// Putting this in Chat would miss internal retries or count logical calls
 	// that never became requests.
-	call := OutboundCall{Provider: c.provider, Model: model}
+	call := OutboundCall{Provider: c.provider, Model: tier.model}
 	started := time.Now()
 	defer func() { timing.latencyMS = time.Since(started).Milliseconds() }()
 	observeOutboundCall(ctx, call)
-	stream, err := c.client.CreateChatCompletionStream(ctx, ccReq)
+	stream, err := tier.client.CreateChatCompletionStream(ctx, ccReq)
 	if err != nil {
 		return nil, timing, fmt.Errorf("llm stream: %w", err)
 	}

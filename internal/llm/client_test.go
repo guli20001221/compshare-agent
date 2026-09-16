@@ -457,11 +457,11 @@ func TestClientChatRejectsStreamWithoutTerminalFinishReason(t *testing.T) {
 			if len(delivered) != 0 {
 				t.Fatalf("partial attempt leaked to caller: %q", delivered)
 			}
-			if got := atomic.LoadInt32(&attempts); got != maxChatAttempts || len(completed) != maxChatAttempts {
-				t.Fatalf("attempts=%d observations=%d, want bounded retry count %d", got, len(completed), maxChatAttempts)
+			if got := atomic.LoadInt32(&attempts); got != minChatAttempts || len(completed) != minChatAttempts {
+				t.Fatalf("attempts=%d observations=%d, want bounded retry count %d", got, len(completed), minChatAttempts)
 			}
 			for i, attempt := range completed {
-				if attempt.Outcome != OutboundAttemptError || attempt.ErrorClass != OutboundErrorStream || attempt.StopReason != "" || attempt.Retried != (i+1 < maxChatAttempts) {
+				if attempt.Outcome != OutboundAttemptError || attempt.ErrorClass != OutboundErrorStream || attempt.StopReason != "" || attempt.Retried != (i+1 < minChatAttempts) {
 					t.Fatalf("incomplete attempt recorded as successful: %#v", attempt)
 				}
 			}
