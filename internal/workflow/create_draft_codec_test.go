@@ -456,12 +456,12 @@ func TestSnapshotEncodesOnlySealSafeValues(t *testing.T) {
 // TestUpstreamArgsDoNotAliasTheDraft: every builder must produce a fresh map, or
 // the tool executor could mutate the record the seal's digest is computed over.
 //
-// The Zone half of this was near-vacuous: d.Args.Zone is a string on a struct
-// VALUE, so no write to the returned map could have reached it whatever the
-// builder did. The disks are the real test — all three builders used to hand out
-// the draft's own list, and on the create path that draft is decoded from the
-// SEALED contract, which is how a request became a way to write to the audit
-// record. All three are checked, because all three were sharing it.
+// The Zone half is near-vacuous: d.Args.Zone is a string on a struct VALUE, so
+// no write to the returned map could reach it whatever the builder did. The
+// disks are the real test — a builder that handed out the draft's own list
+// would, on the create path, hand out the list decoded from the SEALED
+// contract, turning a request into a way to write to the audit record. All
+// three builders are checked.
 func TestUpstreamArgsDoNotAliasTheDraft(t *testing.T) {
 	d := fullDraft()
 

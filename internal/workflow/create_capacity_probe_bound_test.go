@@ -83,19 +83,18 @@ func runToGPUCardWith(t *testing.T, exec *modelCapacityExecutor) []ConfirmFormOp
 	return gpuOpts
 }
 
-// TestGPUCardGraysASoldOutModelPastTheCapacityProbeFanOut is the regression the
-// combo probe introduced. The GPU-card gate widened the capacity fan-out from a
-// single model's zones (≤4 calls) to every offered (model, zone) row — ~19 live —
-// but the batch bound that decides how many of those calls are actually made was
-// sized for the old, small shape. A catalog larger than the bound records the
-// tail as "never asked", which both cards read as unknown = selectable. A sold-out
-// model whose only probe fell in that tail is then offered as clickable — exactly
-// the 没库存却能点 this whole gate exists to prevent.
+// TestGPUCardGraysASoldOutModelPastTheCapacityProbeFanOut: the GPU-card gate
+// fans the capacity probe out over every offered (model, zone) row — ~19 live —
+// and the batch bound decides how many of those calls are actually made. A
+// catalog larger than the bound records the tail as "never asked", which both
+// cards read as unknown = selectable, so a sold-out model whose only probe fell in
+// that tail is offered as clickable — exactly the 没库存却能点 this gate exists to
+// prevent.
 //
 // The bound must cover the real fan-out. This catalog offers 20 models — more than
 // the ~19 the live catalog produces — with the sold-out one last, so the bound has
-// to reach it. Mutation check: at the old bound (12) the last model's probe is
-// never made and it stays selectable, failing this test.
+// to reach it; at a bound of 12 the last model's probe is never made and it stays
+// selectable, failing this test.
 func TestGPUCardGraysASoldOutModelPastTheCapacityProbeFanOut(t *testing.T) {
 	const soldOutModel = "gpu19"
 	models := make([]string, 0, 20)

@@ -8,11 +8,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestNetAcceleratorDoesNotOfferToEnableWhatIsAlreadyOn: the reply used to end
-// with one fixed clause, so an enabled accelerator reported
-// 「网络加速已开通。……如需开通，我会走确认流程。」 — the same sentence stating a fact and
-// then offering to bring it about. A reader cannot tell which half is the
-// mistake, so the whole answer stops being usable.
+// TestNetAcceleratorDoesNotOfferToEnableWhatIsAlreadyOn: an enabled accelerator
+// must not report 「网络加速已开通。……如需开通，我会走确认流程。」 — a sentence stating a
+// fact and then offering to bring it about. A reader cannot tell which half is
+// the mistake, so the whole answer stops being usable.
 func TestNetAcceleratorDoesNotOfferToEnableWhatIsAlreadyOn(t *testing.T) {
 	on, empty := renderNetAcceleratorStatusReply(map[string]any{"Optimized": true})
 	require.False(t, empty)

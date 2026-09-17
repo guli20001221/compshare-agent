@@ -280,8 +280,7 @@ func TestLiveFullFlow(t *testing.T) {
 	}
 	audit := &MemAuditWriter{}
 	sup := liveSupervisor(t)
-	// Log the remaining A/B arm. The removed product-level read-only/write split no longer changes
-	// the prompt or tool surface; only reference-context delivery is varied here.
+	// Log the A/B arm: only reference-context delivery is varied here.
 	contextEnabled := liveContextEnabled()
 	t.Logf("[arm] context=%v model=%s", contextEnabled, sup.Model)
 	svc := NewService(sup, audit)

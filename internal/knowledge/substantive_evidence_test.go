@@ -6,11 +6,11 @@ import (
 	"unicode/utf8"
 )
 
-// TestBuildSubstantiveEvidenceLedgerCarriesBoundedSnippet pins the P3 resolution
-// of the content-free-ledger blocker: the agentic-RAG ledger carries a real,
-// bounded content snippet (so a symptom tool-ops turn — where the retrieved
-// evidence IS the primary base — can ground an ACTIONABLE answer), while the
-// diagnosis-lane ledger (BuildEvidenceLedger) stays deliberately content-free.
+// TestBuildSubstantiveEvidenceLedgerCarriesBoundedSnippet: the agentic-RAG
+// ledger carries a real, bounded content snippet (so a symptom tool-ops turn —
+// where the retrieved evidence IS the primary base — can ground an ACTIONABLE
+// answer), while the diagnosis-lane ledger (BuildEvidenceLedger) stays
+// deliberately content-free.
 func TestBuildSubstantiveEvidenceLedgerCarriesBoundedSnippet(t *testing.T) {
 	// Real-shaped external runbook content: the actionable flags live in the head,
 	// padded so the body exceeds the snippet cap and the bound is exercised.
@@ -41,13 +41,13 @@ func TestBuildSubstantiveEvidenceLedgerCarriesBoundedSnippet(t *testing.T) {
 		t.Fatalf("substance gate: snippet missing actionable flag --max-model-len; got %q", item.Snippet)
 	}
 	// Bounded: the snippet must not exceed the cap (input-bloat guard for the
-	// multi-round loop, memory: priortext-avalanche-invalidates-planner).
+	// multi-round loop).
 	if n := utf8.RuneCountInString(item.Snippet); n > DefaultEvidenceSnippetMaxRunes {
 		t.Fatalf("snippet %d runes exceeds cap %d", n, DefaultEvidenceSnippetMaxRunes)
 	}
 
-	// The diagnosis-lane ledger stays content-free (no regression), while sharing
-	// chunk identity with the substantive one (one projection helper, two views).
+	// The diagnosis-lane ledger stays content-free while sharing chunk identity
+	// with the substantive one (one projection helper, two views).
 	plain := BuildEvidenceLedger("vllm 显存不足", hits, DefaultEvidenceLedgerMaxItems)
 	if plain.Items[0].Snippet != "" {
 		t.Fatalf("BuildEvidenceLedger must stay content-free; got snippet %q", plain.Items[0].Snippet)

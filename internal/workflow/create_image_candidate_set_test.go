@@ -65,12 +65,12 @@ func candidateWfCtx(params map[string]any) *Context {
 // TestTheFacetCountAndThePickerPopulationAreTheSameNumber is the invariant the
 // whole imageCandidateSet exists to hold.
 //
-// They used to be two independent computations: the facet card counted the raw
-// catalog while the picker ran the ranker's hard gates first and only then applied
-// the facets. The card therefore stated "框架 / 应用镜像 55 个镜像" against a picker
-// that had already dropped rows for reasons the count never saw. Asserting the two
-// numbers are equal — rather than asserting either number — is what makes a future
-// second producer fail here instead of in front of a user.
+// Two independent computations — a facet card counting the raw catalog while
+// the picker runs the ranker's hard gates first and only then applies the
+// facets — would state "框架 / 应用镜像 55 个镜像" against a picker that had already
+// dropped rows for reasons the count never saw. Asserting the two numbers are
+// equal — rather than asserting either number — is what makes a second producer
+// fail here instead of in front of a user.
 func TestTheFacetCountAndThePickerPopulationAreTheSameNumber(t *testing.T) {
 	wfCtx := candidateWfCtx(map[string]any{})
 	set := createImageCandidates(wfCtx)
@@ -238,8 +238,8 @@ func TestTheTagCardActuallyRunsInTheGuidedSequence(t *testing.T) {
 			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageType": "App"}}
 		case form.Field("ImageTag") != nil:
 			cards = append(cards, "tag")
-			// Only App tags are offered — the System row contributed none, so the
-			// pair that used to dead-end cannot be assembled here.
+			// Only App tags are offered — the System row contributed none, so a
+			// dead-end type/tag pair cannot be assembled here.
 			assert.Equal(t, []string{"", "pytorch", "comfyUI"}, optionValues(fieldByKey(t, form, "ImageTag")))
 			return ConfirmResolution{Confirmed: true, Overrides: map[string]string{"ImageTag": "comfyUI"}}
 		// The final card also states ImageId, but read-only and with no options; the

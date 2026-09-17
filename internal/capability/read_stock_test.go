@@ -48,12 +48,11 @@ func TestStockRender_FilterDedupeAndStatus(t *testing.T) {
 	assert.Contains(t, reply, soldOutDisclaimer, "the caveat still reaches the user")
 }
 
-// TestStockListingStatesItsCaveatOncePerListNotOncePerMachineType is the reason
-// the caveat moved out of the per-row text. Against the live catalog (12 models
-// on sale, 2026-07-29) the old renderer emitted the same 30-character
-// parenthetical on all 12 lines, so the answer to "有什么卡" was 12 copies of a
-// disclaimer with the model names threaded between them. The caveat applies to
-// the list as a whole, so it is stated once, under it.
+// TestStockListingStatesItsCaveatOncePerListNotOncePerMachineType: the caveat
+// applies to the list as a whole, so it is stated once, under it. Repeated on
+// every row it would turn the answer to "有什么卡" (12 models on sale against the
+// live catalog) into 12 copies of a disclaimer with the model names threaded
+// between them.
 func TestStockListingStatesItsCaveatOncePerListNotOncePerMachineType(t *testing.T) {
 	types := make([]any, 0, 12)
 	for _, name := range []string{"5090", "4090", "4090_48G", "3080Ti", "2080Ti", "3090", "2080", "A800", "H20", "P40", "V100S", "A100"} {
@@ -105,10 +104,8 @@ func TestStockEnvelope_SubjectsAndDisclaimer(t *testing.T) {
 
 // --- the request is the only filter ---------------------------------------------
 
-// This replaces TestStockReferentText_RC017, which pinned the opposite: that an
-// empty gpu_type would be filled from the model a PRIOR stock turn resolved to,
-// as long as that model was still offered. The capability no longer has that
-// second input, so what is worth pinning is that identical requests produce
+// An empty gpu_type is not filled from the model a PRIOR stock turn resolved
+// to: the capability has no such second input, so identical requests produce
 // identical answers — a read whose result depends on session history is a read
 // nobody can reason about from its arguments.
 func TestStockFilterComesOnlyFromTheRequest(t *testing.T) {
@@ -147,11 +144,10 @@ func TestStockHandle_PlainListingAttachesEnvelope(t *testing.T) {
 
 	require.Equal(t, platform.ReadStatusHandled, result.Status)
 	assert.Equal(t, "DescribeAvailableCompShareInstanceTypes", result.ToolAction)
-	// This used to assert exactly one upstream call. The listing now also reads the
-	// zone catalog and the GPU inventory, because a stock answer that says only
-	// 开售 does not answer "有多少" — the card counts live in a third API. The extra
-	// reads are the deliberate price of that, so the profile is asserted rather
-	// than left to drift.
+	// The listing also reads the zone catalog and the GPU inventory, because a
+	// stock answer that says only 开售 does not answer "有多少" — the card counts
+	// live in a third API. The extra reads are the deliberate price of that, so
+	// the profile is asserted rather than left to drift.
 	assert.Equal(t, "DescribeAvailableCompShareInstanceTypes", exec.calls[0].action,
 		"the catalog is still read first and is still the answer's source action")
 	assert.Contains(t, result.Reply, "- 4090：开售")
@@ -511,9 +507,9 @@ func TestStockHandle_UnmatchedZoneMentionHandsBackTheLiveCatalog(t *testing.T) {
 }
 
 // TestStockHandle_UnmatchedZoneMentionOffersEveryZoneTheCatalogReturned is the
-// invariant the bug broke: the candidate set the model can choose from must equal
-// the zone set the live call returned. The old code narrowed it to the empty set
-// while asking the model to choose. Any future narrowing — a cap, a "closest
+// invariant: the candidate set the model can choose from must equal the zone
+// set the live call returned; narrowing it to the empty set while asking the
+// model to choose is a dead end. Any narrowing — a cap, a "closest
 // match" filter, a same-region slice — rebuilds the same dead end, so the
 // expectation here is written out by hand from the fixture rather than derived
 // from the code under test.

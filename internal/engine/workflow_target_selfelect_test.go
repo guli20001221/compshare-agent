@@ -16,12 +16,11 @@ import (
 //   - a decline persists no selection;
 //   - a confirm executes exactly the card's id.
 //
-// These replace the old "model self-election is refused" assertion. That test
-// recompiled the turn context AFTER a mid-turn describe — a shape production never
-// produces, since the AgentContext is an immutable turn-entry snapshot (Chat freezes
-// it at turn entry). Whether the Agent SHOULD answer "怎么关机" instead of proposing a
-// stop is a P7 behavioral concern, separate from the target-authorization layer; the
-// human gate makes a stray self-elected proposal harmless either way.
+// The AgentContext is an immutable turn-entry snapshot (Chat freezes it at turn
+// entry), so no test here recompiles it after a mid-turn describe — production
+// never produces that shape. Whether the Agent SHOULD answer "怎么关机" instead of
+// proposing a stop is a behavioral concern separate from the target-authorization
+// layer; the human gate makes a stray self-elected proposal harmless either way.
 
 func selfElectStopEngine(t *testing.T, confirm ConfirmFunc) (*Engine, *mockExecutorFn) {
 	t.Helper()

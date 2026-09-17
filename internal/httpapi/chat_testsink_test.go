@@ -62,9 +62,9 @@ func (s *recordingSink) firstIndexOf(event string) int {
 	return -1
 }
 
-// body marshals all recorded frames to a single JSON string, so tests can keep
-// using substring assertions (e.g. "the streamed output still contains the raw
-// IP") that previously ran against the SSE response body.
+// body marshals all recorded frames to a single JSON string, so tests can use
+// substring assertions (e.g. "the streamed output still contains the raw IP")
+// over the whole stream.
 func (s *recordingSink) body() string {
 	raw, _ := json.Marshal(s.events)
 	return string(raw)

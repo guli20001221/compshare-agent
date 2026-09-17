@@ -8,19 +8,13 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestRun_SealTamperFailsBeforeMutatingStep pins P4 acceptance #3: once the user
-// confirms, a business param rewritten by a later step must not silently reach a
-// mutating call. A post-confirm step tampers GpuType inside its own BuildArgs.
-//
-// The inputs below are unchanged; the expectations moved, and that is the fix.
-// This test used to assert StoppedAt=="写操作" and executor.calls==["ToolA"] —
-// i.e. it recorded that the TAMPERING step's own call went through on the
-// tampered params, and only the step AFTER it was blocked. That is weaker than
-// the property named on the first line of this comment, and it is not academic:
-// in CreateInstanceWorkflow the write is the last mutating step, so "blocked at
-// the next step" would mean the instance was already created. Now the check runs
-// after BuildArgs, so the tampering step fails-stop on itself and reaches no
-// executor at all.
+// TestRun_SealTamperFailsBeforeMutatingStep: once the user confirms, a business
+// param rewritten by a later step must not silently reach a mutating call. A
+// post-confirm step tampers GpuType inside its own BuildArgs and must fail-stop
+// on itself, reaching no executor at all. Blocking only the step AFTER it would
+// be weaker than that, and not academically: in CreateInstanceWorkflow the write
+// is the last mutating step, so "blocked at the next step" would mean the
+// instance was already created.
 func TestRun_SealTamperFailsBeforeMutatingStep(t *testing.T) {
 	executor := &mockExecutor{}
 	confirmYes := ConfirmFunc(func(string, map[string]any) bool { return true })
@@ -77,7 +71,7 @@ func TestRun_SealTamperInsideTheWriteStepBlocksThatWrite(t *testing.T) {
 	require.Empty(t, executor.calls, "the unconfirmed create must never be issued; there is no later step to catch it")
 }
 
-// TestRun_ConfirmCardAndWriteShareSealedContract pins P4 acceptance #4: the args
+// TestRun_ConfirmCardAndWriteShareSealedContract: the args
 // shown on the confirm card, the args the write executes, and the sealed
 // contract all carry the same confirmed values — one contract, not three
 // independent re-derivations.
@@ -110,7 +104,7 @@ func TestRun_ConfirmCardAndWriteShareSealedContract(t *testing.T) {
 	assert.True(t, result.Contract.verifyDigest(result.Contract.BusinessParams))
 }
 
-// TestRun_FormEditReConfirmsAndSealsFinalValue pins P4 acceptance #5: a confirm
+// TestRun_FormEditReConfirmsAndSealsFinalValue: a confirm
 // form edit invalidates the pre-edit draft — it forces a re-confirm and only the
 // final confirmed value is sealed and executed, never the value the user changed
 // away from.

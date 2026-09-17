@@ -11,8 +11,8 @@ import (
 )
 
 // The previous turn's user-facing buffers must not be composed into this turn's
-// reply. They used to be cleared by name in a reset block; now the turn is one
-// value that entry replaces, so this covers every field in it at once.
+// reply. The turn is one value that entry replaces, so this covers every field
+// in it at once rather than a list of fields cleared by name.
 func TestTurnEntryReplacesTheWholeTurn(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{responses: []llm.ChatResponse{{Content: "ok"}}}, &mockExecutor{}, nil)
 	eng.turnState = turnState{

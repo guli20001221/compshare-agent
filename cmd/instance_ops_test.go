@@ -100,7 +100,7 @@ func userCtx() context.Context {
 	return tools.WithUser(context.Background(), tools.UserContext{TopOrganizationID: 7, OrganizationID: 8})
 }
 
-// P2 gate 5: a rate-limit denial must be enforced by the driver itself (this lane never passes through
+// A rate-limit denial must be enforced by the driver itself (this lane never passes through
 // SafeToolExecutor). A denied turn reaches neither the credential fetch nor the harness.
 func TestInstanceOpsRunner_RateLimitDeniedNeverDiagnoses(t *testing.T) {
 	diag := &fakeDiagnoser{output: "should-not-run"}

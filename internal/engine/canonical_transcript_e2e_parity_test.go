@@ -412,8 +412,9 @@ func TestEndToEndHotColdParityWhenReplayBudgetCompactsDetail(t *testing.T) {
 	requireTranscriptWasReplayed(t, hotAssembled)
 	assertToolCallPairsValid(t, hotAssembled)
 
-	// The budget must have bitten — otherwise this test proves nothing. The old
-	// dialogue remains, while its re-queryable tool detail is compacted away.
+	// The budget must have bitten — otherwise this test proves nothing. The
+	// earliest dialogue remains, while its re-queryable tool detail is compacted
+	// away.
 	require.Contains(t, rendered, oldest+" 这台怎么了",
 		"the earliest plain exchange must remain semantic history")
 	require.NotContains(t, rendered, `"id":"`+oldest+`"`,

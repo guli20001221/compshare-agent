@@ -37,7 +37,7 @@ func TestProposalToolExposureAndMapping(t *testing.T) {
 	require.False(t, ok, "the retired alias must no longer resolve to an operation")
 }
 
-// Request tools carry an operation-specific boundary plus the P2 interaction
+// Request tools carry an operation-specific boundary plus the shared interaction
 // template. The template is derived at catalog construction from the capability
 // registry, never from a workflow's internal execution-step description.
 func TestRequestToolDescriptionUsesCapabilityBoundaryAndP2Template(t *testing.T) {
@@ -139,134 +139,22 @@ func TestCentralAgentStaticPromptAndToolWindowStayWithinBudget(t *testing.T) {
 		t.Logf("mutating=%t instance_ops=%t system_bytes=%d system_runes=%d tool_bytes=%d tool_runes=%d total_bytes=%d total_runes=%d",
 			shape.mutating, shape.instanceOps, len(system), len([]rune(system)), len(toolJSON), len([]rune(string(toolJSON))),
 			len(system)+len(toolJSON), len([]rune(system))+len([]rune(string(toolJSON))))
-		// P2 adds one compact, shared observation contract. Keep B4's measured
-		// write-authorization wording verbatim instead of recovering this budget
-		// by weakening its anti-over-questioning safeguards.
-		//
-		// 4800 -> 4900 (2026-08-03): +128 bytes for the correct_tool_call
-		// exception inside the needs_input clause. Bought deliberately: without
-		// it the generic "补问缺字段" rule makes the model ask the user to restate
-		// a question they already stated correctly, on the ~4% of SearchKnowledge
-		// calls whose arguments the MODEL malformed (rate recorded in
-		// engine.go's parse-error comment and tool_arg_parse_test's fixtures).
-		// That is the over-questioning this budget exists to protect against, so
-		// squeezing the exception into ambiguity would defeat its own purpose.
-		//
-		// 4900 -> 5250 (2026-08-14): +294 bytes for the reclaimed-resource
-		// terminal rule. Bought deliberately: without it a confirmed-reclaimed
-		// instance gets a manufactured recovery path — retention window, manual
-		// support escalation, "related resources may still be recoverable" — for
-		// data the platform has already permanently deleted, which is a worse
-		// failure than any number of bytes. Measured max after the change is 5183
-		// (read-only shape), so the number is the measurement plus a small margin,
-		// not a round number chosen to be safe.
-		//
-		// 5250 -> 5600 (2026-08-20): +348 bytes for the operation-substitution rule
-		// and for widening 「可选筛选条件」 to 「可选参数」. The occasion was a customer
-		// who asked to start their 3090, hit a failed capacity check, and got the
-		// instance started in no-GPU mode — the Agent kept the verb and changed the
-		// object until it succeeded. The rule that should have covered it was scoped
-		// to QUERY facets ("筛选条件"), and nothing said a failed operation is reported
-		// rather than substituted.
-		//
-		// Be honest about what these bytes buy: a replay probe against the real
-		// model (10 runs, incident context, bare 「要」) produced the substitution
-		// 8/8 on unmodified main and 8/10 with this rule present — and neither miss
-		// was the rule. So it is a correctly-scoped general statement, NOT the thing
-		// that stops this. The control point is the confirmation card, which now
-		// states the whole spec change. Do not spend more prompt bytes on this class
-		// of behavior expecting a different result.
-		//
-		// Measured max after the change is 5531 (read-only shape), so the number is
-		// the measurement plus a small margin, not a round number chosen to be safe.
-		//
-		// 2026-09-16, no raise: +254 bytes (read-only shape 5258 -> 5512) for the
-		// list-before-asking rule. A user who says 「我的实例」 without an ID is
-		// located from the account's own instance list; only a multi-instance
-		// account is asked which one, and 「现在还有实例吗」 lists everything
-		// instead of re-checking a remembered ID. The repair-lane section had
-		// been teaching the opposite ("没有明确目标才询问实例 ID") and is rewritten
-		// in the same change.
-		//
-		// Be honest about what these bytes buy: a live probe against the real
-		// model (five bare no-ID questions x4, an account with two instances,
-		// SSH lane off so only the behavior bullet was in the prompt) asked for
-		// an ID before listing 6/20 on unmodified main and 2/20 with this rule
-		// present. Both remaining misses are the how-to question 「怎么关闭实例」,
-		// which does not say 「我的实例」: the model answers with console steps
-		// and then asks for the ID to operate (once offering to list instead).
-		// That is the rule's edge, not a wording gap to spend more bytes on.
+		// Byte budgets are the measurement plus a small margin, never a round
+		// number chosen to be safe: the system prompt measures at most 5512
+		// (read-only shape). A raise must name what the bytes buy and whether a
+		// probe against the real model showed it; a rule that reads well but
+		// does not move the measured behavior is not a reason to spend prompt.
 		require.LessOrEqual(t, len(system), 5600, "central system prompt grew past its reviewed byte budget")
 		require.NotContains(t, system, "更新任务状态",
 			"the retired semantic-memory tool must not remain as a model instruction")
-		// The production shape includes the SSH diagnosis tool. Keep the budget
-		// attached to the exact window sent by the deployed configuration rather
-		// than a cheaper no-SSH approximation.
-		// 35000 -> 36000 (2026-09-01): one reviewed workflow was added for the
-		// upstream SwitchChargeType operation. It exposes only the target instance
-		// and the four upstream billing modes; pricing remains outside the tool's
-		// contract. Keep the schema explicit instead of recovering bytes by deleting
-		// unrelated tool guidance or merging tools without production selection data.
-		//
-		// 36000 -> 36800 (2026-09-10): twenty model-visible parameters carried a
-		// name and a type and nothing else — `port` did not say it applies only to
-		// custom_port, the monitor `targets` did not say an omitted list means the
-		// selected instance, `source` did not say an omitted value means the
-		// platform catalog. Each now states its own fill and omission rule. The
-		// same bytes carry the quote-to-order field mapping (`gpu_type` ->
-		// RequestCreateInstance.GpuType and seven more), which is checked rather
-		// than merely written: see TestToolDescriptionsOnlyNameFieldsTheirTargetToolHas.
-		//
-		// Be honest about what these bytes buy: nothing here was measured against a
-		// model. The recorded gate that could have measured it was retired the same
-		// day as model-stale, so this is a contract-completeness change — the model
-		// could not previously have known these rules from the window — not a
-		// demonstrated behavior improvement. Do not cite it as one.
-		//
-		// Measured max after the change is 36646 (production shape).
-		//
-		// 36800 -> 37000 (2026-09-10): the same pass left the VALUE half of the
-		// quote-to-order mapping unchecked, and it was already broken.
-		// ReadCapability_image_list.source offered only `shared`;
-		// RequestCreateInstance.ImageSource accepted only `sharing`, and
-		// actionresolver.CodecEnum matches members exactly — so a value carried
-		// straight from the listing was refused before the workflow's alias fold ran.
-		// RequestReinstallInstance.ImageSource had carried both spellings since
-		// 1172013d for exactly this reason; #607 widened create's enum and did not
-		// bring the compatibility value along. These bytes are that value, the CFS
-		// capacity bound now stated where upstream enforces it, and Schedule.timezone
-		// finally naming the default its read-side twin already states.
-		//
-		// Unlike the raise above, this one has a demonstrated defect behind it:
-		// TestIdentityReferencesCarryValuesTheTargetFieldAccepts reproduces the
-		// rejection when the value is removed. It is still not a measured model
-		// improvement — no probe was run against a model. Do not cite it as one.
-		//
-		// Measured max after the change is 36850 (production shape).
-		//
-		// 37000 -> 37100 (2026-09-16): +125 bytes (36857 -> 36982, production
-		// shape). ResizeInstanceWorkflow now says the GPU model cannot be changed
-		// and a different model means a new instance: upstream
-		// ResizeCompShareInstance takes Cpu/Memory/Gpu counts under the current
-		// GpuType and has no GpuType parameter, so a turn whose retrieval missed
-		// the resize doc no longer invents a card-swap flow.
-		// DiagnoseInstanceInternals says "list the account's instances first,
-		// ask if several" instead of "clarify first", matching the prompt rule
-		// above.
-		//
-		// Be honest about what these bytes buy: the resize sentence is a contract
-		// correction pinned by TestInventoryToolDescriptionsSetRoutingBoundaries,
-		// not a measured model improvement. The diagnose wording was not in the
-		// probe's tool window (SSH lane off), so it was not exercised at all.
-		//
-		// Measured max after the change is 36982 (production shape).
+		// The tool window is measured on the production shape, which includes
+		// the SSH diagnosis tool; its max is 36982 bytes. Every model-visible
+		// parameter states its own fill and omission rule, and identity fields
+		// carry values the target tool accepts (both are pinned by their own
+		// tests here); recover bytes by neither deleting that guidance nor
+		// merging tools without production selection data.
 		require.LessOrEqual(t, len(toolJSON), 37100, "model-visible tool window grew past its reviewed byte budget")
-		// 41000 -> 41900 -> 42100 (2026-09-10): both raises follow the tool-window
-		// numbers above; the system prompt is unchanged throughout. Measured max is
-		// 41938 (production shape).
-		//
-		// 42100 -> 42400 (2026-09-16): the system-prompt and tool-window entries
-		// dated above, together. Measured max is 42324 (production shape).
+		// Measured max is 42324 (production shape).
 		require.LessOrEqual(t, len(system)+len(toolJSON), 42400,
 			"static prompt plus tool schemas grew past its reviewed byte budget")
 	}

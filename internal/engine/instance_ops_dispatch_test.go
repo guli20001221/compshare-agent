@@ -626,9 +626,8 @@ func TestInstanceOps_NoSSHTargetReturnsStructuredBoundaryObservation(t *testing.
 
 // An id that is not in the account gets the same honest, non-retryable treatment. This is the
 // likeliest failure of all in practice — instance ids go stale fast (a test account replaced 7 of
-// its 10 instances inside one hour on 2026-08-06) — and until it had its own branch the user was
-// told 「请稍后重试，或到控制台查看实例状态」 about a box that no longer existed, which is advice
-// that cannot work and points at the wrong layer. Same lesson as 门 8b above, third occurrence.
+// its 10 instances inside one hour) — and 「请稍后重试，或到控制台查看实例状态」 about a box that no
+// longer exists is advice that cannot work and points at the wrong layer.
 func TestInstanceOps_NotFoundRefusedHonestly(t *testing.T) {
 	runner := &fakeInstanceOpsRunner{err: ErrInstanceOpsNotFound}
 	eng := newInstanceOpsEngine(runner, alwaysConfirm)

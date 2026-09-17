@@ -25,13 +25,11 @@ func crossTurnDiskInstance() map[string]any {
 	}}
 }
 
-// TestCreateDiskCrossTurnResumeRejectMakesZeroWrites is the permanent regression
-// gate for the FirstDecision retirement (2026-07). The whole justification for
-// deleting the forced-first-decision hop was that the free ReAct loop must carry a
-// multi-turn write task across turns without a first-hop mechanism hijacking the
-// second turn or slamming the write window shut after the first hop. This locks the
-// exact scenario end to end, through the real per-turn Chat entry point (the seam
-// FirstDecision used to hook), over ONE engine and TWO turns:
+// TestCreateDiskCrossTurnResumeRejectMakesZeroWrites: the free ReAct loop must
+// carry a multi-turn write task across turns without any first-hop mechanism
+// hijacking the second turn or slamming the write window shut after the first
+// hop. This locks the exact scenario end to end, through the real per-turn Chat
+// entry point, over ONE engine and TWO turns:
 //
 //	Turn 1  "给 uhost-test 加一个数据盘"  → the Agent proposes CreateDisk with no Size;
 //	        the resolver reports Size missing. No mutating call happens.
@@ -42,8 +40,8 @@ func crossTurnDiskInstance() map[string]any {
 // Non-vacuous by construction: the executor returns a real success for
 // CreateAndAttachCompshareDisk (so a write would be recorded if it fired), and the
 // test asserts the price step DID run (proving turn 2 reached the card, not an early
-// error) while the create API did NOT. A first-hop regression that dropped the turn-1
-// park or short-circuited turn 2 would break one of these assertions.
+// error) while the create API did NOT. Dropping the turn-1 park or
+// short-circuiting turn 2 breaks one of these assertions.
 //
 // Size is supplied as a JSON number because the RequestCreateDisk tool schema types
 // Size as a number (a capacity field, internal/actionresolver/catalog.go); that is

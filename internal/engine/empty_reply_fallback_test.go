@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestChat_EmptyLLMContent_ReturnsHonestFallback is the P0 empty-reply guard.
+// TestChat_EmptyLLMContent_ReturnsHonestFallback is the empty-reply guard.
 // When a turn finishes with no error, no tool call, and empty content (flash
 // intermittently returns empty content), the user must get a non-empty honest
 // message instead of a blank "Assistant>" reply ("空回复"). This is the

@@ -25,11 +25,11 @@ func remoteHits(scores ...float64) []knowledge.RetrievalHit {
 	return items
 }
 
-// TestUnknownRemoteScaleIsNotFlooredAsWeakEvidence is the regression this file
+// TestUnknownRemoteScaleIsNotFlooredAsWeakEvidence is the case this file
 // exists for. A remote knowledge service that omits (or renames) its retrieval
-// mode used to be recorded as bm25_only, which put a 55.0 floor in front of a
-// [0,1] score and dropped EVERY hit — the ledger emptied, and downstream that
-// is indistinguishable from "the corpus has nothing".
+// mode must not be judged as bm25_only: that puts a 55.0 floor in front of a
+// [0,1] score and drops EVERY hit — the ledger empties, and downstream that is
+// indistinguishable from "the corpus has nothing".
 //
 // The premise assertions are not decoration: without them a future change to
 // either threshold could make this test pass because nothing was ever near a
@@ -64,10 +64,10 @@ func TestKnownScalesStillFloor(t *testing.T) {
 // FloorValue claims. Reporting a threshold nothing was compared against sends an
 // operator to look at scores when the fault is elsewhere.
 //
-// The qwen3_rrf case is the one that mattered and the one an earlier version of
-// this fix got wrong: the mode KEEPS its label through a reranker fallback while
-// its scores revert to the RRF fusion scale, so the verdict skipped the 0.5
-// floor while the trace still printed 0.5 beside a 0.031 score.
+// The qwen3_rrf case is the subtle one: the mode KEEPS its label through a
+// reranker fallback while its scores revert to the RRF fusion scale, so the
+// verdict skips the 0.5 floor and the trace must not print 0.5 beside a 0.031
+// score.
 func TestFloorValueReportsOnlyAFloorThatActuallyRan(t *testing.T) {
 	rrfScores := remoteHits(0.031, 0.028)
 

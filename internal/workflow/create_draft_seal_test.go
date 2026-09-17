@@ -10,7 +10,7 @@ import (
 // draftContext is a create context sitting exactly where the resolve step runs:
 // the catalog and image queries have returned, nothing is resolved yet, and the
 // user named only a GPU — so zone, CPU, memory, card count and image are all
-// about to be auto-derived. That is the shape the seal used to be blind to.
+// about to be auto-derived, which is exactly what the seal must capture.
 func draftContext(zone string) *Context {
 	wfCtx := NewContext(map[string]any{"GpuType": "4090"})
 	wfCtx.referenceData.ZoneCatalog = createZoneCatalog()
@@ -355,14 +355,14 @@ func TestAPricelessCreateStopsBeforeTheCard(t *testing.T) {
 	}
 }
 
-// TestCreateDraftIsNotInParamsBeforeTheGatePasses separates the two facts the
-// draft used to conflate. The resolve step runs BEFORE the confirm gate — on the
-// guided path it runs while an earlier selection card's seal is still live — so
-// its output may not touch Params. Only a passed gate promotes it.
+// TestCreateDraftIsNotInParamsBeforeTheGatePasses keeps two facts apart. The
+// resolve step runs BEFORE the confirm gate — on the guided path it runs while an
+// earlier selection card's seal is still live — so its output may not touch
+// Params. Only a passed gate promotes it.
 //
-// Without this, "the draft is in Params" would again mean nothing more than
-// "someone computed one", which is exactly the reading createArgsFromSealedDraft
-// exists to refuse.
+// Without this, "the draft is in Params" would mean nothing more than "someone
+// computed one", which is exactly the reading createArgsFromSealedDraft exists
+// to refuse.
 func TestCreateDraftIsNotInParamsBeforeTheGatePasses(t *testing.T) {
 	wfCtx := draftContext("cn-sh2-02")
 	before := paramsDigest(wfCtx.Params)
@@ -386,16 +386,14 @@ func TestCreateDraftIsNotInParamsBeforeTheGatePasses(t *testing.T) {
 	assert.Contains(t, wfCtx.Params, createDraftKey)
 }
 
-// TestCreateExecutesTheConfirmedDraftNotAFreshDerivation is the decisive one: it
-// fails on the pre-draft code.
+// TestCreateExecutesTheConfirmedDraftNotAFreshDerivation is the decisive one.
 //
-// The old stepCreateInstance.BuildArgs called resolveTargetSpec a SECOND time,
-// after the gate, reading "查询可用配比" again. The card and the create agreed only
-// because that function is pure and its inputs happened to be frozen — an accident
-// of the call graph, not a contract. Here the world moves after the user approves
-// (the catalog re-homes 4090, the image query returns something else). A
-// re-derivation would create in cn-wlcb-01 with img-999; the confirmed contract
-// says cn-sh2-02 with img-001.
+// A create step that called resolveTargetSpec a SECOND time after the gate,
+// reading "查询可用配比" again, would agree with the card only while that function
+// is pure and its inputs happen to be frozen — an accident of the call graph, not
+// a contract. Here the world moves after the user approves (the catalog re-homes
+// 4090, the image query returns something else). A re-derivation would create in
+// cn-wlcb-01 with img-999; the confirmed contract says cn-sh2-02 with img-001.
 func TestCreateExecutesTheConfirmedDraftNotAFreshDerivation(t *testing.T) {
 	wfCtx := draftContext("cn-sh2-02")
 	runToTheGate(t, wfCtx)
@@ -557,9 +555,9 @@ func TestPromotedDraftDoesNotAliasTheCandidate(t *testing.T) {
 	// The Zone write above replaces a map value, so it only ever showed that the
 	// candidate's args map and the promoted one are different maps — which they
 	// always were. Writing through the disk list is the assertion with teeth: it
-	// reaches the one field that lives behind a reference, and it used to travel
-	// straight into the promoted copy and break the digest, fail-stopping a create
-	// the user had correctly approved.
+	// reaches the one field that lives behind a reference, and a shared list
+	// would carry the write straight into the promoted copy and break the
+	// digest, fail-stopping a create the user had correctly approved.
 	candDisks, ok := candidateArgs[argsKeyDisks].([]any)
 	require.True(t, ok, "fixture carries no disks — a disk-aliasing assertion without a disk proves nothing")
 	require.NotEmpty(t, candDisks)
@@ -572,12 +570,11 @@ func TestPromotedDraftDoesNotAliasTheCandidate(t *testing.T) {
 		"and the sealed record must still carry the disk that was confirmed")
 }
 
-// TestCreateCardNameAndExecutedIDAreOneSelection is the typed-image contract. The
-// card used to render pickImageName while the create sent pickImageId — two walks
-// of the same response. For a THREADED id they could genuinely disagree: the name
-// shown was whatever ImageName travelled alongside, so a stale name could be
-// displayed over a different image's id. Now the catalog's own name for that id
-// wins.
+// TestCreateCardNameAndExecutedIDAreOneSelection is the typed-image contract:
+// the card's name and the executed id come from one selection, so the catalog's
+// own name for the id wins. Two walks of the same response could disagree for a
+// THREADED id, where whatever ImageName travelled alongside could be a stale name
+// displayed over a different image's id.
 func TestCreateCardNameAndExecutedIDAreOneSelection(t *testing.T) {
 	wfCtx := draftContext("cn-wlcb-01")
 	// Caller threads an explicit id, paired with a name that no longer describes it.

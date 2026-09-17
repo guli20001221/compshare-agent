@@ -15,7 +15,7 @@ import (
 // calls whose arguments are not a JSON object (flash emits a leaked tag or a bare
 // query string instead of `{"query":"…"}`):
 //
-//  1. The tool result FED BACK to the agent is a P2 needs_input observation with
+//  1. The tool result FED BACK to the agent is a needs_input observation with
 //     an explicit valid-JSON hint, so the next ReAct round can recover instead
 //     of stalling on a bare parser error.
 //  2. The RECORDED StepError message stays concise and omits the corrective
@@ -41,7 +41,7 @@ func TestExecuteTool_MalformedArgsReturnsCorrectiveHint(t *testing.T) {
 
 			got := (&Engine{}).executeTool(context.Background(), tool, onStep)
 
-			// (1) Model-facing tool result: stable P2 control plane + corrective hint.
+			// (1) Model-facing tool result: stable control plane + corrective hint.
 			result, ok := tools.ParseAgentToolResult(got.Observation)
 			require.Truef(t, ok, "returned result must use the agent tool-result contract, got %q", got.Observation)
 			assert.Equal(t, tools.AgentToolStatusNeedsInput, result.Status)

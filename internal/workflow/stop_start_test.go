@@ -326,9 +326,8 @@ func TestStartInstance_RunningRejected(t *testing.T) {
 }
 
 // Upstream's StopCompShareInstance request has no Force field and its handler has
-// no branch for one, so the old "Spot -> Force:true" was dead code dressed up as a
-// contract. Sending it told the reader we knew something about spot stops that we
-// did not.
+// no branch for one, so sending "Spot -> Force:true" would tell the reader we
+// knew something about spot stops that we did not.
 func TestStopInstance_SpotInstanceOmitsForce(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {"UHostSet": []any{

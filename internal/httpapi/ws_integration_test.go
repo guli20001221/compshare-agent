@@ -301,11 +301,10 @@ func TestWS_Confirm_SessionDriftResolves(t *testing.T) {
 
 // A resolved confirmation has to say so on the socket.
 //
-// Until 2026-08-12 only FAILURES wrote a frame here, which left a client no way
-// to distinguish "the server accepted this" from "the bytes left my machine".
-// The console resolved that ambiguity the only way it could and marked cards
-// 已处理 on ws.send(), so an expired card rendered as handled while a [NotFound]
-// arrived beside it saying the opposite. The POST transport has always returned
+// If only FAILURES wrote a frame here, a client could not distinguish "the
+// server accepted this" from "the bytes left my machine"; a console that marks
+// cards 已处理 on ws.send() would render an expired card as handled while a
+// [NotFound] arrived beside it saying the opposite. The POST transport returns
 // this acknowledgement (confirmResponse); this is the same fact on the socket
 // the console actually uses.
 func TestWS_Confirm_SuccessIsAcknowledgedWithItsConfirmationID(t *testing.T) {
@@ -353,13 +352,12 @@ func TestWS_Confirm_DeclineIsAlsoAcknowledged(t *testing.T) {
 // An expired card's rejection must name the card, must not arrive as an "error"
 // frame, and must not put developer English on a customer's screen.
 //
-// All three come from one production turn (2026-08-17): the user clicked 确认 on an
-// SSH card that had already timed out, the server answered "error"/NotFound with
-// the sentinel's own text, and the console — which treats ANY "error" frame as the
-// end of the turn — closed the socket and killed a 30-minute in-instance diagnosis,
-// leaving "[NotFound] confirmation not found or already resolved" as the answer.
-// Naming the card (#548) was necessary and not sufficient: a client that does not
-// know about the id cannot ignore an "error" frame, it can only fail the turn.
+// The console treats ANY "error" frame as the end of the turn: a user who clicks
+// 确认 on an SSH card that has already timed out would otherwise have the socket
+// closed under a running in-instance diagnosis, with the sentinel's own text as
+// the answer. Naming the card is necessary and not sufficient: a client that does
+// not know about the id cannot ignore an "error" frame, it can only fail the
+// turn.
 func TestWS_Confirm_ExpiredCardRejectionIsScopedToTheCardAndReadable(t *testing.T) {
 	srv, _, _ := wsTestHandlers(t, chatLLM{}, denyConfirm)
 	conn := dialWS(t, srv, gatewayHeaders())

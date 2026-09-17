@@ -718,9 +718,8 @@ func TestCreateInstanceGuided_IncompatibleSelectedCommunityImageShowsGPUCard(t *
 	eng := NewEngine(executor, nil, nil)
 	eng.SetConfirmEditsFn(func(_ string, _ map[string]any, form *ConfirmForm) ConfirmResolution {
 		require.NotNil(t, form)
-		// Capture and stop at the GPU card; walk past anything before it. Declining
-		// unconditionally used to work only because the GPU card happened to come
-		// first — this test is about the GPU card appearing at all, not about where.
+		// Capture and stop at the GPU card; walk past anything before it. This
+		// test is about the GPU card appearing at all, not about where.
 		if form.Field("GpuType") == nil {
 			return ConfirmResolution{Confirmed: true}
 		}

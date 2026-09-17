@@ -14,8 +14,8 @@ import (
 
 // TestDumpCapabilityInventory writes the exact tool window the production model
 // sees, plus the mutating workflow registry. This is the code-grounded answer to
-// "can the agent actually do X", used to label the 53 replay cases before any of
-// them is scored: a question the agent has no capability for must be judged on
+// "can the agent actually do X", which labels replay cases before any of them
+// is scored: a question the agent has no capability for must be judged on
 // whether it hands off honestly, not on whether it produced the right answer.
 func TestDumpCapabilityInventory(t *testing.T) {
 	out := os.Getenv("COMPSHARE_CAPABILITY_OUT")

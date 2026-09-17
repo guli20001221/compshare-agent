@@ -97,10 +97,10 @@ func TestInstanceOpsContextPreservesCase124ErrorAfterTargetExtraction(t *testing
 	require.Contains(t, history[0].Content, "413")
 }
 
-// Production case 006 ended after eight inner SSH commands with an aborted,
-// empty outer assistant row. On the next user message the old complete-pair
-// projection erased the prior instance ID, so the outer Agent asked for it
-// again instead of resuming the existing inner transcript.
+// A diagnosis that ends after eight inner SSH commands with an aborted, empty
+// outer assistant row must keep its instance ID for the next user message: a
+// projection that kept only complete pairs would erase it, and the outer Agent
+// would ask for it again instead of resuming the existing inner transcript.
 func TestInstanceOpsContextKeepsUnpairedHistoricalUserForCase006Resume(t *testing.T) {
 	first := &Engine{
 		turnState: turnState{lastUserMsg: "uhost-1uha5i7jetgm"},

@@ -35,9 +35,9 @@ func TestExecuteWorkflow_GuidedCreateLocksExplicitGPU(t *testing.T) {
 	eng.confirmEditsFn = func(_ string, _ map[string]any, form *workflow.ConfirmForm) workflow.ConfirmResolution {
 		require.NotNil(t, form)
 		require.NotNil(t, form.Step)
-		// Image-first reorder: the GPU step is no longer step 1 (the image SOURCE
-		// leads). Advance through the image steps until the GPU field appears, then
-		// capture its options and stop — position-independent.
+		// The image SOURCE leads, so the GPU step is not step 1. Advance through the
+		// image steps until the GPU field appears, then capture its options and
+		// stop — position-independent.
 		if gpu := form.Field("GpuType"); gpu != nil {
 			for _, opt := range gpu.Options {
 				gpuOptions = append(gpuOptions, opt.Value)
@@ -51,27 +51,6 @@ func TestExecuteWorkflow_GuidedCreateLocksExplicitGPU(t *testing.T) {
 
 	assert.Equal(t, []string{"4090"}, gpuOptions)
 }
-
-// DELETED: TestExecuteWorkflow_GuidedCreateCanonicalizesSpaced409048G.
-//
-// It drove executeWorkflow with a raw {"GpuType": "4090 48G"} and asserted the
-// confirm card showed "4090_48G". That canonicalization used to happen inside
-// executeWorkflow (engine.go, knowledge.CanonicalGPUType) — i.e. AFTER the
-// resolver had accepted the value and on the same side of the wire as the seal.
-// It now happens in the resolver, before ReadyForConfirmation, against the live
-// machine-type catalog.
-//
-// So the test's INPUT is no longer producible: GpuType reaches
-// executeResolvedWorkflow only via Request* -> Resolver, which means it is
-// already canonical. The
-// test would have been asserting a hand-built state production cannot reach —
-// the same green-but-unreachable shape deleted in 77c9f5e9.
-//
-// The contract itself is NOT dropped. actionresolver's
-// TestResolveCanonicalizesGpuTypeBeforeConfirmation drives the identical input
-// ("4090 48G") to the identical expectation ("4090_48G") and additionally pins
-// what this test could not: that the confirm card and the executed arguments
-// carry the same string.
 
 func TestExecuteWorkflow_GuidedCreateDoesNotOverrideResolvedGPUFromUserText(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{

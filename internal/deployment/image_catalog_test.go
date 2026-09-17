@@ -76,9 +76,9 @@ func TestParsePlatformImageEntries_CapturesSoftwaresAndContainer(t *testing.T) {
 	if torch.SizeMB != 51200 {
 		t.Errorf("SizeMB mismatch: %v", torch.SizeMB)
 	}
-	// P1: the platform's own Tags (镜像标签) and Description are captured as the
+	// The platform's own Tags (镜像标签) and Description are captured as the
 	// structured, real data the Agent reasons over — a real tag is Chinese
-	// ("深度学习"), never the synthetic "deep_learning" the deleted keyword table used.
+	// ("深度学习"), never a synthetic "deep_learning".
 	if got := torch.Tags; len(got) != 2 || got[0] != "深度学习" || got[1] != "PyTorch" {
 		t.Errorf("Tags not captured: %v", got)
 	}
@@ -239,7 +239,7 @@ func TestImageCatalogSnapshot_EntriesReturnsFreshCopy(t *testing.T) {
 	}
 }
 
-// TestImageCatalogSnapshot_TagsDeepCopiedFromEveryAccessor pins the P1 immutability
+// TestImageCatalogSnapshot_TagsDeepCopiedFromEveryAccessor pins the immutability
 // contract for Tags specifically, through BOTH read paths (Entries and ByID): a
 // caller mutating a returned entry's Tags slice must not reach the snapshot's stored
 // row. Without the deep copy, the []string header would be shared and one consumer's

@@ -12,7 +12,7 @@ func TestCreatePathToolsAllowRegion(t *testing.T) {
 	// The create-path read tools must declare Region (→ AllowedParams) so
 	// SafeToolExecutor.filterSafeArgs keeps the Region the create workflow pairs
 	// with a non-default Zone. Without it, a cn-bj2-03 / cn-sh2-02 create 230s on
-	// "Params [Zone] not available" (live-verified 2026-06-16; resolves PR-β1).
+	// "Params [Zone] not available" (live-verified 2026-06-16).
 	policies := DefaultToolExecutionPolicies()
 	for _, action := range []string{
 		"DescribeAvailableCompShareInstanceTypes",

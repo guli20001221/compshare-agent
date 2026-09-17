@@ -10,9 +10,9 @@ import (
 	"github.com/compshare-agent/internal/zones"
 )
 
-// TestZoneCatalogSnapshotForSpec_DeclarativeExecutionDependency pins the link
-// the live reinstall path previously lacked: an operation with no Zone proposal
-// field can declare that its workflow consumes zone facts, and the engine then
+// TestZoneCatalogSnapshotForSpec_DeclarativeExecutionDependency: an operation
+// with no Zone proposal field can declare that its workflow consumes zone
+// facts, and the engine then
 // fetches the same turn snapshot it would fetch for a CodecZone field. Ordinary
 // lifecycle actions still skip the read.
 func TestZoneCatalogSnapshotForSpec_DeclarativeExecutionDependency(t *testing.T) {

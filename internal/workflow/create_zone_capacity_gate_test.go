@@ -262,8 +262,7 @@ func TestZoneCapacityProbeSkipsUntilAnImageIsResolved(t *testing.T) {
 
 // TestGuidedCreateWiresTheZoneProbeBeforeTheZoneCard is the anti-orphan gate: a
 // probe defined but not placed — or placed after the card it is meant to gate —
-// is a unit-tested function with no effect (the shape capacityCreatable had
-// before this change).
+// is a unit-tested function with no effect.
 func TestGuidedCreateWiresTheZoneProbeBeforeTheZoneCard(t *testing.T) {
 	steps := CreateInstanceGuidedDef().Steps
 	probeAt, zoneAt, gpuAt := -1, -1, -1
@@ -280,9 +279,9 @@ func TestGuidedCreateWiresTheZoneProbeBeforeTheZoneCard(t *testing.T) {
 	require.NotEqual(t, -1, probeAt, "the capacity probe must be IN the guided flow")
 	require.NotEqual(t, -1, zoneAt)
 	require.NotEqual(t, -1, gpuAt)
-	// It used to run BETWEEN these two, on the reasoning that it "needs the chosen
-	// GPU". It does not — it fans out over the models instead — and sitting there
-	// left the GPU card as the one place a user could pick something unbuyable.
+	// The probe does not need the chosen GPU — it fans out over the models — so
+	// running it between the two cards would leave the GPU card as the one place
+	// a user could pick something unbuyable.
 	assert.Less(t, probeAt, gpuAt, "the probe must gate the GPU card too")
 	assert.Less(t, probeAt, zoneAt, "…and the zone card, which reads the same answers")
 }

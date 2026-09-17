@@ -7,9 +7,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The charge type is now a card. It used to be reachable only by saying it in
-// the request ("用抢占式创建一台…"), which was a workaround for an ordering
-// constraint that measurement removed — see
+// The charge type is a card, not something the user has to say in the request
+// ("用抢占式创建一台…"); its place in the order is pinned by
 // TestChargeTypeIsSettledBeforeEveryPoolScopedStep.
 func TestChargeTypeCardIsOfferedWhenTheUserDidNotSayIt(t *testing.T) {
 	wfCtx := formWfCtx(t, map[string]any{"GpuType": "4090"})

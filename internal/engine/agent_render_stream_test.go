@@ -23,9 +23,8 @@ type streamingSeqMockLLM struct {
 
 // A knowledge answer must be FINALIZED (its citation markers stripped by the
 // deterministic final gate) BEFORE any token reaches the client — not after.
-// Under typography-only grounding the finalizer no longer replaces "unsupported"
-// prose (the semantic verifier is gone; fail-open ships the Agent's answer), but
-// the streaming invariant is unchanged: a searched turn buffers instead of
+// The finalizer never replaces prose (fail-open ships the Agent's answer), but
+// the streaming invariant holds: a searched turn buffers instead of
 // streaming live, so the raw [[chunk_id]] marker never appears in the token stream.
 func TestKnowledgeAnswerIsFinalizedBeforeAnyTokenReachesTheClient(t *testing.T) {
 	const chunkID = "prior-refund-policy"

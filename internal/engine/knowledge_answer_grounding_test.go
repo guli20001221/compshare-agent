@@ -264,9 +264,9 @@ func TestKnowledgeGrounding_IrrelevantSearchDoesNotEraseStableAnswer(t *testing.
 }
 
 // A verbatim evidence dump is a prose problem, not a security one: every chunk is
-// customer-safe corpus text, so the answer SHIPS and the dump is recorded instead
-// of triggering the canned reply that used to eat the whole turn. Uses a real
-// sanitized record so the echo needle is real evidence text.
+// customer-safe corpus text, so the answer SHIPS and the dump is recorded; no
+// canned reply eats the turn. Uses a real sanitized record so the echo needle is
+// real evidence text.
 func TestKnowledgeGrounding_VerbatimDumpShipsAndIsRecorded(t *testing.T) {
 	record := loadSanitizedContextRAGRecords(t)[2]
 	hit := knowledge.RetrievalHit{Kept: true, Score: 90, Chunk: knowledge.KBChunk{

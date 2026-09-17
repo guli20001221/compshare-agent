@@ -100,10 +100,10 @@ func TestCommittedWriteSummaryIsEmptyWhenNothingCommitted(t *testing.T) {
 	require.Equal(t, "", nilEngine.CommittedWriteSummary())
 }
 
-// Guided creation confirms through the form gate, which used to record the
-// card's reason for trace only. The refusal sentence reads the same field, so
-// the form gate must write it too — otherwise a guided card that timed out at
-// 2 a.m. reads as 「好的」, as if the user had declined.
+// Guided creation confirms through the form gate. The refusal sentence reads
+// the same terminal-reason field the trace does, so the form gate must write
+// it — otherwise a guided card that timed out at 2 a.m. reads as 「好的」, as if
+// the user had declined.
 func TestFormGateRecordsTheTerminalReasonForTheRefusalSentence(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	restore := eng.installTurnConfirmation(ChatOptions{

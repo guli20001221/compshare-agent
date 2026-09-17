@@ -5,10 +5,10 @@ import (
 	"testing"
 )
 
-// Until 2026-08-08 every write-mode refusal printed one sentence — 「属于高危操作或命令形式不被接受」 —
-// covering the destructive tier, the shape gate, an over-long command and the operator's own decline.
-// That is unactionable in both directions: the operator cannot tell a policy refusal from their own
-// click, and the model cannot tell "never going to work" from "resend it as two commands".
+// One sentence — 「属于高危操作或命令形式不被接受」 — covering the destructive tier, the shape gate, an
+// over-long command and the operator's own decline is unactionable in both directions: the operator
+// cannot tell a policy refusal from their own click, and the model cannot tell "never going to work"
+// from "resend it as two commands".
 //
 // The four must be DISTINGUISHABLE, which is a stronger property than any one wording, so assert
 // pairwise distinctness rather than four string literals a reword would have to chase.

@@ -71,8 +71,8 @@ func availableGPU(name string, vramGB int) any {
 	}
 }
 
-// TestExecuteWorkflow_SealedParamsIgnoreContradictoryLastUserMsg pins P4
-// acceptance #7: after resolution, the confirmed (and executed) create params
+// TestExecuteWorkflow_SealedParamsIgnoreContradictoryLastUserMsg: after
+// resolution, the confirmed (and executed) create params
 // come from the sealed contract, never a second reading of the chat text. A
 // lastUserMsg that names a different GPU must not change what the user confirms.
 func TestExecuteWorkflow_SealedParamsIgnoreContradictoryLastUserMsg(t *testing.T) {

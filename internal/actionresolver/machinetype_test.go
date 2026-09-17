@@ -30,8 +30,8 @@ func TestCanonicalMachineType_ExactAndCaseAndFormat(t *testing.T) {
 	assert.Equal(t, machineTypeResolved, m.Status)
 	assert.Equal(t, "V100S", m.Canonical, "canonical form comes from the catalog, not the user's casing")
 
-	// 3. separator formatting — the case that used to need a hardcoded
-	//    "4090 48G" -> "4090_48G" alias. Same token, different punctuation.
+	// 3. separator formatting — "4090 48G" and "4090_48G" are the same token
+	//    with different punctuation, so no alias table is needed.
 	for _, raw := range []string{"4090 48G", "4090-48G", "4090_48g", "  4090 48g  "} {
 		m = canonicalMachineType(raw, catalog)
 		assert.Equalf(t, machineTypeResolved, m.Status, "raw=%q", raw)
