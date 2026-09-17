@@ -29,7 +29,7 @@ package main
 //
 //	go test ./cmd -run TestLiveAcceptanceJudge -live-acc-judge -v -timeout 120m \
 //	  -live-acc-runs r1.jsonl,r2.jsonl,r3.jsonl -live-acc-labels labels.jsonl \
-//	  -live-acc-out judged.json
+//	  -live-acc-corpus release.jsonl -live-acc-out judged.json
 
 import (
 	"bufio"
@@ -51,6 +51,7 @@ var (
 	liveAccJudge  = flag.Bool("live-acc-judge", false, "run the 53-case acceptance judge (real model); off = skip")
 	liveAccRuns   = flag.String("live-acc-runs", "", "comma-separated transcript JSONLs, one per run (required)")
 	liveAccLabels = flag.String("live-acc-labels", "", "capability label JSONL: {case_id,label,capability,note} (required)")
+	liveAccCorpus = flag.String("live-acc-corpus", "", "comma-separated chunk JSONLs {chunk_id,title,content} of the knowledge release the runs retrieved from (required)")
 	liveAccOut    = flag.String("live-acc-out", "", "write the verdicts JSON here")
 	liveAccConfig = flag.String("live-acc-config", "", "config path; default deploy/conf/config.local.yaml")
 )
@@ -156,8 +157,8 @@ func TestLiveAcceptanceJudge(t *testing.T) {
 	if !*liveAccJudge {
 		t.Skip("set -live-acc-judge to run")
 	}
-	if *liveAccRuns == "" || *liveAccLabels == "" {
-		t.Fatal("-live-acc-runs and -live-acc-labels are required")
+	if *liveAccRuns == "" || *liveAccLabels == "" || *liveAccCorpus == "" {
+		t.Fatal("-live-acc-runs, -live-acc-labels and -live-acc-corpus are required")
 	}
 
 	root := behavioralRepoRoot(t)
@@ -168,7 +169,7 @@ func TestLiveAcceptanceJudge(t *testing.T) {
 	}
 	client := llm.NewClient(cfg.Agent.LLM)
 
-	corpus := loadCorpusChunks(t, root+"/deploy/kb/stage2b_w0.jsonl", root+"/deploy/kb/external_w0.jsonl")
+	corpus := loadCorpusChunks(t, strings.Split(*liveAccCorpus, ",")...)
 	labels := loadAccLabels(t, *liveAccLabels)
 	runs := strings.Split(*liveAccRuns, ",")
 	byRun := make([]map[string]*replayCaseRecord, 0, len(runs))
@@ -327,17 +328,18 @@ type judgeEvidence struct {
 	Content string
 }
 
-// loadCorpusChunks maps chunk_id to its text. The transcript records which
-// chunks retrieval kept but not what they said, and without the text a judge
-// can only ask "did the answer cite something", which the engine makes
-// unanswerable — it strips cite markers before returning the reply. Judging
-// grounding then degrades into judging the judge's own prior knowledge, and
-// every correct-but-uncited platform fact reads as invented.
+// loadCorpusChunks maps chunk_id to its text, from an export of the knowledge
+// release the runs retrieved against (the corpus lives in compshare-kb). The
+// transcript records which chunks retrieval kept but not what they said, and
+// without the text a judge can only ask "did the answer cite something", which
+// the engine makes unanswerable — it strips cite markers before returning the
+// reply. Judging grounding then degrades into judging the judge's own prior
+// knowledge, and every correct-but-uncited platform fact reads as invented.
 func loadCorpusChunks(t *testing.T, paths ...string) map[string]judgeEvidence {
 	t.Helper()
 	out := map[string]judgeEvidence{}
 	for _, p := range paths {
-		f, err := os.Open(p)
+		f, err := os.Open(strings.TrimSpace(p))
 		if err != nil {
 			t.Fatalf("open corpus %s: %v", p, err)
 		}

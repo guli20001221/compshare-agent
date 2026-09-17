@@ -12,9 +12,8 @@ import (
 // evidence IS the primary base — can ground an ACTIONABLE answer), while the
 // diagnosis-lane ledger (BuildEvidenceLedger) stays deliberately content-free.
 func TestBuildSubstantiveEvidenceLedgerCarriesBoundedSnippet(t *testing.T) {
-	// Real-shaped external runbook content: the actionable flags live in the head
-	// (mirrors deploy/kb/external_w0.jsonl ext-gpu-oom-vllm-001), padded so the
-	// body exceeds the snippet cap and the bound is exercised.
+	// Real-shaped external runbook content: the actionable flags live in the head,
+	// padded so the body exceeds the snippet cap and the bound is exercised.
 	content := "适用场景：模型放不进 GPU 显存时会报 out-of-memory（OOM）。可组合降低显存占用：" +
 		"1. 缩短上下文长度：--max-model-len。2. 降低并发：--max-num-seqs。" +
 		"3. 多卡张量并行：--tensor-parallel-size。4. 量化：quantization。" +

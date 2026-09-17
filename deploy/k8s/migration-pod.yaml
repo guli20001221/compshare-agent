@@ -1,5 +1,7 @@
-# Manual-only database migration helper.  It is intentionally not referenced by
-# the GitLab delivery pipeline.
+# One-shot Pod that applies every deploy/migrations/*.sql with the psql shipped
+# in the service image.  The manual `migrate-database` job creates it; the
+# database host comes from config.prod.yaml, the rest of the DSN from
+# config.local.yaml, and neither is ever printed.
 apiVersion: v1
 kind: Pod
 metadata:

@@ -37,10 +37,6 @@ type knowledgeRemoteChunkReader interface {
 	ReadChunks(ctx context.Context, searchID string, chunkIDs []string) ([]knowledge.KBChunk, error)
 }
 
-type knowledgeLocalChunkReader interface {
-	Chunk(chunkID string) (knowledge.KBChunk, bool)
-}
-
 // KnowledgeRequest is emitted by the harness as an @@KNOWLEDGE side-band line.
 // It deliberately has no search_id field: the Go broker owns that short-lived
 // capability and will read only chunk ids returned by a search in this run.
@@ -305,39 +301,31 @@ func (b *knowledgeBridge) read(req KnowledgeRequest) knowledgeReply {
 }
 
 func (b *knowledgeBridge) readAuthorized(ids []string) ([]knowledge.KBChunk, error) {
-	if remote, ok := b.retriever.(knowledgeRemoteChunkReader); ok {
-		groups := make(map[string][]string)
-		order := make([]string, 0)
-		for _, id := range ids {
-			searchID := b.capabilities[id].searchID
-			if searchID == "" {
-				return nil, knowledge.ErrSearchCapabilityInvalid
-			}
-			if _, seen := groups[searchID]; !seen {
-				order = append(order, searchID)
-			}
-			groups[searchID] = append(groups[searchID], id)
-		}
-		var chunks []knowledge.KBChunk
-		for _, searchID := range order {
-			group, err := remote.ReadChunks(b.ctx, searchID, groups[searchID])
-			if err != nil {
-				return nil, err
-			}
-			chunks = append(chunks, group...)
-		}
-		return chunks, nil
+	remote, ok := b.retriever.(knowledgeRemoteChunkReader)
+	if !ok {
+		return nil, errors.New("knowledge retriever does not support chunk reads")
 	}
-	if local, ok := b.retriever.(knowledgeLocalChunkReader); ok {
-		chunks := make([]knowledge.KBChunk, 0, len(ids))
-		for _, id := range ids {
-			if chunk, found := local.Chunk(id); found {
-				chunks = append(chunks, chunk)
-			}
+	groups := make(map[string][]string)
+	order := make([]string, 0)
+	for _, id := range ids {
+		searchID := b.capabilities[id].searchID
+		if searchID == "" {
+			return nil, knowledge.ErrSearchCapabilityInvalid
 		}
-		return chunks, nil
+		if _, seen := groups[searchID]; !seen {
+			order = append(order, searchID)
+		}
+		groups[searchID] = append(groups[searchID], id)
 	}
-	return nil, errors.New("knowledge retriever does not support chunk reads")
+	var chunks []knowledge.KBChunk
+	for _, searchID := range order {
+		group, err := remote.ReadChunks(b.ctx, searchID, groups[searchID])
+		if err != nil {
+			return nil, err
+		}
+		chunks = append(chunks, group...)
+	}
+	return chunks, nil
 }
 
 func uniqueKnowledgeChunkIDs(values []string) []string {

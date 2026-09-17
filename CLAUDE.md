@@ -72,9 +72,9 @@ records whether projection occurred.
 ## Tool and workflow boundaries
 
 The model chooses read capabilities and knowledge retrieval in the loop.
-Production knowledge retrieval always uses the remote MCP configured at
-`agent.retrieval.mcp_url`. The in-process retriever is for tests and offline
-evaluation only.
+Knowledge retrieval always goes to the remote MCP configured at
+`agent.retrieval.mcp_url`; the corpus, its build pipeline and its release
+publication live in `compshare-kb`, and this repository carries none of them.
 Each `SearchKnowledge` executes the main Agent's query once, without an internal
 planning model call. The Agent can search again within the four-call turn budget;
 weak-candidate inspection, `ReadChunk`, and citation handling remain separate.
