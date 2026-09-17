@@ -61,18 +61,18 @@ func TestCustomerSupportImageFallbackIsConcise(t *testing.T) {
 	require.NotContains(t, reply, agentprotocol.FeishuCustomerSupportMarker)
 }
 
+// Both markers consumed in the service's order leave the Agent's answer intact
+// for the support delivery; the console notice is never appended to a support
+// case.
 func TestCustomerSupportMarkerWinsOverConsoleHandoff(t *testing.T) {
 	answer := "认证卡住了。\n" + agentprotocol.FeishuConsoleHandoffMarker + "\n" + agentprotocol.FeishuCustomerSupportMarker
 	answer, supportRequested := consumeCustomerSupportMarker(answer)
 	answer, consoleRequested := consumeConsoleHandoffMarker(answer)
 	require.True(t, supportRequested)
 	require.True(t, consoleRequested)
-	if supportRequested {
-		answer = customerSupportReply()
-	} else if consoleRequested {
-		answer = appendConsoleHandoff(answer, "https://console.example.test/#/assistant", "")
-	}
-	require.Equal(t, customerSupportReply(), answer)
+	require.Equal(t, "认证卡住了。", answer, "the answer the support delivery sends ahead of the entry")
+	require.NotContains(t, answer, agentprotocol.FeishuConsoleHandoffMarker)
+	require.NotContains(t, answer, agentprotocol.FeishuCustomerSupportMarker)
 }
 
 func TestConsoleHandoffKeepsWebOnlyBackwardCompatibility(t *testing.T) {

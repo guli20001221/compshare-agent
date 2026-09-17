@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/llm"
+	"github.com/compshare-agent/internal/observability"
+	"github.com/compshare-agent/internal/refusal"
 	"github.com/compshare-agent/internal/tools"
 	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/require"
@@ -150,7 +152,56 @@ func TestDeterministicToolReplyKeepsEarlierInstanceReport(t *testing.T) {
 	}
 	model := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{toolCall("guest-first", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"恢复服务"}`)}},
+		{ToolCalls: []openai.ToolCall{toolCall("stop", "RequestStopInstance", `{"UHostId":"uhost-1"}`)}},
+	}}
+	executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
+		switch action {
+		case "DescribeCompShareInstance":
+			return map[string]any{"UHostSet": []any{map[string]any{"UHostId": "uhost-1", "Name": "train-1", "State": "Running", "Zone": "cn-wlcb-01", "ChargeType": "Postpay"}}}, nil
+		case "DescribeCompShareSupportZone":
+			return map[string]any{"ZoneInfo": []any{map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb"}}}, nil
+		}
+		return map[string]any{"RetCode": 0}, nil
+	}}
+	eng := NewWithDeps(model, executor, nil)
+	eng.SetMutatingToolsEnabled(true)
+	eng.SetInstanceOps(runner)
+
+	reply, err := eng.ChatWithOptions(context.Background(), "先恢复 uhost-1；若不能继续就关机", noopStep, ChatOptions{
+		ConfirmResultFunc: func(string, map[string]any) ConfirmationResult {
+			return ConfirmationResult{TerminalReason: observability.ConfirmationReasonUserDeclined}
+		},
+	})
+
+	require.NoError(t, err)
+	require.Contains(t, reply, "restart original service")
+	require.Contains(t, reply, "后续汇总未完成")
+	require.Contains(t, reply, "关机操作未执行")
+	require.NotContains(t, executor.calls, "StopCompShareInstance")
+	require.Equal(t, 1, runner.calls)
+	require.True(t, eng.instanceOpsInterruptionIncludedInReplyThisTurn,
+		"an already-present canonical report still needs a transport acknowledgement")
+	eng.AcknowledgeDeliveredInstanceOpsInterruption()
+	require.Nil(t, eng.pendingInstanceOpsInterruption)
+}
+
+// A support handoff after a Guest run is not a deterministic reply: the run's
+// report is evidence only the Agent can narrate, so the turn continues to the
+// Agent's answer and the support entry follows it. The interrupted-run notice
+// keeps its ordinary next-turn delivery, as after any narrated answer.
+func TestSupportHandoffAfterInstanceRunKeepsTheAgentsNarration(t *testing.T) {
+	runner := &fakeInstanceOpsRunner{
+		err: errors.New("runner transport failed after command"),
+		progress: []InstanceOpsProgress{{
+			Kind: InstanceOpsProgressCommand, Command: "restart original service",
+			Tier: "mutating", Disposition: "ran",
+		}},
+	}
+	const narration = "已重启原服务但排查中断；已执行的命令见上方记录，可以让人工客服继续核实。"
+	model := &mockLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{toolCall("guest-first", "DiagnoseInstanceInternals", `{"UHostId":"uhost-1","Task":"恢复服务"}`)}},
 		customerSupportToolCall(),
+		{Content: narration},
 	}}
 	eng := NewWithDeps(model, &mockExecutor{results: map[string]map[string]any{}}, nil)
 	eng.SetInstanceOps(runner)
@@ -158,14 +209,11 @@ func TestDeterministicToolReplyKeepsEarlierInstanceReport(t *testing.T) {
 	reply, err := eng.Chat(context.Background(), "先恢复 uhost-1；若不能继续再给我人工入口", noopStep)
 
 	require.NoError(t, err)
-	require.Contains(t, reply, "restart original service")
-	require.Contains(t, reply, "后续汇总未完成")
-	require.Contains(t, reply, "人工")
+	require.Equal(t, narration+"\n\n"+refusal.HumanAgentTransfer, reply)
 	require.Equal(t, 1, runner.calls)
-	require.True(t, eng.instanceOpsInterruptionIncludedInReplyThisTurn,
-		"an already-present canonical report still needs a transport acknowledgement")
-	eng.AcknowledgeDeliveredInstanceOpsInterruption()
-	require.Nil(t, eng.pendingInstanceOpsInterruption)
+	require.Len(t, model.calls, 3, "the Agent narrates the run before the entry is appended")
+	require.False(t, eng.instanceOpsInterruptionIncludedInReplyThisTurn)
+	require.NotNil(t, eng.pendingInstanceOpsInterruption, "a narrated turn leaves the notice for the next turn")
 }
 
 func TestInstanceOpsDifferentTargetsUseDifferentInvocations(t *testing.T) {

@@ -84,7 +84,16 @@ func customerSupportPostContent(markdown, imageKey string) (string, error) {
 	return string(raw), nil
 }
 
-func (s *Service) replyCustomerSupport(ctx context.Context, messageID string) error {
+// replyCustomerSupport delivers the Agent's answer, when it wrote one, and then
+// the configured support entry. The answer goes through the ordinary reply path
+// (split and rendered like any other answer); the entry is its own post so the
+// QR image stays attached to the support sentence.
+func (s *Service) replyCustomerSupport(ctx context.Context, messageID, answer string) error {
+	if strings.TrimSpace(answer) != "" {
+		if err := s.reply(ctx, messageID, answer); err != nil {
+			return err
+		}
+	}
 	if len(s.customerSupportQR) == 0 {
 		return s.reply(ctx, messageID, customerSupportReply())
 	}

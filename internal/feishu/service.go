@@ -290,9 +290,10 @@ func (s *Service) handleJob(ctx context.Context, item job) {
 			answer, needsConsoleHandoff := consumeConsoleHandoffMarker(answer)
 			if needsCustomerSupport {
 				log.Printf("Feishu customer-support handoff requested by knowledge-only Agent message=%s", item.messageID)
-				// Support wins if a malformed completion contains both markers: these
-				// categories must not be misrepresented as instance diagnosis.
-				if replyErr := s.replyCustomerSupport(ctx, item.messageID); replyErr != nil {
+				// The Agent's own answer is delivered ahead of the support entry.
+				// Support wins if a completion carries both markers: a console notice
+				// would misrepresent a support case as instance diagnosis.
+				if replyErr := s.replyCustomerSupport(ctx, item.messageID, answer); replyErr != nil {
 					log.Printf("warning: Feishu customer-support reply failed message=%s: %v", item.messageID, replyErr)
 				}
 				return
