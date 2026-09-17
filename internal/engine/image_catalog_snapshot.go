@@ -10,18 +10,6 @@ import (
 	"github.com/compshare-agent/internal/tools"
 )
 
-// imageCatalogSnapshotForSpec is the spec-gated builder the action-proposal resolver
-// uses to decide "does this operation need the image catalog?" and, when it does,
-// build exactly one snapshot per turn — which the resolver verifies an explicit
-// CompShareImageId against AND threads into executeWorkflow via ReferenceData, so
-// the resolver and the workflow share one image catalog (the single authority that
-// ends the three-interpreter image resolution). Non-image ops get nil, exactly as
-// zoneCatalogSnapshotForSpec returns nil for non-zone ops.
-func (e *Engine) imageCatalogSnapshotForSpec(ctx context.Context, spec actionresolver.OperationSpec, source, proposedImageID string) *deployment.ImageCatalogSnapshot {
-	snapshot, _ := e.resolveImageCatalogSnapshotForSpec(ctx, spec, source, proposedImageID, true)
-	return snapshot
-}
-
 // resolveImageCatalogSnapshotForSpec verifies one proposed image id with an
 // upstream point query and returns the source that actually contained it.
 //

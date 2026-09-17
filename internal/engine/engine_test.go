@@ -17,7 +17,6 @@ import (
 	"github.com/compshare-agent/internal/llm"
 	"github.com/compshare-agent/internal/observability"
 	"github.com/compshare-agent/internal/refusal"
-	"github.com/compshare-agent/internal/textutil"
 	"github.com/compshare-agent/internal/tools"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -2013,27 +2012,6 @@ func TestMonitorHistoryUnsupportedReplyUsesCurrentScopeWording(t *testing.T) {
 	assert.Contains(t, refusal.MonitorHistoryUnsupported, "最多查询 20 台实例")
 	assert.Contains(t, refusal.MonitorHistoryUnsupported, "30 天")
 	assert.NotContains(t, refusal.MonitorHistoryUnsupported, "暂不支持指定历史时间段")
-}
-
-func TestNormalizeMsg(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"empty", "", ""},
-		{"trim leading trailing spaces", "  hello  ", "hello"},
-		{"collapse internal spaces", "foo   bar", "foo bar"},
-		{"collapse tabs and newlines", "foo\t\nbar", "foo bar"},
-		{"lowercase ascii", "Install Fail", "install fail"},
-		{"preserve chinese", "初始化失败", "初始化失败"},
-		{"mixed ascii chinese", " Install  Fail 初始化", "install fail 初始化"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			assert.Equal(t, tc.want, textutil.Normalize(tc.in))
-		})
-	}
 }
 
 // A budget limit closes the tool loop after the completed call/result pair.

@@ -167,12 +167,12 @@ func TestZoneCardLeavesEveryZoneSelectableWhenNoneIsCreatable(t *testing.T) {
 // a missing capacity signal, now applied per zone.
 func TestZoneCardIgnoresAProbeThatCouldNotAnswer(t *testing.T) {
 	t.Run("no probe result at all", func(t *testing.T) {
-		assert.Nil(t, zoneCreatability(nil))
-		assert.Nil(t, zoneCreatability(map[string]any{}))
+		assert.Nil(t, comboCreatability(nil))
+		assert.Nil(t, comboCreatability(map[string]any{}))
 	})
 
 	t.Run("a call that errored is unknown, not unavailable", func(t *testing.T) {
-		known := zoneCreatability(encodeBatchOutcomes([]BatchOutcome{
+		known := comboCreatability(encodeBatchOutcomes([]BatchOutcome{
 			{Key: "cn-wlcb-03", Err: "timeout"},
 			{Key: "cn-sh2-02", OK: true, Result: map[string]any{"Specs": []any{
 				map[string]any{"Gpu": float64(1), "Cpu": float64(16), "Mem": float64(64), "ResourceEnough": true},
@@ -184,7 +184,7 @@ func TestZoneCardIgnoresAProbeThatCouldNotAnswer(t *testing.T) {
 	})
 
 	t.Run("a success with no Specs is unknown, not unavailable", func(t *testing.T) {
-		known := zoneCreatability(encodeBatchOutcomes([]BatchOutcome{
+		known := comboCreatability(encodeBatchOutcomes([]BatchOutcome{
 			{Key: "cn-wlcb-03", OK: true, Result: map[string]any{"Specs": []any{}}},
 		}))
 		_, present := known["cn-wlcb-03"]

@@ -23,10 +23,6 @@ type ResourceEnvelopeMeta struct {
 	Truncated bool
 }
 
-func BuildResourceEnvelope(instances []entity.InstanceSnapshot) envelope.Envelope {
-	return BuildResourceEnvelopeWithMetaAndZoneCatalog(instances, ResourceEnvelopeMeta{}, nil)
-}
-
 func BuildResourceEnvelopeWithMeta(instances []entity.InstanceSnapshot, meta ResourceEnvelopeMeta) envelope.Envelope {
 	return BuildResourceEnvelopeWithMetaAndZoneCatalog(instances, meta, nil)
 }

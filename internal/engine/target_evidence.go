@@ -65,8 +65,6 @@ func existenceOracleForKind(kind string) string {
 	}
 }
 
-func (e targetEvidence) confirmed() bool { return e.Verdict == entity.ExistenceVerified }
-
 // targetEvidenceKey identifies existence evidence by (field, kind, id) — NEVER by a
 // bare id string. Two targets of DIFFERENT kinds (an instance UHostId and a disk
 // DiskId, say) can carry the same id string; keying by value alone would let the

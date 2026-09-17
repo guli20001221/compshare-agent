@@ -13,6 +13,11 @@ import (
 
 var testOwner = store.Owner{TopOrganizationID: 1, OrganizationID: 2}
 
+func waitForConfirmation(ctx context.Context, ch <-chan ConfirmDecision, timeout time.Duration) ConfirmDecision {
+	decision, _ := WaitForConfirmationOutcome(ctx, ch, timeout)
+	return decision
+}
+
 func TestConfirmBroker_ResolveConfirmed(t *testing.T) {
 	b := NewConfirmBroker()
 	id, ch := b.Register("sess-1", testOwner)
@@ -23,7 +28,7 @@ func TestConfirmBroker_ResolveConfirmed(t *testing.T) {
 		require.NoError(t, b.Resolve(id, "sess-1", testOwner, ConfirmDecision{Confirmed: true}))
 	}()
 
-	result := WaitForConfirmation(context.Background(), ch, 1*time.Second)
+	result := waitForConfirmation(context.Background(), ch, 1*time.Second)
 	assert.True(t, result.Confirmed)
 }
 
@@ -36,7 +41,7 @@ func TestConfirmBroker_ResolveDenied(t *testing.T) {
 		require.NoError(t, b.Resolve(id, "sess-1", testOwner, ConfirmDecision{Confirmed: false}))
 	}()
 
-	result := WaitForConfirmation(context.Background(), ch, 1*time.Second)
+	result := waitForConfirmation(context.Background(), ch, 1*time.Second)
 	assert.False(t, result.Confirmed)
 }
 
@@ -44,7 +49,7 @@ func TestConfirmBroker_Timeout(t *testing.T) {
 	b := NewConfirmBroker()
 	_, ch := b.Register("sess-1", testOwner)
 
-	result := WaitForConfirmation(context.Background(), ch, 50*time.Millisecond)
+	result := waitForConfirmation(context.Background(), ch, 50*time.Millisecond)
 	assert.False(t, result.Confirmed, "timeout should return false")
 }
 
@@ -58,7 +63,7 @@ func TestConfirmBroker_ContextCancelled(t *testing.T) {
 		cancel()
 	}()
 
-	result := WaitForConfirmation(ctx, ch, 5*time.Second)
+	result := waitForConfirmation(ctx, ch, 5*time.Second)
 	assert.False(t, result.Confirmed, "cancelled context should return false")
 }
 
@@ -68,7 +73,7 @@ func TestConfirmBroker_Cancel(t *testing.T) {
 
 	b.Cancel(id)
 
-	result := WaitForConfirmation(context.Background(), ch, 50*time.Millisecond)
+	result := waitForConfirmation(context.Background(), ch, 50*time.Millisecond)
 	assert.False(t, result.Confirmed, "cancelled confirmation should return false")
 }
 
@@ -122,7 +127,7 @@ func TestConfirmBroker_ResolveSessionDriftSameOwnerResolves(t *testing.T) {
 
 	require.NoError(t, b.Resolve(id, "sess-recovered", testOwner, ConfirmDecision{Confirmed: true}),
 		"same-owner confirm under a drifted session label must resolve")
-	result := WaitForConfirmation(context.Background(), ch, 50*time.Millisecond)
+	result := waitForConfirmation(context.Background(), ch, 50*time.Millisecond)
 	assert.True(t, result.Confirmed, "decision must be delivered to the registering turn")
 }
 

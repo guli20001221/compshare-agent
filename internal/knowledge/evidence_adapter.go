@@ -1,7 +1,6 @@
 package knowledge
 
 import (
-	"fmt"
 	"strings"
 	"unicode/utf8"
 )
@@ -43,19 +42,6 @@ type EvidenceItem struct {
 	// recorded (EchoedEvidenceChunkID) as a synthesis-quality signal; it never
 	// blocks the answer.
 	Snippet string `json:"snippet,omitempty"`
-}
-
-const (
-	DiagnosisClaimSupported   = "supported"
-	DiagnosisClaimInferred    = "inferred"
-	DiagnosisClaimUnconfirmed = "unconfirmed"
-)
-
-type DiagnosisClaim struct {
-	Claim    string   `json:"claim"`
-	Status   string   `json:"status"`
-	ChunkIDs []string `json:"chunk_ids,omitempty"`
-	Reason   string   `json:"reason,omitempty"`
 }
 
 func (l EvidenceLedger) Empty() bool {
@@ -158,62 +144,6 @@ func MergeEvidenceLedgers(first, second EvidenceLedger, maxItems int) EvidenceLe
 	return out
 }
 
-func ValidateDiagnosisClaims(claims []DiagnosisClaim, ledger EvidenceLedger) ([]DiagnosisClaim, error) {
-	known := map[string]struct{}{}
-	for _, item := range ledger.Items {
-		id := strings.TrimSpace(item.ChunkID)
-		if id != "" {
-			known[id] = struct{}{}
-		}
-	}
-	validated := make([]DiagnosisClaim, 0, len(claims))
-	for i, claim := range claims {
-		text := compactWhitespace(claim.Claim)
-		if text == "" {
-			continue
-		}
-		status := strings.ToLower(strings.TrimSpace(claim.Status))
-		if status == "" {
-			status = DiagnosisClaimUnconfirmed
-		}
-		switch status {
-		case DiagnosisClaimSupported, DiagnosisClaimInferred, DiagnosisClaimUnconfirmed:
-		default:
-			return nil, fmt.Errorf("diagnosis claim %d has invalid status %q", i, claim.Status)
-		}
-		ids := dedupeStrings(trimStrings(claim.ChunkIDs))
-		for _, id := range ids {
-			if _, ok := known[id]; !ok {
-				return nil, fmt.Errorf("diagnosis claim %d references unknown chunk_id %q", i, id)
-			}
-		}
-		reason := compactWhitespace(claim.Reason)
-		if status == DiagnosisClaimSupported && len(ids) == 0 {
-			status = DiagnosisClaimUnconfirmed
-			reason = appendDiagnosisClaimReason(reason, "supported status had no chunk_ids; downgraded to unconfirmed")
-		}
-		validated = append(validated, DiagnosisClaim{
-			Claim:    clipRunes(text, 240),
-			Status:   status,
-			ChunkIDs: ids,
-			Reason:   clipRunes(reason, 180),
-		})
-	}
-	return validated, nil
-}
-
-func appendDiagnosisClaimReason(reason, suffix string) string {
-	reason = strings.TrimSpace(reason)
-	suffix = strings.TrimSpace(suffix)
-	if reason == "" {
-		return suffix
-	}
-	if suffix == "" {
-		return reason
-	}
-	return reason + "; " + suffix
-}
-
 func evidenceScoreBucket(score float64) string {
 	switch {
 	case score >= 0.85:
@@ -308,16 +238,6 @@ func dedupeStrings(values []string) []string {
 		}
 		seen[value] = struct{}{}
 		out = append(out, value)
-	}
-	return out
-}
-
-func trimStrings(values []string) []string {
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		if trimmed := strings.TrimSpace(value); trimmed != "" {
-			out = append(out, trimmed)
-		}
 	}
 	return out
 }

@@ -3,6 +3,7 @@ package envelope
 import (
 	"testing"
 
+	"github.com/compshare-agent/internal/observability"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -26,9 +27,9 @@ func TestHashEnvelopeIsStableAndRedactsSecrets(t *testing.T) {
 		Constraints: Constraints{DoNotInventInstances: true},
 	}
 
-	first, err := Hash(env)
+	first, err := observability.HashTracePayload(env)
 	require.NoError(t, err)
-	second, err := Hash(env)
+	second, err := observability.HashTracePayload(env)
 	require.NoError(t, err)
 
 	assert.Equal(t, first, second)

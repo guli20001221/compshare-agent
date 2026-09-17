@@ -32,8 +32,13 @@ func oneInstance(id, login string) *listDescriber {
 	return &listDescriber{raw: map[string]any{"UHostSet": []any{instRow(id, login, pwPepper)}}}
 }
 
+func fetchCredentialWithHostResolver(ctx context.Context, d Describer, instanceID string, hr HostResolver) (Credential, error) {
+	cred, _, err := fetchCredentialWithDialPolicy(ctx, d, instanceID, hr, dialPolicy{})
+	return cred, err
+}
+
 // The wiring assertion: a resolver handed to NewService must reach the credential the
-// harness is actually run with. Everything else here tests FetchCredential directly, so
+// harness is actually run with. Everything else here tests the resolver arm directly, so
 // without this the option could be accepted, stored, and never consulted — a lane that
 // looks configured and dials the old address anyway.
 func TestServiceDialsTheResolvedAddress(t *testing.T) {
@@ -52,7 +57,7 @@ func TestServiceDialsTheResolvedAddress(t *testing.T) {
 func TestFetchCredentialWithoutResolverKeepsTheAdvertisedHost(t *testing.T) {
 	d := oneInstance("uhost-plain", "ssh -p 23 root@10.0.0.7")
 
-	cred, err := FetchCredentialWithHostResolver(context.Background(), d, "uhost-plain", nil)
+	cred, err := fetchCredentialWithHostResolver(context.Background(), d, "uhost-plain", nil)
 
 	require.NoError(t, err)
 	require.Equal(t, "10.0.0.7", cred.Host, "a nil resolver must leave the lane byte-identical to before")
@@ -70,7 +75,7 @@ func TestFetchCredentialDialsTheResolvedAddressKeepingUserAndPort(t *testing.T) 
 	r := &recordingResolver{host: "2003:da8:2004:1000::1"}
 	d := oneInstance("uhost-container", "ssh -p 23 root@10.0.0.7")
 
-	cred, err := FetchCredentialWithHostResolver(context.Background(), d, "uhost-container", r)
+	cred, err := fetchCredentialWithHostResolver(context.Background(), d, "uhost-container", r)
 
 	require.NoError(t, err)
 	require.Equal(t, "2003:da8:2004:1000::1", cred.Host)
@@ -89,7 +94,7 @@ func TestFetchCredentialRefusesWhenTheAddressRewriteFails(t *testing.T) {
 	r := &recordingResolver{err: boom}
 	d := oneInstance("uhost-vm", "ssh ubuntu@10.0.0.9")
 
-	cred, err := FetchCredentialWithHostResolver(context.Background(), d, "uhost-vm", r)
+	cred, err := fetchCredentialWithHostResolver(context.Background(), d, "uhost-vm", r)
 
 	require.ErrorIs(t, err, boom, "the underlying cause must survive so the log names the layer")
 	require.Empty(t, cred.Host, "no dial target may survive a failed rewrite")
@@ -102,7 +107,7 @@ func TestFetchCredentialKeepsAdvertisedHostWhenResolverHasNoMapping(t *testing.T
 	r := &recordingResolver{host: ""}
 	d := oneInstance("uhost-vm", "ssh ubuntu@10.0.0.9")
 
-	cred, err := FetchCredentialWithHostResolver(context.Background(), d, "uhost-vm", r)
+	cred, err := fetchCredentialWithHostResolver(context.Background(), d, "uhost-vm", r)
 
 	require.NoError(t, err)
 	require.Equal(t, "10.0.0.9", cred.Host)
@@ -117,7 +122,7 @@ func TestFetchCredentialNeverRewritesADNSLoginHost(t *testing.T) {
 	r := &recordingResolver{host: "2003:da8:2004:1000::1"}
 	d := oneInstance("uhost-pod", "ssh -p 23973 root@cpod-abcdefg.podtcp.compshare.cn")
 
-	cred, err := FetchCredentialWithHostResolver(context.Background(), d, "uhost-pod", r)
+	cred, err := fetchCredentialWithHostResolver(context.Background(), d, "uhost-pod", r)
 
 	require.NoError(t, err)
 	require.Equal(t, "cpod-abcdefg.podtcp.compshare.cn", cred.Host)
@@ -132,7 +137,7 @@ func TestFetchCredentialDoesNotRewriteAnAlreadyIPv6LoginHost(t *testing.T) {
 	r := &recordingResolver{host: "2003:da8:2004:1000::2"}
 	d := oneInstance("uhost-v6", "ssh -p 23 root@2003:da8:2004:1000::5")
 
-	cred, err := FetchCredentialWithHostResolver(context.Background(), d, "uhost-v6", r)
+	cred, err := fetchCredentialWithHostResolver(context.Background(), d, "uhost-v6", r)
 
 	require.NoError(t, err)
 	require.Zero(t, r.calls, "an address that is already IPv6 needs no rewrite")

@@ -187,7 +187,7 @@ func TestLoadRecentHistoryStatusGatingAndInterruptedTurns(t *testing.T) {
 	history, _ := loadHistoryForTest(t, rows)
 	eng := &engine.Engine{}
 	eng.RehydrateHistory(history)
-	view := (engine.ContextCompiler{}).Compile(eng, "继续", time.Now())
+	view := (engine.ContextCompiler{}).CompileForTurn(eng, "继续", "", time.Now())
 	require.Equal(t, []engine.ConversationPair{
 		{User: "检查旧实例", Assistant: "已检查"},
 		{User: "改为检查新实例"},

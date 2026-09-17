@@ -28,7 +28,7 @@ func TestContextCompilerPreservesCompleteFollowupContextAndLiveSelection(t *test
 		},
 	}
 
-	view := (ContextCompiler{}).Compile(eng, "粘贴呢", now)
+	view := (ContextCompiler{}).CompileForTurn(eng, "粘贴呢", "", now)
 	require.Equal(t, "粘贴呢", view.CurrentQuestion)
 	require.Equal(t, []ConversationPair{{User: "Windows 终端怎么复制？", Assistant: "选中文本后按 Ctrl+Shift+C。"}}, view.RecentConversation)
 	require.NotEmpty(t, view.SelectedEntities)
@@ -57,7 +57,7 @@ func TestContextCompilerCarriesConversationVerbatimAndNeverPriorRawToolJSON(t *t
 		}}},
 	}
 
-	view := (ContextCompiler{}).Compile(eng, "继续", time.Now())
+	view := (ContextCompiler{}).CompileForTurn(eng, "继续", "", time.Now())
 	eng.messages = append(eng.messages, openai.ChatCompletionMessage{Role: openai.ChatMessageRoleUser, Content: "继续"})
 	rendered := renderTestMessages(messagesFromAgentContext(eng.messages, view, true))
 	require.NotContains(t, rendered, "must-not-survive")
@@ -80,8 +80,8 @@ func TestContextCompilerHotColdSemanticEquivalence(t *testing.T) {
 	cold := &Engine{sessionStateHydrated: true, sessionState: state, messages: append([]openai.ChatCompletionMessage(nil), messages...)}
 
 	require.Equal(t,
-		(ContextCompiler{}).Compile(hot, "还是那台吗", now),
-		(ContextCompiler{}).Compile(cold, "还是那台吗", now),
+		(ContextCompiler{}).CompileForTurn(hot, "还是那台吗", "", now),
+		(ContextCompiler{}).CompileForTurn(cold, "还是那台吗", "", now),
 	)
 }
 

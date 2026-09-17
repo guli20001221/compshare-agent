@@ -33,7 +33,7 @@ func TestConfirmBroker_FormOverridesDelivered(t *testing.T) {
 	require.NoError(t, b.Resolve(id, "sess-1", testOwner,
 		ConfirmDecision{Confirmed: true, Overrides: map[string]string{"GpuType": "A800"}}))
 
-	d := WaitForConfirmation(context.Background(), ch, time.Second)
+	d := waitForConfirmation(context.Background(), ch, time.Second)
 	assert.True(t, d.Confirmed)
 	assert.Equal(t, map[string]string{"GpuType": "A800"}, d.Overrides)
 }
@@ -50,7 +50,7 @@ func TestConfirmBroker_InvalidOverrideKeepsPending(t *testing.T) {
 
 	require.NoError(t, b.Resolve(id, "sess-1", testOwner,
 		ConfirmDecision{Confirmed: true, Overrides: map[string]string{"GpuType": "A800"}}))
-	d := WaitForConfirmation(context.Background(), ch, time.Second)
+	d := waitForConfirmation(context.Background(), ch, time.Second)
 	assert.True(t, d.Confirmed)
 	assert.Equal(t, "A800", d.Overrides["GpuType"])
 }
@@ -65,7 +65,7 @@ func TestConfirmBroker_OverridesWithoutFormRejected(t *testing.T) {
 
 	// Pending kept; a plain confirm still works.
 	require.NoError(t, b.Resolve(id, "sess-1", testOwner, ConfirmDecision{Confirmed: true}))
-	assert.True(t, WaitForConfirmation(context.Background(), ch, time.Second).Confirmed)
+	assert.True(t, waitForConfirmation(context.Background(), ch, time.Second).Confirmed)
 }
 
 func TestConfirmBroker_DenyIgnoresOverrides(t *testing.T) {
@@ -76,7 +76,7 @@ func TestConfirmBroker_DenyIgnoresOverrides(t *testing.T) {
 	// the overrides downstream (nothing may act on a denied edit).
 	require.NoError(t, b.Resolve(id, "sess-1", testOwner,
 		ConfirmDecision{Confirmed: false, Overrides: map[string]string{"GpuType": "H100"}}))
-	d := WaitForConfirmation(context.Background(), ch, time.Second)
+	d := waitForConfirmation(context.Background(), ch, time.Second)
 	assert.False(t, d.Confirmed)
 	assert.Nil(t, d.Overrides)
 }
@@ -185,7 +185,7 @@ func TestWS_Confirm_OverridesRoundTrip(t *testing.T) {
 	confirmID, ch := h.confirmBroker.RegisterWithForm("sess-1", gatewayOwner, testGPUForm())
 	result := make(chan ConfirmDecision, 1)
 	go func() {
-		result <- WaitForConfirmation(context.Background(), ch, 5*time.Second)
+		result <- waitForConfirmation(context.Background(), ch, 5*time.Second)
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -210,7 +210,7 @@ func TestWS_Confirm_InvalidOverride_ErrorFrameAndPendingKept(t *testing.T) {
 	confirmID, ch := h.confirmBroker.RegisterWithForm("sess-1", gatewayOwner, testGPUForm())
 	result := make(chan ConfirmDecision, 1)
 	go func() {
-		result <- WaitForConfirmation(context.Background(), ch, 5*time.Second)
+		result <- waitForConfirmation(context.Background(), ch, 5*time.Second)
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

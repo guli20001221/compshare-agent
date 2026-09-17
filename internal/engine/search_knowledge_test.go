@@ -20,9 +20,9 @@ func TestExecuteSearchKnowledgeAutoExpandsOnlyIndividuallyStrongHits(t *testing.
 	weakTail := "弱命中正文末尾-不得自动展开"
 	strongBody := strings.Repeat("强命中前文。", 100) + strongTail
 	weakBody := strings.Repeat("弱命中前文。", 100) + weakTail
-	retriever := &chunkStoreRetriever{
+	retriever := &remoteChunkStoreRetriever{
 		scriptedKnowledgeRetriever: scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
-			Enabled: true, HybridMode: knowledge.RetrievalModeQwen3RRF, RerankerMode: "qwen3-reranker-8b",
+			Enabled: true, SearchID: "search-1", HybridMode: knowledge.RetrievalModeQwen3RRF, RerankerMode: "qwen3-reranker-8b",
 			HitItems: []knowledge.RetrievalHit{
 				{Kept: true, Score: 0.92, Chunk: knowledge.KBChunk{ChunkID: "strong", Title: "强命中", Content: strongBody}},
 				{Kept: true, Score: 0.31, Chunk: knowledge.KBChunk{ChunkID: "weak", Title: "弱命中", Content: weakBody}},
@@ -52,17 +52,17 @@ func TestExecuteSearchKnowledgeLaterAutoExpansionUpgradesTurnLedger(t *testing.T
 	tail := "第二次检索展开后的唯一正文尾串"
 	targetBody := strings.Repeat("目标正文前文。", 100) + tail
 	fillerBody := strings.Repeat("首个强命中。", 100)
-	retriever := &chunkStoreRetriever{
+	retriever := &remoteChunkStoreRetriever{
 		scriptedKnowledgeRetriever: scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{
 			{
-				Enabled: true, HybridMode: knowledge.RetrievalModeQwen3RRF, RerankerMode: "qwen3-reranker-8b",
+				Enabled: true, SearchID: "search-1", HybridMode: knowledge.RetrievalModeQwen3RRF, RerankerMode: "qwen3-reranker-8b",
 				HitItems: []knowledge.RetrievalHit{
 					{Kept: true, Score: 0.92, Chunk: knowledge.KBChunk{ChunkID: "filler", Content: fillerBody}},
 					{Kept: true, Score: 0.31, Chunk: knowledge.KBChunk{ChunkID: "target", Content: targetBody}},
 				},
 			},
 			{
-				Enabled: true, HybridMode: knowledge.RetrievalModeQwen3RRF, RerankerMode: "qwen3-reranker-8b",
+				Enabled: true, SearchID: "search-2", HybridMode: knowledge.RetrievalModeQwen3RRF, RerankerMode: "qwen3-reranker-8b",
 				HitItems: []knowledge.RetrievalHit{
 					{Kept: true, Score: 0.93, Chunk: knowledge.KBChunk{ChunkID: "target", Content: targetBody}},
 				},
@@ -117,9 +117,9 @@ func TestExecuteSearchKnowledgeAutoExpansionFailureKeepsSearchSnippet(t *testing
 func TestExecuteSearchKnowledgeDoesNotAutoExpandUnjudgedRRFFallback(t *testing.T) {
 	tail := "RRF回退正文末尾-需显式读取"
 	body := strings.Repeat("回退节选。", 100) + tail
-	retriever := &chunkStoreRetriever{
+	retriever := &remoteChunkStoreRetriever{
 		scriptedKnowledgeRetriever: scriptedKnowledgeRetriever{results: []knowledge.RetrievalResult{{
-			Enabled: true, HybridMode: knowledge.RetrievalModeQwen3RRF,
+			Enabled: true, SearchID: "search-1", HybridMode: knowledge.RetrievalModeQwen3RRF,
 			RerankerFallbackReason: "reranker_timeout",
 			HitItems: []knowledge.RetrievalHit{{
 				Kept: true, Score: 0.031, Chunk: knowledge.KBChunk{ChunkID: "rrf", Content: body},

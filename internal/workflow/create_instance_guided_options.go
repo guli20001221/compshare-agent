@@ -956,14 +956,6 @@ func selectedImageFamily(wfCtx *Context) (deployment.ImageFamily, bool) {
 	return deployment.ImageFamily{}, false
 }
 
-func guidedImageFormOptions(params map[string]any, images map[string]any, gpuType string, taxonomy *deployment.ImageTaxonomy, zoneIsPod bool) (string, []ConfirmFormOption, int) {
-	if images == nil {
-		return "", nil, 0
-	}
-	set := buildImageCandidateSet(params, images, gpuType, taxonomy, zoneIsPod)
-	return guidedImageFormOptionsFromSet(params, images, gpuType, set)
-}
-
 // guidedImageFormOptionsForContext reads the same structured request and selected
 // facets as the other image cards.
 func guidedImageFormOptionsForContext(wfCtx *Context, gpuType string) (string, []ConfirmFormOption, int) {

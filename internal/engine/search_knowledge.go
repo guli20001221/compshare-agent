@@ -283,15 +283,6 @@ func isRankingAmbiguous(items []knowledge.RetrievalHit, hybridMode string) bool 
 	return items[0].Score-items[1].Score < rankingAmbiguousSpreadFor(hybridMode)
 }
 
-// weakEvidenceThresholdFor maps a knowledge.RetrievalResult.HybridMode value to
-// the appropriate weak-evidence floor. See cited_guard.go for the rationale
-// behind each scale. The empty string and any unrecognized value default to
-// the BM25 threshold so existing tests with mock RetrievalResult{} keep their
-// fixture-pinned behavior.
-func weakEvidenceThresholdFor(hybridMode string) float64 {
-	return knowledge.WeakEvidenceThresholdFor(hybridMode)
-}
-
 // rankingAmbiguousSpreadFor maps a score scale to the spread under which the top
 // two hits are considered tied. Keyed by scale for the same reason the floor is:
 // a spread is a distance on a scale, not a property of a pipeline.

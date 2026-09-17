@@ -55,7 +55,7 @@ func TestVerifiedEvidenceNeverReachesTheModel(t *testing.T) {
 		SelectedInstanceAtUnix:    time.Unix(1_750_000_000, 0).Unix(),
 		SelectedInstanceFreshness: ContinuityFreshnessFresh,
 	}}
-	view := (ContextCompiler{}).Compile(eng, "那包月呢", time.Unix(1_750_000_001, 0))
+	view := (ContextCompiler{}).CompileForTurn(eng, "那包月呢", "", time.Unix(1_750_000_001, 0))
 	card := renderAgentContextCard(view)
 
 	require.Contains(t, card, "【本轮执行上下文",

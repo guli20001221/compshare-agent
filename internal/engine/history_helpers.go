@@ -1,9 +1,6 @@
 package engine
 
 import (
-	"encoding/json"
-	"strings"
-
 	openai "github.com/sashabaranov/go-openai"
 )
 
@@ -25,19 +22,6 @@ func stripHistoricalToolTranscript(messages []openai.ChatCompletionMessage) []op
 		out = append(out, msg)
 	}
 	return out
-}
-
-// parseFirstJSONObject extracts the first balanced {...} object from an LLM
-// response (tolerating code fences / prose around it) and unmarshals it into dst.
-// Returns false when no object is found or it does not unmarshal — fail-closed.
-func parseFirstJSONObject(raw string, dst any) bool {
-	text := strings.TrimSpace(raw)
-	start := strings.Index(text, "{")
-	end := strings.LastIndex(text, "}")
-	if start < 0 || end <= start {
-		return false
-	}
-	return json.Unmarshal([]byte(text[start:end+1]), dst) == nil
 }
 
 func safeHistoryStart(messages []openai.ChatCompletionMessage, candidateStart int) int {

@@ -518,7 +518,7 @@ func ProjectTranscript(transcript *TranscriptV1) []openai.ChatCompletionMessage 
 			}
 			declared[one.ID] = true
 			// Type is restored rather than stored: every tool this agent exposes
-			// is a function tool (VisibleRegistry builds nothing else), so the
+			// is a function tool (the tool window builds nothing else), so the
 			// field is a constant on the wire and storing it would only create a
 			// way for the record to disagree with the registry. If a non-function
 			// tool type is ever added, this becomes lossy and the schema must

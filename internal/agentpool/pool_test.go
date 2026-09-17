@@ -375,7 +375,7 @@ func TestColdRecoveryPagesBySizeAndKeepsWholeNewestTurns(t *testing.T) {
 	require.Equal(t, 2, ms.listCalls,
 		"reverse paging should stop when the rune budget is full instead of loading all 800 rows")
 
-	view := (engine.ContextCompiler{}).Compile(eng, "继续", time.Now())
+	view := (engine.ContextCompiler{}).CompileForTurn(eng, "继续", "", time.Now())
 	require.NotEmpty(t, view.RecentConversation)
 	require.True(t, strings.HasPrefix(view.RecentConversation[len(view.RecentConversation)-1].User, "q-399-"))
 	for _, turn := range view.RecentConversation {

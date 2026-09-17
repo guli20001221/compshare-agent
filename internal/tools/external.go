@@ -75,8 +75,9 @@ func NewExternalExecutor(cfg config.AgentConfig) *ExternalExecutor {
 	}
 }
 
-// NewExternalExecutorWithProvider constructs an ExternalExecutor with an
-// explicit CredentialProvider. Intended for HTTP path and tests.
+// NewExternalExecutorWithProvider constructs an ExternalExecutor around an
+// explicit CredentialProvider; tests use it to inject a fake provider and a
+// local server.
 func NewExternalExecutorWithProvider(apiURL, region, projectId string, provider CredentialProvider) *ExternalExecutor {
 	return &ExternalExecutor{
 		apiURL:     strings.TrimRight(apiURL, "/") + "/",

@@ -49,10 +49,7 @@ func TestUserAuthoredTextSeparatesScreenshotReferenceFromTypedMessage(t *testing
 		"请继续推荐其他数字人镜像",
 	)
 	assert.Equal(t, "请继续推荐其他数字人镜像", userAuthoredText(wrapped))
-	assert.Equal(t, recognized, screenshotReferenceText(wrapped))
 	assert.Equal(t, "普通用户消息", userAuthoredText("  普通用户消息  "))
-	assert.Empty(t, screenshotReferenceText("普通用户消息"))
-	assert.Empty(t, screenshotReferenceText(screenshotContextPrefix+"缺少结束边界"))
 }
 
 // TestChatWithOptions_LiveTurnFencesImageContextToLLM closes the live-turn gap

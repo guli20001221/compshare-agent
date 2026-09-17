@@ -7,11 +7,17 @@ import (
 	"testing"
 
 	"github.com/compshare-agent/internal/actionresolver"
+	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/tools"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func snapshotFor(eng *Engine, spec actionresolver.OperationSpec, source, imageID string) *deployment.ImageCatalogSnapshot {
+	snapshot, _ := eng.resolveImageCatalogSnapshotForSpec(context.Background(), spec, source, imageID, true)
+	return snapshot
+}
 
 // TestImageCatalogFetchedOnlyWhenAProposalNamesAnId guards the cost condition that
 // came with giving create a CompShareImageId field.
@@ -34,23 +40,23 @@ func TestImageCatalogFetchedOnlyWhenAProposalNamesAnId(t *testing.T) {
 
 	eng := &Engine{}
 
-	assert.Nil(t, eng.imageCatalogSnapshotForSpec(context.Background(), create, "community", ""),
+	assert.Nil(t, snapshotFor(eng, create, "community", ""),
 		"a create naming no image must not pay for a catalog fetch")
-	assert.Nil(t, eng.imageCatalogSnapshotForSpec(context.Background(), create, "community", "   "),
+	assert.Nil(t, snapshotFor(eng, create, "community", "   "),
 		"…and blank is not an id")
 
 	// With an id there IS something to verify, so the fetch is attempted. This
 	// engine has no executor, so it yields the unavailable snapshot rather than
 	// nil — and unavailable is what makes the resolver REFUSE the id instead of
 	// passing it through, which is the behavior that must not be skipped.
-	snap := eng.imageCatalogSnapshotForSpec(context.Background(), create, "community", "compshareImage-abc")
+	snap := snapshotFor(eng, create, "community", "compshareImage-abc")
 	require.NotNil(t, snap, "an id must be verified, so the catalog must be fetched")
 	assert.False(t, snap.Available(),
 		"a fetch that could not run reports unavailable, so the id is refused rather than trusted")
 
 	stop, ok := catalog.Lookup("StopInstanceWorkflow")
 	require.True(t, ok)
-	assert.Nil(t, eng.imageCatalogSnapshotForSpec(context.Background(), stop, "", "compshareImage-abc"),
+	assert.Nil(t, snapshotFor(eng, stop, "", "compshareImage-abc"),
 		"an operation with no image field never needs the catalog, whatever it was handed")
 }
 

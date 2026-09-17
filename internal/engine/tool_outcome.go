@@ -59,5 +59,3 @@ func verbatimReply(reply, observation string) toolOutcome {
 }
 
 func (o toolOutcome) terminatesTurn() bool { return o.Delivery == deliverFinal }
-
-func (o toolOutcome) deliversToUser() bool { return o.Delivery != deliverToModel }

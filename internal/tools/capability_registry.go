@@ -111,36 +111,6 @@ func cloneStringsPreservingEmpty(in []string) []string {
 	return append([]string{}, in...)
 }
 
-// VisibleTools returns the one agent tool window. The model gets the full
-// read-only or mutating registry and chooses its next call; workflow safety is
-// enforced at dispatch and confirmation, not by an unused intent-to-subset planner.
-func (r *CapabilityRegistry) VisibleTools(mutatingEnabled bool) []openai.Tool {
-	capabilities := r.VisibleCapabilities(mutatingEnabled)
-	visible := make([]openai.Tool, 0, len(capabilities))
-	for _, capability := range capabilities {
-		visible = append(visible, capability.Tool)
-	}
-	return visible
-}
-
-func (r *CapabilityRegistry) VisibleCapabilities(mutatingEnabled bool) []Capability {
-	if r == nil {
-		return nil
-	}
-
-	visible := make([]Capability, 0, len(r.ordered))
-	for _, capability := range r.ordered {
-		if !capability.ExposedToAgent {
-			continue
-		}
-		if !mutatingEnabled && (capability.Policy.Route == ActionRouteWorkflow || capability.Policy.Class == ActionClassMutating) {
-			continue
-		}
-		visible = append(visible, capability)
-	}
-	return visible
-}
-
 func (r *CapabilityRegistry) ValidateSafety() error {
 	for _, capability := range r.ordered {
 		policy := capability.Policy

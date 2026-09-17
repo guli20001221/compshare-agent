@@ -33,8 +33,6 @@ type ReadDefinition struct {
 
 func ReadToolName(id intent.Intent) string { return ReadToolPrefix + string(id) }
 
-func namedReadToolName(name string) string { return ReadToolPrefix + name }
-
 func ReadDefinitions() []ReadDefinition {
 	definitions := []ReadDefinition{
 		readDefinition(intent.IntentResourceInfo, NewReadCapability(resourceReadSpec())),

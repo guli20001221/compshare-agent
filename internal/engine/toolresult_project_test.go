@@ -196,7 +196,7 @@ func TestProjectedToolResultMarksCanonicalTranscript(t *testing.T) {
 	}
 	require.True(t, projectToolResultForReAct("DescribeCompShareImages", result),
 		"precondition: this fixture must exercise a real projection")
-	liveToolResult := prompt.FormatToolResult(result)
+	liveToolResult, _ := prompt.FormatToolResultWithTrace(result)
 	assertFormattedProjectionMetadata(t, liveToolResult)
 
 	call := openai.ToolCall{

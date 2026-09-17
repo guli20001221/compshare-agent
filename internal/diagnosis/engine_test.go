@@ -53,11 +53,11 @@ func TestContext_NewAndResult(t *testing.T) {
 
 	// Store and retrieve a step result
 	dCtx.StepResults["check_state"] = map[string]any{"State": "Running"}
-	result := dCtx.Result("check_state")
+	result := dCtx.StepResults["check_state"]
 	assert.Equal(t, "Running", result["State"])
 
 	// Non-existent step returns nil
-	assert.Nil(t, dCtx.Result("nonexistent"))
+	assert.Nil(t, dCtx.StepResults["nonexistent"])
 }
 
 func TestContext_NilParams(t *testing.T) {
@@ -303,7 +303,7 @@ func TestEngine_Run_StepResultsAccumulate(t *testing.T) {
 				Tool: "ToolB",
 				BuildArgs: func(dCtx *Context) (map[string]any, error) {
 					// Access step_a's result during BuildArgs
-					prev := dCtx.Result("step_a")
+					prev := dCtx.StepResults["step_a"]
 					if prev != nil {
 						capturedFromStepB = prev["ValueA"].(string)
 					}
@@ -311,7 +311,7 @@ func TestEngine_Run_StepResultsAccumulate(t *testing.T) {
 				},
 				Evaluate: func(result map[string]any, dCtx *Context) Verdict {
 					// Also verify step_a result is accessible during Evaluate
-					prev := dCtx.Result("step_a")
+					prev := dCtx.StepResults["step_a"]
 					if prev != nil && prev["ValueA"] == "hello" {
 						return Verdict{Action: Conclude, Conclusion: "accumulated OK"}
 					}
