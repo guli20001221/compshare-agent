@@ -73,6 +73,9 @@ func TestParsePersistedContextRejectsMalformedAndUnknownEnvelopes(t *testing.T) 
 	for _, raw := range []json.RawMessage{
 		json.RawMessage(`{"agent_session_state":{"schema_version":"0.0"}}`),
 		json.RawMessage(`{"agent_session_state":{"schema_version":"12.0","future":"value"}}`),
+		json.RawMessage(`{"agent_session_state":{"schema_version":"11.1"}}`),
+		json.RawMessage(`{"agent_session_state":{"schema_version":"11"}}`),
+		json.RawMessage(`{"agent_session_state":{"schema_version":"v11.0"}}`),
 	} {
 		parsed, err := ParsePersistedContext(raw)
 		assert.ErrorIs(t, err, ErrUnknownSessionStateSchema)
@@ -130,7 +133,7 @@ func TestSessionStateSnapshotAndClear(t *testing.T) {
 	assert.Equal(t, SessionState{}, state)
 	assert.Zero(t, version)
 
-	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1, SelectedInstanceID: "uhost-a"}, 3)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent, SelectedInstanceID: "uhost-a"}, 3)
 	state, version, hydrated = e.SessionStateSnapshot()
 	assert.True(t, hydrated)
 	assert.Equal(t, SessionStateSchemaCurrent, state.SchemaVersion)
@@ -201,7 +204,7 @@ func TestSetSessionStateVersionZeroCannotMintInstanceSelectionAuthority(t *testi
 
 func TestPersistedInstanceOpsJobRoundTripsWithoutExecutablePayload(t *testing.T) {
 	state := SessionState{
-		SchemaVersion: SessionStateSchemaV11,
+		SchemaVersion: SessionStateSchemaCurrent,
 		PersistedInstanceOpsJobs: []PersistedInstanceOpsJob{{
 			InstanceID: "uhost-a",
 			JobID:      "job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -243,40 +246,48 @@ func TestSetSessionStateNormalizesServerOwnedBackgroundJobs(t *testing.T) {
 		Purpose: "  contact user@example.com\n\tdownload weights ", UpdatedAt: "not-a-time",
 	}
 	e := newEngineForSessionStateTest(t)
-	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV11, PersistedInstanceOpsJobs: []PersistedInstanceOpsJob{job}}, 1)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent, PersistedInstanceOpsJobs: []PersistedInstanceOpsJob{job}}, 1)
 	state, _, _ := e.SessionStateSnapshot()
 	require.Len(t, state.PersistedInstanceOpsJobs, 1)
 	assert.Equal(t, "uhost-a", state.PersistedInstanceOpsJobs[0].InstanceID)
 	assert.Equal(t, "contact user@example.com download weights", state.PersistedInstanceOpsJobs[0].Purpose)
 	assert.Empty(t, state.PersistedInstanceOpsJobs[0].UpdatedAt)
 
-	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV7, PersistedInstanceOpsJobs: []PersistedInstanceOpsJob{job}}, 2)
+	e.SetSessionState(SessionState{SchemaVersion: "7.0", PersistedInstanceOpsJobs: []PersistedInstanceOpsJob{job}}, 2)
 	state, _, _ = e.SessionStateSnapshot()
 	assert.Empty(t, state.PersistedInstanceOpsJobs,
-		"a pre-V8 envelope cannot smuggle a job cursor through an unknown field")
+		"an envelope from an earlier schema cannot smuggle a job cursor")
 }
 
-func TestLegacySingleBackgroundJobHydratesAndRewritesAsPlural(t *testing.T) {
-	for _, schema := range []string{SessionStateSchemaV8, SessionStateSchemaV9, SessionStateSchemaV10} {
-		raw := []byte(`{"agent_session_state":{"schema_version":"` + schema + `","persisted_instance_ops_job":{"instance_id":"uhost-a","job_id":"job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"running","purpose":"serve app"}}}`)
+// A row written by an earlier schema keeps its referent and evidence, loses the
+// continuation cursors that schema bound to another contract, and is written
+// back as the current schema.
+func TestEarlierSchemaRowHydratesWithoutCursorsAndRewritesAsCurrent(t *testing.T) {
+	for _, schema := range []string{"1.0", "7.0", "8.0", "10.0"} {
+		raw := []byte(`{"agent_session_state":{"schema_version":"` + schema + `","selected_instance_id":"uhost-a","selected_instance_source":"user_selected",` +
+			`"persisted_instance_ops_job":{"instance_id":"uhost-a","job_id":"job-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","state":"running","purpose":"serve app"},` +
+			`"persisted_instance_ops_jobs":[{"instance_id":"uhost-a","job_id":"job-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state":"running"}],` +
+			`"persisted_instance_ops_agent":{"instance_id":"uhost-a","session_id":"4ddf6804-9b0b-4527-b6eb-6cc62f65ead5","workdir_id":"4ddf6804-9b0b-4527-b6eb-6cc62f65ead5","contract":"` + instanceOpsAgentSessionContract + `","model":"gpt-5.6-terra"}}}`)
 		parsed, err := ParsePersistedContext(raw)
-		require.NoError(t, err)
+		require.NoError(t, err, "schema %s", schema)
+		require.Equal(t, schema, parsed.AgentSessionState.SchemaVersion, "the parse reports the row's own version")
 		eng := newEngineForSessionStateTest(t)
 		eng.SetSessionState(parsed.AgentSessionState, 1)
 		state, _, _ := eng.SessionStateSnapshot()
-		require.Equal(t, SessionStateSchemaV11, state.SchemaVersion)
-		require.Len(t, state.PersistedInstanceOpsJobs, 1)
-		require.Equal(t, "serve app", state.PersistedInstanceOpsJobs[0].Purpose)
+		require.Equal(t, SessionStateSchemaCurrent, state.SchemaVersion, "schema %s", schema)
+		require.Equal(t, "uhost-a", state.SelectedInstanceID, "schema %s", schema)
+		require.Empty(t, state.PersistedInstanceOpsJobs, "schema %s kept a job cursor", schema)
+		require.True(t, state.PersistedInstanceOpsAgent.IsZero(), "schema %s kept an agent cursor", schema)
 		encoded, err := json.Marshal(state)
 		require.NoError(t, err)
-		require.Contains(t, string(encoded), `"persisted_instance_ops_jobs"`)
-		require.NotContains(t, string(encoded), `"persisted_instance_ops_job"`)
+		require.NotContains(t, string(encoded), `persisted_instance_ops_job`)
+		require.NotContains(t, string(encoded), `persisted_instance_ops_agent`)
 	}
 }
 
 func TestPersistedInstanceOpsAgentRoundTripsWithoutTranscriptOrAuthorization(t *testing.T) {
 	state := SessionState{
-		SchemaVersion: SessionStateSchemaV10,
+		SchemaVersion: SessionStateSchemaCurrent,
 		PersistedInstanceOpsAgent: PersistedInstanceOpsAgentSession{
 			InstanceID:         "uhost-a",
 			SessionID:          "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5",
@@ -298,7 +309,7 @@ func TestPersistedInstanceOpsAgentRoundTripsWithoutTranscriptOrAuthorization(t *
 	assert.Equal(t, state, parsed.AgentSessionState)
 }
 
-func TestSetSessionStateNormalizesConversationBoundAgentCursorOnlyForV10(t *testing.T) {
+func TestSetSessionStateNormalizesAgentCursorOnlyForTheCurrentSchema(t *testing.T) {
 	agent := PersistedInstanceOpsAgentSession{
 		InstanceID:         " uhost-a ",
 		SessionID:          "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5",
@@ -309,13 +320,13 @@ func TestSetSessionStateNormalizesConversationBoundAgentCursorOnlyForV10(t *test
 		UpdatedAt:          "2026-08-26T12:00:00Z",
 	}
 	e := newEngineForSessionStateTest(t)
-	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV10, PersistedInstanceOpsAgent: agent}, 1)
+	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent, PersistedInstanceOpsAgent: agent}, 1)
 	state, _, _ := e.SessionStateSnapshot()
 	assert.Equal(t, "uhost-a", state.PersistedInstanceOpsAgent.InstanceID)
 	assert.Equal(t, "gpt-5.6-terra", state.PersistedInstanceOpsAgent.Model)
 
-	e.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV9, PersistedInstanceOpsAgent: agent}, 2)
+	e.SetSessionState(SessionState{SchemaVersion: "10.0", PersistedInstanceOpsAgent: agent}, 2)
 	state, _, _ = e.SessionStateSnapshot()
 	assert.True(t, state.PersistedInstanceOpsAgent.IsZero(),
-		"a v9 cursor has no conversation-anchor contract and cannot gain v10 semantics")
+		"a cursor written by an earlier schema is bound to another contract")
 }

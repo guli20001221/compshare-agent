@@ -16,7 +16,7 @@ func TestRefreshSystemPrompt_InjectsSelectedInstance(t *testing.T) {
 	eng.InitWithContext("暂无用户信息")
 
 	eng.SetSessionState(SessionState{
-		SchemaVersion:        SessionStateSchemaV1,
+		SchemaVersion:        SessionStateSchemaCurrent,
 		SelectedInstanceID:   "uhost-abc123",
 		SelectedInstanceName: "my-gpu-box",
 	}, 1)
@@ -50,7 +50,7 @@ func TestRefreshSystemPrompt_IDOnlyWhenNameEmpty(t *testing.T) {
 	eng.InitWithContext("")
 
 	eng.SetSessionState(SessionState{
-		SchemaVersion:      SessionStateSchemaV1,
+		SchemaVersion:      SessionStateSchemaCurrent,
 		SelectedInstanceID: "uhost-xyz789",
 	}, 1)
 
@@ -67,7 +67,7 @@ func TestRefreshSystemPrompt_PreservesBaseUserContext(t *testing.T) {
 	eng.InitWithContext("您有 3 个实例（2 个运行中、1 个其他状态）")
 
 	eng.SetSessionState(SessionState{
-		SchemaVersion:        SessionStateSchemaV1,
+		SchemaVersion:        SessionStateSchemaCurrent,
 		SelectedInstanceID:   "uhost-111",
 		SelectedInstanceName: "train-node-1",
 	}, 1)
@@ -92,7 +92,7 @@ func TestRefreshSystemPrompt_ClearsStaleInstance(t *testing.T) {
 
 	// Turn 1: load a selected instance into SessionState.
 	eng.SetSessionState(SessionState{
-		SchemaVersion:        SessionStateSchemaV1,
+		SchemaVersion:        SessionStateSchemaCurrent,
 		SelectedInstanceID:   "uhost-stale",
 		SelectedInstanceName: "stale-box",
 	}, 1)
@@ -105,7 +105,7 @@ func TestRefreshSystemPrompt_ClearsStaleInstance(t *testing.T) {
 	// SetSessionState with empty instance — simulating a turn where the
 	// persisted state no longer has a selected instance.
 	eng.ClearSessionState()
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 2)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 2)
 	_, err = eng.ChatWithOptions(context.Background(), "turn2", noopStep, ChatOptions{})
 	require.NoError(t, err)
 	assert.NotContains(t, renderTestMessages(mock.calls[1].Messages), "uhost-stale",

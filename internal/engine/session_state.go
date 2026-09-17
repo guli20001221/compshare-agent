@@ -5,94 +5,28 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/compshare-agent/internal/knowledge"
 )
 
-// SessionStateSchemaV1 is the first persisted JSON schema version for SessionState.
-const SessionStateSchemaV1 = "1.0"
-
-// SessionStateSchemaV2 historically added a persisted context frame. The field is
-// now retired, but V2 rows remain readable so a later write can drop that unused
-// semantic sidecar without a migration.
-const SessionStateSchemaV2 = "2.0"
-
-// SessionStateSchemaV3 historically extended the retired context frame. It is
-// retained only as a recognized on-wire version for existing sessions.
-const SessionStateSchemaV3 = "3.0"
-
-// SessionStateSchemaV4 records the trust source for selected instances. Its old
-// workflow-slot fields are ignored; selection provenance remains live.
-const SessionStateSchemaV4 = "4.0"
-
-// SessionStateSchemaV5 added fields that are now retired plus explicit selection
-// freshness. V5 rows remain readable and unknown fields disappear on rewrite.
-const SessionStateSchemaV5 = "5.0"
-
-// SessionStateSchemaV6 persists bounded evidence from answers that passed the
-// semantic knowledge verifier. It lets a cold/restarted agent validate a short
-// follow-up against the same source instead of trusting arbitrary assistant text
-// or forcing another retrieval.
-const SessionStateSchemaV6 = "6.0"
-
-// SessionStateSchemaV7 retired older summary fields. Those fields are
-// deliberately ignored when old rows are decoded.
-const SessionStateSchemaV7 = "7.0"
-
-// SessionStateSchemaV8 persists one opaque in-instance background-job handle.
-// It deliberately stores no command or output: the handle is sufficient to poll
-// the reviewed guest job after an Engine rebuild, while the original operation
-// remains outside conversation/session persistence.
-const SessionStateSchemaV8 = "8.0"
-
-// SessionStateSchemaV9 adds one opaque Claude Agent SDK session cursor for the most recently used
-// SSH-ops target. The transcript remains in the SDK's existing ephemeral local store; PostgreSQL
-// receives only the UUID, target, contract/model binding and timestamp.
-const SessionStateSchemaV9 = "9.0"
-
-// SessionStateSchemaV10 binds the SDK cursor and its stable opaque workdir UUID to an opaque
-// digest of the outer conversation already bridged into that transcript. The digest contains no
-// conversation text and exists only to send subsequent turns as a delta. Each resume forks into a
-// new cursor, while WorkdirID keeps Claude's project/transcript lookup rooted in one private cwd.
-const SessionStateSchemaV10 = "10.0"
-
-// SessionStateSchemaV11 retains independent observation handles for multiple
-// background jobs. A long-lived service does not occupy the only repair slot.
-const SessionStateSchemaV11 = "11.0"
-
-const SessionStateSchemaCurrent = SessionStateSchemaV11
+// SessionStateSchemaCurrent is the persisted JSON schema version this binary
+// writes, as "<major>.<minor>". A row from an earlier version decodes through
+// the same struct: retired fields are ignored and disappear on the next write,
+// and the server-owned continuation cursors it may carry are dropped because
+// an earlier schema bound them to a different contract (SetSessionState). A row
+// from a later version is left untouched for the binary that wrote it.
+const SessionStateSchemaCurrent = "11.0"
 
 // ErrUnknownSessionStateSchema is returned by ParsePersistedContext when a
 // row looks like an agent envelope (top-level object with an
-// agent_session_state.schema_version string) but the version is not in
-// knownSessionStateSchemaVersions. Callers (handleChat) MUST treat this
-// like a parse failure: continue the chat turn but skip persistence so
-// the row is left untouched for a binary version that recognizes it. See
+// agent_session_state.schema_version string) but the version is newer than
+// SessionStateSchemaCurrent or not a version at all. Callers (handleChat) MUST
+// treat this like a parse failure: continue the chat turn but skip persistence
+// so the row is left untouched for a binary version that recognizes it. See
 // ParsePersistedContext for the compatibility rationale.
 var ErrUnknownSessionStateSchema = errors.New("engine: unknown SessionState schema_version")
-
-// knownSessionStateSchemaVersions enumerates every schema_version string
-// this binary recognizes as an agent-owned envelope. Probing for any of
-// these inside agent_session_state.schema_version is what distinguishes a
-// true envelope from a legacy client blob that happens to carry the
-// same top-level key.
-//
-// When bumping SessionStateSchemaV1 to a new version, append the new
-// constant here. Removing an entry is a breaking change to the on-wire
-// envelope detection — be very explicit if you do it.
-var knownSessionStateSchemaVersions = map[string]struct{}{
-	SessionStateSchemaV1:  {},
-	SessionStateSchemaV2:  {},
-	SessionStateSchemaV3:  {},
-	SessionStateSchemaV4:  {},
-	SessionStateSchemaV5:  {},
-	SessionStateSchemaV6:  {},
-	SessionStateSchemaV7:  {},
-	SessionStateSchemaV8:  {},
-	SessionStateSchemaV9:  {},
-	SessionStateSchemaV10: {},
-	SessionStateSchemaV11: {},
-}
 
 // SessionState is the per-session, JSON-serializable, multi-replica-safe
 // snapshot of agent-level dialog state. It MUST be fully round-trip-able:
@@ -194,29 +128,6 @@ func (s SessionState) MarshalJSON() ([]byte, error) {
 	return json.Marshal(alias(s))
 }
 
-// UnmarshalJSON upgrades the old single-job field without retaining two
-// producers of active-job state. Only versions that actually owned that field
-// may contribute a legacy handle; client version-0 authority is checked during
-// SetSessionState as before.
-func (s *SessionState) UnmarshalJSON(data []byte) error {
-	type alias SessionState
-	var wire struct {
-		alias
-		LegacyJob PersistedInstanceOpsJob `json:"persisted_instance_ops_job"`
-	}
-	if err := json.Unmarshal(data, &wire); err != nil {
-		return err
-	}
-	*s = SessionState(wire.alias)
-	if s.SchemaVersion == SessionStateSchemaV8 || s.SchemaVersion == SessionStateSchemaV9 || s.SchemaVersion == SessionStateSchemaV10 {
-		s.PersistedInstanceOpsJobs = nil
-		if job := normalizePersistedInstanceOpsJob(wire.LegacyJob); !job.IsZero() {
-			s.PersistedInstanceOpsJobs = []PersistedInstanceOpsJob{job}
-		}
-	}
-	return nil
-}
-
 // PersistedContext is the on-wire shape stored in sessions.context. It
 // exists to preserve the public CreateCSAgentSession Context API param —
 // clients may write an arbitrary JSON blob via that param, and the agent
@@ -228,12 +139,12 @@ func (s *SessionState) UnmarshalJSON(data []byte) error {
 //     PersistedContext with no error.
 //  2. Known envelope:                  top-level object with
 //     agent_session_state.schema_version
-//     in knownSessionStateSchemaVersions.
+//     at or below SessionStateSchemaCurrent.
 //     Decoded as the real envelope.
 //  3. Unknown envelope version:        top-level object with
 //     agent_session_state.schema_version
-//     string, but the version is not
-//     recognized by this binary. Returns
+//     string, but newer than this binary
+//     or not a version. Returns
 //     ErrUnknownSessionStateSchema so
 //     the caller skips persistence and
 //     the row is left untouched for a
@@ -324,10 +235,43 @@ func classifyEnvelope(probe any) envelopeKind {
 	if !ok {
 		return envelopeKindLegacy
 	}
-	if _, known := knownSessionStateSchemaVersions[ver]; known {
+	if schemaVersionReadable(ver) {
 		return envelopeKindKnown
 	}
 	return envelopeKindUnknownVersion
+}
+
+// schemaVersionReadable reports whether ver is a "<major>.<minor>" version this
+// binary may read: 1.0 up to and including SessionStateSchemaCurrent. Anything
+// newer, or not of that shape, belongs to another binary.
+func schemaVersionReadable(ver string) bool {
+	major, minor, ok := parseSchemaVersion(ver)
+	if !ok || major < 1 {
+		return false
+	}
+	currentMajor, currentMinor, _ := parseSchemaVersion(SessionStateSchemaCurrent)
+	return major < currentMajor || (major == currentMajor && minor <= currentMinor)
+}
+
+func parseSchemaVersion(ver string) (major, minor int, ok bool) {
+	majorText, minorText, found := strings.Cut(ver, ".")
+	if !found {
+		return 0, 0, false
+	}
+	parse := func(text string) (int, bool) {
+		if text == "" || strings.TrimLeft(text, "0123456789") != "" {
+			return 0, false
+		}
+		n, err := strconv.Atoi(text)
+		return n, err == nil
+	}
+	if major, ok = parse(majorText); !ok {
+		return 0, 0, false
+	}
+	if minor, ok = parse(minorText); !ok {
+		return 0, 0, false
+	}
+	return major, minor, true
 }
 
 // extractAgentSchemaVersion returns (version, true) only when probe is an

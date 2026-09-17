@@ -470,7 +470,7 @@ func TestBackgroundJobPurposeIsWhitespaceCollapsedAndRuneBounded(t *testing.T) {
 func TestBackgroundJobRoundTripsAcrossEngineRebuildWithoutCommand(t *testing.T) {
 	jobID := "job-" + strings.Repeat("c", 32)
 	hot := &Engine{sessionStateHydrated: true, sessionStateVersion: 7,
-		sessionState: SessionState{SchemaVersion: SessionStateSchemaV7}}
+		sessionState: SessionState{SchemaVersion: SessionStateSchemaCurrent}}
 	hot.observeInstanceOpsBackgroundJob("uhost-1", jobID, "running", "下载 token=example-value\n  模型权重")
 	state, version, hydrated := hot.SessionStateSnapshot()
 	require.True(t, hydrated)

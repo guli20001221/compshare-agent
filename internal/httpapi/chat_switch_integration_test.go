@@ -86,7 +86,7 @@ func TestChatSwitchSessions_CarriesCorrectContext_Integration(t *testing.T) {
 	envelope := func(instanceID string) json.RawMessage {
 		raw, mErr := json.Marshal(engine.PersistedContext{
 			AgentSessionState: engine.SessionState{
-				SchemaVersion:      engine.SessionStateSchemaV1,
+				SchemaVersion:      engine.SessionStateSchemaCurrent,
 				SelectedInstanceID: instanceID,
 			},
 		})

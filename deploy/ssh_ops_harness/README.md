@@ -105,8 +105,8 @@ SDK 的 ResultMessage 聚合 token、缓存 token、轮数和 API 耗时挂在�
 `HOME` 卷下的 `.claude/projects`，并通过 `cleanupPeriodDays: 1` 使用 CLI 支持的最短自动清理周期。
 这两个目录都必须对部署私有，并只保证同一 Pod 内的容器重启续接；需要监控 512 MiB `agent-home`
 卷的使用量，Pod 重建会清空两者并安全降级为新会话。
-PostgreSQL 的 SessionState V11 保存会话 UUID、稳定工作目录 UUID、实例 ID、契约/模型、conversation anchor、时间，
-以及未结束后台任务的 opaque ID、生命周期和用途描述，不保存命令或输出；V8–V10 的旧单任务字段在读取时迁移。
+PostgreSQL 的 SessionState 保存会话 UUID、稳定工作目录 UUID、实例 ID、契约/模型、conversation anchor、时间，
+以及未结束后台任务的 opaque ID、生命周期和用途描述，不保存命令或输出；早于当前 schema 的行读出来时不带这些续接游标。
 换实例、契约/模型变化、本地记录缺失或 Pod 被重建时都会诚实地开始新会话；墙钟时间本身不会切断同一会话的续接。
 当前 Agent session contract v10 绑定原生 Claude Code preset、远端工具和含已完成工具观察的上下文契约，不注入额外 Stop hook，并保存一枚 64 个小写十六进制字符的 SHA-256 conversation anchor，只表示 inner SDK 已经收到外层对话到哪个位置；
 它不含对话文本。Go 始终在私有握手里发送完整的有界快照和已送达前缀长度；harness 仅在本地 SDK
