@@ -83,8 +83,11 @@ There is no keyword topic router or lexical jailbreak/off-topic pre-block in
 front of the Agent. Scope belongs in the system prompt. Natural-language support
 requests also reach the central Agent, which may call `HandoffToCustomerSupport`;
 the active channel renders the actual support entry, so the model never authors
-QR codes or adapter markers. Only an explicit structured transport event may
-bypass semantic interpretation.
+QR codes or adapter markers. A handoff never replaces evidence the turn already
+gathered: when other tools ran in the turn, the Agent writes its answer and the
+channel appends the entry after it; a handoff that is the turn's only call is
+delivered at once. Only an explicit structured transport event may bypass
+semantic interpretation.
 
 Model-visible read capabilities live in `internal/capability/`. Each capability
 owns its typed request, schema contract, handler and renderer. Do not recreate a

@@ -201,6 +201,12 @@ type turnState struct {
 	// (see deliverVerbatim) without ending the turn. Accumulated as tools
 	// return it and composed in front of the Agent's reply at the turn exit.
 	verbatimBlocksThisTurn []string
+	// customerSupportEntryThisTurn is the channel's support entry (Web QR text or
+	// the Feishu adapter marker) that HandoffToCustomerSupport asked for while the
+	// turn still had evidence to narrate. It is composed after the Agent's reply
+	// at the turn exit, so a handoff never replaces what the tools already found.
+	// Empty when no handoff was deferred this turn.
+	customerSupportEntryThisTurn string
 }
 
 // newTurnState is the turn's only initializer. The non-zero values here are the

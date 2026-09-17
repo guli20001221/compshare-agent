@@ -64,12 +64,13 @@ func (e *Engine) finalizeHostTerminalResponse(draft string) string {
 func (e *Engine) finishResponseDelivery(content string) string {
 	if strings.TrimSpace(content) == "" {
 		// A turn that already handed the user a verbatim block (the billing card,
-		// see deliverVerbatim) is NOT an empty turn — the block is the answer and
-		// the Agent correctly had nothing to add. Without this, "本次没有生成有效回复"
-		// would be appended underneath a complete answer, which is why the Agent
-		// padded with generic prose instead of stopping: silence was not a legal
-		// outcome. The caller composes the block, so returning "" yields the card alone.
-		if len(e.verbatimBlocksThisTurn) > 0 {
+		// see deliverVerbatim) or deferred a support entry is NOT an empty turn —
+		// the engine-owned text is the answer and the Agent correctly had nothing
+		// to add. Without this, "本次没有生成有效回复" would be appended underneath a
+		// complete answer, which is why the Agent padded with generic prose instead
+		// of stopping: silence was not a legal outcome. The caller composes the
+		// engine-owned text, so returning "" yields it alone.
+		if len(e.verbatimBlocksThisTurn) > 0 || e.customerSupportEntryThisTurn != "" {
 			return ""
 		}
 		content = emptyReplyFallbackMessage

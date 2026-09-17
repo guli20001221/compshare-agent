@@ -1393,9 +1393,50 @@ func TestDeterministicFinalAfterVerbatimBlockStreamsExactlyAsPersisted(t *testin
 	mock := &streamingScriptedLLM{responses: []llm.ChatResponse{{
 		ToolCalls: []openai.ToolCall{
 			toolCall("tc1", "DiagnoseBilling", `{"UHostId":"uhost-bill-001"}`),
-			toolCall("tc2", tools.CustomerSupportHandoffName, `{}`),
+			toolCall("tc2", "RequestStopInstance", `{"UHostId":"uhost-bill-001"}`),
 		},
 	}}}
+	executor := billingStreamExecutor()
+	executor.results["DescribeCompShareInstance"]["UHostSet"].([]any)[0].(map[string]any)["Zone"] = "cn-wlcb-01"
+	executor.results["DescribeCompShareSupportZone"] = map[string]any{
+		"ZoneInfo": []any{map[string]any{"Zone": "cn-wlcb-01", "Region": "cn-wlcb"}},
+	}
+	eng := NewWithDeps(mock, executor, nil)
+	eng.SetMutatingToolsEnabled(true)
+	eng.messages = []openai.ChatCompletionMessage{
+		{Role: openai.ChatMessageRoleSystem, Content: "test"},
+	}
+
+	var deltas []string
+	reply, err := eng.ChatWithOptions(context.Background(), "核验费用后关机", noopStep, ChatOptions{
+		OnTextDelta: func(d string) { deltas = append(deltas, d) },
+		ConfirmResultFunc: func(string, map[string]any) ConfirmationResult {
+			return ConfirmationResult{TerminalReason: observability.ConfirmationReasonUserDeclined}
+		},
+	})
+	require.NoError(t, err)
+	require.Len(t, eng.verbatimBlocksThisTurn, 1)
+	require.NotContains(t, executor.calls, "StopCompShareInstance")
+
+	expected := eng.verbatimBlocksThisTurn[0] + verbatimBlockSeparator + notExecutedReply("StopInstanceWorkflow", observability.ConfirmationReasonUserDeclined)
+	streamed := strings.Join(deltas, "")
+	assert.Equal(t, expected, reply)
+	assert.Equal(t, reply, streamed,
+		"a deterministic final must be emitted after an already-streamed verbatim block")
+}
+
+// A handoff batched with the billing card is deferred to the turn exit: the
+// card leads, the Agent's own answer follows, and the support entry closes the
+// reply — in the stream and in the persisted reply alike.
+func TestDeferredSupportEntryAfterVerbatimBlockStreamsExactlyAsPersisted(t *testing.T) {
+	const narration = "费用明细见上方卡片；退款需要人工核实。"
+	mock := &streamingScriptedLLM{responses: []llm.ChatResponse{
+		{ToolCalls: []openai.ToolCall{
+			toolCall("tc1", "DiagnoseBilling", `{"UHostId":"uhost-bill-001"}`),
+			toolCall("tc2", tools.CustomerSupportHandoffName, `{}`),
+		}},
+		{Content: narration},
+	}}
 	eng := NewWithDeps(mock, billingStreamExecutor(), nil)
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},
@@ -1407,12 +1448,14 @@ func TestDeterministicFinalAfterVerbatimBlockStreamsExactlyAsPersisted(t *testin
 	})
 	require.NoError(t, err)
 	require.Len(t, eng.verbatimBlocksThisTurn, 1)
+	require.Len(t, mock.calls, 2)
 
-	expected := eng.verbatimBlocksThisTurn[0] + verbatimBlockSeparator + refusal.HumanAgentTransfer
-	streamed := strings.Join(deltas, "")
+	expected := eng.verbatimBlocksThisTurn[0] + verbatimBlockSeparator + narration + verbatimBlockSeparator + refusal.HumanAgentTransfer
 	assert.Equal(t, expected, reply)
-	assert.Equal(t, reply, streamed,
-		"a deterministic final must be emitted after an already-streamed verbatim block")
+	assert.Equal(t, reply, strings.Join(deltas, ""),
+		"the appended support entry must be streamed exactly as it is persisted")
+	assert.Equal(t, narration, eng.messages[len(eng.messages)-1].Content,
+		"model history keeps the Agent's answer, never the channel renderer")
 }
 
 func TestVerbatimBlockSurvivesALaterModelFailure(t *testing.T) {

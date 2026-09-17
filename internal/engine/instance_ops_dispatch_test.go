@@ -377,7 +377,7 @@ func TestInstanceOps_AgentFailureStatusNeverComesFromTextOrUnknownClass(t *testi
 func TestInstanceOpsAgentFailureCodeIsClosed(t *testing.T) {
 	for _, class := range []string{
 		"authentication_failed", "billing_error", "rate_limit", "invalid_request", "server_error",
-		"unknown", "model_error", "max_turns", "sdk_timeout", "sdk_error", "no_progress",
+		"unknown", "model_error", "max_turns", "sdk_timeout", "sdk_error", "no_progress", "empty_result",
 	} {
 		require.Equal(t, "SSH_AGENT_"+strings.ToUpper(class), instanceOpsAgentFailureCode(class))
 	}

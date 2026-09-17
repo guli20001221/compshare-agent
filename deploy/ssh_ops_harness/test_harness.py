@@ -2922,6 +2922,78 @@ check("provider-error-after-work-has-an-error-outcome-with-context-receipt",
           '"context_applied":true', '"context_applied": true'))
 
 
+# Production 2026-09-17: seven runs where the upstream answered the inner model with an empty 200.
+# The SDK ends cleanly — an assistant message with no text, then is_error=false, num_turns=2,
+# output_tokens=0 and an empty result — so nothing downstream distinguished it from a diagnosis,
+# the audit called the run `ok`, and the parent Agent handed the user the placeholder as the
+# conclusion. An empty completion is a runner failure with its own closed class.
+async def _empty_completion_query(prompt, options):
+    del prompt, options
+    assistant = type("AssistantMessage", (), {})()
+    assistant.error = None
+    assistant.content = []
+    yield assistant
+    result = type("ResultMessage", (), {})()
+    result.result = ""
+    result.is_error = False
+    result.num_turns = 2
+    result.subtype = "success"
+    result.usage = {"input_tokens": 3100, "output_tokens": 0, "cache_read_input_tokens": 0}
+    yield result
+
+
+_saved_empty_query = _fake_sdk.query
+_saved_stdin, _saved_conn, _saved_preflight = sys.stdin, harness._CONN, harness.preflight_probe
+_saved_stage, _saved_options = harness.stage_clean_workdir, harness.build_options
+_saved_audit = list(harness.AUDIT)
+try:
+    _fake_sdk.query = _empty_completion_query
+    sys.modules["claude_agent_sdk"] = _fake_sdk
+    harness.stage_clean_workdir = lambda: None
+    harness.preflight_probe = lambda _conn: None
+    harness.build_options = lambda *_args, **_kwargs: object()
+    harness.AUDIT[:] = []
+    sys.stdin = _io.StringIO(_json.dumps({
+        "host": "10.0.0.9", "user": "root", "port": 22,
+        "password": "empty-result-password", "task": "diagnose service",
+        "context": _reference_context,
+    }) + "\n")
+    _empty_completion_wire = _capture(lambda: _asyncio.run(harness.main()))
+finally:
+    _fake_sdk.query = _saved_empty_query
+    sys.stdin = _saved_stdin
+    harness._CONN = _saved_conn
+    harness.preflight_probe = _saved_preflight
+    harness.stage_clean_workdir = _saved_stage
+    harness.build_options = _saved_options
+    harness.AUDIT[:] = _saved_audit
+    if _saved_sdk is None:
+        sys.modules.pop("claude_agent_sdk", None)
+    else:
+        sys.modules["claude_agent_sdk"] = _saved_sdk
+
+_empty_completion_outcomes = [_json.loads(line[len("@@OUTCOME "):])
+                              for line in _empty_completion_wire.splitlines()
+                              if line.startswith("@@OUTCOME ")]
+check("empty-completion-is-a-bounded-agent-failure-not-a-conclusion",
+      len(_empty_completion_outcomes) == 1
+      and _empty_completion_outcomes[0]["outcome"] == "agent_failed"
+      and _empty_completion_outcomes[0]["err_class"] == "empty_result"
+      and _empty_completion_outcomes[0]["context_applied"] is True
+      and _empty_completion_outcomes[0]["agent_usage"] == {
+          "input_tokens": 3100, "output_tokens": 0, "cache_read_input_tokens": 0, "num_turns": 2})
+check("empty-completion-verdict-says-so-and-keeps-the-retry-hint",
+      "<<<VERDICT>>>" in _empty_completion_wire
+      and "模型空响应" in _empty_completion_wire
+      and "可以直接重试" in _empty_completion_wire
+      and "尚未执行任何实例内命令" in _empty_completion_wire
+      and "未生成明确结论" not in _empty_completion_wire)
+# The contrast that pins the discriminator: the same clean end WITH a conclusion stays a success.
+check("clean-end-with-a-conclusion-still-completes",
+      '"outcome": ""' in _main_output.replace('"outcome":""', '"outcome": ""')
+      and "mocked contextual diagnosis" in _main_output)
+
+
 # Session continuity is acknowledged only after the same "real model event" gate as context. An
 # init event may reveal the SDK's ID, but auth can fail immediately after init, so init alone is not
 # a receipt. The sideband contains no cwd/instance/task and a mismatched SDK ID is never persisted.

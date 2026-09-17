@@ -965,14 +965,16 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 	// summarize or act on it. Drained here, at the top of the turn, so it can never fire on the same
 	// turn that stashed it (executeInstanceOps runs strictly later).
 	e.emitPendingInstanceOpsInterruption(onStep)
-	// Single composition site for verbatim blocks: every success path — normal
+	// Single composition site for engine-owned text: every success path — normal
 	// answer, deterministic reply, token-budget recovery, round-ceiling recovery —
 	// returns through this one function, so a block already streamed to the user
-	// can never be missing from the reply that gets persisted. Skipped on error, so
-	// a failed turn is never dressed up as a successful one.
+	// can never be missing from the reply that gets persisted, and a deferred
+	// support entry is always appended after the answer. Skipped on error, so a
+	// failed turn is never dressed up as a successful one.
 	defer func() {
 		if err == nil {
 			reply = e.composeWithVerbatimBlocks(reply)
+			reply = e.composeWithCustomerSupportEntry(reply, opts.OnTextDelta)
 		}
 	}()
 	// Tool proposals, confirmations and trace share this server-side turn ID.
@@ -1030,17 +1032,20 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 		e.directAnswerToolRetryPending = false
 		return agentruntime.Final(content, agentruntime.FinishFinalAnswer), true
 	}
-	finishVerbatimBlocksAfterFailure := func() (agentruntime.Result, bool) {
-		if len(e.verbatimBlocksThisTurn) == 0 {
+	finishEngineOwnedTextAfterFailure := func() (agentruntime.Result, bool) {
+		completion := e.engineOwnedHistoryCompletion()
+		if completion == "" {
 			return agentruntime.Result{}, false
 		}
-		// The block has already crossed the streaming boundary. Finish the
-		// replay pair with the same amount-free marker used by the ordinary
-		// card-only path; the deferred composer will persist exactly the blocks
-		// that were streamed without exposing their figures to model history.
+		// A block has already crossed the streaming boundary, and a deferred
+		// support entry is what the Agent decided before the model failed. Finish
+		// the replay pair with the same figure-free markers used by the ordinary
+		// engine-text-only path; the deferred composer will persist exactly the
+		// blocks that were streamed and append the entry, without exposing either
+		// to model history.
 		e.messages = append(e.messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleAssistant,
-			Content: verbatimBillingHistoryCompletion,
+			Content: completion,
 		})
 		content := e.finalizeHostTerminalResponse("")
 		emitTerminalText(content)
@@ -1221,26 +1226,27 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 				}
 			}
 			// An empty content here means the Agent deliberately added nothing after a
-			// verbatim block (finalizeResponse only returns "" in that case). Recording
-			// an empty assistant message would put a contentless turn into history for
-			// every later request; the block itself is intentionally NOT recorded, so the
-			// figures stay out of the model's context.
+			// verbatim block or a deferred support entry (finalizeResponse only returns
+			// "" in those cases). Recording an empty assistant message would put a
+			// contentless turn into history for every later request; the block and
+			// the entry are intentionally NOT recorded, so the figures and the channel
+			// renderer stay out of the model's context.
 			if content != "" {
 				e.messages = append(e.messages, openai.ChatCompletionMessage{
 					Role:    openai.ChatMessageRoleAssistant,
 					Content: content,
 				})
-			} else if len(e.verbatimBlocksThisTurn) > 0 {
-				// The displayed billing card intentionally is not an assistant history
-				// message: its amounts belong to the server-rendered UI, not to the
-				// model. Still finish the MODEL'S exchange with a short amount-free
-				// marker. Without it, a pure billing turn ends on a tool result, cannot
-				// become a complete replay pair, and hot/cold recovery diverges.
-				// This is internal context only; composeWithVerbatimBlocks still returns
-				// exactly the card and no extra user-visible prose.
+			} else if completion := e.engineOwnedHistoryCompletion(); completion != "" {
+				// The displayed card or entry intentionally is not an assistant history
+				// message: the amounts and the renderer belong to the server-rendered
+				// UI, not to the model. Still finish the MODEL'S exchange with a short
+				// marker. Without it, such a turn ends on a tool result, cannot become
+				// a complete replay pair, and hot/cold recovery diverges. This is
+				// internal context only; the deferred composer still returns exactly
+				// the engine-owned text and no extra user-visible prose.
 				e.messages = append(e.messages, openai.ChatCompletionMessage{
 					Role:    openai.ChatMessageRoleAssistant,
-					Content: verbatimBillingHistoryCompletion,
+					Content: completion,
 				})
 			}
 			return agentruntime.Final(content, agentruntime.FinishFinalAnswer), nil
@@ -1265,7 +1271,7 @@ func (e *Engine) ChatWithOptions(ctx context.Context, userMsg string, onStep fun
 			e.runtimeFinishReasonThisTurn = result.Reason
 			return result.Reply, nil
 		}
-		if result, ok := finishVerbatimBlocksAfterFailure(); ok {
+		if result, ok := finishEngineOwnedTextAfterFailure(); ok {
 			e.runtimeFinishReasonThisTurn = result.Reason
 			return result.Reply, nil
 		}
@@ -1745,6 +1751,77 @@ func (e *Engine) composeWithVerbatimBlocks(reply string) string {
 // same turn reads as one run-on paragraph live and two paragraphs after a reload.
 const verbatimBlockSeparator = "\n\n"
 
+// customerSupportHandoffObservation tells the model that the channel will attach
+// its support entry after this turn's answer, so the Agent writes the answer the
+// evidence supports and leaves the contact details to the channel.
+const customerSupportHandoffObservation = "渠道会在本轮回复末尾附上配置的客服联系入口；本次未返回备用入口或工单地址，未确认入口可用、人工接通或受理，也未创建工单。" +
+	"请直接用本轮已核实的信息作答；不要复述或编造联系方式、工单入口、排队或受理状态，也不要再调用本工具。"
+
+// customerSupportHandoffObservationPayload is the model-visible half of a
+// deferred support handoff: the tool result the Agent reads before writing the
+// answer the entry is appended to.
+func customerSupportHandoffObservationPayload() string {
+	return fmt.Sprintf(`{"observation":%q,"support_entry_appended_to_reply":true}`, customerSupportHandoffObservation)
+}
+
+// turnCalledOtherTools reports whether the current turn's transcript carries a
+// model tool call other than action. The assistant message that carries a batch
+// is appended before its calls execute, so batch-mates count whether they ran
+// before or after action.
+func (e *Engine) turnCalledOtherTools(action string) bool {
+	start := currentTurnStart(e.messages)
+	if start < 0 {
+		return false
+	}
+	for _, message := range e.messages[start:] {
+		for _, call := range message.ToolCalls {
+			if call.Function.Name != action {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// composeWithCustomerSupportEntry puts the deferred support entry after the
+// Agent's reply. It runs at the same single turn exit as the verbatim blocks, so
+// no success path — final answer, deterministic reply, budget or ceiling
+// recovery — can drop the entry the Agent asked for. Every reply path has
+// already streamed its own text by then, so the appended part is streamed here
+// and the stream ends exactly as the persisted reply does.
+func (e *Engine) composeWithCustomerSupportEntry(reply string, emitDelta func(string)) string {
+	if e == nil || e.customerSupportEntryThisTurn == "" {
+		return reply
+	}
+	entry := e.customerSupportEntryThisTurn
+	if strings.TrimSpace(reply) == "" {
+		if emitDelta != nil {
+			emitDelta(entry)
+		}
+		return entry
+	}
+	if emitDelta != nil {
+		emitDelta(verbatimBlockSeparator + entry)
+	}
+	return reply + verbatimBlockSeparator + entry
+}
+
+// engineOwnedHistoryCompletion closes the model's exchange for a turn whose
+// user-visible reply is engine-owned text only — a verbatim card, the deferred
+// support entry, or both — and the Agent added no prose. The user already has
+// that text; the model keeps a marker saying what was delivered without
+// repeating it. Empty when the turn delivered no engine-owned text.
+func (e *Engine) engineOwnedHistoryCompletion() string {
+	var parts []string
+	if len(e.verbatimBlocksThisTurn) > 0 {
+		parts = append(parts, verbatimBillingHistoryCompletion)
+	}
+	if e.customerSupportEntryThisTurn != "" {
+		parts = append(parts, agentprotocol.CustomerSupportHistoryCompletion)
+	}
+	return strings.Join(parts, "\n")
+}
+
 func (e *Engine) executeTool(ctx context.Context, tc openai.ToolCall, onStep func(StepEvent)) toolOutcome {
 	action := tc.Function.Name
 	if e.knowledgeOnlyThisTurn && !knowledgeOnlyToolAllowed(action) {
@@ -1862,6 +1939,19 @@ func (e *Engine) executeToolOnce(ctx context.Context, tc openai.ToolCall, onStep
 		// The active channel receives a QR or a private adapter marker. Model
 		// history keeps only the semantic outcome, so neither renderer can be
 		// copied into a later answer without another tool call.
+		//
+		// A turn that already called other tools has evidence only the Agent can
+		// narrate, so the entry is composed after its answer at the turn exit
+		// instead of ending the turn here. A handoff that is the turn's only call
+		// has nothing to narrate and is delivered at once, without a model round.
+		// One entry per turn: a repeated call re-sets the same entry and returns
+		// the same observation. The tool stays in the window on purpose — removing
+		// it would change the serialized prefix and cost the closing call its
+		// prompt cache.
+		if e.turnCalledOtherTools(action) {
+			e.customerSupportEntryThisTurn = reply
+			return observed(customerSupportHandoffObservationPayload())
+		}
 		return toolOutcome{
 			Observation: agentprotocol.CustomerSupportHistoryCompletion,
 			Reply:       reply,
