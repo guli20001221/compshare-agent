@@ -8,7 +8,4 @@ import "github.com/compshare-agent/internal/knowledge"
 const (
 	weakEvidenceBM25Threshold     = knowledge.WeakEvidenceBM25Threshold
 	weakEvidenceSemanticThreshold = knowledge.WeakEvidenceSemanticThreshold
-
-	rankingAmbiguousBM25Spread     = 5.0
-	rankingAmbiguousSemanticSpread = 0.05
 )

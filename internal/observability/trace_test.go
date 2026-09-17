@@ -136,8 +136,7 @@ func TestRetrievalTraceV03FieldsMarshal(t *testing.T) {
 			{ChunkID: "w0-init_failure-error-code-a1b2c3d4", Score: 0.78, Kept: true},
 			{ChunkID: "w0-billing_rule-arrears-aabbccdd", Score: 0.41, Kept: false},
 		},
-		RefusedReason:        "weak_evidence",
-		WeakEvidence:         true,
+		FloorDroppedAll:      true,
 		HybridMode:           "bm25_fallback",
 		HybridFallbackReason: "embedding_timeout",
 		EmbeddingLatencyMS:   int64Ptr(4987),
@@ -175,8 +174,7 @@ func TestRetrievalTraceV03FieldsMarshal(t *testing.T) {
 		`"query_normalized":"实例 初始化失败"`,
 		`"hits":2`,
 		`"hit_items":[{"chunk_id":"w0-init_failure-error-code-a1b2c3d4","score":0.78,"kept":true},{"chunk_id":"w0-billing_rule-arrears-aabbccdd","score":0.41,"kept":false}]`,
-		`"refused_reason":"weak_evidence"`,
-		`"weak_evidence":true`,
+		`"floor_dropped_all":true`,
 		`"hybrid_mode":"bm25_fallback"`,
 		`"hybrid_fallback_reason":"embedding_timeout"`,
 		`"embedding_latency_ms":4987`,
@@ -340,9 +338,8 @@ func TestRetrievalTraceNewFieldsMarkBlockObserved(t *testing.T) {
 		{name: "activities", trace: RetrievalTrace{Activities: []RetrievalActivity{{ID: "search_1", Query: "扣费规则", Hits: 1}}}},
 		{name: "references", trace: RetrievalTrace{References: []RetrievalReference{{RefID: "1", ChunkID: "w0-billing_rule-aabbccdd", Title: "计费规则"}}}},
 		{name: "cited refs", trace: RetrievalTrace{CitedRefs: []RetrievalCitedRef{{RefID: "1", ChunkID: "w0-billing_rule-aabbccdd"}}}},
-		{name: "refused reason", trace: RetrievalTrace{RefusedReason: "no_evidence"}},
-		{name: "weak evidence", trace: RetrievalTrace{WeakEvidence: true}},
-		{name: "ranking error candidate", trace: RetrievalTrace{RankingErrorCandidate: true}},
+		{name: "floor dropped all", trace: RetrievalTrace{FloorDroppedAll: true}},
+		{name: "floor value", trace: RetrievalTrace{FloorValue: 0.5}},
 	}
 
 	for _, tc := range cases {
@@ -386,34 +383,6 @@ func TestRetrievalTraceDefaultsKeepSlicesIterable(t *testing.T) {
 	if len(record.Retrieval.HitItems) != 0 || len(record.Retrieval.Activities) != 0 || len(record.Retrieval.References) != 0 ||
 		len(record.Retrieval.CitedRefs) != 0 {
 		t.Fatalf("retrieval defaults should be empty: %#v", record.Retrieval)
-	}
-}
-
-func TestWriterMirrorsRankingErrorCandidates(t *testing.T) {
-	now := time.Date(2026, 5, 15, 8, 0, 0, 0, time.UTC)
-	writer, err := NewWriter(WriterOptions{Dir: t.TempDir(), Now: func() time.Time { return now }})
-	if err != nil {
-		t.Fatalf("NewWriter: %v", err)
-	}
-
-	err = writer.Append(TraceRecord{
-		TraceID:     "trace-ranking",
-		TurnID:      "turn-1",
-		TurnIndex:   1,
-		UserMsgHash: "sha256:user",
-		Retrieval: RetrievalTrace{
-			Enabled:               true,
-			RankingErrorCandidate: true,
-			RefusedReason:         "retry_no_cite",
-		},
-	})
-	if err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-
-	line := readLines(t, filepath.Join(writer.Dir(), "2026-05-15", "ranking-error-candidates.jsonl"))[0]
-	if !strings.Contains(line, `"ranking_error_candidate":true`) || !strings.Contains(line, `"retry_no_cite"`) {
-		t.Fatalf("ranking-error mirror line = %s", line)
 	}
 }
 

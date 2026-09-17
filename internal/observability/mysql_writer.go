@@ -305,16 +305,15 @@ func (w *MySQLWriter) sweepExpired() {
 	}
 }
 
-// The INSERT column list: the order must match rowFromTrace (the first 12)
-// followed by promotedColumnValues (the 7 outcome columns from migration 0004).
+// The INSERT column list: the order must match rowFromTrace (the first 11)
+// followed by promotedColumnValues (the 4 outcome columns from migration 0004).
 const (
-	promotedInsertCols = "(request_uuid, top_organization_id, organization_id, connection_id, " +
-		"turn_index, created_at, status, intent, tool_count, cited_chunk_ids, " +
+	insertCols = "(request_uuid, top_organization_id, organization_id, connection_id, " +
+		"turn_index, created_at, status, tool_count, cited_chunk_ids, " +
 		"duration_ms, trace_json, " +
-		"terminated_by, abort_cause, error_class, resolution, route_status, " +
-		"refusal_type, resolution_source)"
+		"terminated_by, abort_cause, error_class, resolution_source)"
 
-	promotedColCount = 19
+	insertColCount = 15
 )
 
 func (w *MySQLWriter) insertBatch(batch []persistedTrace) (int, error) {
@@ -322,7 +321,7 @@ func (w *MySQLWriter) insertBatch(batch []persistedTrace) (int, error) {
 		return 0, nil
 	}
 	var placeholders strings.Builder
-	args := make([]any, 0, len(batch)*promotedColCount)
+	args := make([]any, 0, len(batch)*insertColCount)
 	n := 0 // running $N counter across the whole multi-row VALUES list
 	candidateCount := 0
 	for _, p := range batch {
@@ -367,7 +366,7 @@ func (w *MySQLWriter) insertBatch(batch []persistedTrace) (int, error) {
 	}
 	// ON CONFLICT DO NOTHING mirrors MySQL's INSERT IGNORE on the request_uuid
 	// unique key so retried enqueues don't fail loudly.
-	query := "INSERT INTO agent_traces " + promotedInsertCols + " VALUES " + placeholders.String() +
+	query := "INSERT INTO agent_traces " + insertCols + " VALUES " + placeholders.String() +
 		" ON CONFLICT (request_uuid) DO NOTHING"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -377,18 +376,15 @@ func (w *MySQLWriter) insertBatch(batch []persistedTrace) (int, error) {
 }
 
 // promotedColumnValues projects the 0004 outcome columns from a finalized
-// TraceRecord, in the same order promotedInsertCols lists them after trace_json.
-// Each empty axis becomes SQL NULL (an answered turn that did not refuse has
-// refusal_type = NULL, error_class = NULL), so a dashboard COUNT/GROUP BY over a
-// column counts only the turns where that axis actually fired.
+// TraceRecord, in the same order insertCols lists them after trace_json. Each
+// empty axis becomes SQL NULL (an answered turn that did not fail has
+// error_class = NULL), so a dashboard COUNT/GROUP BY over a column counts only
+// the turns where that axis actually fired.
 func promotedColumnValues(rec TraceRecord) []any {
 	return []any{
 		nullableStr(rec.Outcome.TerminatedBy),
 		nullableStr(rec.Outcome.AbortCause),
 		nullableStr(rec.Outcome.ErrorClass),
-		nullableStr(rec.Outcome.Resolution),
-		nil, // retired route_status column; retained in SQL for schema compatibility
-		nullableStr(rec.Retrieval.DeriveRefusalType()),
 		nullableStr(rec.State.ResolutionSource),
 	}
 }
@@ -402,7 +398,7 @@ func nullableStr(s string) any {
 	return s
 }
 
-// rowFromTrace projects a persistedTrace into the 12 column values for
+// rowFromTrace projects a persistedTrace into the 11 column values for
 // agent_traces. Defined as a free function so it stays trivially unit-
 // testable without a live DB.
 func rowFromTrace(p persistedTrace) ([]any, error) {
@@ -431,7 +427,6 @@ func rowFromTrace(p persistedTrace) ([]any, error) {
 		rec.TurnIndex,
 		createdAt,
 		statusFromTrace(rec),
-		"", // retired intent column; retained in SQL for schema compatibility
 		len(rec.ToolCalls),
 		citedJSON,
 		rec.Outcome.TotalLatencyMS,

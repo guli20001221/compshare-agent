@@ -215,7 +215,6 @@ func TestExecuteSearchKnowledge_RemoteUnavailableIsDistinctFromEmpty(t *testing.
 	require.Len(t, traces, 1)
 	assert.True(t, traces[0].Unavailable)
 	assert.Equal(t, "mcp_unavailable", traces[0].FailureReason)
-	assert.Empty(t, traces[0].RefusedReason)
 }
 
 func TestExecuteSearchKnowledge_RetryReportsItsOwnAvailability(t *testing.T) {

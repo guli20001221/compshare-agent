@@ -8,7 +8,7 @@ import "testing"
 // would erase the evidence-producing activity from the turn trace.
 func TestMergeRetrievalTrace(t *testing.T) {
 	hits := RetrievalTrace{Enabled: true, KBVersion: "kb.v1", Hits: 3}
-	empty := RetrievalTrace{Enabled: true, Hits: 0, RefusedReason: "no_evidence"}
+	empty := RetrievalTrace{Enabled: true, Hits: 0}
 	zero := RetrievalTrace{}
 
 	cases := []struct {
