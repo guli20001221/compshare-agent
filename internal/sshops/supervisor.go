@@ -52,12 +52,11 @@ type ConfirmRequest struct {
 
 // ConfirmDecision is the terminal result of a per-command confirmation card.
 //
-// A bool alone made three materially different outcomes indistinguishable: the user declined, the
-// card timed out, or the client disconnected. All must deny the write, but collapsing them caused a
-// timeout to be rendered as "you declined" in the activity stream. TerminalReason is the existing
-// transport-level closed-set spelling (user_declined | timeout | client_disconnect |
-// delivery_failed | broker_cancelled); an empty or unknown value deliberately degrades to the legacy
-// "no approval received" reason in the harness.
+// Approved alone cannot distinguish three outcomes that all deny the write: the user declined, the
+// card timed out, or the client disconnected — and a timeout must not be rendered as "you
+// declined" in the activity stream. TerminalReason is the transport-level closed-set spelling
+// (user_declined | timeout | client_disconnect | delivery_failed | broker_cancelled); an empty or
+// unknown value deliberately degrades to the generic "no approval received" reason in the harness.
 type ConfirmDecision struct {
 	Approved       bool
 	TerminalReason string

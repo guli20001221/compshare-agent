@@ -11,8 +11,8 @@ import (
 type AuditEvent struct {
 	RequestUUID string
 	// TurnID is the server-side turn identity. TaskHash binds the canonical tool-call
-	// ID, or Task for legacy callers without an ID. The existing UNIQUE key prevents
-	// replay of one invocation while allowing intentional follow-up calls in a turn.
+	// ID, or Task for callers without an ID. The UNIQUE key prevents replay of one
+	// invocation while allowing intentional follow-up calls in a turn.
 	TurnID            string
 	TaskHash          string
 	TopOrganizationID uint32

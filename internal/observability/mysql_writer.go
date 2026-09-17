@@ -38,12 +38,6 @@ type MySQLWriter struct {
 	flushPeriod   time.Duration
 	retentionDays int
 	logger        *log.Logger
-	// promotedColumns is true when agent_traces has the 0004 outcome columns
-	// (terminated_by, refusal_type, …). Probed once at startup. When false the
-	// writer falls back to the legacy 12-column INSERT so a new binary on a DB
-	// that has 0002 but not 0004 still ingests trace_json instead of failing
-	// every batch on an unknown-column error (the deploy-order must-fix).
-	promotedColumns bool
 
 	// Writer health is intentionally metadata-only. Trace delivery is best
 	// effort so it never delays an Agent reply; these counters make a degraded
@@ -136,35 +130,8 @@ func NewMySQLWriter(dsn string, opts MySQLWriterOptions) (*MySQLWriter, error) {
 		retentionDays: defaultIfZero(opts.RetentionDays, DefaultTraceRetentionDays),
 		logger:        defaultLogger(opts.Logger),
 	}
-	w.promotedColumns = detectPromotedColumns(db, w.logger)
 	go w.run()
 	return w, nil
-}
-
-// detectPromotedColumns probes once at startup whether agent_traces has the 0004
-// outcome columns. When false, insertBatch uses the legacy 12-column INSERT so a
-// new binary on a DB that has 0002 but not 0004 still ingests trace_json instead of
-// failing every batch on an unknown-column error (the deploy-order must-fix). Any
-// probe error is treated as "absent" — degrade safely, never block ingestion.
-func detectPromotedColumns(db *sql.DB, logger *log.Logger) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	var n int
-	err := db.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM information_schema.columns
-		   WHERE table_schema = current_schema()
-		     AND table_name = 'agent_traces'
-		     AND column_name = 'terminated_by'`).Scan(&n)
-	if err != nil {
-		logger.Printf("mysql_writer: promoted-column probe failed (%v); using legacy 12-column INSERT", err)
-		return false
-	}
-	if n == 0 {
-		logger.Printf("mysql_writer: agent_traces missing promoted columns (run migration 0004); writing trace_json only")
-		return false
-	}
-	logger.Printf("mysql_writer: agent_traces has promoted outcome columns; GROUP-BY columns enabled")
-	return true
 }
 
 // Append satisfies Writer for callers without tenant context. It is equivalent
@@ -284,9 +251,8 @@ func (w *MySQLWriter) run() {
 	}
 
 	// Retention sweep: agent_traces has no TTL of its own (the JSONL sink expires
-	// files via observability.Cleanup; the MySQL sink previously had no equivalent
-	// and grew unbounded). Sweep once at startup (mirrors the file sink's
-	// per-process cleanup) and then daily for the long-running server.
+	// files via observability.Cleanup). Sweep once at startup (mirrors the file
+	// sink's per-process cleanup) and then daily for the long-running server.
 	w.sweepExpired()
 	retentionTick := time.NewTicker(24 * time.Hour)
 	defer retentionTick.Stop()
@@ -339,15 +305,9 @@ func (w *MySQLWriter) sweepExpired() {
 	}
 }
 
-// Column lists + per-row placeholders for the two INSERT shapes. The legacy 12-
-// column form is the floor (always valid against a 0002 schema); the promoted form
-// appends the 0004 outcome columns AFTER trace_json — so the order here must match
-// rowFromTrace (base 12) followed by promotedColumnValues (the 7 extras).
+// The INSERT column list: the order must match rowFromTrace (the first 12)
+// followed by promotedColumnValues (the 7 outcome columns from migration 0004).
 const (
-	legacyInsertCols = "(request_uuid, top_organization_id, organization_id, connection_id, " +
-		"turn_index, created_at, status, intent, tool_count, cited_chunk_ids, " +
-		"duration_ms, trace_json)"
-
 	promotedInsertCols = "(request_uuid, top_organization_id, organization_id, connection_id, " +
 		"turn_index, created_at, status, intent, tool_count, cited_chunk_ids, " +
 		"duration_ms, trace_json, " +
@@ -360,10 +320,6 @@ const (
 func (w *MySQLWriter) insertBatch(batch []persistedTrace) (int, error) {
 	if len(batch) == 0 {
 		return 0, nil
-	}
-	cols := legacyInsertCols
-	if w.promotedColumns {
-		cols = promotedInsertCols
 	}
 	var placeholders strings.Builder
 	args := make([]any, 0, len(batch)*promotedColCount)
@@ -378,9 +334,7 @@ func (w *MySQLWriter) insertBatch(batch []persistedTrace) (int, error) {
 			continue
 		}
 		candidateCount++
-		if w.promotedColumns {
-			row = append(row, promotedColumnValues(p.record)...)
-		}
+		row = append(row, promotedColumnValues(p.record)...)
 		// Build this row's ($N,$N+1,...) group only after rowFromTrace succeeds, so a
 		// skipped (malformed) record never desyncs placeholders from args.
 		if placeholders.Len() > 0 {
@@ -413,7 +367,7 @@ func (w *MySQLWriter) insertBatch(batch []persistedTrace) (int, error) {
 	}
 	// ON CONFLICT DO NOTHING mirrors MySQL's INSERT IGNORE on the request_uuid
 	// unique key so retried enqueues don't fail loudly.
-	query := "INSERT INTO agent_traces " + cols + " VALUES " + placeholders.String() +
+	query := "INSERT INTO agent_traces " + promotedInsertCols + " VALUES " + placeholders.String() +
 		" ON CONFLICT (request_uuid) DO NOTHING"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -486,26 +440,17 @@ func rowFromTrace(p persistedTrace) ([]any, error) {
 }
 
 // statusFromTrace collapses the trace record's terminal state into the
-// agent_traces.status ENUM('success','blocked','error'). It now derives from the
-// finalized outcome.terminated_by axis (FinalizeOutcome), which fixes the empty
-// LLM reply hiding inside "success" while preserving the existing meanings of the
-// three values:
+// agent_traces.status ENUM('success','blocked','error'), from the finalized
+// outcome.terminated_by axis (FinalizeOutcome):
 //   - "blocked" = the engine deliberately stopped the turn: a hard-block,
-//     rate-limit denial, OR a budget cap (token budget / ReAct round ceiling — the
-//     token-budget path already reported "blocked" via its hard-block; the round
-//     ceiling previously leaked into "success", which this un-masks).
+//     rate-limit denial, or a budget cap (token budget / ReAct round ceiling).
 //   - "error"   = the turn failed to complete for a non-policy reason: an LLM
-//     error, timeout, empty reply (the dark-hole-within-the-dark-hole, previously
-//     "success"), or a client disconnect.
+//     error, timeout, empty reply, or a client disconnect.
 //   - "success" = the turn delivered a normal answer.
 //
-// The precise terminated_by / abort_cause live in trace_json for queryability;
-// when ops adds finer ENUM values (e.g. 'aborted') in Phase 1b, this collapse can
-// widen.
-//
-// Legacy fallback: a record that never ran FinalizeOutcome (TerminatedBy=="")
-// keeps the original trace-only inference, so older fixtures / un-finalized
-// records are unaffected.
+// The precise terminated_by / abort_cause live in their own columns and in
+// trace_json. A record that never ran FinalizeOutcome (TerminatedBy=="") is
+// classified from its hard-block and rate-limit facts alone.
 func statusFromTrace(rec TraceRecord) string {
 	switch rec.Outcome.TerminatedBy {
 	case TerminatedByBlocked, TerminatedByBudget:
@@ -516,7 +461,7 @@ func statusFromTrace(rec TraceRecord) string {
 		TerminatedByUserCancel:
 		return "error"
 	}
-	// Un-finalized record: original trace-only inference.
+	// Un-finalized record.
 	if rec.EngineHardBlock.Hit {
 		return "blocked"
 	}

@@ -298,7 +298,7 @@ func imageTypeFacetOptions(set imageCandidateSet) []ConfirmFormOption {
 //
 // Counting over afterType rather than the whole catalog is what makes every offered
 // tag reachable: a tag whose only images the type already excluded scores 0 and is
-// not offered, so the card can no longer produce an empty picker.
+// not offered, so the card cannot produce an empty picker.
 //
 // Returns nil (facet OMITTED — never a default, never a blocker) when no candidate
 // carries a tag: an absent tag facet must never exclude any image.
@@ -646,7 +646,7 @@ func buildGuidedImageTagForm(wfCtx *Context) (*ConfirmForm, error) {
 // user wants to do and stores the answer as ImageSource, so the following re-query
 // and filter step rebuild from the matching catalog.
 //
-// The card no longer asks "哪个来源" — see imageSourceFacetOptions. Each branch then
+// The card does not ask "哪个来源" — see imageSourceFacetOptions. Each branch then
 // gets the filter that fits its data, with no branch-specific code: community rows
 // all carry ImageType=Community so the type facet omits itself for lack of a
 // choice, and platform tags barely intersect the platform's 用途 classification so

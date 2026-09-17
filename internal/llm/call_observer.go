@@ -69,7 +69,7 @@ type OutboundCallResult struct {
 	CachedPromptTokens *int
 	// ToolCount and ToolWindowRunes describe the final tool array handed to the
 	// SDK for this exact attempt. Both remain explicit zeroes for a tool-free
-	// request so new traces distinguish that shape from legacy missing fields.
+	// request so the trace distinguishes that shape from a missing field.
 	ToolCount       int
 	ToolWindowRunes int
 	// ToolWindowHash is an order-sensitive SHA-256 of the serialized tool array.
@@ -86,10 +86,9 @@ type OutboundCallResultObserver func(OutboundCallResult)
 // protocol values this client recognizes. Trace is an aggregation boundary,
 // not a place to preserve a provider's arbitrary diagnostic string; new
 // non-empty spellings remain visible as "other" and still fail closed in
-// ChatResponse.OutputIncomplete. The "unspecified" mapping remains available
-// for legacy records and non-stream response producers; the streaming client
-// rejects a missing native reason before recording success. A failed attempt
-// carries no StopReason.
+// ChatResponse.OutputIncomplete. The "unspecified" mapping is for non-stream
+// response producers; the streaming client rejects a missing native reason
+// before recording success. A failed attempt carries no StopReason.
 func TraceFinishReason(reason string) string {
 	switch normalized := strings.ToLower(strings.TrimSpace(reason)); normalized {
 	// A standard JSON null decodes to the zero value of the SDK's string alias,

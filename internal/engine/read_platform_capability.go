@@ -266,8 +266,7 @@ func routeStatusForReadResult(r capability.ReadResult) platform.RouteStatus {
 		// the dispatched route status; the distinct read status carries the emptiness.
 		return platform.RouteStatusDispatched
 	case platform.ReadStatusConflict:
-		// Ambiguous request resolving to multiple candidates — mirror the legacy
-		// ambiguous-target fallback route status.
+		// Ambiguous request resolving to multiple candidates.
 		return platform.RouteStatusFallbackUnresolvedTarget
 	case platform.ReadStatusFailureAfterTool:
 		return platform.RouteStatusFailureAfterTool

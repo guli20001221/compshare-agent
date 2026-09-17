@@ -23,7 +23,7 @@ func TestRegistryWillNotSwearToWhatItHasNotSeen(t *testing.T) {
 		r := NewRegistry()
 		r.LastFullSync = synced
 		r.LastSyncEvent = string(SyncEventSyncRefresh)
-		r.Instances = map[string]InstanceSnapshot{"uhost-known": {UHostId: "uhost-known"}}
+		r.instances = map[string]InstanceSnapshot{"uhost-known": {UHostId: "uhost-known"}}
 		r.TotalCount = 20
 		r.Truncated = true
 
@@ -49,7 +49,7 @@ func TestRegistryWillNotSwearToWhatItHasNotSeen(t *testing.T) {
 		r := NewRegistry()
 		r.LastFullSync = synced
 		r.LastSyncEvent = string(SyncEventFailed)
-		r.Instances = map[string]InstanceSnapshot{"uhost-stale": {UHostId: "uhost-stale"}}
+		r.instances = map[string]InstanceSnapshot{"uhost-stale": {UHostId: "uhost-stale"}}
 		r.TotalCount = 1
 		assert.False(t, r.CanAssertAbsence(),
 			"the sync failed — this view may be arbitrarily stale")
@@ -66,7 +66,7 @@ func TestRegistryKeepsItsAuthorityWhenItHasActuallySeenTheAccount(t *testing.T) 
 		r := NewRegistry()
 		r.LastFullSync = synced
 		r.LastSyncEvent = string(SyncEventSyncRefresh)
-		r.Instances = map[string]InstanceSnapshot{
+		r.instances = map[string]InstanceSnapshot{
 			"uhost-a": {UHostId: "uhost-a"},
 			"uhost-b": {UHostId: "uhost-b"},
 		}
@@ -96,7 +96,7 @@ func TestSnapshotCarriesTheSameAuthorityRuleAsTheRegistry(t *testing.T) {
 	r := NewRegistry()
 	r.LastFullSync = time.Date(2026, 7, 12, 10, 0, 0, 0, time.UTC)
 	r.LastSyncEvent = string(SyncEventSyncRefresh)
-	r.Instances = map[string]InstanceSnapshot{"uhost-known": {UHostId: "uhost-known"}}
+	r.instances = map[string]InstanceSnapshot{"uhost-known": {UHostId: "uhost-known"}}
 	r.TotalCount = 20
 	r.Truncated = true
 

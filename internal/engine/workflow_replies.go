@@ -28,8 +28,8 @@ import (
 // resolver-produced resolvedProposal that is already gate-eligible
 // (ReadyForConfirmation, or ReadyForIntake for the guided form) — so no caller can
 // hand the workflow-execution entry a bare action name + args it invented. The
-// guarantee is a compile-time one: bare (action string, args map) can no longer
-// reach execution.
+// guarantee is a compile-time one: bare (action string, args map) cannot reach
+// execution.
 //
 // The human confirmation gate fires INSIDE executeResolvedWorkflow
 // (workflow.Engine.Run → confirmFn), so this carrier is pre-confirmation
@@ -317,8 +317,7 @@ func (e *Engine) executeResolvedWorkflow(ctx context.Context, act confirmableAct
 // convergence; mirrors operationSupportsGuidedIntake). Account/storage creation
 // workflows (create/CFS/net-optimizer) require no existing instance, so they have
 // no required instance-target field and derive false. On a catalog build error or
-// an unknown action it fails CLOSED (returns true → require target), preserving
-// the old switch's `default: true` fail-safe.
+// an unknown action it fails CLOSED (returns true → require target).
 func workflowRequiresInstanceTarget(action string) bool {
 	catalog, err := defaultActionCatalog()
 	if err != nil {
@@ -345,12 +344,10 @@ func deterministicWorkflowReply(action string, args map[string]any) (string, boo
 	case "RebootInstanceWorkflow":
 		return fmt.Sprintf("✅ 已为实例 %s 执行重启。", uhost), true
 	case "StartInstanceWorkflow":
-		mode := strings.ToLower(strings.TrimSpace(fmt.Sprint(args["StartMode"])))
-		legacySpec := strings.ToUpper(strings.TrimSpace(fmt.Sprint(args["WithoutGpuSpec"])))
-		switch {
-		case mode == "cpu_only_2c4g" || legacySpec == "A":
+		switch strings.ToLower(strings.TrimSpace(fmt.Sprint(args["StartMode"]))) {
+		case "cpu_only_2c4g":
 			return fmt.Sprintf("✅ 已将实例 %s 改为 2核/4GB 的 CPU-only 规格并执行开机，启动需要一点时间，请稍后查看。", uhost), true
-		case mode == "cpu_only_8c16g" || legacySpec == "B":
+		case "cpu_only_8c16g":
 			return fmt.Sprintf("✅ 已将实例 %s 改为 8核/16GB 的 CPU-only 规格并执行开机，启动需要一点时间，请稍后查看。", uhost), true
 		}
 		return fmt.Sprintf("✅ 已为实例 %s 执行开机，启动需要一点时间，请稍后查看。", uhost), true

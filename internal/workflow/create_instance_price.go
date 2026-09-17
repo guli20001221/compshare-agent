@@ -12,8 +12,8 @@ import "fmt"
 // price arrays.
 //
 // Upstream reports compute, disks and paid image as separate components. Disks
-// already includes SystemDisks, so the latter is used only as a compatibility
-// fallback when Disks is absent. Price is the legacy all-in fallback.
+// already includes SystemDisks, so the latter is used only as a fallback when
+// Disks is absent; Price is the all-in fallback.
 func priceAmountFor(raw map[string]any, arrKey, chargeType string) (float64, bool) {
 	arr, ok := raw[arrKey].([]any)
 	if !ok {

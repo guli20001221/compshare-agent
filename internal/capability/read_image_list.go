@@ -243,8 +243,8 @@ func renderImageListReply(raw map[string]any, listKey string, fieldOrder []strin
 		}
 		filtered = append(filtered, entry)
 	}
-	// "query + 0 matches" -> explicit not-found, do not silently fall
-	// through to the full list (that's what confused users in round 1 smoke).
+	// "query + 0 matches" -> explicit not-found; silently falling through to
+	// the full list reads as if the query had matched.
 	if query != "" && len(filtered) == 0 {
 		return noImageListNoMatchReply
 	}

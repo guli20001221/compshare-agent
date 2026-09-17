@@ -59,9 +59,7 @@ type FinishSignals struct {
 	// ChatErr is the error returned by Engine.Chat (nil on success). Drives the
 	// user_cancel / timeout / error terminuses via errors.Is.
 	ChatErr error
-	// ReplyEmpty is true when the turn ended with chatErr==nil and an empty reply
-	// (the "dark-hole-within-the-dark-hole": empty LLM streams that previously hid
-	// inside status="success").
+	// ReplyEmpty is true when the turn ended with chatErr==nil and an empty reply.
 	ReplyEmpty bool
 	// ReactRounds is the number of ReAct loop rounds entered this turn (zero for
 	// deterministic exits before the Agent loop).

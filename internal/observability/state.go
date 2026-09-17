@@ -40,8 +40,8 @@ type StateTrace struct {
 // distinguishing "user named an id this turn" / "planner resolved a ref mid-turn"
 // from the carried turn-start binding is genuinely ambiguous without a deeper
 // signal (the same tool that acts on a session-bound instance also fires the
-// mid-turn record), so v1 folds those into the turn-start source rather than
-// mis-stamp them. They are defined so the schema is complete and a later
+// mid-turn record), so they are folded into the turn-start source rather than
+// mis-stamped. They are defined so the schema is complete and a later
 // binding-source stamp can emit them without a schema change.
 const (
 	ResolutionSourceSessionState = "session_state"

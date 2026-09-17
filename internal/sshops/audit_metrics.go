@@ -5,11 +5,10 @@ import "strings"
 const auditFirstCommandNone = "none"
 
 // maxAuditStepCommandRunes bounds one persisted display command, MARKER INCLUDED — a stored command
-// is never longer than this, so the number can be stated without a footnote. The legacy confirmation
-// wire refuses anything over 300 chars (_MAX_CONFIRMABLE_COMMAND in guardrails.py), while the current
-// autonomous path has its own command cap; this bound exists so a pathological read cannot make the Finish
-// UPDATE large, and it is counted in RUNES rather than bytes because a CJK path would otherwise be
-// cut mid-character.
+// is never longer than this, so the number can be stated without a footnote. The harness has its
+// own command cap; this bound exists so a pathological read cannot make the Finish UPDATE large,
+// and it is counted in RUNES rather than bytes because a CJK path would otherwise be cut
+// mid-character.
 const maxAuditStepCommandRunes = 200
 
 // auditTruncationMarker is charged against that bound rather than appended past it. A cap that a

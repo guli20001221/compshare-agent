@@ -21,8 +21,7 @@ import (
 // them installed for the next turn, and a turn that supplies none must still
 // record the terminal state of the cards the session's own callback answers.
 //
-// Restores run in reverse installation order, matching the defer stack these
-// three used to register individually.
+// Restores run in reverse installation order.
 func (e *Engine) installTurnConfirmation(opts ChatOptions) func() {
 	var restores []func()
 

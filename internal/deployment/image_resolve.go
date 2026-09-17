@@ -7,11 +7,10 @@ import (
 )
 
 // ResolutionStatus and Provenance are TWO orthogonal dimensions of an image
-// resolution, kept separate on purpose (the recon's redline #4). Status answers
-// "could we resolve the request against the catalog"; Provenance answers "where did
-// the resolved value come from". Flattening them into one enum cannot express the
-// exact state the legacy catalogImageName path produced — a value that WAS returned
-// but was NOT catalog-verified — which is the defect this convergence removes.
+// resolution, kept separate on purpose. Status answers "could we resolve the
+// request against the catalog"; Provenance answers "where did the resolved value
+// come from". Flattening them into one enum could not express a value that was
+// returned but NOT catalog-verified, which is the state a create must never seal.
 type ResolutionStatus string
 
 const (

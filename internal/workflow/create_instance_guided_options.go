@@ -874,7 +874,7 @@ func parseGuidedSpecKey(key string) (zone string, gpu, cpu, memoryMB float64, er
 // TOTAL number of candidates those options are a page of. The total is returned
 // rather than inferred because the options are capped at maxGuidedImageOptions:
 // the caller states "共 N 个" from the same set the options came from, so the card
-// can no longer advertise a population it does not show.
+// cannot advertise a population it does not show.
 func guidedImageFamilyFormOptionsForContext(wfCtx *Context) (string, []ConfirmFormOption, int) {
 	if wfCtx == nil {
 		return "", nil, 0

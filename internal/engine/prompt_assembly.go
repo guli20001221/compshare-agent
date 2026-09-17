@@ -37,8 +37,7 @@ func (e *Engine) trimHistory() {
 // another is how a "source list" quietly becomes the narrower of the two.
 //
 // This is the sole history cut-point calculation. Keeping it separate from
-// assembly lets both paths account in the same units without another historical
-// compaction mode.
+// assembly lets both paths account in the same units.
 func rawHistoryCutPoint(messages []openai.ChatCompletionMessage, budgetRunes int) int {
 	if budgetRunes <= 0 || len(messages) <= 1 {
 		return -1

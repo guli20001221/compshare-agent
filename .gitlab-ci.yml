@@ -234,14 +234,10 @@ deploy:
       # and kube-proxy lag it by a second or two, and strategy: Recreate has
       # already removed the old Pod, so the ClusterIP briefly has no endpoint at
       # all and iptables DROPs the packets -- a connect timeout, not a refusal.
-      # Without a retry the check was red on every deploy that actually replaced
-      # the Pod and green on every no-op re-run of the same image tag, which is
-      # exactly the wrong way round: pipeline 2516809 reported "deploy failed"
-      # for a rollout that had succeeded, and its re-run passed only because
-      # apply was "unchanged" and the Pod had been Ready for hours.
+      # Without a retry the check is red on every deploy that actually replaces
+      # the Pod and green on every no-op re-run of the same image tag.
       #
-      # Retrying rather than switching to 127.0.0.1:7429 is deliberate. The
-      # re-run proves the Service round trip works on this cluster, so localhost
+      # Retrying rather than probing 127.0.0.1:7429 is deliberate: localhost
       # would drop the selector/targetPort coverage to buy nothing.
       probe() {
         kubectl -n "$NAMESPACE" exec "$POD" -c "$APP" -- python3 -c \

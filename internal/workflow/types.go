@@ -92,7 +92,7 @@ type Step struct {
 	//     still write StepResults, InitialParams or Runtime. Nothing stops it.
 	Resolve func(wfCtx *Context) (map[string]any, error)
 	// SkipIf lets adaptive workflows omit a step once earlier context has made
-	// that choice unambiguous. nil preserves the legacy "always run" behavior.
+	// that choice unambiguous. nil means the step always runs.
 	SkipIf func(wfCtx *Context) (bool, error)
 	// Optional lets a post-success enrichment step fail without failing the
 	// whole workflow. Default false preserves existing fail-stop behavior.

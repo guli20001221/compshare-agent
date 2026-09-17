@@ -407,8 +407,8 @@ func TestStartInstance_WithoutGpuSendsSpecOnStart(t *testing.T) {
 	def := StartInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
 	result, err := eng.Run(context.Background(), def, map[string]any{
-		"UHostId":        "uhost-yyy",
-		"WithoutGpuSpec": "B",
+		"UHostId":   "uhost-yyy",
+		"StartMode": "cpu_only_8c16g",
 	})
 
 	assert.NoError(t, err)
@@ -477,14 +477,13 @@ func TestStartInstance_WithoutGpuShowsInConfirm(t *testing.T) {
 	def := StartInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
 	_, _ = eng.Run(context.Background(), def, map[string]any{
-		"UHostId":        "uhost-yyy",
-		"WithoutGpuSpec": "B",
+		"UHostId":   "uhost-yyy",
+		"StartMode": "cpu_only_8c16g",
 	})
 
-	// The card must state the change as a change. The previous shape put the
-	// replacement in four unlabelled without_gpu_* keys while leaving the
-	// instance's CURRENT GpuType/GPU rows on the card, so the console's most
-	// prominent line read "GPU 4090 × 1" on the card that removed the 4090.
+	// The card must state the change as a change: leaving the instance's CURRENT
+	// GpuType/GPU rows on the card would make its most prominent line read
+	// "GPU 4090 × 1" on the card that removes the 4090.
 	change, ok := capturedArgs["规格变更"].(string)
 	require.True(t, ok, "confirm summary must carry the spec change: %v", capturedArgs)
 	assert.Contains(t, change, "4090 × 1")
@@ -590,8 +589,8 @@ func TestStartInstance_WithoutGpuUsesDefaultSpecWhenPreviewMissing(t *testing.T)
 	def := StartInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
 	result, err := eng.Run(context.Background(), def, map[string]any{
-		"UHostId":        "uhost-yyy",
-		"WithoutGpuSpec": "A",
+		"UHostId":   "uhost-yyy",
+		"StartMode": "cpu_only_2c4g",
 	})
 
 	assert.NoError(t, err)
@@ -628,8 +627,8 @@ func TestStartInstance_WithoutGpuUnsupportedRejectedBeforeConfirm(t *testing.T) 
 	def := StartInstanceDef()
 	eng := NewEngine(executor, confirmFn, onStep)
 	result, err := eng.Run(context.Background(), def, map[string]any{
-		"UHostId":        "uhost-yyy",
-		"WithoutGpuSpec": "A",
+		"UHostId":   "uhost-yyy",
+		"StartMode": "cpu_only_2c4g",
 	})
 
 	assert.NoError(t, err)
@@ -664,8 +663,8 @@ func TestStartInstance_PodRejectsWithoutGpuTierB(t *testing.T) {
 	onStep, _ := collectEvents()
 
 	result, err := NewEngine(executor, confirmFn, onStep).Run(context.Background(), StartInstanceDef(), map[string]any{
-		"UHostId":        "cpod-yyy",
-		"WithoutGpuSpec": "B",
+		"UHostId":   "cpod-yyy",
+		"StartMode": "cpu_only_8c16g",
 	})
 
 	require.NoError(t, err)

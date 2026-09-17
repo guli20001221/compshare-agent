@@ -236,8 +236,7 @@ func describeInstanceDiskSetHasID(raw map[string]any, instanceID, diskID string)
 
 // emitWriteAuthorizationTraces records the dual-proof audit for every write target
 // the resolver verified this turn: the ExistenceProof it established (which oracle,
-// when, which account, what verdict — from targetEvidence, previously consumed only
-// as a resolver gate and then discarded) plus whether the user's confirmation
+// when, which account, what verdict — from targetEvidence) plus whether the user's confirmation
 // authorized execution (executionAuthorized — the SelectionProof outcome). It fires
 // for BOTH authorized and declined writes, so the audit shows what existence was
 // proven regardless of the final human decision. Emissions are sorted by

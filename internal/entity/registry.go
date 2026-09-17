@@ -54,15 +54,10 @@ func WithClock(now func() time.Time) RegistryOption {
 type EntityRegistry struct {
 	mu sync.RWMutex
 
-	// Deprecated: use Snapshot, ResolveByID, ResolveByName, or Filter.
-	// Direct map access is not part of the runtime-safe T-004b contract.
-	Instances map[string]InstanceSnapshot
-	// NameIndex maps normalizeName(instance.Name) to UHostIds. Callers should
-	// prefer ResolveByName instead of reading this normalized index directly.
-	//
-	// Deprecated: use Snapshot or ResolveByName. Direct map access is not
-	// protected from concurrent refreshes outside EntityRegistry methods.
-	NameIndex        map[string][]string
+	instances map[string]InstanceSnapshot
+	// nameIndex maps normalizeName(instance.Name) to UHostIds; ResolveByName is
+	// the reader.
+	nameIndex        map[string][]string
 	LastFullSync     time.Time
 	LastSyncEvent    string
 	LastSyncError    string
@@ -102,8 +97,8 @@ type RegistryTraceState struct {
 
 func NewRegistry(opts ...RegistryOption) *EntityRegistry {
 	r := &EntityRegistry{
-		Instances:        map[string]InstanceSnapshot{},
-		NameIndex:        map[string][]string{},
+		instances:        map[string]InstanceSnapshot{},
+		nameIndex:        map[string][]string{},
 		LastSyncEvent:    string(SyncEventUnavailable),
 		recentlyReleased: map[string]time.Time{},
 		now:              time.Now,
@@ -146,7 +141,7 @@ func (r *EntityRegistry) Age() time.Duration {
 func (r *EntityRegistry) CanAssertAbsence() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return canAssertAbsence(r.LastFullSync, r.LastSyncEvent, r.Truncated, len(r.Instances), r.TotalCount)
+	return canAssertAbsence(r.LastFullSync, r.LastSyncEvent, r.Truncated, len(r.instances), r.TotalCount)
 }
 
 // CanAssertAbsence: see EntityRegistry.CanAssertAbsence. Same rule, immutable copy.
@@ -171,8 +166,8 @@ func (r *EntityRegistry) Snapshot() RegistrySnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	instances := copyInstances(r.Instances)
-	nameIndex := copyNameIndex(r.NameIndex)
+	instances := copyInstances(r.instances)
+	nameIndex := copyNameIndex(r.nameIndex)
 	snapshotID := ""
 	if !r.LastFullSync.IsZero() {
 		snapshotID = computeSnapshotID(instances, r.TotalCount, r.Truncated)
@@ -223,9 +218,8 @@ func (r *EntityRegistry) Refresh(ctx context.Context, exec Executor, reason Refr
 	return err
 }
 
-// RefreshResult is Refresh plus the raw DescribeCompShareInstance result.
-// Engine.Init uses the raw result for its existing prompt context while the
-// registry records the same call as an observable Phase 0 snapshot.
+// RefreshResult is Refresh plus the raw DescribeCompShareInstance result, for
+// callers that also need the listing itself.
 func (r *EntityRegistry) RefreshResult(ctx context.Context, exec Executor, reason RefreshReason) (map[string]any, error) {
 	result, err := exec.Execute(ctx, "DescribeCompShareInstance", map[string]any{"Limit": 100})
 	if err != nil {
@@ -336,7 +330,7 @@ func (r *EntityRegistry) SyncFromDescribe(result map[string]any, event string) e
 	now := r.now()
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for id := range r.Instances {
+	for id := range r.instances {
 		if _, stillPresent := next[id]; !stillPresent {
 			r.recentlyReleased[id] = now
 		}
@@ -346,7 +340,7 @@ func (r *EntityRegistry) SyncFromDescribe(result map[string]any, event string) e
 	}
 	r.pruneRecentlyReleased(now)
 
-	r.Instances = next
+	r.instances = next
 	r.rebuildNameIndexLocked()
 	r.LastFullSync = now
 	r.LastSyncEvent = event
@@ -359,16 +353,16 @@ func (r *EntityRegistry) SyncFromDescribe(result map[string]any, event string) e
 }
 
 func (r *EntityRegistry) rebuildNameIndexLocked() {
-	r.NameIndex = make(map[string][]string)
-	for id, inst := range r.Instances {
+	r.nameIndex = make(map[string][]string)
+	for id, inst := range r.instances {
 		key := normalizeName(inst.Name)
 		if key == "" {
 			continue
 		}
-		r.NameIndex[key] = append(r.NameIndex[key], id)
+		r.nameIndex[key] = append(r.nameIndex[key], id)
 	}
-	for key := range r.NameIndex {
-		sort.Strings(r.NameIndex[key])
+	for key := range r.nameIndex {
+		sort.Strings(r.nameIndex[key])
 	}
 }
 

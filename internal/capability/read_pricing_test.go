@@ -154,7 +154,7 @@ func TestPricingUsesRequestedZoneOrReportsCatalogFailure(t *testing.T) {
 // conversion, the omitted Zone (RetCode=230 guard) and the 1-GPU default must
 // survive the migration off intent.Slots.
 func TestPricingHandle_PassesMemoryAsMBToAPI(t *testing.T) {
-	exec := &fakeReadExec{result: pricingFixture(map[string]any{"Postpay": float64(1.69)})}
+	exec := &fakeReadExec{result: pricingFixture(map[string]any{"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Instance": float64(1.69)}}})}
 
 	result := runPricing(t, exec, PricingRequest{GPUType: "4090", Kind: platform.PriceKindAccount})
 
@@ -389,7 +389,7 @@ func TestPricingHandle_ExactModelDoesNotExpandMemoryVariant(t *testing.T) {
 				}},
 			},
 		},
-		"Postpay": float64(1.69),
+		"PriceDetails": []any{map[string]any{"ChargeType": "Postpay", "Instance": float64(1.69)}},
 	}}
 
 	result := runPricing(t, exec, PricingRequest{GPUType: "4090"})

@@ -7,8 +7,7 @@ import "fmt"
 // tuning knob. Its real consumer is the capacity probe (stepProbeZoneCapacity),
 // whose fan-out is one call per offered (model, zone) row of the catalog so both
 // hardware cards can be gated on real creatability — ~19 rows against the live
-// catalog today, not the four zones of a single model an earlier version of this
-// comment assumed. The bound MUST stay above that real fan-out: a bound below it
+// catalog today. The bound MUST stay above that real fan-out: a bound below it
 // drops the tail, and a dropped capacity probe reads downstream as "unknown =
 // selectable" — which is how a sold-out model at the end of the list gets offered
 // as clickable (see TestGPUCardGraysASoldOutModelPastTheCapacityProbeFanOut). 40

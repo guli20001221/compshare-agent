@@ -267,7 +267,7 @@ const (
 // State and TerminalReason are closed-set values above. ElapsedMS measures the
 // wait from presenting the card to its terminal outcome; it may be zero for an
 // immediately resolved confirmation. Step metadata is present only for guided
-// forms; plain y/n cards retain the legacy empty-metadata shape.
+// forms; plain y/n cards carry none.
 type ConfirmationTrace struct {
 	Action            string                   `json:"action"`
 	State             string                   `json:"state"`
@@ -496,7 +496,7 @@ type RetrievalTrace struct {
 	// knowledge service reported a scoring path this build has no calibrated
 	// floor for, so the relevance floor and the ranking-ambiguity metric were
 	// both SKIPPED for that query and FloorValue is absent. Query it to find a
-	// remote whose retrieval metadata this build no longer understands;
+	// remote whose retrieval metadata this build does not understand;
 	// HybridFallbackReason carries the raw mode it sent.
 	HybridMode string `json:"hybrid_mode,omitempty"`
 	// HybridFallbackReason is non-empty when HybridMode == "bm25_fallback"

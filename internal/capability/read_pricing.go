@@ -693,74 +693,34 @@ func pricingBillingTableForKind(raw map[string]any, kind string) map[string]stri
 	if raw == nil {
 		return out
 	}
-	// Shape 3 (production) takes precedence; Shapes 1/2 remain for legacy/tests.
-	if details, ok := raw["PriceDetails"].([]any); ok && len(details) > 0 {
-		listPrices := mapChargeTypeToInstance(raw["ListPriceDetails"])
-		if len(listPrices) == 0 {
-			listPrices = mapChargeTypeToInstance(raw["OriginalPriceDetails"])
-		}
-		actualPrices := mapChargeTypeToInstance(details)
-		for _, key := range []string{"Postpay", "Spot", "Day", "Month", "Dynamic"} {
-			act, hasAct := actualPrices[key]
-			if !hasAct {
-				continue
-			}
-			actStr := pricingFormatNumber(act)
-			if actStr == "" {
-				continue
-			}
-			if listVal, hasList := listPrices[key]; hasList {
-				listStr := pricingFormatNumber(listVal)
-				if listStr != "" && listStr != actStr {
-					out[key] = fmt.Sprintf("%s (原价 %s)", actStr, listStr)
-					continue
-				}
-			}
-			out[key] = actStr
-		}
-		if len(out) > 0 {
-			normalizePricingChargeTypes(out)
-			return out
-		}
-	}
-	// Shape 1: flat keys at top level.
-	for _, key := range []string{"Postpay", "Spot", "Day", "Month", "Dynamic"} {
-		if val, ok := raw[key]; ok {
-			if s := pricingFormatNumber(val); s != "" {
-				out[key] = s
-			}
-		}
-	}
-	if len(out) > 0 {
-		normalizePricingChargeTypes(out)
+	// GetCompShareInstancePrice and GetCompShareInstanceUserPrice both answer with
+	// PriceDetails (actual) beside ListPriceDetails / OriginalPriceDetails.
+	details, ok := raw["PriceDetails"].([]any)
+	if !ok || len(details) == 0 {
 		return out
 	}
-	// Shape 2: nested under InstancePrice.
-	nested, ok := raw["InstancePrice"].(map[string]any)
-	if !ok {
-		return out
+	listPrices := mapChargeTypeToInstance(raw["ListPriceDetails"])
+	if len(listPrices) == 0 {
+		listPrices = mapChargeTypeToInstance(raw["OriginalPriceDetails"])
 	}
+	actualPrices := mapChargeTypeToInstance(details)
 	for _, key := range []string{"Postpay", "Spot", "Day", "Month", "Dynamic"} {
-		val, ok := nested[key]
-		if !ok {
+		act, hasAct := actualPrices[key]
+		if !hasAct {
 			continue
 		}
-		switch t := val.(type) {
-		case map[string]any:
-			price := pricingFormatNumber(t["Price"])
-			orig := pricingFormatNumber(t["OriginalPrice"])
-			if price != "" && orig != "" && price != orig {
-				out[key] = fmt.Sprintf("%s (原价 %s)", price, orig)
-			} else if price != "" {
-				out[key] = price
-			} else if orig != "" {
-				out[key] = orig
-			}
-		default:
-			if s := pricingFormatNumber(val); s != "" {
-				out[key] = s
+		actStr := pricingFormatNumber(act)
+		if actStr == "" {
+			continue
+		}
+		if listVal, hasList := listPrices[key]; hasList {
+			listStr := pricingFormatNumber(listVal)
+			if listStr != "" && listStr != actStr {
+				out[key] = fmt.Sprintf("%s (原价 %s)", actStr, listStr)
+				continue
 			}
 		}
+		out[key] = actStr
 	}
 	normalizePricingChargeTypes(out)
 	return out

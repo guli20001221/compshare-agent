@@ -25,7 +25,7 @@ func (r *EntityRegistry) ResolveByID(id string) (*InstanceSnapshot, ResolveResul
 	query := strings.TrimSpace(id)
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if inst, ok := r.Instances[query]; ok {
+	if inst, ok := r.instances[query]; ok {
 		copy := inst
 		return &copy, ResolveResult{Status: ResolveHit, Query: query, Candidates: []string{query}}
 	}
@@ -43,7 +43,7 @@ func (r *EntityRegistry) ResolveByName(name string) ([]*InstanceSnapshot, Resolv
 	}
 
 	r.mu.RLock()
-	if ids := append([]string(nil), r.NameIndex[normalized]...); len(ids) > 0 {
+	if ids := append([]string(nil), r.nameIndex[normalized]...); len(ids) > 0 {
 		matches := r.instancesForIDsLocked(ids)
 		r.mu.RUnlock()
 		status := ResolveHit
@@ -52,7 +52,7 @@ func (r *EntityRegistry) ResolveByName(name string) ([]*InstanceSnapshot, Resolv
 		}
 		return matches, ResolveResult{Status: status, Query: query, Candidates: idsOfSnapshots(matches)}
 	}
-	if matches := instancesWhoseIDAppearsInText(query, r.Instances); len(matches) > 0 {
+	if matches := instancesWhoseIDAppearsInText(query, r.instances); len(matches) > 0 {
 		r.mu.RUnlock()
 		status := ResolveHit
 		if len(matches) > 1 {
@@ -65,7 +65,7 @@ func (r *EntityRegistry) ResolveByName(name string) ([]*InstanceSnapshot, Resolv
 	scored := make([]scoredInstance, 0)
 	terms := normalizeTerms(query)
 	r.mu.RLock()
-	for _, inst := range r.Instances {
+	for _, inst := range r.instances {
 		if score := fuzzyScore(normalized, terms, normalizeName(inst.Name)); score > 0 {
 			scored = append(scored, scoredInstance{snapshot: inst, score: score})
 		}
@@ -177,7 +177,7 @@ func (s RegistrySnapshot) instancesForIDs(ids []string) []*InstanceSnapshot {
 func (r *EntityRegistry) instancesForIDsLocked(ids []string) []*InstanceSnapshot {
 	matches := make([]*InstanceSnapshot, 0, len(ids))
 	for _, id := range ids {
-		if inst, ok := r.Instances[id]; ok {
+		if inst, ok := r.instances[id]; ok {
 			copy := inst
 			matches = append(matches, &copy)
 		}
