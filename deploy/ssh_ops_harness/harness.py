@@ -2672,8 +2672,13 @@ async def main():
                 "因此没有形成经验证的最终结论。可以直接重试并继续此前进度。")
         body += _partial_note(sdk_error)
     elif not body:
-        body = "（诊断已结束，但未生成明确结论"
-        body += "）"
+        # A clean SDK end with no conclusion text is a model that answered nothing (an empty
+        # upstream completion), not a diagnosis that found nothing to report: a bounded runner
+        # failure, retryable within the parent's per-turn run budget.
+        sdk_error = "empty_result"
+        body = ("诊断中断：实例内诊断代理本轮没有返回任何结论（模型空响应），"
+                "因此没有形成经验证的最终结论。可以直接重试并继续此前进度。")
+        body += _partial_note(sdk_error)
     _emit_outcome("agent_failed" if sdk_error else "", sdk_error,
                   context_applied=model_turn_began and reference_context is not None,
                   agent_usage=agent_usage)

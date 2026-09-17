@@ -412,7 +412,8 @@ func (e *Engine) instanceOpsRecoveryReply() (string, bool) {
 func instanceOpsAgentFailureCode(class string) string {
 	switch class {
 	case "authentication_failed", "billing_error", "rate_limit", "invalid_request",
-		"server_error", "unknown", "model_error", "max_turns", "sdk_timeout", "sdk_error", "no_progress":
+		"server_error", "unknown", "model_error", "max_turns", "sdk_timeout", "sdk_error", "no_progress",
+		"empty_result":
 		return "SSH_AGENT_" + strings.ToUpper(class)
 	default:
 		return "SSH_AGENT_FAILED"
