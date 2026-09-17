@@ -67,6 +67,9 @@ func rebuildColdAfterHTTPPersistence(reply string, metadata json.RawMessage) *En
 	return cold
 }
 
+// nextModelRequest drives one real turn and returns what the model was sent,
+// with the turn-start clock line neutralized: two engines compared here run
+// their turns a moment apart, and the wall clock is not what is under test.
 func nextModelRequest(t *testing.T, engine *Engine) []openai.ChatCompletionMessage {
 	t.Helper()
 	mock := &mockLLM{responses: []llm.ChatResponse{{Content: "已收到。"}}}
@@ -74,7 +77,20 @@ func nextModelRequest(t *testing.T, engine *Engine) []openai.ChatCompletionMessa
 	_, err := engine.Chat(context.Background(), billingFollowUp, noopStep)
 	require.NoError(t, err)
 	require.Len(t, mock.calls, 1)
-	return mock.calls[0].Messages
+	messages := mock.calls[0].Messages
+	for i, msg := range messages {
+		if msg.Role != openai.ChatMessageRoleSystem || !strings.HasPrefix(msg.Content, "【本轮执行上下文】") {
+			continue
+		}
+		lines := strings.Split(msg.Content, "\n")
+		for j, line := range lines {
+			if strings.HasPrefix(line, "本轮开始时间：") {
+				lines[j] = "本轮开始时间：<turn start>"
+			}
+		}
+		messages[i].Content = strings.Join(lines, "\n")
+	}
+	return messages
 }
 
 func TestPureBillingCardNeverEntersColdModelHistory(t *testing.T) {
