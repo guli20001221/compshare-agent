@@ -52,6 +52,40 @@ diagnose-production:
       when: manual
   allow_failure: true
 
+# The workload and the migration Pod pull their image with the `regcred`
+# Secret. UHub rejects it once that account's password rotates, and because
+# the image is pulled on every rollout (imagePullPolicy: Always), every deploy
+# and every rollback then sits in ImagePullBackOff. This rewrites the Secret
+# from the UHUB_USER / UHUB_PASS the build job pushes with; the kubelet picks
+# it up on its next pull attempt, so a Pod already in back-off recovers on its
+# own. Nothing here prints the password.
+refresh-regcred:
+  stage: diagnose
+  image: hub.ucloudadmin.com/prj-uhost-ussg/kubectl-alpine:1.17.17
+  tags:
+    - uaek-c5
+  variables:
+    NAMESPACE: prj-ucompshare-prod
+  script:
+    - |
+      set -eu
+      if [ -z "${UHUB_USER:-}" ] || [ -z "${UHUB_PASS:-}" ]; then
+        echo "UHUB_USER / UHUB_PASS are not available to this job" >&2
+        exit 1
+      fi
+      # kubectl 1.17 has only the boolean --dry-run.
+      kubectl -n "$NAMESPACE" create secret docker-registry regcred \
+        --docker-server=uhub.service.ucloud.cn \
+        --docker-username="$UHUB_USER" \
+        --docker-password="$UHUB_PASS" \
+        --dry-run -o yaml \
+        | kubectl -n "$NAMESPACE" apply -f -
+      kubectl -n "$NAMESPACE" get secret regcred -o jsonpath='{.metadata.name}{" type="}{.type}{"\n"}'
+  rules:
+    - if: '$CI_COMMIT_BRANCH == "main"'
+      when: manual
+  allow_failure: true
+
 # Destructive production cleanup is deliberately an explicit manual action.
 # It removes only this workload's controllers and their Pods; the Service and
 # database are retained so an approved deploy can recreate the workload.

@@ -10,7 +10,9 @@
 ## 前置条件
 
 - GitLab 项目设置受保护变量 `UHUB_USER` 和 `UHUB_PASS`，并由 `uaek-c5` runner 执行；
-- `prj-ucompshare-prod` 已存在可拉取 UHub 镜像的 `regcred`；
+- `prj-ucompshare-prod` 已存在可拉取 UHub 镜像的 `regcred`。UHub 账号密码轮换后它会失效，症状是
+  任何 deploy（包括回滚）都停在 `ImagePullBackOff`、events 里 `unauthorized: authorization failed`；
+  点 `diagnose` 阶段的手动 job `refresh-regcred`，它用 `UHUB_USER` / `UHUB_PASS` 重写这个 Secret；
 - 带迁移的提交先点手动 job `migrate-database`：它用本次构建的镜像起一个一次性 Pod
   （[`migration-pod.yaml`](migration-pod.yaml)），在集群内用镜像自带的 `psql` 执行
   [`../migrations/`](../migrations/) 的全部文件，数据库凭据不进入 CI job；
