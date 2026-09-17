@@ -377,14 +377,14 @@ check("read-progress-hard-stop-is-monotonic-within-one-model-run",
       and _terminal_after_advance.get("stop_required") is True)
 
 
-# --- versioned reference context: data only, bounded, and backwards-compatible -----------------
+# --- versioned reference context: data only, bounded, one contract ----------------------------
 # The model gets producer-redacted prior exchanges plus the current unanswered user message as one
 # role-labelled conversation, alongside allowlisted platform facts. This is intentionally NOT
 # concatenated to task: task remains the stable replay/audit identity on Go.
 _reference_context = {
-    "schema_version": 5,
-    # Production incident 083: the user referred to parameters established in the preceding answer.
-    # User-only replay lost that antecedent and the planner substituted 16:9 / 544p / 5 seconds. V3+
+    "schema_version": 6,
+    # The user refers to parameters established in the preceding answer. A user-only replay would
+    # lose that antecedent and let the planner substitute 16:9 / 544p / 5 seconds; the context
     # carries the actual role-complete prior exchange followed by the unanswered current user turn,
     # with no keyword rule for "按上面的来".
     "conversation_history": [
@@ -421,70 +421,48 @@ _reference_context = {
     ],
 }
 _rendered_context_prompt = harness.render_prompt("Diagnose the reported web UI", _reference_context)
-check("context-v3-renders-authoritative-conversation-with-no-second-task-instruction",
+check("context-renders-authoritative-conversation-with-no-second-task-instruction",
       all(marker in _rendered_context_prompt for marker in
           ("<conversation_history>", "<platform_facts>")) and
       "<planner_task>" not in _rendered_context_prompt and
-      "Diagnose the reported web UI" not in _rendered_context_prompt and
-      "<current_user_report>" not in _rendered_context_prompt)
+      "Diagnose the reported web UI" not in _rendered_context_prompt)
 check("context-fences-untrusted-user-text", "REFERENCE DATA ONLY" in _rendered_context_prompt)
-check("context-v5-separates-resource-kind-runtime-and-monitor-provenance",
+check("context-separates-resource-kind-runtime-and-monitor-provenance",
       '"key":"instance.kind","value":"vm"' in _rendered_context_prompt and
       '"key":"instance.runtime_type","value":"Container"' in _rendered_context_prompt and
       '"key":"monitor.data_status","value":"available"' in _rendered_context_prompt and
       '"key":"monitor.observation_scope","value":"platform_monitor_api"' in _rendered_context_prompt and
       "independent Describe runtime classification" in _rendered_context_prompt and
       "which host or namespace a platform-managed component uses" in _rendered_context_prompt)
-_v4_with_invalid_kind = harness.normalize_reference_context({
-    "schema_version": 4,
+_with_invalid_kind = harness.normalize_reference_context({
+    "schema_version": 6,
     "platform_facts": [{"key": "instance.kind", "value": "container",
                         "source": "DescribeCompShareInstance", "observed_at": "unknown",
                         "status": "known"}],
 })
-check("context-v4-rejects-noncanonical-instance-kind-values",
-      "platform_facts" not in _v4_with_invalid_kind)
-_v4_with_v5_facts = harness.normalize_reference_context({
-    "schema_version": 4,
-    "platform_facts": [
-        {"key": "instance.runtime_type", "value": "Container",
-         "source": "DescribeCompShareInstance", "observed_at": "unknown", "status": "known"},
-        {"key": "monitor.data_status", "value": "available",
-         "source": "GetCompShareInstanceMonitor", "observed_at": "unknown", "status": "known"},
-    ],
-})
-check("context-v4-rejects-v5-only-runtime-and-monitor-provenance",
-      "platform_facts" not in _v4_with_v5_facts)
+check("context-rejects-noncanonical-instance-kind-values",
+      "platform_facts" not in _with_invalid_kind)
 for _key, _value in (
         ("instance.runtime_type", "Normal"),
         ("monitor.data_status", "healthy"),
         ("monitor.observation_scope", "inner-container")):
-    _invalid_v5 = harness.normalize_reference_context({
-        "schema_version": 5,
+    _invalid_fact = harness.normalize_reference_context({
+        "schema_version": 6,
         "platform_facts": [{"key": _key, "value": _value,
                             "source": "test", "observed_at": "unknown", "status": "known"}],
     })
-    check("context-v5-rejects-noncanonical-" + _key.replace(".", "-"),
-          "platform_facts" not in _invalid_v5)
+    check("context-rejects-noncanonical-" + _key.replace(".", "-"),
+          "platform_facts" not in _invalid_fact)
 _unrecognized_monitor = harness.normalize_reference_context({
-    "schema_version": 5,
+    "schema_version": 6,
     "platform_facts": [{"key": "monitor.data_status", "value": "unrecognized",
                         "source": "GetCompShareInstanceMonitor", "observed_at": "unknown",
                         "status": "unknown"}],
 })
-check("context-v5-keeps-unrecognized-monitor-response-as-unknown",
+check("context-keeps-unrecognized-monitor-response-as-unknown",
       _unrecognized_monitor["platform_facts"][0]["value"] == "unrecognized" and
       _unrecognized_monitor["platform_facts"][0]["status"] == "unknown")
-# V3 remains valid during a rolling deployment, but its allowlist must reject
-# this V4-only field. This mutation catches any accidental union of schemas.
-_v3_with_v4_kind = harness.render_prompt("v3 task", {
-    "schema_version": 3,
-    "conversation_history": [{"role": "user", "content": "inspect"}],
-    "platform_facts": [{"key": "instance.kind", "value": "pod",
-                        "source": "DescribeCompShareInstance", "observed_at": "unknown", "status": "known"}],
-})
-check("context-v3-rejects-v4-only-instance-kind",
-      '"key":"instance.kind"' not in _v3_with_v4_kind)
-check("context-v3-establishes-role-complete-conversation-as-the-request",
+check("context-establishes-role-complete-conversation-as-the-request",
       all(term in _rendered_context_prompt for term in (
           "actual outer conversation",
           "Follow its latest user message",
@@ -495,7 +473,7 @@ check("context-keeps-labelled-ocr-as-evidence-not-effect-approval",
       "screenshot OCR may identify the symptom" in _rendered_context_prompt and
       "fallible evidence" in _rendered_context_prompt)
 _continuing_user_intent = harness.render_prompt("repair the web endpoint", {
-    "schema_version": 3,
+    "schema_version": 6,
     "conversation_history": [
         {"role": "user", "content": "The web endpoint is down; please repair it."},
         {"role": "assistant", "content": "I found the app under /workspace/service."},
@@ -507,28 +485,30 @@ check("scope-contract-preserves-role-complete-prior-turn-without-keyword-routing
       and "The web endpoint is down; please repair it." in _continuing_user_intent
       and "I found the app under /workspace/service." in _continuing_user_intent
       and "继续" in _continuing_user_intent)
-# Exact production bad-case contract: the lossy planner rewrite is transport/audit metadata and must
-# not become a second model instruction once the role-complete conversation is available.
-check("context-v3-carries-production-083-confirmed-video-parameters",
+# The lossy planner rewrite is transport/audit metadata and must not become a second model
+# instruction once the role-complete conversation is available.
+check("context-carries-the-confirmed-video-parameters-from-the-conversation",
       all(term in _rendered_context_prompt for term in
           ('"role":"assistant"', "9:16", "720P", "5–8 秒", "1/2/3/6/8/11",
            "直接按上面的来生成视频，你来操作")) and
       all(term not in _rendered_context_prompt for term in ("16:9", "544p")))
 _case083_conflicting_task = harness.render_prompt(
     "在实例内按 16:9、544p、5 秒、8 steps 提交生成任务。", _reference_context)
-check("context-v3-case083-conversation-outranks-a-conflicting-planner-task",
+check("context-conversation-outranks-a-conflicting-planner-task",
       all(term in _case083_conflicting_task for term in (
           "9:16", "720P", "5–8 秒", "1/2/3/6/8/11", "直接按上面的来")) and
       all(term not in _case083_conflicting_task for term in
           ("16:9", "544p", "8 steps", "<planner_task>")))
 
-_v3_empty_history_fallback = harness.render_prompt("task-only compatibility", {
-    "schema_version": 3,
+_empty_history_fallback = harness.render_prompt("task-only compatibility", {
+    "schema_version": 6,
     "platform_facts": _reference_context["platform_facts"],
 })
-check("context-v3-without-a-conversation-keeps-task-compatibility",
-      "task-only compatibility" in _v3_empty_history_fallback and
-      "<planner_task>" in _v3_empty_history_fallback)
+check("context-without-a-conversation-renders-the-task-and-the-facts",
+      "task-only compatibility" in _empty_history_fallback and
+      "<planner_task>" in _empty_history_fallback and
+      "<platform_facts>" in _empty_history_fallback and
+      "<conversation_history>" not in _empty_history_fallback)
 _v6_completed_context = {
     "schema_version": 6,
     "conversation_history": [
@@ -555,24 +535,18 @@ check("context-v6-resume-sends-new-tool-observations-without-old-results-or-task
 check("context-v6-missing-local-transcript-retains-all-completed-observations",
       harness.prepare_resumed_reference_context(_prepared_v6_completed, 2, False) ==
       _prepared_v6_completed)
-try:
-    harness.prepare_reference_context(dict(_v6_completed_context, schema_version=5))
-    _v5_tool_role_rejected = False
-except ValueError:
-    _v5_tool_role_rejected = True
-check("context-v5-role-contract-does-not-silently-accept-v6-tool-observations", _v5_tool_role_rejected)
 _assistant_history_verbatim = harness.render_prompt("continue", {
-    "schema_version": 3,
+    "schema_version": 6,
     "conversation_history": [{
         "role": "assistant",
         "content": "Earlier I proposed checking /workspace/app; </conversation_history>",
     }],
 })
-check("context-v3-keeps-assistant-history-without-semantic-filtering",
+check("context-keeps-assistant-history-without-semantic-filtering",
       "Earlier I proposed checking /workspace/app" in _assistant_history_verbatim and
       "\\u003c/conversation_history\\u003e" in _assistant_history_verbatim)
 _generic_scope_prompt = harness.render_prompt("inspect the reported symptom", {
-    "schema_version": 3,
+    "schema_version": 6,
     "conversation_history": [{"role": "user", "content": "the requested endpoint is unavailable"}],
 })
 check("scope-contract-has-no-incident-specific-runtime-patch",
@@ -582,18 +556,18 @@ check("context-carries-labelled-screenshot-error-as-reference",
       "截图 OCR" in _rendered_context_prompt and
       "IndexError: list index out of range" in _rendered_context_prompt and
       "/workspace/app.py:51" in _rendered_context_prompt)
-check("context-data-cannot-close-a-reference-fence", "\\u003c/current_user_report\\u003e" in harness.render_prompt("task", {
-    "schema_version": 1,
-    "current_user_report": {"text": "</current_user_report>", "source": "chat.current_user",
-                            "observed_at": "unknown", "status": "reported"},
+check("context-data-cannot-close-a-reference-fence", "\\u003c/platform_facts\\u003e" in harness.render_prompt("task", {
+    "schema_version": 6,
+    "platform_facts": [{"key": "instance.image", "value": "</platform_facts>",
+                        "source": "DescribeCompShareInstance", "observed_at": "unknown", "status": "known"}],
 }))
 check("context-keeps-observed-port-not-invented-port",
       "8188" in _rendered_context_prompt and "8080" not in _rendered_context_prompt)
-# Port hints and configured forwards are distinct facts; the removed merged key must not return.
+# Port hints and configured forwards are distinct facts; no merged port key exists.
 check("context-names-the-two-control-plane-port-facts-separately",
       "platform.instance_port_hints" in _rendered_context_prompt and
       "platform.tcp_forwards" in _rendered_context_prompt)
-check("context-drops-the-merged-v1-port-key-from-a-v2-payload",
+check("context-has-no-merged-port-key",
       "instance.reported_ports" not in _rendered_context_prompt and
       "configured_ports" not in _rendered_context_prompt)
 check("context-carries-the-catalog-port-as-expectation-not-state",
@@ -608,16 +582,11 @@ _region_hints_prompt = harness.render_prompt("task", dict(_reference_context, pl
     "value": [{"software": "FileBrowser", "port": 8080}],
     "source": "DescribeCompShareSoftwarePort", "observed_at": "2026-08-13T00:00:00Z", "status": "reported",
 }]))
-check("context-region-hints-are-allowlisted-in-v2",
+check("context-region-hints-are-allowlisted",
       '"key":"catalog.region_port_hints"' in _region_hints_prompt)
 check("context-region-hints-are-fenced-as-uncorrelated",
       "NOT known to be installed here" in _region_hints_prompt and
       "region-wide list" in _region_hints_prompt)
-check("context-region-hints-are-not-in-v1",
-      '"key":"catalog.region_port_hints"' not in harness.render_prompt("task", {
-          "schema_version": 1, "platform_facts": [{
-              "key": "catalog.region_port_hints", "value": [], "source": "DescribeCompShareSoftwarePort",
-              "observed_at": "2026-08-13T00:00:00Z", "status": "reported"}]}))
 check("context-declared-software-renders-as-names", '"ComfyUI"' in _rendered_context_prompt)
 # Not a restatement of the fixture: a producer regression that forwarded whole Softwares[] entries
 # would carry the sibling URL, and that URL embeds a live Jupyter token. The harness is the last gate
@@ -635,13 +604,13 @@ check("context-states-listener-is-not-observed", "not_observed" in _rendered_con
 check("context-rejects-nonallowlisted-facts", "must-not-reach-prompt" not in _rendered_context_prompt)
 check("context-unknown-schema-falls-back-to-task",
       harness.render_prompt("task-only", {"schema_version": 99}) == "task-only")
-# A FUTURE version is the same refusal as a garbage one. It is the case that will actually happen —
-# a server ahead of a harness — and guessing that v5's keys mean what v4's mean is how a renamed fact
-# gets read as the fact it replaced.
-check("context-future-schema-falls-back-to-task",
-      harness.render_prompt("task-only", dict(_reference_context, schema_version=7)) == "task-only")
-# True == 1 in Python, so a bool would otherwise select the v1 allowlist by accident.
-check("context-boolean-schema-version-is-not-v1",
+# Any other version is the same refusal as a garbage one: guessing that another version's keys mean
+# what this one's mean is how a renamed fact gets read as the fact it replaced.
+check("context-other-schema-falls-back-to-task",
+      harness.render_prompt("task-only", dict(_reference_context, schema_version=7)) == "task-only" and
+      harness.render_prompt("task-only", dict(_reference_context, schema_version=5)) == "task-only")
+# True == 1 in Python, so a bool must not be read as a version number.
+check("context-boolean-schema-version-is-not-a-version",
       harness.normalize_reference_context(dict(_reference_context, schema_version=True)) is None)
 
 # The background-job cursor is a separate live-session handshake value, not a reference fact. It is
@@ -672,87 +641,25 @@ check("full-job-capacity-does-not-block-foreground-work",
       "tracked background-job capacity" in _busy_elsewhere_prompt
       and "other foreground work remains available" in _busy_elsewhere_prompt)
 
-# A server rolled back below this harness still sends v1, and that must keep working — but against
-# the V1 allowlist, not the union. Two directions, because "accepts both" silently becoming "accepts
-# either key in either version" is a third schema nobody designed and nobody renders correctly.
-_v1_context = {
-    "schema_version": 1,
-    "platform_facts": [
-        {"key": "instance.reported_ports", "value": {"http": [8188], "tcp_forwards": []},
-         "source": "DescribeCompShareInstance", "observed_at": "2026-08-13T00:00:00Z", "status": "known"},
-        {"key": "catalog.expected_software_ports", "value": [{"software": "ComfyUI", "port": 8188}],
-         "source": "DescribeCompShareSoftwarePort", "observed_at": "2026-08-13T00:00:00Z", "status": "reported"},
-    ],
-}
-_rendered_v1 = harness.render_prompt("v1 task", _v1_context)
-check("context-v1-payload-still-renders", "instance.reported_ports" in _rendered_v1)
-check("context-v1-carries-the-v1-fence-note",
-      "`instance.reported_ports` is unverified Describe metadata" in _rendered_v1 and
-      "platform.instance_port_hints" not in _rendered_v1)
-check("context-v1-rejects-a-v2-only-fact-key", "catalog.expected_software_ports" not in _rendered_v1)
-check("context-v3-fence-note-is-not-the-v1-one",
-      "`instance.reported_ports` is unverified Describe metadata" not in _rendered_context_prompt)
-_v2_reference_context = {
-    "schema_version": 2,
-    "current_user_report": {
-        "text": "The UI is still unavailable.", "source": "chat.current_user",
-        "observed_at": "unknown", "status": "reported",
-    },
-    "prior_user_reports": [{
-        "text": "The UI was working yesterday.", "source": "chat.prior_user",
-        "observed_at": "unknown", "status": "reported",
-    }],
-    "platform_facts": _reference_context["platform_facts"],
-}
-_rendered_v2 = harness.render_prompt("v2 task", _v2_reference_context)
-check("context-v2-payload-still-renders-its-prior-user-shape",
-      "<prior_user_reports>" in _rendered_v2 and "The UI was working yesterday." in _rendered_v2 and
-      "<conversation_history>" not in _rendered_v2)
-_v2_with_v1_key = harness.normalize_reference_context(dict(_v2_reference_context, platform_facts=[
-    {"key": "instance.reported_ports", "value": {"http": [8188]},
-     "source": "DescribeCompShareInstance", "observed_at": "2026-08-13T00:00:00Z", "status": "known"},
-]))
-check("context-v2-rejects-the-retired-v1-fact-key", "platform_facts" not in _v2_with_v1_key)
 check("context-echoes-the-version-it-validated-against",
-      harness.normalize_reference_context(_v1_context)["schema_version"] == 1 and
-      harness.normalize_reference_context(_v2_reference_context)["schema_version"] == 2 and
-      harness.normalize_reference_context({"schema_version": 3})["schema_version"] == 3 and
-      harness.normalize_reference_context({"schema_version": 4})["schema_version"] == 4 and
-      harness.normalize_reference_context(_reference_context)["schema_version"] == 5)
-check("context-v3-does-not-rewrite-or-truncate-producer-budgeted-history",
+      harness.normalize_reference_context(_reference_context)["schema_version"] == 6)
+check("context-does-not-rewrite-or-truncate-producer-budgeted-history",
       harness.normalize_reference_context({
-          "schema_version": 3,
+          "schema_version": 6,
           "conversation_history": [{"role": "assistant", "content": "x" * 5000}],
       })["conversation_history"][0]["content"] == "x" * 5000)
 try:
     harness.prepare_reference_context({
-        "schema_version": 3,
-        "conversation_history": [{"role": "tool", "content": "must not be silently dropped"}],
+        "schema_version": 6,
+        "conversation_history": [{"role": "system", "content": "must not be silently dropped"}],
     })
-    _invalid_v3_history = None
+    _invalid_history = None
 except ValueError as exc:
-    _invalid_v3_history = str(exc)
-check("context-v3-malformed-history-fails-explicitly",
-      "invalid role message" in (_invalid_v3_history or ""))
-try:
-    harness.prepare_reference_context({
-        "schema_version": 3,
-        "conversation_history": [{"role": "user", "content": "继续"}],
-        "current_user_report": {"text": "继续", "source": "chat.current_user",
-                                "observed_at": "unknown", "status": "reported"},
-    })
-    _mixed_v3_history = None
-except ValueError as exc:
-    _mixed_v3_history = str(exc)
-check("context-v3-does-not-silently-duplicate-the-current-user-as-a-legacy-report",
-      "must not mix legacy" in (_mixed_v3_history or ""))
-check("context-bounds-user-report", len(harness.normalize_reference_context({
-    "schema_version": 1,
-    "current_user_report": {"text": "x" * 5000, "source": "chat.current_user",
-                            "observed_at": "unknown", "status": "reported"},
-})["current_user_report"]["text"]) == harness._MAX_CONTEXT_TEXT)
+    _invalid_history = str(exc)
+check("context-malformed-history-fails-explicitly",
+      "invalid role message" in (_invalid_history or ""))
 _oversized_context = {
-    "schema_version": 1,
+    "schema_version": 6,
     "platform_facts": [{
         "key": "monitor", "value": {f"metric-{i}": "x" * 512 for i in range(32)},
         "source": "GetCompShareInstanceMonitor", "observed_at": "2026-08-13T00:00:00Z", "status": "known",
@@ -766,60 +673,47 @@ check("context-large-supported-payload-is-never-silently-dropped-to-task-only",
 # Go deliberately sends the complete bounded history plus a private prefix length. Only the harness
 # can know whether Claude Code's local JSONL survived. Apply the suffix solely for a real --resume;
 # the same requested resume with an absent local record must start fresh with the full conversation.
-_prepared_v3_context = harness.prepare_reference_context(_reference_context)
-_resumed_v3_context = harness.prepare_resumed_reference_context(
-    _prepared_v3_context, 2, resume_existing=True)
-_fresh_fallback_v3_context = harness.prepare_resumed_reference_context(
-    _prepared_v3_context, 2, resume_existing=False)
+_prepared_context = harness.prepare_reference_context(_reference_context)
+_resumed_context = harness.prepare_resumed_reference_context(
+    _prepared_context, 2, resume_existing=True)
+_fresh_fallback_context = harness.prepare_resumed_reference_context(
+    _prepared_context, 2, resume_existing=False)
 check("resume-index-keeps-only-the-unseen-role-message-for-a-real-sdk-resume",
-      _resumed_v3_context["conversation_history"] ==
-      _prepared_v3_context["conversation_history"][2:] and
-      _resumed_v3_context["platform_facts"] == _prepared_v3_context["platform_facts"])
+      _resumed_context["conversation_history"] ==
+      _prepared_context["conversation_history"][2:] and
+      _resumed_context["platform_facts"] == _prepared_context["platform_facts"])
 check("resume-index-is-ignored-when-the-local-sdk-record-is-missing",
-      _fresh_fallback_v3_context == _prepared_v3_context and
-      len(_fresh_fallback_v3_context["conversation_history"]) == 3)
+      _fresh_fallback_context == _prepared_context and
+      len(_fresh_fallback_context["conversation_history"]) == 3)
 check("resume-index-never-mutates-the-complete-producer-snapshot",
-      len(_prepared_v3_context["conversation_history"]) == 3)
-# Reverse rolling deploy: old Go sends role-complete schema V3 plus its old-contract
-# high-water index. The current harness rejects that cursor in normalize_agent_session,
-# starts a fresh SDK session, and must ignore the stale index rather than fail or drop
-# the already-seen prefix from the only transcript this fresh session has.
-_old_go_v3_context = harness.prepare_reference_context({
-    "schema_version": 3,
+      len(_prepared_context["conversation_history"]) == 3)
+# A cursor persisted under another contract is rejected in normalize_agent_session and the
+# harness starts a fresh SDK session; it must ignore the stale high-water index rather than
+# fail or drop the already-seen prefix from the only transcript this fresh session has.
+_old_contract_context = harness.prepare_reference_context({
+    "schema_version": 6,
     "conversation_history": [
         {"role": "user", "content": "old question"},
         {"role": "assistant", "content": "old answer"},
         {"role": "user", "content": "continue"},
     ],
 })
-check("old-contract-fresh-fallback-keeps-complete-schema-v3-history",
+check("old-contract-fresh-fallback-keeps-the-complete-history",
       harness.prepare_resumed_reference_context(
-          _old_go_v3_context, 2, resume_existing=False) == _old_go_v3_context)
-check("real-resume-can-suffix-role-complete-schema-v3",
+          _old_contract_context, 2, resume_existing=False) == _old_contract_context)
+check("real-resume-can-suffix-the-role-complete-history",
       harness.prepare_resumed_reference_context(
-          _old_go_v3_context, 2, resume_existing=True)["conversation_history"] ==
+          _old_contract_context, 2, resume_existing=True)["conversation_history"] ==
       [{"role": "user", "content": "continue"}])
 for _index_case, _bad_index in (
         ("bool", True), ("negative", -1), ("string", "2"),
         ("float", 2.0), ("past-end", 4)):
     try:
         harness.prepare_resumed_reference_context(
-            _prepared_v3_context, _bad_index, resume_existing=True)
+            _prepared_context, _bad_index, resume_existing=True)
         check("resume-index-fails-closed::" + _index_case, False)
     except ValueError:
         check("resume-index-fails-closed::" + _index_case, True)
-try:
-    harness.prepare_resumed_reference_context(
-        harness.prepare_reference_context(_v2_reference_context), 1, resume_existing=True)
-    _v2_nonzero_resume_index_error = None
-except ValueError as exc:
-    _v2_nonzero_resume_index_error = str(exc)
-check("resume-index-nonzero-is-rejected-for-v2-context",
-      "requires role-complete" in (_v2_nonzero_resume_index_error or ""))
-check("resume-index-zero-keeps-v2-mixed-deploy-context",
-      harness.prepare_resumed_reference_context(
-          harness.prepare_reference_context(_v2_reference_context), 0, resume_existing=True) ==
-      harness.prepare_reference_context(_v2_reference_context))
 
 
 # --- CLI selection: the SDK bundles an older CLI and prefers it unless cli_path is explicit. ---
@@ -1881,13 +1775,14 @@ try:
     sys.stdin = _io.StringIO(_json.dumps({
         "host": "10.0.0.9", "user": "root", "port": 22, "password": "context-test-password",
         "task": "继续上一轮", "context": _reference_context,
-        "pending_background_job": {"job_id": _JOB_ID, "state": "running"},
+        "pending_background_jobs": [{"job_id": _JOB_ID, "state": "running"}],
+        "background_job_slots_remaining": 0,
     }) + "\n")
     _main_pending_output = _capture(lambda: _asyncio.run(harness.main()))
     sys.stdin = _io.StringIO(_json.dumps({
         "host": "10.0.0.9", "user": "root", "port": 22, "password": "context-test-password",
         "task": "排查另一台实例", "context": _reference_context,
-        "background_job_slot_busy": True,
+        "background_job_slots_remaining": 0,
     }) + "\n")
     _main_busy_output = _capture(lambda: _asyncio.run(harness.main()))
     sys.stdin = _io.StringIO(_json.dumps({
@@ -2332,7 +2227,7 @@ _second_start_wire = _capture(lambda: _asyncio.run(_pending_ssh_tool({
     "command": "python3 -m pip install another", "purpose": "install another",
     "run_in_background": True,
 })))
-check("legacy-single-slot-producer-cannot-lose-a-handle-to-a-second-job",
+check("exhausted-durable-capacity-cannot-lose-a-handle-to-a-second-job",
       "@@JOB " not in _second_start_wire and "refused_precondition" in _second_start_wire)
 _endpoint_tool = next(tool for tool in _first_tools if tool._test_tool_name == "endpoint_probe")
 _remote_text_tool = next(tool for tool in _first_tools if tool._test_tool_name == "read_text_file")

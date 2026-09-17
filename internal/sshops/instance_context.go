@@ -214,7 +214,7 @@ func monitorFacts(ctx context.Context, d Describer, instanceID, observedAt strin
 	raw, err := d.Execute(monitorCtx, instanceContextSourceMonitor, map[string]any{"UHostIds": []string{instanceID}})
 	elapsed := time.Since(started)
 	if err != nil {
-		// The model-visible v5 outcome is query_failed rather than a guessed network or guest-agent
+		// The model-visible outcome is query_failed rather than a guessed network or guest-agent
 		// cause. Logs retain the narrower operational distinction between a deadline and an upstream
 		// error, while a successful empty payload follows the separate empty path below. Elapsed is
 		// logged on every path so the budget stays measured. INV-6 holds: this endpoint returns

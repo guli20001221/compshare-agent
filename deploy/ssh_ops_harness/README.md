@@ -162,16 +162,16 @@ SDK 在 `initialize` 等待 60 秒后超时；harness 会在同一个已选 npm 
    `started` 行只说明「请求过上下文」，把它当送达结果读会高估覆盖率——`Finish` 本身也可能失败
    （日志里是 `ssh-ops: audit finish failed …`），那种行会永远停在 `started`。
 
-   当前值是 **`6`**：除当前用户报告和平台事实外，它还携带按真实角色排列的历史问答及已完成工具观察。
-   历史按完整 exchange 预算，当前回合工具结果沿用 canonical transcript 的预算；harness 不另行截断。
-   新 harness 仍接受 v1–v5；不支持该版本的旧 harness 会降级成 task-only（终态行就是 `0`，不是
-   半份上下文）。后端与 harness 应一起部署；旧 SDK 会话契约会开始新会话，不重放已有命令。
-   v5 增加上游运行形态和平台监控来源，v3 引入角色完整历史，v4 新增权威 `instance.kind=vm|pod`；这个值按资源 ID 契约判定，
-   不能从 PID 1、镜像或 `InstanceType=Container` 猜测。v1 用一个 `instance.reported_ports` 同时装 Describe 的
-   `Ports` 与 `TcpForwards`，v2 拆成 `platform.instance_port_hints` / `platform.tcp_forwards`，
-   并新增 `instance.declared_software`（**只有名字**：同级的 `URL` 里带活的 Jupyter token）和
-   `catalog.expected_software_ports`（镜像目录的**预期**端口，状态恒为 `reported`，永远不会是
-   `known`）。这四个键任何一个都不证明实例里真的有进程在听——那只有 SSH 查完的
+   当前值是 **`6`**，也是 harness 唯一接受的版本（Go 与 harness 在同一个镜像里；别的值一律降级成
+   task-only，终态行就是 `0`，不是半份上下文）。v6 携带按真实角色排列的历史问答、已完成的工具观察
+   和平台事实：历史按完整 exchange 预算，当前回合工具结果沿用 canonical transcript 的预算，harness
+   不另行截断。旧 SDK 会话契约会开始新会话，不重放已有命令。平台事实里 `instance.kind=vm|pod`
+   按资源 ID 契约判定，不能从 PID 1、镜像或 `InstanceType=Container` 猜测；`instance.runtime_type`
+   和 `monitor.data_status` / `monitor.observation_scope` 分别是上游运行形态和平台监控来源；
+   `platform.instance_port_hints` / `platform.tcp_forwards` 是 Describe 的 `Ports` 与 `TcpForwards`，
+   `instance.declared_software` **只有名字**（同级的 `URL` 里带活的 Jupyter token），
+   `catalog.expected_software_ports` 是镜像目录的**预期**端口（状态恒为 `reported`，永远不会是
+   `known`）。这四个端口/软件键任何一个都不证明实例里真的有进程在听——那只有 SSH 查完的
    `guest.listeners` 能说，它的初值是 `not_observed`。
 
    `DescribeCompShareSoftwarePort` **不接受实例参数**（只有 Region），返回的是整个区域的目录，
@@ -181,8 +181,8 @@ SDK 在 `initialize` 等待 60 秒后超时；harness 会在同一个已选 npm 
    提示词，把排查引向一个从没装过的服务。审计里两者也是不同的 coverage 位。
 
    `context_fact_coverage` 是位掩码，新位只追加不重排（`internal/opscontext/context.go`）。
-   注意 `CoveragePortHints`（16）在 v1 行里同时代表了 forwards，所以**跨版本比较这一位之前先按
-   `context_schema_version` 分组**。
+   2026-09-14 之前的审计行带的是 2–5 版上下文，其中 `CoveragePortHints`（16）在更早的行里同时代表了
+   forwards，所以**跨版本比较这一位之前先按 `context_schema_version` 分组**。
 
 ## 没生效的排查
 
