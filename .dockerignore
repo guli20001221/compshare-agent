@@ -1,5 +1,5 @@
-# The checkout is ~1.8 GiB (mostly local .claude state).  Use an allowlist so
-# neither local data nor unrelated tracked files can enter the build context.
+# Allowlist: only what the Dockerfile copies enters the build context, so
+# neither local state nor unrelated tracked files can leak into the image.
 **
 
 !Dockerfile
@@ -14,7 +14,6 @@
 
 !deploy/
 !deploy/conf/
-!deploy/conf/config.yaml
 !deploy/migrations/
 !deploy/migrations/**
 !deploy/ssh_ops_harness/
