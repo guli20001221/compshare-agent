@@ -246,8 +246,8 @@ type specCandidate struct {
 // listSpecCandidates enumerates all valid (CPU, MemoryMB) combinations from
 // DescribeAvailableCompShareInstanceTypes for the given GPU type and count, in
 // the target zone. Each Collection entry × each Memory value produces one
-// candidate. Because the catalog query is no longer zone-filtered upstream (a
-// GPU may appear in several zones), the zone filter here keeps candidates to the
+// candidate. Because the catalog query is not zone-filtered upstream (a GPU may
+// appear in several zones), the zone filter here keeps candidates to the
 // single resolved zone — avoiding cross-zone duplicates. Both the selected zone
 // and each catalog row must be explicit; a missing Zone is not treated as a
 // wildcard or a platform default.
@@ -661,10 +661,8 @@ func stepCheckCapacity() Step {
 		Type: StepToolCall,
 		Tool: "CheckCompShareResourceCapacity",
 		// Capacity asks about the draft — the same resolution the card will show
-		// and the create will send. It no longer calls resolveTargetSpec or
-		// pickImageId: doing so made this a SECOND interpretation of the request,
-		// which agreed with the draft's only because both are pure and nothing
-		// moved between them. The draft's validations (placement, image
+		// and the create will send. Re-resolving the spec or image here would be a
+		// SECOND interpretation of the request. The draft's validations (placement, image
 		// compatibility) already ran in the resolve step under the stricter
 		// purchase=true form, so there is nothing left for this step to re-check.
 		BuildArgs: func(wfCtx *Context) (map[string]any, error) {
@@ -1577,7 +1575,7 @@ func materializeCreateDraft(wfCtx *Context) (map[string]any, error) {
 	// Both validations run HERE, once, before capacity, price or the card. The
 	// purchase=true form is the strictest (it alone requires AzGroup on a pod
 	// zone), so passing it subsumes the capacity step's weaker purchase=false
-	// check — which is why capacity no longer runs one of its own.
+	// check — which is why capacity runs none of its own.
 	if err := validateCreatePlacement(wfCtx, placement, true); err != nil {
 		return nil, err
 	}
@@ -1972,7 +1970,7 @@ type SelectedImage struct {
 //     and is never replaced by a name-ranked image.
 //   - A named request with no exact catalog match is not silently swapped: the
 //     resolver returns a ranked candidate whose REAL catalog name the confirm card
-//     shows, and the user confirms it (the acceptance gate). Community no longer
+//     shows, and the user confirms it (the acceptance gate). Community never
 //     blindly takes groups[0].Data[0].
 func selectCreateImage(wfCtx *Context) SelectedImage {
 	return resolveSelectedImage(wfCtx.Params, createImageCatalog(wfCtx))

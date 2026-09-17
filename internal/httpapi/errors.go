@@ -38,7 +38,7 @@ func (e *APIError) Error() string {
 func (e *APIError) Unwrap() error { return e.cause }
 
 // Cause returns the unclassified error behind an internal APIError, or nil.
-// Callers use it to LOG; putting it in a response is what this change removed.
+// Callers use it to LOG; it never goes into a response.
 func (e *APIError) Cause() error {
 	if e == nil {
 		return nil

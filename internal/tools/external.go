@@ -523,8 +523,8 @@ func flattenInto(dst map[string]string, src map[string]any, prefix string) {
 		case map[string]any:
 			flattenInto(dst, val, key)
 		case []string:
-			// Phase 1 handlers emit []string directly. Without this case the
-			// default branch would encode the slice as "[a b]" instead of Key.N.
+			// Without this case the default branch would encode the slice as
+			// "[a b]" instead of Key.N.
 			for i, item := range val {
 				dst[fmt.Sprintf("%s.%d", key, i)] = item
 			}

@@ -188,12 +188,9 @@ func cleanResourceText(value string) string {
 	return strings.TrimSpace(strings.NewReplacer("\r", " ", "\n", " ").Replace(safeValue(value)))
 }
 
-// resourceMemoryLabel converts InstanceSnapshot.Memory, which is MB, to GB.
-// The parameter is named for its unit because the conversion previously carried
-// a `memory < 1024 → print as GB` shortcut, which made the function
-// non-monotonic: 1023 rendered as "1023 GB" and 1024 as "1 GB". A sub-GB
-// instance may not exist today, but a size that reads 1000× too large is not a
-// failure mode to leave standing on the argument that its input is impossible.
+// resourceMemoryLabel converts InstanceSnapshot.Memory, which is MB, to GB. The
+// parameter is named for its unit; no size is printed without the conversion,
+// so the label stays monotonic (1023 MB is not "1023 GB").
 func resourceMemoryLabel(memoryMB int) string {
 	if memoryMB <= 0 {
 		return "内存未知"

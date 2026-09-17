@@ -31,11 +31,11 @@ func (e *Engine) supportZoneListStrict(ctx context.Context) ([]zones.ZoneInfo, e
 // zoneCatalogSnapshot builds the turn's read-only zone catalog from the live
 // support-zone list, one structured placement per zone plus its console display
 // name — the SINGLE reference the resolver validates against and the workflow
-// looks placements up in, replacing the four parallel zone-keyed maps.
+// looks placements up in.
 //
-// The network call, its failure mode and caching live HERE (the same
-// process-cached supportZoneList the old chain used, so this adds a cache read,
-// not an API call), so the snapshot the workflow consumes is pure data. Only a
+// The network call, its failure mode and caching live HERE (the process-cached
+// supportZoneList, so this is a cache read, not an API call), so the snapshot
+// the workflow consumes is pure data. Only a
 // FAILURE to obtain the catalog (no executor or a query error) yields an
 // UNAVAILABLE snapshot — never a fallback: a consumer must refuse rather than
 // guess a zone from a stale table, exactly as for the machine-type catalog. A

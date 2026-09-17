@@ -417,7 +417,6 @@ var Registry = []openai.Tool{
 			},
 		},
 	},
-	// --- Additional API Tools (Phase 2) ---
 	{
 		Type: openai.ToolTypeFunction,
 		Function: &openai.FunctionDefinition{

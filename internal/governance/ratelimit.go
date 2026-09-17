@@ -277,10 +277,7 @@ func (l Limits) forClass(class Class) (qps int, daily int) {
 		// this class.
 		return l.UserTurnQPS, l.UserTurnDaily
 	default:
-		// Phase 1 hardening defines LLM, mutating-tool, and read-expensive
-		// quota classes. Unknown
-		// future classes fall back to the LLM budget until config validation
-		// grows an explicit class registry.
+		// An unknown class falls back to the LLM budget.
 		return l.LLMQPS, l.LLMDaily
 	}
 }

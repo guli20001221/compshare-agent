@@ -198,9 +198,9 @@ func stepQueryCFSForResize() Step {
 			if targetSize <= 0 {
 				return nil, NewMissingSlotError("扩容 CFS 需要指定目标容量（GB）。", "target_size_gb")
 			}
-			// Create checks this bound before its first upstream call; resize used to
-			// carry it all the way to the API and come back with a range error the
-			// model cannot repair from. Same product limit, same place in the flow.
+			// Same product limit as create, checked in the same place: before the
+			// first upstream call, so the API never answers with a range error the
+			// model cannot repair from.
 			if !cfsbilling.SizeInRange(int(targetSize)) {
 				return nil, NewMissingSlotError(cfsbilling.SizeRangeHint(), "target_size_gb")
 			}

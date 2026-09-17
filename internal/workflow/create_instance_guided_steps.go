@@ -11,10 +11,9 @@ import (
 // list. Each shouldSkip predicate answers for exactly one step.
 
 // guidedStepLabel names this card's position for the confirmation payload. The
-// wizard is conditional, so guidedStepPosition reports no total — the old
-// "%d/%d" format outlived its denominator and rendered "4/0", a total of zero
-// stated as fact. It uses the same vocabulary the card title does, so the
-// payload and the card the user is reading cannot disagree.
+// wizard is conditional, so guidedStepPosition reports no total and no "%d/%d"
+// is rendered. It uses the same vocabulary the card title does, so the payload
+// and the card the user is reading cannot disagree.
 func guidedStepLabel(wfCtx *Context, logical int) string {
 	index, _ := guidedStepPosition(wfCtx, logical)
 	return guidedOrdinal(index)

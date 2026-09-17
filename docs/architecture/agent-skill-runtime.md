@@ -82,12 +82,9 @@ the reply's wording or layout.
 
 RAG is retrieval used **inside** the Agent loop, via the `SearchKnowledge` tool —
 not a terminal answer form. The Agent chooses when to search and supplies the
-user-facing retrieval intent. On the turn's first knowledge search,
-`planKnowledgeQuery` produces 1–3 contextualized retrieval queries and resolves
-references when history exists; planning failure or an empty plan falls back to
-the Agent-supplied query unchanged. Retrieval goes to the configured CompShare
-KB MCP endpoint. The result contains cited chunks the Agent grounds
-its answer in. Citation discipline is **fail-open**:
+query; each call executes that query once, without an internal planning model
+call, against the configured CompShare KB MCP endpoint. The result contains
+cited chunks the Agent grounds its answer in. Citation discipline is **fail-open**:
 if the Agent cannot cite, the original answer ships with citation markers stripped
 — citation formatting never regenerates user-facing prose. The only hard stop is
 a raw-evidence leak (security). Citation-marker leakage into the final text is

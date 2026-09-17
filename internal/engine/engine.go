@@ -803,11 +803,12 @@ func (e *Engine) SetSessionState(state SessionState, version int) {
 		// yet persisted, so its scalars are at-or-newer than the incoming row.
 		return
 	}
-	// The job cursor was introduced in V8. Older envelopes may contain an
-	// unknown field with the same spelling; do not grant it V8 semantics. A V8
-	// cursor is normalized again at hydration so client-supplied/unbounded text
-	// cannot bypass the persistence boundary. Version 0 is the client-provided CreateSession
-	// envelope, so neither server-owned continuation cursor may enter through it.
+	// The job cursor is a V8+ field. An older envelope may contain an unknown
+	// field with the same spelling; do not grant it those semantics. A cursor is
+	// normalized again at hydration so client-supplied/unbounded text cannot
+	// bypass the persistence boundary. Version 0 is the client-provided
+	// CreateSession envelope, so neither server-owned continuation cursor may
+	// enter through it.
 	if (state.SchemaVersion != SessionStateSchemaV8 && state.SchemaVersion != SessionStateSchemaV9 &&
 		state.SchemaVersion != SessionStateSchemaV10 && state.SchemaVersion != SessionStateSchemaV11) || version <= 0 {
 		state.PersistedInstanceOpsJobs = nil
@@ -817,8 +818,9 @@ func (e *Engine) SetSessionState(state SessionState, version int) {
 	// CreateCSAgentSession accepts an arbitrary client Context at version 0. The SDK cursor is
 	// server-owned continuation authority, not client state: never let a caller seed a UUID that
 	// could attach this new product session to another local transcript. The first server CAS write
-	// advances ContextVersion and may then carry a cursor observed from @@AGENT_SESSION. V9 did not
-	// bind that cursor to an outer-conversation anchor, so only V10 may hydrate the current contract.
+	// advances ContextVersion and may then carry a cursor observed from @@AGENT_SESSION. Only V10+
+	// binds that cursor to an outer-conversation anchor, so only V10+ may hydrate the current
+	// contract.
 	if (state.SchemaVersion != SessionStateSchemaV10 && state.SchemaVersion != SessionStateSchemaV11) || version <= 0 {
 		state.PersistedInstanceOpsAgent = PersistedInstanceOpsAgentSession{}
 	} else {

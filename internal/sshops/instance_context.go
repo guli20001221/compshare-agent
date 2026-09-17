@@ -167,12 +167,11 @@ func instanceFacts(inst map[string]any, instanceID, observedAt string) []opscont
 	disks, disksKnown := instanceContextDisks(inst)
 	facts = append(facts, instanceContextFact("instance.disks", disks, instanceContextSourceDescribe, observedAt, statusForKnown(disksKnown)))
 
-	// Two facts, not one. v1 merged the Describe Ports block and the TcpForwards list under
-	// `instance.reported_ports`, which made "a port is configured on this instance" and "the platform
-	// forwards that port" indistinguishable in the payload — and both readable as a guest listener,
-	// which neither is. This lane has still not established whether every instance kind reports
-	// control-plane exposure, image-declared defaults, or both, so each fact stays deliberately
-	// neutral about what it proves; what changed is that the model can no longer confuse the two.
+	// Two facts, not one: "a port is configured on this instance" (the Describe Ports block) and
+	// "the platform forwards that port" (the TcpForwards list) are different claims, and neither is
+	// a guest listener. Whether every instance kind reports control-plane exposure, image-declared
+	// defaults, or both is not established, so each fact stays deliberately neutral about what it
+	// proves.
 	hints, hintsKnown := instanceContextPortHints(inst)
 	facts = append(facts, instanceContextFact("platform.instance_port_hints", hints, instanceContextSourceDescribe, observedAt, statusForKnown(hintsKnown)))
 	forwards, forwardsKnown := instanceContextTCPForwards(inst)
@@ -261,9 +260,9 @@ func monitorFacts(ctx context.Context, d Describer, instanceID, observedAt strin
 	}
 	facts := monitorProvenanceFacts(dataStatus, observedAt)
 	if len(metricFacts) == 0 {
-		// Retain the legacy unknown fact for consumers that do not yet interpret
-		// v5 provenance. The new data_status fact is what distinguishes this
-		// successful-empty response from a query failure.
+		// The unknown fact keeps the monitor slot present; the data_status fact
+		// beside it is what distinguishes this successful-empty response from a
+		// query failure.
 		return append(facts,
 			instanceContextFact("monitor", "unavailable", instanceContextSourceMonitor, observedAt, opscontext.StatusUnknown))
 	}

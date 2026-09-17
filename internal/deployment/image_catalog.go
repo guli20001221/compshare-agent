@@ -294,9 +294,8 @@ func (s *ImageCatalogSnapshot) Len() int {
 }
 
 // ParsePlatformImageEntries reads a DescribeCompShareImages / custom / shared
-// response (all use the flat ImageSet shape) into catalog rows tagged with source.
-// It captures the structured Softwares block and the Container runtime-form flag
-// that the legacy platformImageCandidates path discarded.
+// response (all use the flat ImageSet shape) into catalog rows tagged with source,
+// including the structured Softwares block and the Container runtime-form flag.
 func ParsePlatformImageEntries(result map[string]any, source string) []ImageCatalogEntry {
 	if result == nil {
 		return nil

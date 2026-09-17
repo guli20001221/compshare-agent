@@ -226,8 +226,8 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 				continue
 			}
 			// Editable-confirm-form opt-in (create-flow 表单化): per-turn client
-			// capability declaration. Absent/unknown values leave it off, so
-			// legacy clients keep byte-identical confirmation frames.
+			// capability declaration. Absent/unknown values leave it off, so a
+			// client that does not opt in keeps plain confirmation frames.
 			if features, err := frame.Get("Features").StringArray(); err == nil {
 				for _, f := range features {
 					if f == featureConfirmForm {

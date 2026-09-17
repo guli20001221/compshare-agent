@@ -9,18 +9,18 @@ import (
 // UpstreamAPIError is the typed failure ExternalExecutor returns when an upstream
 // CompShare response carries a non-zero RetCode.
 //
-// Its Error() string is BYTE-IDENTICAL to the historical flat format
-// ("API error (RetCode=N): MSG"), because the saga step wrappers embed it via %v
-// and that text reaches user-facing narration. Do NOT change Error()'s format.
+// Its Error() string is the flat "API error (RetCode=N): MSG": the workflow step
+// wrappers embed it via %v and that text reaches user-facing narration, so the
+// format is a contract.
 //
 // Classification must use the typed fields, never this display string.
 //
 // Hint carries optional recovery guidance. It is not part of Error()
 // and is surfaced to the model/user separately, so reading it can never leak the
-// raw upstream tokens ("RetCode=230" / "not available" / "CompShareImageId") that
-// the reply_not_contains regression gate forbids. The same Hint serves two
-// consumers: the ReAct observation and the typed read-capability failure
-// renderer. The wording must remain actionable for both audiences.
+// raw upstream tokens ("RetCode=230" / "not available" / "CompShareImageId").
+// The same Hint serves two consumers: the ReAct observation and the typed
+// read-capability failure renderer. The wording must remain actionable for both
+// audiences.
 type UpstreamAPIError struct {
 	Code    int
 	Message string
@@ -165,9 +165,8 @@ func retCodeGuidanceForMessage(code int, msg string) retCodeGuidance {
 
 func retCodeHintForMessage(code int, msg string) string {
 	guidance := retCodeGuidanceByCode[code]
-	// Keep this pre-existing message refinement in its historical helper. The
-	// RetCode policy itself remains the single table above; this only selects the
-	// more specific safe hint when the gateway's code 230 identifies existing CFS.
+	// The RetCode policy is the single table above; this only selects the more
+	// specific safe hint when the gateway's code 230 identifies existing CFS.
 	if code == 230 && strings.Contains(strings.ToLower(msg), "existing cfs") {
 		return "该可用区已经存在 CFS 共享文件存储：请直接使用已有 CFS，或换一个支持的 Pod/容器可用区后再创建。"
 	}

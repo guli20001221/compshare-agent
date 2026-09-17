@@ -170,10 +170,11 @@ func (b *ConfirmBroker) Cancel(confirmationID string) {
 	}
 }
 
-// WaitForConfirmationOutcome preserves the terminal cause that the old boolean
-// confirmation contract intentionally collapsed. The reason is a closed-set
-// observability value: no broker id, form value, user text, or transport error
-// reaches the trace. A closed channel without a resolved decision means the
+// WaitForConfirmationOutcome blocks until the confirmation is resolved, the
+// context is cancelled, or the timeout expires, and reports the terminal cause.
+// The reason is a closed-set observability value: no broker id, form value, user
+// text, or transport error reaches the trace. A closed channel without a
+// resolved decision means the
 // broker removed the interaction; a cancelled context means the client went
 // away before resolving it.
 func WaitForConfirmationOutcome(ctx context.Context, ch <-chan ConfirmDecision, timeout time.Duration) (ConfirmDecision, string) {

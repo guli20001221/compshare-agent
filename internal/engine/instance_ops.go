@@ -110,12 +110,12 @@ type InstanceOpsProgress struct {
 	// Tier is the guardrail class the command was executed under ("read_only" | "mutating" |
 	// "destructive"), or "" when the runner did not report one. It is the ONLY thing that separates
 	// "this diagnosis looked at the box" from "this diagnosis changed it", which is the question a
-	// user has after an interrupted run — and the adapter was dropping it while the audit row kept
-	// it. Every consumer must treat "" as unknown rather than as read_only.
+	// user has after an interrupted run. Every consumer must treat "" as unknown rather than as
+	// read_only.
 	Tier string
 	// Reason names WHICH gate refused, when the runner knows: the destructive tier, the shape gate,
-	// a declined/timed-out/disconnected legacy confirmation, or a command too long for the legacy wire. Empty
-	// means unknown, and every consumer must degrade to the old generic wording rather than assume a
+	// a declined/timed-out/disconnected confirmation, or a command too long for the wire. Empty
+	// means unknown, and every consumer must degrade to the generic wording rather than assume a
 	// value.
 	Reason   string
 	ExitCode *int   // nil for refused/failed commands that never produced an exit status

@@ -169,8 +169,8 @@ func runClient(o clientOpts) {
 		case "step":
 			// Label and Message are what the console actually renders — Action
 			// alone tells you the frame arrived, not what the user would read.
-			// Printing all three is how a label regression becomes visible here
-			// instead of only in a browser.
+			// Printing all three makes a missing label visible here instead of
+			// only in a browser.
 			fmt.Printf("● step        [%v] %v %v%s%s\n",
 				f["Index"], f["Type"], f["Action"],
 				optionalField(" | ", f["Label"]), optionalField(" | ", f["Message"]))

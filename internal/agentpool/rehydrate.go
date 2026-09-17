@@ -28,7 +28,7 @@ func historyMessageSourceRunes(msg engine.HistoryMessage) int {
 	if err == nil {
 		return len([]rune(string(raw)))
 	}
-	// json.RawMessage can make Marshal fail only for malformed legacy metadata.
+	// json.RawMessage can make Marshal fail only for malformed stored metadata.
 	// Charge that raw payload conservatively instead of turning it into free I/O.
 	return len([]rune(msg.Role)) + len([]rune(msg.Content)) + len(msg.Transcript)
 }

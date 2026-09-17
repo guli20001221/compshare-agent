@@ -267,14 +267,6 @@ func requestedWithoutGPUSpec(wfCtx *Context) string {
 	if wfCtx == nil || wfCtx.Params == nil {
 		return ""
 	}
-	// Accept the old wire-shaped parameter for a confirmation that was already
-	// sealed before deployment. New Agent proposals never see this field.
-	if v, ok := wfCtx.Params["WithoutGpuSpec"]; ok {
-		spec, _ := v.(string)
-		if spec = strings.TrimSpace(spec); spec != "" {
-			return spec
-		}
-	}
 	mode, _ := wfCtx.Params["StartMode"].(string)
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case startModeCPUOnly2C4GB:

@@ -123,10 +123,9 @@ func (s *Service) DiagnoseWithContext(ctx context.Context, d Describer, owner Ow
 		return Result{}, err // credential-free error (see credential.go)
 	}
 	// INV-13: the user-selected target, the box the credential was read from, and the box written to
-	// the audit row must be ONE instance. resolveInstance already requires an exact id
-	// match (the arr[0] fallback is gone — see credential.go), so this holds structurally; assert it
-	// explicitly as fail-closed defense-in-depth against any future regression that reintroduces a
-	// mismatch. The audit records the RESOLVED id so "which box did we enter" has one producer.
+	// the audit row must be ONE instance. resolveInstance already requires an exact id match, so
+	// this holds structurally; it is asserted explicitly as fail-closed defense-in-depth. The audit
+	// records the RESOLVED id so "which box did we enter" has one producer.
 	if cred.InstanceID != instanceID {
 		return Result{}, fmt.Errorf("sshops: resolved instance %q != requested %q, refusing (INV-13)", cred.InstanceID, instanceID)
 	}

@@ -17,9 +17,8 @@ type Deadlines struct {
 	Pong  time.Duration
 }
 
-// Writer serializes outbound frames to a WebSocket connection. It satisfies the
-// same WriteEvent / WriteKeepalive contract as the legacy sse.Writer so the
-// Chat streaming core can write to either transport through one interface.
+// Writer serializes outbound frames to a WebSocket connection through the
+// WriteEvent / WriteKeepalive contract the Chat streaming core writes to.
 //
 // Each frame is a single JSON text message of the form {"event": <name>, ...data}
 // — the data struct's top-level fields are flattened alongside a discriminating

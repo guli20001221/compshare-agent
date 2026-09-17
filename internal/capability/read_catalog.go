@@ -101,6 +101,6 @@ func RegisteredReadForTool(toolName string) (RegisteredRead, bool) {
 	return RegisteredRead{}, false
 }
 
-// Parameter schemas are no longer hand-written here: each capability declares a
-// schemaNode field contract (field_contract.go) that is the single source for
-// its tool schema, runtime validation and consistency-test expectation.
+// Parameter schemas are not written here: each capability declares a schemaNode
+// field contract (field_contract.go) that is the single source for its tool
+// schema, runtime validation and consistency-test expectation.
