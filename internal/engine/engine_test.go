@@ -346,7 +346,7 @@ func TestChatDisplayedInstanceListRemainsInCanonicalTranscript(t *testing.T) {
 	eng.messages = []openai.ChatCompletionMessage{
 		{Role: openai.ChatMessageRoleSystem, Content: "test"},
 	}
-	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaV1}, 1)
+	eng.SetSessionState(SessionState{SchemaVersion: SessionStateSchemaCurrent}, 1)
 
 	reply, err := eng.Chat(context.Background(), "我有哪些实例", noopStep)
 

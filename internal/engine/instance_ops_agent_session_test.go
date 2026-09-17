@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -105,7 +106,9 @@ func TestObserveInstanceOpsAgentSessionPersistsOnlyValidatedCursor(t *testing.T)
 	require.Equal(t, sessionID, got.WorkdirID)
 	require.Equal(t, "gpt-5.6-terra", got.Model)
 	require.Equal(t, anchor, got.ConversationAnchor)
-	require.Equal(t, SessionStateSchemaCurrent, e.sessionState.SchemaVersion)
+	encoded, err := json.Marshal(e.sessionState)
+	require.NoError(t, err)
+	require.Contains(t, string(encoded), `"schema_version":"`+SessionStateSchemaCurrent+`"`)
 	require.NotEmpty(t, got.UpdatedAt)
 
 	// A stale v2 or otherwise cross-contract receipt cannot replace the last proven cursor.
@@ -122,7 +125,7 @@ func TestObserveInstanceOpsAgentSessionPersistsOnlyValidatedCursor(t *testing.T)
 
 func TestClientCreatedVersionZeroContextCannotSeedContinuationCursors(t *testing.T) {
 	const injected = "4ddf6804-9b0b-4527-b6eb-6cc62f65ead5"
-	for _, schema := range []string{SessionStateSchemaV8, SessionStateSchemaV9, SessionStateSchemaV10, SessionStateSchemaV11} {
+	for _, schema := range []string{"8.0", "10.0", SessionStateSchemaCurrent} {
 		e := &Engine{}
 		e.SetSessionState(SessionState{
 			SchemaVersion: schema,

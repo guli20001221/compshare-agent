@@ -177,15 +177,15 @@ EIP is diagnostic-only and is never selected as a dial target.
 
 If a browser disconnects during a diagnosis, the next turn may show a bounded
 deterministic notice. Ordinary commands are never replayed. When one approved
-managed background job emits its opaque handle, SessionState V11 persists only
+managed background job emits its opaque handle, SessionState persists only
 the instance ID, job ID, lifecycle state, bounded purpose and timestamp. A
 later diagnosis on that instance can poll the handle after a browser disconnect,
 Engine LRU eviction or process restart; neither the command nor its output enters
 conversation/audit storage. Up to 32 unresolved handles are tracked independently;
 a matching terminal observation clears only that job. Running services do not
-prevent other installation or download jobs. V8–V10 single-job JSON migrates on read.
+prevent other installation or download jobs.
 
-SessionState V11 also keeps a same-instance opaque Agent SDK session UUID,
+SessionState also keeps a same-instance opaque Agent SDK session UUID,
 a stable opaque workdir UUID, and a content-free SHA-256 high-water mark for the outer conversation already
 bridged into it. The SDK transcript stays in its existing local ephemeral store
 and never enters PostgreSQL. A fresh inner session receives the canonical bounded

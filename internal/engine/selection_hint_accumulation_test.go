@@ -96,7 +96,8 @@ func TestSessionRowFromAnOlderBinaryDropsItsDigest(t *testing.T) {
 	pc, err := ParsePersistedContext(raw)
 	require.NoError(t, err,
 		"an unknown field must not fail the decode — that would make every pre-cut session unloadable")
-	require.Equal(t, SessionStateSchemaV7, pc.AgentSessionState.SchemaVersion)
+	require.Equal(t, "7.0", pc.AgentSessionState.SchemaVersion,
+		"the parse reports the row's own version; hydration stamps the current one")
 	require.Equal(t, "inst-BBB", pc.AgentSessionState.SelectedInstanceID,
 		"premise: the rest of the row must survive, or this proves only that decoding failed")
 

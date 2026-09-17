@@ -47,7 +47,6 @@ func (e *Engine) rememberVerifiedEvidence(question string, ledger knowledge.Evid
 		out = append([]VerifiedEvidenceTurn(nil), out[len(out)-verifiedEvidenceMaxTurns:]...)
 	}
 	e.sessionState.VerifiedEvidence = out
-	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 	e.markVerifiedEvidenceUpdated()
 }
 

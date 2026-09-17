@@ -83,7 +83,6 @@ func (e *Engine) clearSelectedInstance() {
 	e.sessionState.SelectedInstanceSource = ""
 	e.sessionState.SelectedInstanceAtUnix = 0
 	e.sessionState.SelectedInstanceFreshness = ""
-	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 }
 
 func (e *Engine) clearSelectedInstanceIfMatches(id string) {
@@ -150,7 +149,6 @@ func (e *Engine) recordSelectedInstanceIDWithSource(id, name, source string) {
 		e.sessionState.SelectedInstanceSource == SelectedInstanceSourceUser {
 		if e.sessionState.SelectedInstanceID == id && e.sessionState.SelectedInstanceName == "" && name != "" {
 			e.sessionState.SelectedInstanceName = name
-			e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 		}
 		return
 	}
@@ -172,7 +170,6 @@ func (e *Engine) recordSelectedInstanceIDWithSource(id, name, source string) {
 	e.sessionState.SelectedInstanceSource = source
 	e.sessionState.SelectedInstanceAtUnix = time.Now().Unix()
 	e.sessionState.SelectedInstanceFreshness = ContinuityFreshnessFresh
-	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 }
 
 // selectedInstanceTTLSeconds bounds passively observed target hints. A stamped
@@ -193,7 +190,6 @@ func (e *Engine) expireStaleSelectedInstance(now time.Time) {
 	at := e.sessionState.SelectedInstanceAtUnix
 	if at <= 0 {
 		e.sessionState.SelectedInstanceFreshness = ContinuityFreshnessExpired
-		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 		return
 	}
 	freshness := continuityFreshness(at, selectedInstanceTTLSeconds, now)
@@ -202,12 +198,10 @@ func (e *Engine) expireStaleSelectedInstance(now time.Time) {
 			freshness = ContinuityFreshnessStale
 		}
 		e.sessionState.SelectedInstanceFreshness = freshness
-		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 		return
 	}
 	if freshness == ContinuityFreshnessExpired {
 		e.sessionState.SelectedInstanceFreshness = ContinuityFreshnessExpired
-		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 		return
 	}
 	e.sessionState.SelectedInstanceFreshness = freshness

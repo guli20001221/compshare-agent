@@ -173,12 +173,10 @@ func (e *Engine) observeInstanceOpsBackgroundJob(instanceID, jobID, state, purpo
 			jobs[index] = job
 		}
 		e.sessionState.PersistedInstanceOpsJobs = jobs
-		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 		return
 	}
 	if terminalInstanceOpsJobState(state) && index >= 0 {
 		e.sessionState.PersistedInstanceOpsJobs = append(jobs[:index], jobs[index+1:]...)
-		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 	}
 }
 
@@ -209,7 +207,6 @@ func (e *Engine) clearBackgroundJobForInstance(instanceID string) {
 	}
 	if len(retained) != len(e.sessionState.PersistedInstanceOpsJobs) {
 		e.sessionState.PersistedInstanceOpsJobs = retained
-		e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 	}
 }
 

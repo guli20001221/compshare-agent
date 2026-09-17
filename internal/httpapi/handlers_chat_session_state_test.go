@@ -131,7 +131,7 @@ func TestPrepareChatRefreshesSessionStateAfterWaitingForLease(t *testing.T) {
 		State: "running", Purpose: "download model", UpdatedAt: "2026-08-25T12:00:00Z",
 	}
 	latestRaw, err := json.Marshal(engine.PersistedContext{AgentSessionState: engine.SessionState{
-		SchemaVersion: engine.SessionStateSchemaV11, PersistedInstanceOpsJobs: []engine.PersistedInstanceOpsJob{job},
+		SchemaVersion: engine.SessionStateSchemaCurrent, PersistedInstanceOpsJobs: []engine.PersistedInstanceOpsJob{job},
 	}})
 	require.NoError(t, err)
 	h := NewHandlers(
@@ -166,7 +166,7 @@ func TestTurnLimitAllowsOnlyBoundedActiveJobContinuation(t *testing.T) {
 		State: "running", Purpose: "compile requested app", UpdatedAt: "2026-08-25T12:00:00Z",
 	}
 	raw, err := json.Marshal(engine.PersistedContext{AgentSessionState: engine.SessionState{
-		SchemaVersion: engine.SessionStateSchemaV11, PersistedInstanceOpsJobs: []engine.PersistedInstanceOpsJob{job},
+		SchemaVersion: engine.SessionStateSchemaCurrent, PersistedInstanceOpsJobs: []engine.PersistedInstanceOpsJob{job},
 	}})
 	require.NoError(t, err)
 	v7Smuggled := json.RawMessage(`{"agent_session_state":{"schema_version":"7.0","persisted_instance_ops_job":{"instance_id":"uhost-active","job_id":"job-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","state":"running"}}}`)
@@ -312,7 +312,7 @@ func TestDispatchChat_PreHydratedEngine_MalformedContext_StillSkipsPersist(t *te
 
 	// Simulate a prior turn having hydrated the Engine.
 	eng.SetSessionState(engine.SessionState{
-		SchemaVersion:      engine.SessionStateSchemaV1,
+		SchemaVersion:      engine.SessionStateSchemaCurrent,
 		SelectedInstanceID: "uhost-prev",
 	}, 5)
 	_, _, hydrated := eng.SessionStateSnapshot()
@@ -391,7 +391,7 @@ func TestChatStreamEveryTerminusPersistsExistingContinuationCursors(t *testing.T
 		t.Run(tc.name, func(t *testing.T) {
 			raw, err := json.Marshal(engine.PersistedContext{
 				AgentSessionState: engine.SessionState{
-					SchemaVersion:             engine.SessionStateSchemaV11,
+					SchemaVersion:             engine.SessionStateSchemaCurrent,
 					PersistedInstanceOpsJobs:  []engine.PersistedInstanceOpsJob{job},
 					PersistedInstanceOpsAgent: agentCursor,
 				},

@@ -109,5 +109,4 @@ func (e *Engine) observeInstanceOpsAgentSession(instanceID, sessionID, workdirID
 		return
 	}
 	e.sessionState.PersistedInstanceOpsAgent = candidate
-	e.sessionState.SchemaVersion = SessionStateSchemaCurrent
 }
