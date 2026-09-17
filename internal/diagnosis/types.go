@@ -62,10 +62,6 @@ func NewContext(params map[string]any) *Context {
 	}
 }
 
-func (c *Context) Result(stepName string) map[string]any {
-	return c.StepResults[stepName]
-}
-
 // RequireUHostId extracts and validates the UHostId param.
 // Returns the ID or an error if missing/empty.
 func (c *Context) RequireUHostId() (string, error) {

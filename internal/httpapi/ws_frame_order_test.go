@@ -109,7 +109,7 @@ func readOneFrame(t *testing.T, ctx context.Context, conn *websocket.Conn) map[s
 // frame-order gate. It drives a per-engine mutating engine through the REAL
 // chatStream WS handler: the scripted LLM's first round proposes a write, the
 // resolver verifies the instance and chatStream emits a `confirmation` frame
-// while blocking in WaitForConfirmation, the test client rejects it, and the
+// while blocking in WaitForConfirmationOutcome, the test client rejects it, and the
 // answer round then streams a `token` frame. The card MUST precede the first
 // answer token. START-on-Stopped is used because it reaches a plain confirmation
 // via ConfirmFunc (create may route to an intake form via a different callback);
@@ -159,7 +159,7 @@ func TestWSLegacy_ConfirmationFramePrecedesTokenFrame(t *testing.T) {
 	)))
 
 	// Phase 1: read up to and including the confirmation frame. The turn is
-	// blocked in WaitForConfirmation, so no token can have been emitted yet.
+	// blocked in WaitForConfirmationOutcome, so no token can have been emitted yet.
 	var frames []map[string]any
 	var confirmationID string
 	for {

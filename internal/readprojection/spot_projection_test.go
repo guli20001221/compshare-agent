@@ -19,7 +19,7 @@ func spotInstance(id string, isSpot bool) entity.InstanceSnapshot {
 // Both rows describe as Postpay; is_spot must preserve the independent resource
 // mode for positive and negative answers.
 func TestSpotInstanceIsVisibleInTheEnvelope(t *testing.T) {
-	env := BuildResourceEnvelope([]entity.InstanceSnapshot{
+	env := buildResourceEnvelope([]entity.InstanceSnapshot{
 		spotInstance("uhost-spot", true),
 		spotInstance("uhost-postpay", false),
 	})

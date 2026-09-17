@@ -42,18 +42,12 @@ const (
 	readChunkStatusUnavailable  = "unavailable"
 )
 
-// chunkReader is the optional capability a KnowledgeRetriever may implement to
-// serve a full chunk body by id. It is kept OFF the KnowledgeRetriever interface
-// so every existing implementation and test double still satisfies it; a
-// retriever without the method simply makes ReadChunk report the corpus
-// unavailable rather than failing to compile.
-type chunkReader interface {
-	Chunk(chunkID string) (knowledge.KBChunk, bool)
-}
-
-// searchBoundChunkReader is the remote half of knowledge retrieval. The Engine
-// supplies the search_id it recorded for this turn; a reader never retains it,
-// which prevents a capability from leaking between sessions or turns.
+// searchBoundChunkReader is the optional capability a KnowledgeRetriever may
+// implement to serve full chunk bodies. It is kept OFF the KnowledgeRetriever
+// interface so a retriever without it simply makes ReadChunk report the corpus
+// unavailable. The Engine supplies the search_id it recorded for this turn; a
+// reader never retains it, which prevents a capability from leaking between
+// sessions or turns.
 type searchBoundChunkReader interface {
 	ReadChunks(ctx context.Context, searchID string, chunkIDs []string) ([]knowledge.KBChunk, error)
 }
@@ -113,8 +107,7 @@ func (e *Engine) autoMaterializeKnowledgeChunks(
 			continue
 		}
 		if _, ok := ledgerIndexes[id]; !ok {
-			// Local readers do not have a search_id capability, so ledger
-			// membership is their equivalent authorization boundary.
+			// Only a chunk the ledger shows the model may be expanded.
 			continue
 		}
 		if _, duplicate := seen[id]; duplicate {
@@ -139,60 +132,51 @@ func (e *Engine) autoMaterializeKnowledgeChunks(
 		return result
 	}
 
-	remoteReader, remote := e.knowledgeRetriever.(searchBoundChunkReader)
-	localReader, local := e.knowledgeRetriever.(chunkReader)
-	if !remote && !local {
+	reader, ok := e.knowledgeRetriever.(searchBoundChunkReader)
+	if !ok {
 		result.Unavailable = true
 		return result
 	}
 
 	chunksByID := make(map[string]knowledge.KBChunk, len(ids))
-	if remote {
-		groups := make([]remoteReadGroup, 0, len(ids))
-		groupIndex := map[string]int{}
-		for _, id := range ids {
-			searchID := strings.TrimSpace(e.searchKnowledgeCapabilitiesThisTurn[id])
-			if searchID == "" {
-				result.Unavailable = true
-				continue
-			}
-			index, ok := groupIndex[searchID]
-			if !ok {
-				index = len(groups)
-				groupIndex[searchID] = index
-				groups = append(groups, remoteReadGroup{searchID: searchID})
-			}
-			groups[index].ids = append(groups[index].ids, id)
+	groups := make([]remoteReadGroup, 0, len(ids))
+	groupIndex := map[string]int{}
+	for _, id := range ids {
+		searchID := strings.TrimSpace(e.searchKnowledgeCapabilitiesThisTurn[id])
+		if searchID == "" {
+			result.Unavailable = true
+			continue
 		}
+		index, ok := groupIndex[searchID]
+		if !ok {
+			index = len(groups)
+			groupIndex[searchID] = index
+			groups = append(groups, remoteReadGroup{searchID: searchID})
+		}
+		groups[index].ids = append(groups[index].ids, id)
+	}
+	if ctx == nil {
+		ctx = e.currentCtx
 		if ctx == nil {
-			ctx = e.currentCtx
-			if ctx == nil {
-				ctx = context.Background()
-			}
+			ctx = context.Background()
 		}
-		for _, group := range groups {
-			chunks, err := remoteReader.ReadChunks(ctx, group.searchID, group.ids)
-			if err != nil {
-				if errors.Is(err, knowledge.ErrSearchCapabilityInvalid) {
-					e.invalidateSearchKnowledgeCapability(group.searchID)
-				}
-				result.Unavailable = true
-				continue
+	}
+	for _, group := range groups {
+		chunks, err := reader.ReadChunks(ctx, group.searchID, group.ids)
+		if err != nil {
+			if errors.Is(err, knowledge.ErrSearchCapabilityInvalid) {
+				e.invalidateSearchKnowledgeCapability(group.searchID)
 			}
-			requested := make(map[string]struct{}, len(group.ids))
-			for _, id := range group.ids {
-				requested[id] = struct{}{}
-			}
-			for _, chunk := range chunks {
-				id := strings.TrimSpace(chunk.ChunkID)
-				if _, ok := requested[id]; ok {
-					chunksByID[id] = chunk
-				}
-			}
+			result.Unavailable = true
+			continue
 		}
-	} else {
-		for _, id := range ids {
-			if chunk, ok := localReader.Chunk(id); ok {
+		requested := make(map[string]struct{}, len(group.ids))
+		for _, id := range group.ids {
+			requested[id] = struct{}{}
+		}
+		for _, chunk := range chunks {
+			id := strings.TrimSpace(chunk.ChunkID)
+			if _, ok := requested[id]; ok {
 				chunksByID[id] = chunk
 			}
 		}
@@ -260,9 +244,8 @@ func (e *Engine) executeReadChunk(args map[string]any, onStep func(StepEvent)) s
 		droppedIDs = len(ids) - maxReadChunkIDsPerCall
 		ids = ids[:maxReadChunkIDsPerCall]
 	}
-	remoteReader, remote := e.knowledgeRetriever.(searchBoundChunkReader)
-	localReader, local := e.knowledgeRetriever.(chunkReader)
-	if !remote && !local {
+	reader, ok := e.knowledgeRetriever.(searchBoundChunkReader)
+	if !ok {
 		onStep(StepEvent{Type: StepToolResult, Action: "ReadChunk", Source: e.knowledgeToolSource(), Message: "知识库不可用"})
 		return readChunkResultJSON(nil, map[string]any{"error": "知识库不可用。"})
 	}
@@ -270,11 +253,7 @@ func (e *Engine) executeReadChunk(args map[string]any, onStep func(StepEvent)) s
 		onStep(StepEvent{Type: StepToolResult, Action: "ReadChunk", Source: e.knowledgeToolSource(), Message: "本轮读取次数已达上限"})
 		return readChunkResultJSON(nil, map[string]any{"read_limit_reached": true})
 	}
-	if remote {
-		return e.executeRemoteReadChunk(remoteReader, ids, droppedIDs, onStep)
-	}
-	items, read := e.materializeReadChunks(ids, nil, localReader.Chunk)
-	return e.finishReadChunk(items, read, droppedIDs, nil, "读取完成", onStep)
+	return e.executeRemoteReadChunk(reader, ids, droppedIDs, onStep)
 }
 
 func (e *Engine) executeRemoteReadChunk(reader searchBoundChunkReader, ids []string, droppedIDs int, onStep func(StepEvent)) string {
@@ -471,10 +450,7 @@ type remoteReadGroup struct {
 }
 
 func (e *Engine) knowledgeToolSource() string {
-	if _, ok := e.knowledgeRetriever.(searchBoundChunkReader); ok {
-		return observability.ToolSourceKnowledgeMCP
-	}
-	return observability.ToolSourceKnowledgeLocal
+	return observability.ToolSourceKnowledgeMCP
 }
 
 func (e *Engine) markChunkRead(chunkID string) {

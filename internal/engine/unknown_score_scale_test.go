@@ -150,13 +150,11 @@ func TestUnknownRemoteScaleIsNotRankingAmbiguous(t *testing.T) {
 }
 
 // TestTheFloorExemptionDoesNotRideOnTheDisplayValue keeps the mechanisms
-// separate. An earlier version of this fix expressed the exemption by returning
-// 0 from weakEvidenceThresholdFor, which disabled the floor as a SIDE EFFECT of
-// a display value: `score < 0` is false for any positive score. The two changes
-// then covered for each other, and a mutation deleting the real guard survived
-// the whole suite.
+// separate: a threshold of 0 for the unknown scale would disable the floor as a
+// side effect of a display value (`score < 0` is false for any positive score),
+// and the real guard in appliedFloor could then be deleted unnoticed.
 func TestTheFloorExemptionDoesNotRideOnTheDisplayValue(t *testing.T) {
-	assert.NotZero(t, weakEvidenceThresholdFor(knowledge.RetrievalModeUnknownRemote),
+	assert.NotZero(t, knowledge.WeakEvidenceThresholdFor(knowledge.RetrievalModeUnknownRemote),
 		"the scale table must not be the thing that disables the floor; appliedFloor is, "+
 			"and it has to be independently killable")
 }

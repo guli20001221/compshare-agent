@@ -8,9 +8,14 @@ import (
 	"github.com/compshare-agent/internal/deployment"
 	"github.com/compshare-agent/internal/entity"
 	"github.com/compshare-agent/internal/envelope"
+	"github.com/compshare-agent/internal/observability"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func buildResourceEnvelope(instances []entity.InstanceSnapshot) envelope.Envelope {
+	return BuildResourceEnvelopeWithMeta(instances, ResourceEnvelopeMeta{})
+}
 
 func TestBuildResourceEnvelopeIsStable(t *testing.T) {
 	instances := []entity.InstanceSnapshot{
@@ -49,8 +54,8 @@ func TestBuildResourceEnvelopeIsStable(t *testing.T) {
 		},
 	}
 
-	env := BuildResourceEnvelope(instances)
-	hash, err := envelope.Hash(env)
+	env := buildResourceEnvelope(instances)
+	hash, err := observability.HashTracePayload(env)
 	require.NoError(t, err)
 
 	assert.Equal(t, envelope.KindResourceInfo, env.Kind)
@@ -94,7 +99,7 @@ func TestBuildResourceEnvelopeProjectsLiveZoneNamesWithoutALocalMapping(t *testi
 }
 
 func TestBuildResourceEnvelopeProjectsCurrentImageShapeAndLifecycleTimes(t *testing.T) {
-	env := BuildResourceEnvelope([]entity.InstanceSnapshot{{
+	env := buildResourceEnvelope([]entity.InstanceSnapshot{{
 		UHostId: "cpod-a", ImageName: "PyTorch 2.9", ImageType: "App", InstanceType: "Container",
 		SchedulerStopTime: 1000, StopTime: 2000, ReleaseTime: 3000,
 	}})
@@ -108,7 +113,7 @@ func TestBuildResourceEnvelopeProjectsCurrentImageShapeAndLifecycleTimes(t *test
 }
 
 func TestBuildResourceEnvelopeProjectsCFSAndMigrationProgress(t *testing.T) {
-	env := BuildResourceEnvelope([]entity.InstanceSnapshot{{
+	env := buildResourceEnvelope([]entity.InstanceSnapshot{{
 		UHostId: "cpod-a", CfsID: "cfs-1",
 		MigrationProgress: entity.InstanceMigrationProgress{
 			Present: true, MigrationID: "migration-1", State: "Failed", Reason: "target unavailable",
@@ -147,7 +152,7 @@ func TestBuildResourceEnvelopeOmitsUnverifiedZoneName(t *testing.T) {
 }
 
 func TestBuildResourceEnvelope_NoGPUDoesNotExposeTheStoredGPUModel(t *testing.T) {
-	env := BuildResourceEnvelope([]entity.InstanceSnapshot{{
+	env := buildResourceEnvelope([]entity.InstanceSnapshot{{
 		UHostId: "uhost-a", State: "Running", GpuType: "4090", GPU: 0, CPU: 2, Memory: 4096,
 	}})
 	facts := map[string]any{}
@@ -387,9 +392,9 @@ func TestBuildMonitorEnvelopeHashIsStable(t *testing.T) {
 	left := BuildMonitorEnvelope(subjects, nil, map[string]any{"GPU": 87, "CPU": 1})
 	right := BuildMonitorEnvelope(subjects, nil, map[string]any{"CPU": 1, "GPU": 87})
 
-	leftHash, err := envelope.Hash(left)
+	leftHash, err := observability.HashTracePayload(left)
 	require.NoError(t, err)
-	rightHash, err := envelope.Hash(right)
+	rightHash, err := observability.HashTracePayload(right)
 	require.NoError(t, err)
 
 	assert.Equal(t, leftHash, rightHash)

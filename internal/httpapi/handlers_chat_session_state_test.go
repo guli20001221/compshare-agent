@@ -392,7 +392,7 @@ func TestChatStreamEveryTerminusPersistsExistingContinuationCursors(t *testing.T
 			raw, err := json.Marshal(engine.PersistedContext{
 				AgentSessionState: engine.SessionState{
 					SchemaVersion:             engine.SessionStateSchemaV11,
-					PersistedInstanceOpsJobs:   []engine.PersistedInstanceOpsJob{job},
+					PersistedInstanceOpsJobs:  []engine.PersistedInstanceOpsJob{job},
 					PersistedInstanceOpsAgent: agentCursor,
 				},
 				ClientContext: json.RawMessage(`{"page":"instance"}`),

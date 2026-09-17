@@ -29,11 +29,6 @@ type PromptSection struct {
 	Text string
 }
 
-func renderPromptSections(sections []PromptSection) string {
-	text, _ := renderPromptSectionsWithIDs(sections)
-	return text
-}
-
 func renderPromptSectionsWithIDs(sections []PromptSection) (string, []string) {
 	seen := make(map[string]struct{}, len(sections))
 	ids := make([]string, 0, len(sections))
@@ -105,60 +100,6 @@ func BuildSystemWithOptionsAndTrace(userContext string, opts BuildOptions) (stri
 	return text + "\n", ids
 }
 
-// FormatInstanceContext formats instance list into a context string.
-func FormatInstanceContext(apiResult map[string]any) string {
-	hosts, ok := apiResult["UHostSet"].([]any)
-	if !ok || len(hosts) == 0 {
-		return "用户当前没有实例。"
-	}
-
-	var lines []string
-	running, stopped := 0, 0
-	for _, h := range hosts {
-		host, ok := h.(map[string]any)
-		if !ok {
-			continue
-		}
-		id, _ := host["UHostId"].(string)
-		name, _ := host["Name"].(string)
-		state, _ := host["State"].(string)
-		gpuType, _ := host["GpuType"].(string)
-		gpu, _ := host["GPU"].(float64)
-		chargeType, _ := host["ChargeType"].(string)
-
-		line := fmt.Sprintf("- %s (%s): GPU=%s×%.0f, 状态=%s, 计费=%s",
-			name, id, gpuType, gpu, translateState(state), chargeType)
-		lines = append(lines, line)
-
-		if state == "Running" {
-			running++
-		} else {
-			stopped++
-		}
-	}
-
-	summary := fmt.Sprintf("您有 %d 个实例（%d 个运行中、%d 个其他状态）\n",
-		len(hosts), running, stopped)
-	return summary + strings.Join(lines, "\n")
-}
-
-var stateTranslation = map[string]string{
-	"Running":      "运行中",
-	"Stopped":      "关机",
-	"Starting":     "启动中",
-	"Stopping":     "关机中",
-	"Install":      "初始化中",
-	"Rebooting":    "重启中",
-	"Install Fail": "初始化失败",
-}
-
-func translateState(state string) string {
-	if v, ok := stateTranslation[state]; ok {
-		return v
-	}
-	return state
-}
-
 const maxToolResultRunes = 4000
 
 // toolResultOversizeKey names the field an all-but-empty result carries. It
@@ -166,7 +107,7 @@ const maxToolResultRunes = 4000
 // silence it has to infer.
 const toolResultOversizeKey = "_ResultTooLarge"
 
-// toolResultShrinkLevels is the ladder FormatToolResult walks when a result is
+// toolResultShrinkLevels is the ladder FormatToolResultWithTrace walks when a result is
 // over the cap, from gentlest to harshest. arrayItems is how many entries of
 // each list survive; scalarRunes caps individual string values (0 = leave
 // strings alone). Every rung re-marshals a real Go value, so every rung is
@@ -185,8 +126,7 @@ var toolResultShrinkLevels = []struct {
 	{arrayItems: 0, scalarRunes: 120},
 }
 
-// FormatToolResult returns parseable JSON within maxToolResultRunes. It drops
-// whole values and records truncation explicitly; it never byte-cuts JSON.
+// ToolResultFormatTrace is the content-free measurement of one formatting pass.
 type ToolResultFormatTrace struct {
 	// RawRunes is nil when the input could not be serialized, rather than
 	// misreporting an unknown size as a measured zero.
@@ -195,10 +135,10 @@ type ToolResultFormatTrace struct {
 	Truncated    bool
 }
 
-// FormatToolResultWithTrace is FormatToolResult plus content-free measurements
-// of this generic formatting layer. A caller may already have applied a
-// tool-specific projection; RawRunes therefore means "input to this formatter",
-// not the upstream payload size.
+// FormatToolResultWithTrace returns parseable JSON within maxToolResultRunes.
+// It drops whole values and records truncation explicitly; it never byte-cuts
+// JSON. A caller may already have applied a tool-specific projection; RawRunes
+// therefore means "input to this formatter", not the upstream payload size.
 func FormatToolResultWithTrace(result map[string]any) (string, ToolResultFormatTrace) {
 	b, err := json.Marshal(result)
 	if err != nil {
@@ -233,13 +173,6 @@ func FormatToolResultWithTrace(result map[string]any) (string, ToolResultFormatT
 		VisibleRunes: utf8.RuneCountInString(visible),
 		Truncated:    true,
 	}
-}
-
-// FormatToolResult preserves the existing call contract for callers that do
-// not need formatting telemetry.
-func FormatToolResult(result map[string]any) string {
-	formatted, _ := FormatToolResultWithTrace(result)
-	return formatted
 }
 
 // truncateArrays limits every []any it can reach — top level, nested in maps,

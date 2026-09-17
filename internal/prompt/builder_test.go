@@ -5,6 +5,11 @@ import (
 	"testing"
 )
 
+func renderPromptSectionsOnly(sections []PromptSection) string {
+	text, _ := renderPromptSectionsWithIDs(sections)
+	return text
+}
+
 func TestBuildSystemContext(t *testing.T) {
 	ctx := "您有 2 个实例（1 个运行中）"
 	got := BuildSystemWithOptions(ctx, BuildOptions{MutatingToolsEnabled: true})
@@ -15,38 +20,6 @@ func TestBuildSystemContext(t *testing.T) {
 	empty := BuildSystemWithOptions("", BuildOptions{MutatingToolsEnabled: true})
 	if !strings.Contains(empty, "暂无用户信息") {
 		t.Fatal("empty context should use the first-turn placeholder")
-	}
-}
-
-func TestFormatInstanceContextEmpty(t *testing.T) {
-	for _, input := range []map[string]any{{}, {"UHostSet": nil}} {
-		if got := FormatInstanceContext(input); got != "用户当前没有实例。" {
-			t.Fatalf("empty instance context = %q", got)
-		}
-	}
-}
-
-func TestFormatInstanceContextWithInstances(t *testing.T) {
-	apiResult := map[string]any{"UHostSet": []any{
-		map[string]any{"UHostId": "uhost-abc", "Name": "my-gpu", "State": "Running", "GpuType": "4090", "GPU": float64(1), "ChargeType": "Postpay"},
-		map[string]any{"UHostId": "uhost-def", "Name": "test", "State": "Stopped", "GpuType": "3080Ti", "GPU": float64(1), "ChargeType": "Month"},
-	}}
-	got := FormatInstanceContext(apiResult)
-	for _, want := range []string{"2 个实例", "1 个运行中", "uhost-abc", "运行中"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("instance context missing %q: %s", want, got)
-		}
-	}
-}
-
-func TestTranslateState(t *testing.T) {
-	for input, want := range map[string]string{
-		"Running": "运行中", "Stopped": "关机", "Starting": "启动中",
-		"Install": "初始化中", "Install Fail": "初始化失败", "UnknownState": "UnknownState",
-	} {
-		if got := translateState(input); got != want {
-			t.Errorf("translateState(%q) = %q, want %q", input, got, want)
-		}
 	}
 }
 
@@ -84,7 +57,7 @@ func TestRenderPromptSectionsRejectsDuplicateID(t *testing.T) {
 			t.Fatal("duplicate section id must fail prompt construction")
 		}
 	}()
-	renderPromptSections([]PromptSection{{ID: "policy", Text: "first"}, {ID: "policy", Text: "second"}})
+	renderPromptSectionsOnly([]PromptSection{{ID: "policy", Text: "first"}, {ID: "policy", Text: "second"}})
 }
 
 func TestPromptTraceReportsUniqueSectionIDsWithoutContent(t *testing.T) {

@@ -28,7 +28,7 @@ func TestInterruptedUserHistoryReachesOuterAndInnerModels(t *testing.T) {
 		{Role: openai.ChatMessageRoleTool, ToolCallID: "interrupted", Content: "uncommitted raw output"},
 		{Role: openai.ChatMessageRoleUser, Content: "继续"},
 	}}
-	view := (ContextCompiler{}).Compile(eng, "继续", time.Unix(1_750_000_000, 0))
+	view := (ContextCompiler{}).CompileForTurn(eng, "继续", "", time.Unix(1_750_000_000, 0))
 	require.Equal(t, []ConversationPair{
 		{User: oldTask, Assistant: "继续检查 3001。"},
 		{User: interruptedTask},
@@ -92,20 +92,20 @@ func TestInterruptedUserHistoryBudgetKeepsWholeRecentEndpoints(t *testing.T) {
 		{Role: openai.ChatMessageRoleUser, Content: strings.Repeat("新", maxReplayedHistoryRunes-2)},
 		{Role: openai.ChatMessageRoleUser, Content: "继续"},
 	}}
-	view := (ContextCompiler{}).Compile(eng, "继续", time.Now())
+	view := (ContextCompiler{}).CompileForTurn(eng, "继续", "", time.Now())
 	require.Len(t, view.RecentConversation, 2)
 	require.Equal(t, maxReplayedHistoryRunes, conversationPairsRunes(view.RecentConversation))
 	eng.trimHistory()
-	require.Equal(t, view.RecentConversation, (ContextCompiler{}).Compile(eng, "继续", time.Now()).RecentConversation)
+	require.Equal(t, view.RecentConversation, (ContextCompiler{}).CompileForTurn(eng, "继续", "", time.Now()).RecentConversation)
 
 	// A one-rune overflow drops the entire older endpoint, never a fragment or a
 	// fabricated assistant. A sole oversized latest user still follows the
 	// existing newest-exchange retention rule until the final request ceiling.
 	eng.messages = append(eng.messages, userMsg("再"))
-	view = (ContextCompiler{}).Compile(eng, "继续", time.Now())
+	view = (ContextCompiler{}).CompileForTurn(eng, "继续", "", time.Now())
 	require.Equal(t, []ConversationPair{{User: "继续"}, {User: "再"}}, view.RecentConversation)
 	eng.messages = append(eng.messages, userMsg(strings.Repeat("末", maxReplayedHistoryRunes+1)))
-	view = (ContextCompiler{}).Compile(eng, "继续", time.Now())
+	view = (ContextCompiler{}).CompileForTurn(eng, "继续", "", time.Now())
 	require.Len(t, view.RecentConversation, 1)
 	require.Equal(t, maxReplayedHistoryRunes+1, conversationPairsRunes(view.RecentConversation))
 }
@@ -123,7 +123,7 @@ func TestInterruptedUserHistoryKeepsTranscriptAttribution(t *testing.T) {
 	finishTurn(eng, turn("old-instance-evidence"))
 	eng.messages = append(eng.messages, userMsg("继续"))
 	finishTurn(eng, turn("new-instance-evidence"))
-	view := (ContextCompiler{}).Compile(eng, "继续", time.Now())
+	view := (ContextCompiler{}).CompileForTurn(eng, "继续", "", time.Now())
 	require.Len(t, view.RecentConversation, 3)
 	require.Contains(t, renderTestMessages(view.RecentConversation[0].Transcript), "old-instance-evidence")
 	require.Equal(t, ConversationPair{User: "继续"}, view.RecentConversation[1])

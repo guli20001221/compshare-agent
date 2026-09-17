@@ -971,14 +971,6 @@ func guidedExecutableCandidateZones(wfCtx *Context, catalog map[string]any, gpuT
 	return out
 }
 
-// zoneCreatability reports, per zone, what the probe established. A zone is
-// present ONLY when a call for it succeeded AND returned a usable Specs[]: a
-// failed call, a call the batch bound never made, and an empty spec list are all
-// "we do not know", and the caller must leave those zones alone.
-func zoneCreatability(result map[string]any) map[string]bool {
-	return comboCreatability(result)
-}
-
 // comboCreatability maps capacityComboKey(model, zone) -> creatable. An entry is
 // only present when that probe actually answered: a failed call or a response
 // with no capacity signal stays ABSENT, which both cards read as unknown rather
@@ -1255,23 +1247,6 @@ type imageCandidateSet struct {
 	afterType []deployment.ImageSelection
 	// final is what the picker offers and what "共 N 个" counts.
 	final []deployment.ImageSelection
-}
-
-// buildImageCandidateSet takes zoneIsPod as an EXPLICIT argument rather than
-// reading the ZoneIsPod param, which was the bug. ZoneIsPod is a denormalized cache
-// that syncGuidedZoneMeta only writes at the zone card — and under the image-first
-// order the picker runs BEFORE that card, so a zone pinned in the request reached
-// here with the param absent (read as non-pod). The pod/container filter never
-// applied, the picker offered and defaulted to a VM-only image, and the create gate
-// refused it at the very end ("... 不是容器镜像，不能用于 上海二A"). The caller now
-// resolves the flag from the zone catalog (createZoneIsPod), the same authority the
-// create gate uses, so it cannot be stale or unset.
-func buildImageCandidateSet(params map[string]any, images map[string]any, gpuType string, taxonomy *deployment.ImageTaxonomy, zoneIsPod bool) imageCandidateSet {
-	return buildImageCandidateSetForRequest(params, images, taxonomy, deployment.ImageRequest{
-		Name:         paramStr(params, "ImageName", ""),
-		RequestedGPU: gpuType,
-		Zone:         deployment.ZoneConstraint{Zone: paramStr(params, "Zone", ""), IsPod: zoneIsPod},
-	})
 }
 
 // buildImageCandidateSetForRequest ranks the supplied structured request against

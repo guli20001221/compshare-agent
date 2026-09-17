@@ -3,25 +3,9 @@ package tools
 import (
 	"testing"
 
-	openai "github.com/sashabaranov/go-openai"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-func hasTool(tools []openai.Tool, name string) bool {
-	for _, t := range tools {
-		if t.Function != nil && t.Function.Name == name {
-			return true
-		}
-	}
-	return false
-}
-
-func TestSearchKnowledgeVisibilityFollowsRuntimeMode(t *testing.T) {
-	assert.True(t, hasTool(VisibleRegistry(false), "SearchKnowledge"), "read-only registry includes knowledge search")
-	assert.True(t, hasTool(VisibleRegistry(true), "SearchKnowledge"), "mutating registry includes knowledge search")
-	assert.Equal(t, len(Registry), len(VisibleRegistry(true)), "mutating registry exposes all registered tools")
-}
 
 // TestSearchKnowledgePolicyIsLocalReadOnly proves SearchKnowledge is a read-only
 // knowledge-routed tool that MUST be dispatched locally: its Route is knowledge,

@@ -27,11 +27,6 @@ func transcriptExchange(tag string) []openai.ChatCompletionMessage {
 	}
 }
 
-func renderTranscript(transcript *TranscriptV1) string {
-	raw, _ := json.Marshal(transcript)
-	return string(raw)
-}
-
 // TestTrimAssembledRequest_NeverOrphansToolResultsInReplayedRegion is the
 // blocking one: phase 1 shed a fixed two messages per "pair", so cutting into a
 // four-message exchange left its tool result behind with no call declaring it.

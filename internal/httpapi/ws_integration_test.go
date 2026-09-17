@@ -218,7 +218,7 @@ func TestWS_Confirm_FrameResolvesBrokerWaiter(t *testing.T) {
 	confirmID, ch := h.confirmBroker.Register("sess-1", gatewayOwner)
 	result := make(chan bool, 1)
 	go func() {
-		result <- WaitForConfirmation(context.Background(), ch, 5*time.Second).Confirmed
+		result <- waitForConfirmation(context.Background(), ch, 5*time.Second).Confirmed
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -247,7 +247,7 @@ func TestWS_Confirm_WrongOwnerRejected(t *testing.T) {
 	confirmID, ch := h.confirmBroker.Register("sess-1", otherOwner)
 	result := make(chan bool, 1)
 	go func() {
-		result <- WaitForConfirmation(context.Background(), ch, 1*time.Second).Confirmed
+		result <- waitForConfirmation(context.Background(), ch, 1*time.Second).Confirmed
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -282,7 +282,7 @@ func TestWS_Confirm_SessionDriftResolves(t *testing.T) {
 	confirmID, ch := h.confirmBroker.Register("sess-1", gatewayOwner)
 	result := make(chan bool, 1)
 	go func() {
-		result <- WaitForConfirmation(context.Background(), ch, 5*time.Second).Confirmed
+		result <- waitForConfirmation(context.Background(), ch, 5*time.Second).Confirmed
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -314,7 +314,7 @@ func TestWS_Confirm_SuccessIsAcknowledgedWithItsConfirmationID(t *testing.T) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	confirmID, ch := h.confirmBroker.Register("sess-1", gatewayOwner)
-	go func() { WaitForConfirmation(context.Background(), ch, 5*time.Second) }()
+	go func() { waitForConfirmation(context.Background(), ch, 5*time.Second) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -337,7 +337,7 @@ func TestWS_Confirm_DeclineIsAlsoAcknowledged(t *testing.T) {
 	defer conn.Close(websocket.StatusNormalClosure, "")
 
 	confirmID, ch := h.confirmBroker.Register("sess-1", gatewayOwner)
-	go func() { WaitForConfirmation(context.Background(), ch, 5*time.Second) }()
+	go func() { waitForConfirmation(context.Background(), ch, 5*time.Second) }()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()

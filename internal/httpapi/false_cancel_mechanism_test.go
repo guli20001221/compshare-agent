@@ -29,17 +29,17 @@ func TestRepro_WaitForConfirmation_TimeoutAndDisconnectAreIndistinguishableFromD
 	// 1. Explicit decline: a real {Confirmed:false} delivered on the channel.
 	declineCh := make(chan ConfirmDecision, 1)
 	declineCh <- ConfirmDecision{Confirmed: false}
-	decline := WaitForConfirmation(context.Background(), declineCh, time.Second)
+	decline := waitForConfirmation(context.Background(), declineCh, time.Second)
 
 	// 2. Timeout: nobody ever resolves within the window.
 	timeoutCh := make(chan ConfirmDecision) // never written
-	timeout := WaitForConfirmation(context.Background(), timeoutCh, 10*time.Millisecond)
+	timeout := waitForConfirmation(context.Background(), timeoutCh, 10*time.Millisecond)
 
 	// 3. Client disconnect: context cancelled before resolution.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	disconnectCh := make(chan ConfirmDecision) // never written
-	disconnect := WaitForConfirmation(ctx, disconnectCh, time.Second)
+	disconnect := waitForConfirmation(ctx, disconnectCh, time.Second)
 
 	// All three are byte-identical at the boolean the engine actually reads.
 	assert.False(t, decline.Confirmed, "explicit decline is false")

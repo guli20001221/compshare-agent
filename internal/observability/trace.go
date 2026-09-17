@@ -21,7 +21,6 @@ const (
 	ToolSourceMainReAct          = "main_react"
 	ToolSourceWorkflowInternal   = "workflow_internal"
 	ToolSourceDiagnosisInternal  = "diagnosis_internal"
-	ToolSourceKnowledgeLocal     = "knowledge_local"
 	ToolSourceKnowledgeMCP       = "knowledge_mcp"
 	ToolSourceInitContext        = "init_context"
 	ToolSourceCapabilityInternal = "capability_internal"
@@ -242,7 +241,7 @@ type ToolCallTrace struct {
 	ExecutedTargets  int    `json:"executed_targets"`
 	WindowSeconds    int    `json:"window_seconds"`
 	Projected        bool   `json:"projected,omitempty"`
-	// ToolResult* measures only the generic FormatToolResult layer, after any
+	// ToolResult* measures only the generic prompt.FormatToolResultWithTrace layer, after any
 	// tool-specific projection. Pointers preserve absent vs a measured zero.
 	ToolResultRawRunes     *int  `json:"tool_result_raw_runes,omitempty"`
 	ToolResultVisibleRunes *int  `json:"tool_result_visible_runes,omitempty"`

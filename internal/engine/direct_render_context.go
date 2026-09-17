@@ -62,10 +62,6 @@ func HistorySourceRuneBudget() int { return maxRawHistoryRunes }
 // same instant.
 type ContextCompiler struct{}
 
-func (ContextCompiler) Compile(e *Engine, userMsg string, buildAt time.Time) AgentContext {
-	return (ContextCompiler{}).CompileForTurn(e, userMsg, "", buildAt)
-}
-
 func (ContextCompiler) CompileForTurn(e *Engine, userMsg, turnID string, buildAt time.Time) AgentContext {
 	view := AgentContext{
 		TurnID:          compactContextText(turnID),

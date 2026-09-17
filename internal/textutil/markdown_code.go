@@ -1,3 +1,4 @@
+// Package textutil holds pure string helpers shared across runtime packages.
 package textutil
 
 import "strings"

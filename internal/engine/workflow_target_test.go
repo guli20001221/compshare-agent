@@ -367,7 +367,7 @@ func TestUnknownTargetKindIsRefusedNotVerifiedAsInstance(t *testing.T) {
 	ev := eng.verifyTargetExistence(context.Background(), "network", "net-1", "")
 
 	require.Equal(t, entity.ExistenceNotFound, ev.Verdict, "an unknown kind cannot be confirmed to exist")
-	require.False(t, ev.confirmed())
+	require.NotEqual(t, entity.ExistenceVerified, ev.Verdict)
 }
 
 // A missing tool argument stays missing; context is supplied to the Agent,

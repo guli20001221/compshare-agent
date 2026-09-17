@@ -170,14 +170,6 @@ func (b *ConfirmBroker) Cancel(confirmationID string) {
 	}
 }
 
-// WaitForConfirmation blocks until the confirmation is resolved, the context
-// is cancelled (SSE disconnect), or the timeout expires. It preserves the
-// historical decision-only API for callers that do not need attribution.
-func WaitForConfirmation(ctx context.Context, ch <-chan ConfirmDecision, timeout time.Duration) ConfirmDecision {
-	decision, _ := WaitForConfirmationOutcome(ctx, ch, timeout)
-	return decision
-}
-
 // WaitForConfirmationOutcome preserves the terminal cause that the old boolean
 // confirmation contract intentionally collapsed. The reason is a closed-set
 // observability value: no broker id, form value, user text, or transport error

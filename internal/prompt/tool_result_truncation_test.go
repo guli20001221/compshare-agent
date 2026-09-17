@@ -8,6 +8,11 @@ import (
 	"unicode/utf8"
 )
 
+func formatToolResult(result map[string]any) string {
+	formatted, _ := FormatToolResultWithTrace(result)
+	return formatted
+}
+
 // describeInstanceRow approximates the documented upstream row size with
 // synthetic identifiers so truncation tests exercise realistic payloads.
 func describeInstanceRow(i int) map[string]any {
@@ -91,7 +96,7 @@ func describeInstanceResult(n int) map[string]any {
 func TestFormatToolResult_RealInstancePayloadStaysParseable(t *testing.T) {
 	for _, n := range []int{1, 2, 3, 4, 10, 30} {
 		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
-			out := FormatToolResult(describeInstanceResult(n))
+			out := formatToolResult(describeInstanceResult(n))
 
 			var parsed map[string]any
 			if err := json.Unmarshal([]byte(out), &parsed); err != nil {
@@ -114,7 +119,7 @@ func TestFormatToolResult_RealInstancePayloadStaysParseable(t *testing.T) {
 func TestFormatToolResult_ATruncatedListSaysSoToTheModel(t *testing.T) {
 	for _, n := range []int{3, 4, 10, 30} {
 		t.Run(fmt.Sprintf("n=%d", n), func(t *testing.T) {
-			out := FormatToolResult(describeInstanceResult(n))
+			out := formatToolResult(describeInstanceResult(n))
 
 			var parsed map[string]any
 			if err := json.Unmarshal([]byte(out), &parsed); err != nil {
@@ -158,7 +163,7 @@ func TestFormatToolResult_ATruncatedListSaysSoToTheModel(t *testing.T) {
 }
 
 func TestFormatToolResult_GiantScalarStaysParseable(t *testing.T) {
-	out := FormatToolResult(map[string]any{
+	out := formatToolResult(map[string]any{
 		"RetCode": 0,
 		"Action":  "DiagnoseSomething",
 		"log":     strings.Repeat("x", 10000),
@@ -182,7 +187,7 @@ func TestFormatToolResult_NestedListStaysParseable(t *testing.T) {
 	for i := range inner {
 		inner[i] = map[string]any{"ImageId": fmt.Sprintf("uimage-%03d", i), "Name": strings.Repeat("镜", 60)}
 	}
-	out := FormatToolResult(map[string]any{
+	out := formatToolResult(map[string]any{
 		"RetCode": 0,
 		"CompshareImageGroup": []any{
 			map[string]any{"ImageName": "PyTorch", "Data": inner},
@@ -209,7 +214,7 @@ func TestFormatToolResult_UnderCapIsByteIdentical(t *testing.T) {
 		t.Fatalf("precondition: a single instance must fit under the cap, got %d runes",
 			utf8.RuneCount(direct))
 	}
-	if got := FormatToolResult(small); got != string(direct) {
+	if got := formatToolResult(small); got != string(direct) {
 		t.Errorf("a result under the cap must be returned untouched\nwant %s\ngot  %s", direct, got)
 	}
 }

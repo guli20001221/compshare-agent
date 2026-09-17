@@ -14,14 +14,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// chunkStoreRetriever is a scriptedKnowledgeRetriever that also serves full chunk
-// bodies by id, so ReadChunk has something to read. Only the id->chunk map is
-// consulted by Chunk; Retrieve behavior is inherited.
-type chunkStoreRetriever struct {
-	scriptedKnowledgeRetriever
-	chunks map[string]knowledge.KBChunk
-}
-
+// remoteChunkStoreRetriever is a scriptedKnowledgeRetriever that also serves
+// full chunk bodies by id under a search capability, so ReadChunk has something
+// to read. Only the id->chunk map is consulted by ReadChunks; Retrieve behavior
+// is inherited.
 type remoteChunkStoreRetriever struct {
 	scriptedKnowledgeRetriever
 	chunks map[string]knowledge.KBChunk
@@ -48,11 +44,6 @@ func (r *remoteChunkStoreRetriever) ReadChunks(_ context.Context, searchID strin
 	return result, nil
 }
 
-func (r *chunkStoreRetriever) Chunk(chunkID string) (knowledge.KBChunk, bool) {
-	c, ok := r.chunks[strings.TrimSpace(chunkID)]
-	return c, ok
-}
-
 func readChunkResult(t *testing.T, raw string) map[string]any {
 	t.Helper()
 	var out map[string]any
@@ -60,15 +51,20 @@ func readChunkResult(t *testing.T, raw string) map[string]any {
 	return out
 }
 
-func newChunkStoreEngine(t *testing.T, chunks ...knowledge.KBChunk) (*Engine, *chunkStoreRetriever) {
+// newChunkStoreEngine serves the given chunks under one search capability the
+// engine already holds for this turn, as if a search had just returned them.
+func newChunkStoreEngine(t *testing.T, chunks ...knowledge.KBChunk) (*Engine, *remoteChunkStoreRetriever) {
 	t.Helper()
 	store := map[string]knowledge.KBChunk{}
+	capabilities := map[string]string{}
 	for _, c := range chunks {
 		store[c.ChunkID] = c
+		capabilities[c.ChunkID] = "seeded-search"
 	}
-	retriever := &chunkStoreRetriever{chunks: store}
+	retriever := &remoteChunkStoreRetriever{chunks: store}
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.SetKnowledgeRetriever(retriever)
+	eng.searchKnowledgeCapabilitiesThisTurn = capabilities
 	return eng, retriever
 }
 
@@ -210,6 +206,8 @@ func TestReadChunk_ReusedBodySharesBatchBudgetWithFreshBody(t *testing.T) {
 // so the agent learns the id was wrong instead of inferring the chunk was empty.
 func TestReadChunk_UnknownIDIsExplicit(t *testing.T) {
 	eng, _ := newChunkStoreEngine(t, knowledge.KBChunk{ChunkID: "real", Content: "x"})
+	// The search named it, the read does not return it.
+	eng.searchKnowledgeCapabilitiesThisTurn["ghost"] = "seeded-search"
 	out := readChunkResult(t, eng.executeReadChunk(map[string]any{"chunk_ids": []any{"ghost"}}, noopStep))
 	item := out["chunks"].([]any)[0].(map[string]any)
 	assert.Equal(t, readChunkStatusNotFound, item["status"])
@@ -323,7 +321,7 @@ func TestReadChunk_RecordsCitableEvidenceWithFullBody(t *testing.T) {
 	assert.Contains(t, snippet, tail, "the read upgrades the ledger snippet to the full body")
 }
 
-func TestAutoMaterializeKnowledgeChunks_LocalCapsIDsAndRunesWithoutSpendingToolCall(t *testing.T) {
+func TestAutoMaterializeKnowledgeChunks_CapsIDsAndRunesWithoutSpendingToolCall(t *testing.T) {
 	bodyA := strings.Repeat("甲", 8000)
 	bodyB := strings.Repeat("乙", 5000)
 	eng, _ := newChunkStoreEngine(t,

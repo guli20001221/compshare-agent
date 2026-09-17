@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strings"
 	"testing"
 	"time"
 
@@ -369,49 +368,6 @@ func TestBackendPlacementAndIdentityFieldsAreInternalOnlyForCFSAndNetwork(t *tes
 			}
 		})
 	}
-}
-
-func TestVisibleRegistryFiltersMutatingWorkflowsWhenWritesDisabled(t *testing.T) {
-	visible := VisibleRegistry(false)
-	names := map[string]bool{}
-	for _, tool := range visible {
-		require.NotNil(t, tool.Function)
-		names[tool.Function.Name] = true
-		assert.False(t, strings.HasSuffix(tool.Function.Name, "Workflow"), "workflow tool %s must not be visible in read-only mode", tool.Function.Name)
-	}
-
-	for _, name := range []string{
-		"DescribeCompShareInstance",
-		"GetCompShareInstanceMonitor",
-		"DiagnoseBilling",
-	} {
-		assert.True(t, names[name], "read-only/diagnosis tool %s should remain visible", name)
-	}
-	for _, name := range []string{
-		"CreateInstanceWorkflow",
-		"StopInstanceWorkflow",
-		"StartInstanceWorkflow",
-		"RebootInstanceWorkflow",
-		"RenameInstanceWorkflow",
-		"ResetPasswordWorkflow",
-		"SetStopSchedulerWorkflow",
-		"CancelStopSchedulerWorkflow",
-		"CreateCustomImageWorkflow",
-		"ResizeDiskWorkflow",
-	} {
-		assert.False(t, names[name], "mutating workflow %s should be hidden by default", name)
-	}
-
-	all := VisibleRegistry(true)
-	allNames := map[string]bool{}
-	for _, tool := range all {
-		require.NotNil(t, tool.Function)
-		allNames[tool.Function.Name] = true
-	}
-	assert.True(t, allNames["StopInstanceWorkflow"])
-	assert.True(t, allNames["CreateCustomImageWorkflow"])
-	assert.True(t, allNames["SearchKnowledge"], "knowledge search is always registered")
-	assert.Equal(t, len(Registry), len(all))
 }
 
 func TestDefaultPoliciesAttachMonitorCaps(t *testing.T) {

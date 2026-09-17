@@ -8,6 +8,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func namedReadToolName(name string) string { return ReadToolPrefix + name }
+
 func TestReadDefinitionsUseCapabilitySpecificSchemas(t *testing.T) {
 	definitions := ReadDefinitions()
 	byTool := make(map[string]ReadDefinition, len(definitions))

@@ -114,7 +114,7 @@ func TestInstanceTimesAgreeAcrossBothProducers(t *testing.T) {
 		Zone: "cn-sh2-02", ChargeType: "Postpay",
 	}}
 
-	env := BuildResourceEnvelope(instances)
+	env := buildResourceEnvelope(instances)
 	rendered := RenderResourceSummary(instances, ResourceEnvelopeMeta{TotalCount: 1, Shown: 1})
 
 	// 1. The fact is the same text the block prints.
@@ -133,7 +133,7 @@ func TestInstanceTimesAgreeAcrossBothProducers(t *testing.T) {
 
 	// 3. The zero guard survives: an instance with no expiry emits no fact rather
 	//    than 1970.
-	noExpiry := BuildResourceEnvelope([]entity.InstanceSnapshot{{
+	noExpiry := buildResourceEnvelope([]entity.InstanceSnapshot{{
 		UHostId: "uhost-x", Name: "n", State: "Running", CPU: 1, Memory: 1024, StartTime: started,
 	}})
 	assertNoEnvelopeFact(t, noExpiry, "uhost-x", "expire_time")

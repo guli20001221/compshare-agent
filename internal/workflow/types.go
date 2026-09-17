@@ -360,11 +360,6 @@ func NewContext(params map[string]any) *Context {
 	}
 }
 
-// Sealed returns the sealed contract if the workflow has passed its confirmation
-// gate, or nil. The engine reads this after Run to narrate results from the
-// exact confirmed params rather than re-deriving them from stale input.
-func (c *Context) Sealed() *SealedActionContract { return c.sealed }
-
 // ZoneCatalog returns the turn's zone catalog snapshot, or nil when the run
 // carries none. ZoneCatalogSnapshot's methods are nil-safe, so callers can chain
 // c.ZoneCatalog().Placement(...) without a guard — an absent catalog resolves

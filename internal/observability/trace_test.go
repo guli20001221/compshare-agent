@@ -817,7 +817,7 @@ func TestTraceRecord_ActualExecutionTier_Serialization(t *testing.T) {
 // TestDeriveActualExecutionTier pins the observable-only derivation.
 func TestDeriveActualExecutionTier(t *testing.T) {
 	reactCall := []ToolCallTrace{{Source: ToolSourceMainReAct}}
-	knowledgeCall := []ToolCallTrace{{Source: ToolSourceKnowledgeLocal}}
+	knowledgeCall := []ToolCallTrace{{Source: ToolSourceKnowledgeMCP}}
 	cases := []struct {
 		name   string
 		record TraceRecord
@@ -833,7 +833,7 @@ func TestDeriveActualExecutionTier(t *testing.T) {
 			TraceRecord{}, ""},
 		{"hard-block canned reply, no dispatch signal -> unknown",
 			TraceRecord{EngineHardBlock: EngineHardBlockTrace{Hit: true, Category: "account_billing"}}, ""},
-		{"knowledge_local tool alone (no cutover, no hits) -> unknown",
+		{"knowledge tool alone (no hits) -> unknown",
 			TraceRecord{ToolCalls: knowledgeCall}, ""},
 	}
 	for _, tc := range cases {

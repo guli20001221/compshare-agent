@@ -170,7 +170,7 @@ func (h *Handlers) HandleWS(c *gin.Context) {
 
 	// On exit, cancel the turn context and wait for the chat goroutine to unwind
 	// before the deferred CloseNow runs — otherwise it could write to a closed
-	// conn. cancel() makes the engine + WaitForConfirmation observe ctx.Done()
+	// conn. cancel() makes the engine + WaitForConfirmationOutcome observe ctx.Done()
 	// promptly, so the wait is bounded.
 	defer func() {
 		cancel()

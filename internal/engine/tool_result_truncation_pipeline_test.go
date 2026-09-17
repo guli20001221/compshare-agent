@@ -125,7 +125,8 @@ func runRealToolResultPipeline(t *testing.T, n int) string {
 			"so projection must be a no-op — if this fires, the projection whitelist changed " +
 			"and this gate's premise needs rechecking")
 	}
-	return prompt.FormatToolResult(result)
+	formatted, _ := prompt.FormatToolResultWithTrace(result)
+	return formatted
 }
 
 // TestRealPipeline_InstanceListStaysParseable is the end-to-end form of the bug: an

@@ -116,31 +116,18 @@ func (c Credential) MarshalJSON() ([]byte, error) {
 func (c Credential) HasSecret() bool { return c.password != "" }
 
 // FetchCredential calls DescribeCompShareInstance out-of-band and resolves the SSH target for
-// instanceID. It reads the raw (un-redacted) Password + SshLoginCommand straight off the upstream
-// response map — a trusted in-process consumer, like the snapshot parser. The normal LLM-callable
-// describe path is untouched and still redacts these fields; this is a separate caller whose result
-// is piped only into the SSH transport. On any error nothing is partially exposed.
+// instanceID, dialled at the address the describe response names. It reads the raw (un-redacted)
+// Password + SshLoginCommand straight off the upstream response map — a trusted in-process
+// consumer, like the snapshot parser. The normal LLM-callable describe path is untouched and still
+// redacts these fields; this is a separate caller whose result is piped only into the SSH
+// transport. On any error nothing is partially exposed.
 func FetchCredential(ctx context.Context, d Describer, instanceID string) (Credential, error) {
-	return FetchCredentialWithHostResolver(ctx, d, instanceID, nil)
-}
-
-// FetchCredentialWithHostResolver is FetchCredential with an optional address rewrite:
-// hr decides where the instance is dialled, while everything else — which instance was
-// resolved, its state, its user, its port, its password — is read from the same describe
-// response exactly as before. A nil hr is byte-identical to FetchCredential.
-//
-// Only the HOST moves. The user and port keep coming from SshLoginCommand because they
-// are properties of the image, not of the route: a container image answers on 23 as root
-// over either address (the container runs with --net host, so its sshd is bound on the
-// machine's own stack — the same reason EIP:23 works today), and a plain VM answers on 22
-// as ubuntu over either address.
-func FetchCredentialWithHostResolver(ctx context.Context, d Describer, instanceID string, hr HostResolver) (Credential, error) {
-	return FetchCredentialWithDialPolicy(ctx, d, instanceID, hr, dialPolicy{})
+	cred, _, err := fetchCredentialWithDialPolicy(ctx, d, instanceID, nil, dialPolicy{})
+	return cred, err
 }
 
 // dialPolicy carries the settings that decide WHICH address is dialled, beyond the resolver
-// itself. Its zero value is "internal rewrite only" — byte-identical to the behaviour before
-// public-IPv6 candidates existed, which is what every existing caller and test gets.
+// itself. Its zero value is "internal rewrite only".
 type dialPolicy struct {
 	// PublicIPv6Prefix, when set, adds translation-prefix candidates derived from the
 	// instance's PUBLIC IPv4 after the internal address. Empty (the default) means the
@@ -148,20 +135,13 @@ type dialPolicy struct {
 	PublicIPv6Prefix string
 }
 
-// FetchCredentialWithDialPolicy is FetchCredentialWithHostResolver with an explicit address
-// policy. It exists so a deployment can ask the lane to TRY a second addressing scheme without
-// giving up the first one: the internal address stays the leading candidate, so a zone that
-// works today picks the same address it picks today.
-func FetchCredentialWithDialPolicy(ctx context.Context, d Describer, instanceID string, hr HostResolver, pol dialPolicy) (Credential, error) {
-	cred, _, err := fetchCredentialWithDialPolicy(ctx, d, instanceID, hr, pol)
-	return cred, err
-}
-
-// fetchCredentialWithDialPolicy is the credential boundary's internal form. In
-// addition to the credential it returns the single resolved Describe row so the
-// caller can build a separately allowlisted context projection without issuing
-// a second Describe request. The raw map is package-private and must never cross
-// into the harness or engine: it contains the login command and password.
+// fetchCredentialWithDialPolicy is FetchCredential with an address rewrite (hr decides where the
+// instance is dialled; only the HOST moves, the user and port keep coming from SshLoginCommand
+// because they are properties of the image, not of the route) and an explicit address policy.
+// In addition to the credential it returns the single resolved Describe row so the caller can
+// build a separately allowlisted context projection without issuing a second Describe request.
+// The raw map is package-private and must never cross into the harness or engine: it contains
+// the login command and password.
 func fetchCredentialWithDialPolicy(ctx context.Context, d Describer, instanceID string, hr HostResolver, pol dialPolicy) (Credential, map[string]any, error) {
 	if strings.TrimSpace(instanceID) == "" {
 		return Credential{}, nil, fmt.Errorf("sshops: empty instance id")

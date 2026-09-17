@@ -87,10 +87,6 @@ const (
 	maxTruncatedOutputRecoveriesPerTurn = 1
 )
 
-var (
-	beijingZone = time.FixedZone("CST", 8*3600)
-)
-
 // ConfirmFunc asks the user to confirm an L1 operation. Returns true if confirmed.
 type ConfirmFunc func(action string, args map[string]any) bool
 
@@ -533,18 +529,6 @@ func userAuthoredText(content string) string {
 		return ""
 	}
 	return authored
-}
-
-// screenshotReferenceText recovers only the OCR reference block from a wrapped
-// conversation message. Current live turns use the separately held ImageContext
-// instead; this parser keeps prior screenshot evidence useful after the wrapped
-// message has entered canonical conversation history.
-func screenshotReferenceText(content string) string {
-	recognized, _, _, valid := splitScreenshotContext(content)
-	if !valid {
-		return ""
-	}
-	return recognized
 }
 
 // splitScreenshotContext is the one parser for the stable screenshot wrapper.
@@ -2144,19 +2128,6 @@ type engineToolExecutor struct {
 
 func (x engineToolExecutor) Execute(ctx context.Context, action string, args map[string]any) (map[string]any, error) {
 	return x.engine.executeRawTool(ctx, action, args, x.origin)
-}
-
-func uniqueStrings(values []string) []string {
-	seen := make(map[string]bool, len(values))
-	var out []string
-	for _, value := range values {
-		if value == "" || seen[value] {
-			continue
-		}
-		seen[value] = true
-		out = append(out, value)
-	}
-	return out
 }
 
 // executeDiagnosis runs a diagnostic chain and returns the result as JSON.
