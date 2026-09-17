@@ -25,9 +25,14 @@ never needs the files that created it.
 | `0013_add_ssh_ops_context_observability.sql` | SSH context/audit aggregates |
 | `0014_add_ssh_ops_step_detail.sql` | redacted SSH step summaries |
 | `0015_drop_unused_storage.sql` | drops the retired durable-turn tables and four trace columns nothing writes |
+| `0016_restore_agent_traces_intent.sql` | re-adds `agent_traces.intent`, which the console reads from this database; the writer leaves it NULL |
 
 Numbers 0005–0010 created the durable-turn tables `0015` drops; their files are
 gone and the numbers stay unused.
+
+This database is shared with the console: its "AI 对话记录" page reads
+`sessions`, `messages` and `agent_traces.intent`. Before dropping a column,
+check `pg_stat_statements` for readers outside this repository.
 
 SSH-ops requires `0011`, `0013` and `0014`. At boot the lane probes every
 column its writer uses; an incomplete audit schema disables only SSH-ops and
