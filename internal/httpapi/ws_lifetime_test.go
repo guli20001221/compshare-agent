@@ -9,12 +9,11 @@ import (
 	"github.com/compshare-agent/internal/workflow"
 )
 
-// The socket must outlive the work it carries. These two budgets were independent constants until
-// 2026-07-30, and a live frontend run showed what that costs: agent.ssh_ops.timeout was 12m, the
-// connection deadline was a flat 10m, and an in-instance repair was cut off at exactly 10:00.0 with
-// the user seeing only "[NetworkError] 连接已关闭". By then the lane had already replaced an
-// application directory on the box — so the turn that was killed was the one that had changed the
-// most, and nothing was delivered saying so.
+// The socket must outlive the work it carries. With the two budgets as independent constants — a
+// 12m lane timeout under a flat 10m connection deadline — an in-instance repair is cut off at
+// exactly 10:00.0 with the user seeing only "[NetworkError] 连接已关闭", after the lane has already
+// replaced an application directory on the box: the turn that is killed is the one that changed the
+// most, and nothing is delivered saying so.
 //
 // The assertion is the INVARIANT (machine lifetime > every admitted lane run),
 // not a specific number, so raising either budget or the run bound cannot
@@ -48,14 +47,10 @@ func TestWSMachineLifetimeOutlivesEveryAdmittedLaneRun(t *testing.T) {
 	}
 }
 
-// The 2026-08-12 half of the same rule: a socket sized only for MACHINE work kills turns that spend
-// their time waiting for a PERSON.
-//
-// wsLaneSlack was 2 minutes and its own comment charged the operator's consent cards to it. That
-// was survivable at a 60s card only by accident; production traces over 30 days show turns carrying
-// five cards, so raising the card budget to 120s puts up to 10 minutes of human time inside a
-// 2-minute allowance. The failure would not have looked like a timeout — the socket would simply
-// close mid-repair, which is the 2026-07-30 bug with a different clock driving it.
+// The other half of the same rule: a socket sized only for MACHINE work kills turns that spend
+// their time waiting for a PERSON. Production traces over 30 days show turns carrying five cards,
+// and at a 120s card budget that is up to 10 minutes of human time; charged to a 2-minute slack it
+// would not look like a timeout — the socket would simply close mid-repair.
 //
 // The assertion is again the invariant, deliberately restating the sum from the two policy
 // constants rather than from wsInteractionAllowance, so redefining the allowance in terms of
@@ -118,7 +113,7 @@ func TestInteractionAllowanceIsSizedFromTheCodeBound(t *testing.T) {
 		t.Fatalf("transport card count %d must be the workflow's own bound %d, not a local guess",
 			wsMaxConfirmationsPerTurn, workflow.MaxConfirmationsPerWorkflowTurn)
 	}
-	// The number production actually produced, kept only to state the gap the old constant hid.
+	// The largest number production has produced; the code bound must stay above it.
 	const largestObservedCardsPerTurn = 5
 	if wsMaxConfirmationsPerTurn <= largestObservedCardsPerTurn {
 		t.Fatalf("the code bound (%d) is not above the largest observed run (%d) — one of the two is wrong",

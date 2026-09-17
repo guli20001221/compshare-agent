@@ -233,11 +233,11 @@ func TestWS_DisconnectAfterACommittedWriteKeepsTheWriteInTheAbortedRow(t *testin
 	require.Equal(t, observability.AbortCauseClientDisconnect, record.Outcome.AbortCause)
 }
 
-// A peer that stops consuming without closing used to hold the connection for
-// its whole lifetime: the keepalive ping waited for a pong under the lifetime
-// context while holding the write mutex, so nothing else could be written and
-// the turn's work was recorded 54 minutes later as a model timeout. The ping now
-// has its own deadline; missing it ends the turn as a client disconnect.
+// A peer that stops consuming without closing must not hold the connection for
+// its whole lifetime: a keepalive ping that waited for a pong under the lifetime
+// context while holding the write mutex would block every other write and the
+// turn's work would surface an hour later as a model timeout. The ping has its
+// own deadline; missing it ends the turn as a client disconnect.
 func TestWS_SilentPeerEndsTheTurnAsAClientDisconnectWithinTheKeepaliveDeadline(t *testing.T) {
 	eng := engine.NewWithDeps(blockingLLM{}, tools.ToolExecutor(chatExecutor{}), denyConfirm)
 	eng.RehydrateHistory(nil)

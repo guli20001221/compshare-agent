@@ -1058,12 +1058,10 @@ func TestSafeExecutor_AppliesPerAttemptTimeout(t *testing.T) {
 // TestSafeExecutor_ParentDeadlineDominates verifies that a caller-
 // supplied ctx deadline shorter than policy.TimeoutMS still wins —
 // the per-attempt context.WithTimeout takes the earlier of the two
-// deadlines. Guards against future refactors that might "ignore" the
-// parent deadline by replacing instead of deriving.
-//
-// PR #153 review N2 — surfaced because the existing AppliesPerAttempt
-// test used context.Background as parent; this case is the composition
-// path engine.go relies on (chatTurnTimeout wraps the whole turn).
+// deadlines. Guards against a refactor that "ignores" the parent deadline
+// by replacing instead of deriving. AppliesPerAttempt uses context.Background
+// as parent, so this case is the composition path engine.go relies on
+// (chatTurnTimeout wraps the whole turn).
 func TestSafeExecutor_ParentDeadlineDominates(t *testing.T) {
 	inner := &slowExecutor{}
 	policies := DefaultToolExecutionPolicies()
@@ -1333,19 +1331,16 @@ func TestCustomImageWorkflowInternalArgsSurvivePolicyBoundary(t *testing.T) {
 	assert.NotContains(t, got, "agent_only")
 }
 
-// TestDescribeCompShareJupyterToken_ResolvesZoneIDForPodInstance proves
-// finding #9's fix: a raw call naming a Pod (cpod-*) instance triggers an
-// internal DescribeCompShareInstance lookup for its Zone STRING, a
-// DescribeCompShareSupportZone lookup to resolve that string to its numeric
-// ZoneID, and attaches the resolved zone_id — matching the live evidence (no
-// zone_id -> RetCode 8433 for Pod; zone_id=5001 -> success).
+// TestDescribeCompShareJupyterToken_ResolvesZoneIDForPodInstance: a raw call
+// naming a Pod (cpod-*) instance triggers an internal DescribeCompShareInstance
+// lookup for its Zone STRING, a DescribeCompShareSupportZone lookup to resolve
+// that string to its numeric ZoneID, and attaches the resolved zone_id — live,
+// no zone_id -> RetCode 8433 for Pod; zone_id=5001 -> success.
 //
 // The mock deliberately does NOT put a ZoneId field on the
-// DescribeCompShareInstance response — live-verified 2026-07-10 that field
-// never exists there (upstream tags it json:"-"); only the string Zone does.
-// An earlier version of this test/fix wrongly assumed ZoneId existed on that
-// response, which unit-tested green but was a no-op live; this fixture
-// exists specifically so that mistake can't silently reappear.
+// DescribeCompShareInstance response: that field never exists there (upstream
+// tags it json:"-"); only the string Zone does. A fixture that invented it
+// would unit-test green and be a no-op live.
 func TestDescribeCompShareJupyterToken_ResolvesZoneIDForPodInstance(t *testing.T) {
 	inner := &routedExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {

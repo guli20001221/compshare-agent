@@ -22,18 +22,13 @@ func twoImageCatalog() *deployment.ImageCatalogSnapshot {
 // explicit id, so an id either flow receives is catalog-verified or refused —
 // invariant 1 holds at the same boundary for both.
 //
-// Create gained its id field deliberately. ImageName reaches upstream as
-// FuzzySearch, so a wording the platform does not match returns zero rows and the
-// flow dead-ends on an image that exists; the model sees real ids in a read
-// observation's evidence.subjects[] and can now pass one instead of a phrase.
-//
-// This test previously asserted the opposite, with a note that flipping it would
-// let a stale proposal-time snapshot shadow the guided re-query — "fix the flow
-// first". The flow was fixed first: workflow.createImageCatalog now prefers THIS
-// run's 查询镜像 over any engine-threaded snapshot, so the source switch and the
-// name-miss browse rescue can no longer be overridden. That behaviour is gated by
-// TestCreateImageCatalogPrefersThisRunsQueryOverAnInjectedSnapshot, which is where
-// the protection now lives — this assertion alone no longer carries it.
+// Create has an id field because ImageName reaches upstream as FuzzySearch: a
+// wording the platform does not match returns zero rows and the flow dead-ends on
+// an image that exists, while the model sees real ids in a read observation's
+// evidence.subjects[] and can pass one instead of a phrase. A proposal-time
+// snapshot cannot shadow the guided re-query: workflow.createImageCatalog prefers
+// THIS run's 查询镜像 over any engine-threaded snapshot, which
+// TestCreateImageCatalogPrefersThisRunsQueryOverAnInjectedSnapshot pins.
 func TestCodecImageActivatedForImageBearingOps(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)

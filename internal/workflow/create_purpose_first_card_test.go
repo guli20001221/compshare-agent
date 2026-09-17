@@ -26,9 +26,9 @@ func platformCatalogRows() map[string]any {
 	}}
 }
 
-// TestTheFirstCardAsksWhatTheUserWantsToDo is the point of the reframe. The card
-// used to ask "平台镜像 / 社区镜像", which requires knowing how this platform files
-// its images before you can say what you want to run.
+// TestTheFirstCardAsksWhatTheUserWantsToDo: the card asks what the user wants
+// to run, not "平台镜像 / 社区镜像", which would require knowing how this platform
+// files its images first.
 //
 // The stored value is a real source choice — platform, community, the current
 // account's custom catalog, or images shared into the account — so this pins the
@@ -118,9 +118,9 @@ func TestEachBranchGetsTheFilterThatFitsItsData(t *testing.T) {
 	})
 }
 
-// TestTheTypeFacetNamesEveryTypeTheCatalogReturns covers a real gap: the live
-// platform catalog returns System(9), App(52) AND Other(11), and "Other" used to
-// render as the bare English word beside Chinese labels. Counts are asserted too —
+// TestTheTypeFacetNamesEveryTypeTheCatalogReturns: the live platform catalog
+// returns System(9), App(52) AND Other(11), and "Other" must not render as the
+// bare English word beside Chinese labels. Counts are asserted too —
 // the 用途 facet carries them, and one branch silently lacking them reads as
 // unfinished rather than as a different kind of filter.
 func TestTheTypeFacetNamesEveryTypeTheCatalogReturns(t *testing.T) {

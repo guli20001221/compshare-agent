@@ -10,12 +10,12 @@ import (
 
 // A resolution must not wake the turn until the transport has acknowledged it.
 //
-// Resolve used to do both in one step, ending with the channel send that unblocks
-// the chat goroutine. That goroutine can then finish the turn, write `done` and
-// cancel the connection context — all before the read-loop goroutine reaches its
-// WriteEvent — and the acknowledgement is dropped onto a closed socket. The
-// client, told nothing, settles the card as "连接已关闭" for an action the server
-// accepted and already executed.
+// If the channel send that unblocks the chat goroutine came first, that
+// goroutine could finish the turn, write `done` and cancel the connection
+// context — all before the read-loop goroutine reaches its WriteEvent — and the
+// acknowledgement would be dropped onto a closed socket. The client, told
+// nothing, would settle the card as "连接已关闭" for an action the server accepted
+// and already executed.
 //
 // This is the honest gate for that ordering. The WS integration tests cannot be:
 // they read the ack frame off the socket and would pass under either order.

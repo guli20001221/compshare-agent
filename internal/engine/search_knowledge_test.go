@@ -138,8 +138,8 @@ func TestExecuteSearchKnowledgeDoesNotAutoExpandUnjudgedRRFFallback(t *testing.T
 	assert.Empty(t, eng.readChunkIDsThisTurn)
 }
 
-// TestExecuteSearchKnowledge_LocalDispatchSubstantive proves the P3 hinge: the
-// SearchKnowledge ReAct tool dispatches LOCALLY on the engine retriever (never
+// TestExecuteSearchKnowledge_LocalDispatchSubstantive: the SearchKnowledge
+// ReAct tool dispatches LOCALLY on the engine retriever (never
 // through the external/safe executor — its Route is knowledge, not external_api),
 // returns a SUBSTANTIVE EvidenceLedger (a chunk-content snippet the agent can
 // ground an actionable answer on, not the content-free diagnosis ledger), and

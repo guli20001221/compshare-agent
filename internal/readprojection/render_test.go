@@ -24,10 +24,8 @@ func TestRenderResourceSummaryByteExact(t *testing.T) {
 		GpuType: "4090",
 		GPU:     1,
 		CPU:     8,
-		// MB, as upstream reports it. The fixture used to say 64 and still expect
-		// "64 GB", which only passed because the converter treated small values as
-		// already-GB — a fixture that encoded the wrong unit and a converter that
-		// agreed with it.
+		// MB, as upstream reports it; a fixture saying 64 and expecting "64 GB"
+		// would only pass with a converter that treats small values as already-GB.
 		Memory:     65536,
 		ImageType:  "Ubuntu",
 		StartTime:  1000,

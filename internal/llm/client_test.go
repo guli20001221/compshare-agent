@@ -832,8 +832,8 @@ func TestOnTextDeltaNotCalledForToolCallOnlyChunks(t *testing.T) {
 	}
 }
 
-// TestClientChatFallsBackToAutoWhenForcedToolChoiceUnsupported pins the P0 fix:
-// when the upstream rejects a forced tool_choice in thinking mode (per-key
+// TestClientChatFallsBackToAutoWhenForcedToolChoiceUnsupported: when the
+// upstream rejects a forced tool_choice in thinking mode (per-key
 // Modelverse behavior), Chat retries once with auto rather than failing the turn.
 // The retry must drop tool_choice; the engine-injected note keeps the tool likely.
 func TestClientChatFallsBackToAutoWhenForcedToolChoiceUnsupported(t *testing.T) {

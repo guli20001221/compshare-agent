@@ -56,7 +56,7 @@ func TestRegistryWillNotSwearToWhatItHasNotSeen(t *testing.T) {
 	})
 }
 
-// The other half of the contract, and the one that stops this fix from becoming a
+// The other half of the contract, and the one that stops the rule from becoming a
 // silent hole: a registry that HAS seen the whole account keeps its authority. Without
 // these, "never refuse" would pass the tests above just as well as the correct rule.
 func TestRegistryKeepsItsAuthorityWhenItHasActuallySeenTheAccount(t *testing.T) {

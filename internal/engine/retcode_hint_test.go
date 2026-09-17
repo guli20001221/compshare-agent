@@ -8,7 +8,7 @@ import (
 )
 
 // TestScenario_UpstreamRetCodeHintFedToModel is the end-to-end wiring guard for
-// P0 阶段1B: a known upstream RetCode (230) returned by the executor must reach
+// A known upstream RetCode (230) returned by the executor must reach
 // the model's next-round tool result WITH the recovery hint attached. This fails
 // if any link in executor → executeWithRetry → ExecuteSafe → executeSafeTool →
 // the ReAct error branch flattens the error with %v (which would strip the typed

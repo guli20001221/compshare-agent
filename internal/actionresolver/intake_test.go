@@ -40,8 +40,8 @@ func TestResolveCompleteCreateIsConfirmationNotIntake(t *testing.T) {
 
 // An INVALID VALUE on a declared collectable field is form-correctable: the
 // resolver drops the bad value (never silently swaps it) and the guided form
-// re-collects a valid one. So it opens intake, not prose. (This refines the old
-// blanket "any rejection blocks intake": the field IS one the form can fix.)
+// re-collects a valid one. So it opens intake, not prose: the field IS one the
+// form can fix, so "any rejection blocks intake" would be too blunt.
 func TestResolveCorrectableInvalidValueOpensIntake(t *testing.T) {
 	catalog, err := BuildCatalog()
 	require.NoError(t, err)

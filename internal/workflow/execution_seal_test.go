@@ -7,7 +7,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestNewContext_IsolatesTopLevelParams pins P4 acceptance #1: after NewContext,
+// TestNewContext_IsolatesTopLevelParams: after NewContext,
 // mutating the caller's original map (the engine still owns ResolvedAction.
 // Arguments) must not reach the workflow's business Params, and vice versa.
 func TestNewContext_IsolatesTopLevelParams(t *testing.T) {
@@ -27,7 +27,7 @@ func TestNewContext_IsolatesTopLevelParams(t *testing.T) {
 	assert.Equal(t, "A100", original["GpuType"], "a step mutating Params must not rewrite the caller's confirmed arguments")
 }
 
-// TestNewContext_IsolatesNestedMapsAndSlices pins P4 acceptance #2: a top-level
+// TestNewContext_IsolatesNestedMapsAndSlices: a top-level
 // copy is not a seal — ResolvedAction.Arguments carries structured values, so
 // nested maps and slices must be cloned so a mutation cannot penetrate.
 func TestNewContext_IsolatesNestedMapsAndSlices(t *testing.T) {
@@ -53,7 +53,7 @@ func TestNewContext_IsolatesNestedMapsAndSlices(t *testing.T) {
 		"mutating Params' nested slice must not reach the caller's map")
 }
 
-// TestNewContext_SplitsRuntimeMetadataOutOfBusinessParams pins P4 acceptance #8:
+// TestNewContext_SplitsRuntimeMetadataOutOfBusinessParams:
 // server-injected identity is not a user business parameter — it must be lifted
 // into Runtime and absent from the business Params (and therefore from the
 // confirm form and the sealed digest).

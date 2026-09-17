@@ -98,8 +98,7 @@ func TestTruncateDescribeResultForReAct_HandlesMalformedRows(t *testing.T) {
 	assert.Equal(t, 3, shown)
 }
 
-// PR1 hotfix Bug 4 (2026-05-28): action-aware deterministic filter tests.
-// Encodes WHY: the previous design fed the full mixed-state list to the LLM
-// and let it decide which subset to render; that decision was non-deterministic
-// (N=5 same prompt produced 3 different display strategies). The handler
-// path is the source of truth.
+// Action-aware deterministic filter tests. Feeding the full mixed-state list to
+// the LLM and letting it decide which subset to render is non-deterministic
+// (N=5 same prompt produced 3 different display strategies); the handler path
+// is the source of truth.

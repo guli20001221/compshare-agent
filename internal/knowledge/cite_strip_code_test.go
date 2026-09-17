@@ -45,10 +45,10 @@ func TestStripCiteMarkers_CodeSurvives(t *testing.T) {
 }
 
 // A shell `[[ ... ]]` conditional written WITHOUT a fence or backticks is prose as
-// far as MapOutsideCode is concerned, and it used to match the citation marker: the
-// whole test collapsed away and the user was handed `if; then echo ok; fi`. A
-// chunk_id never contains whitespace, so the id class excludes it and the shell
-// form no longer matches. Fenced/inline code was never affected (covered above).
+// far as MapOutsideCode is concerned, so it must not match the citation marker
+// (that would hand the user `if; then echo ok; fi`). A chunk_id never contains
+// whitespace, so the id class excludes the shell form. Fenced/inline code is
+// covered above.
 func TestStripCiteMarkers_UnfencedShellConditionalSurvives(t *testing.T) {
 	assert.Equal(t, "先确认 if [[ -f /root/model.bin ]]; then echo ok; fi 再继续。",
 		StripCiteMarkers("先确认 if [[ -f /root/model.bin ]]; then echo ok; fi 再继续。"))
@@ -62,10 +62,9 @@ func TestStripCiteMarkers_UnfencedShellConditionalSurvives(t *testing.T) {
 }
 
 // A model that emits an UNBALANCED marker — two opening brackets, one closing —
-// used to slip past the strip (it demanded >=2 closing brackets) and leak the raw
-// internal chunk_id into the user's reply. Seen live: an agent answer ended with
-// `…关自动续费。[[v2-resource_purchase-1aa5f4052663d9bd]`. The doubled `[[` is
-// signal enough; strip through the single `]`.
+// must not leak the raw internal chunk_id into the user's reply (a live answer
+// ended with `…关自动续费。[[v2-resource_purchase-1aa5f4052663d9bd]`). The doubled
+// `[[` is signal enough; strip through the single `]`.
 func TestStripCiteMarkers_UnbalancedTrailingMarkerStripped(t *testing.T) {
 	assert.Equal(t, "在财务中心关闭自动续费。",
 		StripCiteMarkers("在财务中心关闭自动续费。[[v2-resource_purchase-1aa5f4052663d9bd]"))

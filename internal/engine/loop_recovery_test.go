@@ -19,8 +19,8 @@ import (
 // Unlike mockLLM (responses only) and mockLLMWithError (always errors), it can
 // model "round 0 succeeded and recorded evidence, then a later call errors/times
 // out, then the final Agent response succeeds". A step's onErr runs just
-// before the error is returned — used to cancel the ctx mid-flight so the
-// recovery ctx-gate can be exercised.
+// before the error is returned, which lets a test cancel the ctx mid-flight so
+// the recovery ctx-gate can be exercised.
 type mockLLMSteps struct {
 	steps []llmStep
 	idx   int

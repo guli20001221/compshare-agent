@@ -227,8 +227,8 @@ func TestReadChunk_IDCapReportsDropped(t *testing.T) {
 	assert.Equal(t, float64(1), out["dropped_ids"])
 }
 
-// A later search can still lead to a full-body read after the old two-call
-// ceiling, but the aligned four-call ceiling still withdraws and rejects reads.
+// A later search can still lead to a full-body read, but the four-call ceiling
+// aligned with search still withdraws and rejects reads.
 func TestReadChunk_LateSearchRemainsReadableUntilCallBudgetExhausts(t *testing.T) {
 	tail := "末尾说明：目标章节正文已经完整交付。"
 	target := knowledge.KBChunk{ChunkID: "target", Title: "目标章节", Content: strings.Repeat("章节前文。", 120) + tail}

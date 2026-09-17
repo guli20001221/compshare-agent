@@ -30,10 +30,9 @@ func TestReadDefinitionsUseCapabilitySpecificSchemas(t *testing.T) {
 		require.NotContains(t, properties, "slots", "通用槽位袋不得重新进入模型协议")
 	}
 	// Capability-Catalog self-completeness: the catalog must expose every
-	// model-visible read intent on its own terms. This used to be validated
-	// against routing.GeneratedRoutes() (the retired route registry); the catalog
-	// is now the sole source, so the expected set is pinned here — dropping a
-	// capability from ReadDefinitions fails loudly instead of silently.
+	// model-visible read intent on its own terms. The catalog is the sole source,
+	// so the expected set is pinned here — dropping a capability from
+	// ReadDefinitions fails loudly instead of silently.
 	expectedReadIntents := []intent.Intent{
 		intent.IntentResourceInfo, intent.IntentMonitorQuery, intent.IntentMonitorHistory,
 		intent.IntentGPUSpecsQuery, intent.IntentStockAvailability, intent.IntentImageList,

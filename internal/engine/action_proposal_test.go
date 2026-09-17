@@ -506,8 +506,8 @@ func TestAuthorizedTargetIsRecordedAsUserSelection(t *testing.T) {
 // remembered as a genuine user selection even when the subsequent upstream write
 // fails — otherwise a retry ("关掉它") forgets what the user just approved and
 // re-asks. A DECLINED confirmation still records nothing. This is distinct from
-// whole-workflow success (the old gate): a confirmed-then-failed Stop passed its
-// confirm gate (ExecutionAuthorized) but not full success, and must still persist.
+// whole-workflow success: a confirmed-then-failed Stop passed its confirm gate
+// (ExecutionAuthorized) but not full success, and must still persist.
 func TestConfirmedTargetRecordedEvenWhenUpstreamWriteFails(t *testing.T) {
 	newStopEngine := func(confirm bool, stopErr error) *Engine {
 		executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {
@@ -555,12 +555,11 @@ func TestConfirmedTargetRecordedEvenWhenUpstreamWriteFails(t *testing.T) {
 	})
 }
 
-// TestWriteAuthorizationDualProofReachesTrace encodes the B3 invariant: the
-// existence proof the resolver establishes for a write target (which oracle, when,
-// which account, what verdict) — previously consumed only as a resolver gate and
-// then discarded — now reaches the trace as an AuthorizationTrace, paired with
-// whether the user's confirmation authorized execution. The target id and account
-// are HASHED, never raw.
+// TestWriteAuthorizationDualProofReachesTrace: the existence proof the resolver
+// establishes for a write target (which oracle, when, which account, what
+// verdict) reaches the trace as an AuthorizationTrace, paired with whether the
+// user's confirmation authorized execution. The target id and account are
+// HASHED, never raw.
 func TestWriteAuthorizationDualProofReachesTrace(t *testing.T) {
 	run := func(confirm bool) []observability.AuthorizationTrace {
 		executor := &mockExecutorFn{fn: func(action string, args map[string]any) (map[string]any, error) {

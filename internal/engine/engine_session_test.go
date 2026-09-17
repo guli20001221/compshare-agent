@@ -10,8 +10,8 @@ import (
 	openai "github.com/sashabaranov/go-openai"
 )
 
-// newTwoSessions constructs two Engines from the same SharedDeps. Used by the
-// P0 isolation tests below. mockLLM / mockExecutor live in engine_test.go (same
+// newTwoSessions constructs two Engines from the same SharedDeps for the
+// isolation tests below. mockLLM / mockExecutor live in engine_test.go (same
 // package) so we reuse them rather than declaring a parallel stub.
 func newTwoSessions(t *testing.T) (engA, engB *Engine, deps *SharedDeps) {
 	t.Helper()
@@ -25,8 +25,7 @@ func newTwoSessions(t *testing.T) (engA, engB *Engine, deps *SharedDeps) {
 	return engA, engB, deps
 }
 
-// TestSessionIsolation_Messages — P0-1.
-// Per plan §3.2: messages串了的后果是 user B 看到 user A 原话。This test injects
+// TestSessionIsolation_Messages: messages串了的后果是 user B 看到 user A 原话。This test injects
 // a marker into session A's messages slice and asserts session B never sees it,
 // even though both sessions share the same SharedDeps. Encodes WHY: cross-user
 // data leak is the highest-severity failure mode of single-replica multi-tenant
@@ -53,8 +52,7 @@ func TestSessionIsolation_Messages(t *testing.T) {
 	}
 }
 
-// TestSessionIsolation_Registry — P0-2.
-// Per plan §3.2: registry串了的后果是 user B 操作到 user A 的实例（P0 越权）。
+// TestSessionIsolation_Registry: registry串了的后果是 user B 操作到 user A 的实例（越权）。
 // EntityRegistry has no public mutation except SyncFromDescribe — the test
 // injects two disjoint UHostSet maps and asserts neither registry sees the
 // other's instances. Encodes WHY: entity confusion enables cross-tenant write.
@@ -108,8 +106,7 @@ func TestSessionIsolation_Registry(t *testing.T) {
 	}
 }
 
-// TestSessionIsolation_ConfirmFn — P0-3.
-// Per plan §3.2: confirmFn串了的后果是 user A 的确认弹窗去问 user B（P0 误操作）。
+// TestSessionIsolation_ConfirmFn: confirmFn串了的后果是 user A 的确认弹窗去问 user B（误操作）。
 // Each NewSession receives its own ConfirmFunc. The test wires two functions
 // with disjoint side effects and asserts session A invoking confirm never
 // triggers session B's callback.
@@ -144,8 +141,7 @@ func TestSessionIsolation_ConfirmFn(t *testing.T) {
 	}
 }
 
-// TestSessionIsolation_SharedPointersEqual — P0-4.
-// Sibling assertion to the per-session checks: shared fields MUST be pointer-
+// TestSessionIsolation_SharedPointersEqual is the sibling assertion to the per-session checks: shared fields MUST be pointer-
 // equal across sessions. If a session refactor accidentally copies an LLM
 // client or RateLimiter, this test will catch it. Encodes WHY: shared deps
 // hold no per-session state, and copying defeats the purpose of NewSharedDeps.
@@ -165,11 +161,11 @@ func TestSessionIsolation_SharedPointersEqual(t *testing.T) {
 	}
 }
 
-// TestSessionIsolation_RateLimit — P0-5.
-// Encodes WHY: per-user subject keys must isolate quota burn across tenants.
+// TestSessionIsolation_RateLimit: per-user subject keys must isolate quota burn
+// across tenants.
 // Sets distinct subjects on two sessions, burns session A's LLM bucket, and
 // asserts session B's first LLM request still succeeds. If subjects shared
-// a bucket (regression to process-wide subject), this would fail.
+// a bucket (a process-wide subject), this would fail.
 func TestSessionIsolation_RateLimit(t *testing.T) {
 	engA, engB, _ := newTwoSessions(t)
 	engA.SetRateLimitSubject("rl-subj-A")

@@ -10,11 +10,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// The canonical transcript changes the shape of a restored exchange. Before it,
-// every exchange in the replayed region was exactly {user, assistant}; with it,
-// an exchange can be {user, assistant(tool_calls), tool, ..., assistant}. These
-// tests pin the places that assumed the old fixed shape, plus the two boundaries
-// the transcript path bypassed.
+// A restored exchange in the replayed region is not always {user, assistant}:
+// with the canonical transcript it can be {user, assistant(tool_calls), tool,
+// ..., assistant}. These tests pin the places that must handle that shape, plus
+// two boundaries the transcript path must not bypass.
 
 // transcriptExchange builds one restored exchange whose assistant answer was
 // produced through a tool round — the shape the cap arithmetic did not expect.
@@ -27,15 +26,12 @@ func transcriptExchange(tag string) []openai.ChatCompletionMessage {
 	}
 }
 
-// TestTrimAssembledRequest_NeverOrphansToolResultsInReplayedRegion is the
-// blocking one: phase 1 shed a fixed two messages per "pair", so cutting into a
-// four-message exchange left its tool result behind with no call declaring it.
-// A provider rejects that whole request with a 400 — the turn fails outright, it
-// does not degrade.
-//
-// It used to sweep MESSAGE limits, which is the dimension trimAssembledRequest no
-// longer has. Sweeping budgets that admit exactly 0..5 whole exchanges puts the
-// cut in the same places — including, deliberately, between them.
+// TestTrimAssembledRequest_NeverOrphansToolResultsInReplayedRegion: cutting
+// into a four-message exchange must never leave its tool result behind with no
+// call declaring it — a provider rejects that whole request with a 400, so the
+// turn would fail outright rather than degrade. Sweeping budgets that admit
+// exactly 0..5 whole exchanges puts the cut in every place — including,
+// deliberately, between them.
 func TestTrimAssembledRequest_NeverOrphansToolResultsInReplayedRegion(t *testing.T) {
 	const tags = 5
 	msgs := []openai.ChatCompletionMessage{

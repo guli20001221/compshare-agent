@@ -181,12 +181,11 @@ func TestAContainerImageStillReachesBothZones(t *testing.T) {
 	assert.Empty(t, disabledZones, "a container image is compatible with every zone")
 }
 
-// TestCrossingGatesDoNotStrandTheZoneCard is the combination boundary. Each rule
-// used to carry its own stand-down and each one was individually satisfied here —
-// capacity found a creatable zone, the image rule found a compatible zone — so
-// neither stood down, and the card still went out with nothing enabled, because
-// they were not the SAME zone. Per-rule escapes cannot see that; only a decision
-// taken on the assembled options can.
+// TestCrossingGatesDoNotStrandTheZoneCard is the combination boundary. Each
+// rule is individually satisfied here — capacity found a creatable zone, the
+// image rule found a compatible zone — but they are not the SAME zone, so
+// per-rule stand-downs would let the card go out with nothing enabled. Only a
+// decision taken on the assembled options can see that.
 //
 // It asserts the notes survive too. Standing down is a DOWNGRADE, not a fix: one
 // of the known-bad zones becomes the default and the flow keeps going. The confirm

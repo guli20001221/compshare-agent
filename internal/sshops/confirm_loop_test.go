@@ -47,10 +47,9 @@ func newConfirmSup(t *testing.T) Supervisor {
 	}
 }
 
-// stdin used to be a one-shot reader closed right after the handshake, which is why the lane could
-// only ever refuse writes. The reply has to travel back on that same pipe, carrying the id the
-// harness asked with — an answer that arrives without the id could authorize whichever command
-// happens to be pending.
+// stdin stays open after the handshake: the reply has to travel back on that same pipe, carrying
+// the id the harness asked with — an answer that arrives without the id could authorize whichever
+// command happens to be pending.
 func TestSupervisorAnswersConfirmRequestsOnStdin(t *testing.T) {
 	var asked []string
 	sup := newConfirmSup(t)

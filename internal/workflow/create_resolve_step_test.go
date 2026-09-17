@@ -107,10 +107,10 @@ func TestResolveStepRejectsWritingParams(t *testing.T) {
 		"a step that broke its contract must not also have its result believed")
 }
 
-// TestUnhandledStepTypeFailsLoudly: the Run switch used to have no default, so a
-// step type it did not know fell through silently — no handler, no event — and
-// Run then reported Success. A declared step not happening must never read as
-// "the workflow completed".
+// TestUnhandledStepTypeFailsLoudly: a step type the Run switch does not know
+// must not fall through silently — no handler, no event — with Run reporting
+// Success. A declared step not happening must never read as "the workflow
+// completed".
 func TestUnhandledStepTypeFailsLoudly(t *testing.T) {
 	def := &Definition{
 		Name: "BadWorkflow",
@@ -293,15 +293,10 @@ func TestPodZoneCapacityAndPurchaseFlattenPlacementDifferently(t *testing.T) {
 	assert.Equal(t, uint32(9103), priceArgs["zone_id"])
 }
 
-// TestCreateInstance_PodZoneWithoutAzGroupRefusedAtDraft pins the refusal that
-// MOVED when placement validation converged on the draft.
-//
-// The capacity step used to validate with purchase=false, which skips the
-// az_group check, so a pod zone with no resolved az_group passed capacity and was
-// only caught at 查询价格. The draft validates once, with the strictest
-// (purchase=true) form, so the refusal now happens before either call. Nothing
-// was created on the old path either — but the user was told later, after two
-// pointless upstream round-trips.
+// TestCreateInstance_PodZoneWithoutAzGroupRefusedAtDraft: the draft validates
+// once, with the strictest (purchase=true) form, so a pod zone with no resolved
+// az_group is refused before the capacity and price calls rather than after
+// two pointless upstream round-trips.
 func TestCreateInstance_PodZoneWithoutAzGroupRefusedAtDraft(t *testing.T) {
 	executor := createMockExecutor()
 	executor.results["DescribeAvailableCompShareInstanceTypes"] = mockInstanceTypesInZone("cn-newpod-03", "4090",
@@ -334,10 +329,9 @@ func TestCreateInstance_PodZoneWithoutAzGroupRefusedAtDraft(t *testing.T) {
 // TestFormEditRerunsFromTheDraftInDefinitionOrder is gate ④: after an edit the
 // order must be draft → stock → price, not stock → price on a stale draft.
 //
-// The old RevalidateSteps list named only 检查库存 and 查询价格, which was correct
-// only because the draft was materialized later, inside the confirm's BuildArgs.
-// With the draft resolved up front, a list that did not name it would re-check
-// stock for the PREVIOUS GPU and then show a card for the new one.
+// With the draft resolved up front, a revalidation that re-ran only 检查库存 and
+// 查询价格 would re-check stock for the PREVIOUS GPU and then show a card for the
+// new one.
 func TestFormEditRerunsFromTheDraftInDefinitionOrder(t *testing.T) {
 	executor := formMockExecutor()
 	var order []string
@@ -362,10 +356,10 @@ func TestFormEditRerunsFromTheDraftInDefinitionOrder(t *testing.T) {
 	// Two passes over the range, each in definition order.
 	//
 	// 形成确认快照 appears in the re-run without anyone adding it there: the gate
-	// names a BOUNDARY, and the engine walks the definition from it. The old
-	// RevalidateSteps list would have had to be edited by hand when that step was
-	// introduced — and if it had not been, the refreshed card would have shown the
-	// price quoted for the PREVIOUS GPU, silently.
+	// names a BOUNDARY, and the engine walks the definition from it. A hand-kept
+	// step list would have to be edited whenever a step is introduced — and when
+	// it is not, the refreshed card shows the price quoted for the PREVIOUS GPU,
+	// silently.
 	assert.Equal(t,
 		[]string{
 			"查询镜像", "查询可用配比", createOfficialGPUInventoryStep, createPodGPUInventoryStep, createGPUInventoryStep,

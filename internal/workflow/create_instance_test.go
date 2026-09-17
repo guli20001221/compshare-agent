@@ -363,8 +363,7 @@ func TestCreateInstance_PlatformImageAllOfflineBlockedBeforeCapacity(t *testing.
 	assert.NoError(t, err)
 	assert.False(t, result.Success)
 	// Stops while forming the draft: an image that cannot be selected is not a
-	// question to ask capacity about. This used to surface one step later, from
-	// 检查库存's own image lookup.
+	// question to ask capacity about.
 	assert.Equal(t, "形成执行草稿", result.StoppedAt)
 	assert.Contains(t, result.Message, "未找到可用的 PyTorch 镜像")
 	for _, call := range executor.calls {

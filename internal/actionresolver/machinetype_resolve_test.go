@@ -28,9 +28,9 @@ func createResolver(t *testing.T, machineTypes MachineTypeCatalog) *Resolver {
 // vertical exists for: the value the user CONFIRMS is the value that EXECUTES.
 // Canonicalization happens before ReadyForConfirmation, so Arguments (what the
 // workflow consumes) and Confirmation.Arguments (what the card shows) carry the
-// identical canonical string. The old design normalized in executeWorkflow —
-// AFTER the card was rendered and the contract sealed — so the two could differ
-// and neither layer owned the final say.
+// identical canonical string. Normalizing later — AFTER the card was rendered
+// and the contract sealed — would let the two differ with neither layer owning
+// the final say.
 func TestResolveCanonicalizesGpuTypeBeforeConfirmation(t *testing.T) {
 	resolver := createResolver(t, liveCatalog())
 

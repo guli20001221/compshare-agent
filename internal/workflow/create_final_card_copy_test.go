@@ -14,9 +14,8 @@ import (
 // The final card cannot change the billing mode (a late switch desyncs the pool
 // every earlier step queried), so it must NAME the value in force and say where
 // it CAN be changed. Where that is depends on whether this run showed the
-// purchase-mode card — the sentence used to be a constant that always said
-// "重新发起创建", which was written before the card existed and afterwards told
-// users to redo the whole request to change something they had just been asked.
+// purchase-mode card — a constant "重新发起创建" would tell users to redo the
+// whole request to change something they had just been asked.
 func TestFinalCardStatesTheChargeTypeItNoLongerOffers(t *testing.T) {
 	// A final form with no recorded purchase card must still name its active mode
 	// and provide an accurate fallback instruction.

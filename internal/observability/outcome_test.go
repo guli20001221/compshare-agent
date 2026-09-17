@@ -269,9 +269,8 @@ func TestFinalizeOutcome_ZeroValueIsOmitted(t *testing.T) {
 }
 
 // TestStatusFromTrace_TerminatedBy covers the post-FinalizeOutcome mapping into
-// the 3-value status ENUM, including the two bugs this fixes: a chat error
-// (previously "blocked" via the synthetic hard-block) and an empty reply
-// (previously "success") both now report "error".
+// the 3-value status ENUM: a chat error and an empty reply both report "error",
+// never "blocked" or "success".
 func TestStatusFromTrace_TerminatedBy(t *testing.T) {
 	withTB := func(tb string) TraceRecord {
 		r := TraceRecord{}

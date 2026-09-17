@@ -10,26 +10,20 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// ---------------------------------------------------------------------------
-// The ReAct round ceiling used to manufacture its own amnesia.
-//
-// Every terminal exit in ChatWithOptions appends its reply to e.messages before
-// returning — except one. The bare "轮次超限" refusal returned without appending.
-// The HTTP layer stores whatever Chat returns, so that refusal DID reach the
-// database. The consequence was a session whose two histories disagreed:
+// Every terminal exit in ChatWithOptions must append its reply to e.messages
+// before returning, the bare "轮次超限" refusal included. The HTTP layer stores
+// whatever Chat returns, so a refusal that reached the database but not the hot
+// engine would leave a session with two histories:
 //
 //	hot engine (still in the pool):  ... tool, tool, tool          <- no answer
 //	cold rebuild (read from the DB): ... user, assistant(refusal)  <- has it
 //
-// On the hot engine the user's NEXT message therefore landed directly after a
-// run of tool results with no assistant turn in between — a malformed
-// conversation the model then had to make sense of — while a session that had
-// been evicted and rebuilt saw the correct one. Same session, same user, two
-// different pasts, decided by whether the LRU happened to evict.
-//
-// None of the storage work can fix this: the divergence is created entirely in
-// memory, on the write side, before any of it runs.
-// ---------------------------------------------------------------------------
+// On the hot engine the user's NEXT message would land directly after a run of
+// tool results with no assistant turn in between — a malformed conversation the
+// model then has to make sense of — while an evicted and rebuilt session would
+// see the correct one: same session, same user, two different pasts, decided by
+// whether the LRU happened to evict. No storage work can repair that; the
+// divergence would be created in memory, on the write side.
 
 // prose projects an engine's history down to what the messages table can hold:
 // non-empty user/assistant turns. This is precisely what RehydrateHistory reads
@@ -53,8 +47,8 @@ func prose(msgs []openai.ChatCompletionMessage) []openai.ChatCompletionMessage {
 // calls and never produces an answer. The tool is deliberately NOT
 // SearchKnowledge, so the evidence ledger stays empty and synthesizeOnBudget-
 // Exceeded declines to recover — which is what lands the turn on the bare
-// refusal instead of a synthesized answer. (It used to be GetGPUSpecs, deleted
-// with the static GPU table; any non-SearchKnowledge read serves the purpose.)
+// refusal instead of a synthesized answer. Any non-SearchKnowledge read serves
+// the purpose.
 func exhaustTheRoundCeiling(t *testing.T, userMsg string) (*Engine, string) {
 	t.Helper()
 	responses := make([]llm.ChatResponse, maxReActRounds+1)

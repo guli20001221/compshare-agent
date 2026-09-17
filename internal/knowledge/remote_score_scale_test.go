@@ -53,12 +53,10 @@ func TestNormalizeRemoteScoreScale(t *testing.T) {
 }
 
 // TestKnownRetrievalModeDerivesFromTheScoreScale pins that the adapter's gate is
-// not a second list. The earlier version of this test restated the same six
-// modes, which cannot catch drift: whoever adds a mode to one list edits the
-// other copy in the same change, and the test agrees with them either way.
-//
-// What is asserted instead is the derivation — classify a mode once in
-// ScoreScaleFor and the gate follows.
+// not a second list. Restating the modes here could not catch drift: whoever
+// adds a mode to one list edits the other copy in the same change, and the test
+// agrees with them either way. What is asserted is the derivation — classify a
+// mode once in ScoreScaleFor and the gate follows.
 func TestKnownRetrievalModeDerivesFromTheScoreScale(t *testing.T) {
 	for _, mode := range AllRetrievalModes() {
 		require.NotEqual(t, ScoreScaleUnknown, ScoreScaleFor(mode),

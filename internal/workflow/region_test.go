@@ -244,7 +244,6 @@ func TestSetStopScheduler_SetsRegion(t *testing.T) {
 // catalog snapshot. The upstream rejects a Zone without its Region (RetCode=230)
 // for any zone but the default cn-wlcb-01 — live-verified 2026-06-16: cn-bj2-03
 // (华北一C) creates only with Region=cn-bj2.
-// Cite: project-multi-region-audit-2026-05-25 PR-β1.
 
 func TestCreateInstance_NonDefaultZone_PairsRegionWithZone(t *testing.T) {
 	// Every create-path API call must carry the Region matching a non-default Zone,

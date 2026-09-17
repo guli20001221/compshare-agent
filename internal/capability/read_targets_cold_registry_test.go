@@ -220,11 +220,11 @@ func TestTruncatedRegistryAmbiguityCollapsesAfterWarmup(t *testing.T) {
 	assert.NotContains(t, result.Reply, "uhost-backup")
 }
 
-// TestColdRegistryNameReachesEveryCapability: the hole was in shared resolution,
-// so the fix has to hold for every capability that resolves targets — including
-// refund, which used to refuse a cold EXACT ID as well. Per-capability tests
-// elsewhere cover their own rendering; this one asserts only that none of them
-// answers "I cannot find it" about an instance the account has.
+// TestColdRegistryNameReachesEveryCapability: target resolution is shared, so
+// the guarantee has to hold for every capability that resolves targets,
+// including refund. Per-capability tests elsewhere cover their own rendering;
+// this one asserts only that none of them answers "I cannot find it" about an
+// instance the account has.
 func TestColdRegistryNameReachesEveryCapability(t *testing.T) {
 	listing := describeFixture(instanceRowMap(coldNameProbeID, coldNameProbeName, "Running"))
 	nameRef := coldNameTarget(coldNameProbeName)

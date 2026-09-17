@@ -771,11 +771,9 @@ func TestUnknownAction_Rejected(t *testing.T) {
 func TestTrimHistory(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 
-	// The fixture is DERIVED from the ceiling, not hardcoded. It used to be a
-	// literal 50 — chosen to overflow a ceiling of 40 — which meant raising the
-	// ceiling sailed this test straight down trimHistory's no-op branch: no trim,
-	// nothing asserted, still green. It then derived from maxHistoryMessages, and
-	// now from maxRawHistoryRunes, for the same reason.
+	// The fixture is DERIVED from the ceiling, not hardcoded: a literal chosen
+	// to overflow today's ceiling would sail straight down trimHistory's no-op
+	// branch after the next raise — no trim, nothing asserted, still green.
 	const perMessage = 500
 	pairs := maxRawHistoryRunes/perMessage + 4 // comfortably over, whatever the budget is
 	eng.messages = []openai.ChatCompletionMessage{
@@ -809,9 +807,8 @@ func TestTrimHistory(t *testing.T) {
 }
 
 // The ceiling is a SIZE, so a session of many small turns must not be trimmed for
-// having many turns. This is the count deletion stated as behaviour: at the old
-// maxHistoryMessages = 120 this fixture lost everything before turn 141, while
-// costing a twentieth of the budget it now answers to.
+// having many turns: this fixture costs a twentieth of the budget, and a
+// message-count ceiling would have lost everything before turn 141.
 func TestTrimHistoryDoesNotTrimManySmallTurns(t *testing.T) {
 	eng := NewWithDeps(&mockLLM{}, &mockExecutor{}, nil)
 	eng.messages = []openai.ChatCompletionMessage{
@@ -1177,12 +1174,10 @@ func TestDiagnosisInternalReadExpensiveCountsTurnBudget(t *testing.T) {
 }
 
 // A turn that reports two symptoms at once ("CPU 跑满" + "一直在扣费") must get BOTH
-// answered. The billing exit used to be a deterministic reply, which ended the turn:
-// live probes (N=5, both description arms) showed the Agent fetch the monitoring
-// evidence, then call DiagnoseBilling, then return a bare price card — the CPU
-// question unanswered and the evidence already gathered discarded, 5/5 runs.
+// answered: a billing card that ended the turn would leave the CPU question
+// unanswered and the monitoring evidence already gathered discarded.
 //
-// The two guarantees are now separate: the figures are delivered byte-exact, and
+// The two guarantees are separate: the figures are delivered byte-exact, and
 // the turn survives. The model's context must never contain the rendered figures —
 // that, not turn termination, is what makes re-summing periods / extrapolating an
 // hourly quote to monthly spend / inferring a free quota from a zero price
@@ -1244,12 +1239,11 @@ func TestDiagnoseBillingAnswersTheRestOfTheTurnAndHidesFiguresFromTheModel(t *te
 
 // A turn asking ONLY about price must come back as the card and nothing else.
 //
-// Making the billing exit non-terminal created this hazard: the Agent gets a round it
-// did not previously have, and an empty final answer used to be overwritten with
-// "本次没有生成有效回复" — so stopping was illegal and it padded with generic prose
-// instead ("费用通常按以下部分拆分…", vaguer than the card above it, observed 3/5 live).
-// A delivered verbatim block now counts as a non-empty turn, which makes silence the
-// cheap, correct move.
+// The billing exit is non-terminal, so the Agent gets another round; if an empty
+// final answer were then overwritten with "本次没有生成有效回复", stopping would be
+// illegal and the model would pad with generic prose vaguer than the card above
+// it. A delivered verbatim block counts as a non-empty turn, which makes silence
+// the cheap, correct move.
 func TestPureBillingTurnReturnsTheCardAloneWhenTheAgentAddsNothing(t *testing.T) {
 	executor := &mockExecutor{results: map[string]map[string]any{
 		"DescribeCompShareInstance": {
@@ -1607,17 +1601,15 @@ func TestChatHiddenPasswordActionNeverReachesTheTraceOrExecutor(t *testing.T) {
 	assert.NotContains(t, fmt.Sprintf("%+v", blockedEvent), "Secret123!")
 }
 
-// TestKnowledgeTool_ArgsFiltered pins the knowledge route's arg allowlist.
-// SearchKnowledge is now that route's only member (the GetGPUSpecs this used to
-// drive is deleted with the static GPU table).
+// TestKnowledgeTool_ArgsFiltered pins the knowledge route's arg allowlist;
+// SearchKnowledge is that route's only member.
 //
-// It deliberately does NOT drive Chat and inspect the StepToolCall event, the way
-// its ancestor did. That shape CANNOT work here: executeSearchKnowledge
-// hand-builds its event args as {"query": query} (engine.go), so the event never
-// carries the raw map and `NotContains(ev.Args, "evil")` holds no matter what the
-// filter does. Verified by mutation — deleting the FilterArgs call left the
-// event-driven version green, i.e. it was still a vacuous gate after being
-// retargeted. Assert the filter itself, which is the thing with teeth.
+// It deliberately does NOT drive Chat and inspect the StepToolCall event. That
+// shape CANNOT work here: executeSearchKnowledge hand-builds its event args as
+// {"query": query}, so the event never carries the raw map and
+// `NotContains(ev.Args, "evil")` holds no matter what the filter does (deleting
+// the FilterArgs call leaves such a test green). Assert the filter itself,
+// which is the thing with teeth.
 func TestKnowledgeTool_ArgsFiltered(t *testing.T) {
 	filtered := tools.NewSafeToolExecutor(&mockExecutor{}).FilterArgs("SearchKnowledge", map[string]any{
 		"query":        "4090 显存",
@@ -1681,10 +1673,8 @@ func TestFilterAllowedParams_ExternalToolCall(t *testing.T) {
 
 // Verify tool result JSON is valid by parsing it
 // The subject is the tool-result WIRE FORMAT: whatever a tool returns must reach
-// the model as parseable JSON on a role=tool message. The vehicle moved from the
-// deleted GetGPUSpecs to a surviving external read; the "96" assertion went with
-// it, because it pinned H20's VRAM from the static table — a platform fact this
-// repo no longer stores. The JSON contract it was really guarding is unchanged.
+// the model as parseable JSON on a role=tool message. The vehicle is an external
+// read; no platform fact is asserted, because this repo stores none.
 func TestToolResult_IsValidJSON(t *testing.T) {
 	mock := &mockLLM{responses: []llm.ChatResponse{
 		{ToolCalls: []openai.ToolCall{

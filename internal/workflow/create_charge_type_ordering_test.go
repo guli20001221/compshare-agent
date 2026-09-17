@@ -7,20 +7,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestChargeTypeIsSettledBeforeEveryPoolScopedStep is the ordering invariant the
-// Spot failure came down to, stated against what is ACTUALLY pool-scoped.
-//
-// It used to read "before any availability query" — two steps too strict, and
-// that strictness is what kept the charge type off a card for so long.
-// Measurement moved the line twice: the catalog query is not pool-scoped
-// (InstanceType=spot returns an empty catalog, so it is no longer sent) and the
+// TestChargeTypeIsSettledBeforeEveryPoolScopedStep is the ordering invariant,
+// stated against what is ACTUALLY pool-scoped: the catalog query is not
+// (InstanceType=spot returns an empty catalog, so it is not sent) and the
 // inventory snapshot is not either (it carries BOTH pools and is fetched with no
 // charge type). What IS pool-scoped starts at the GPU card.
 //
 // Any card offering an editable ChargeType must precede every step that consumes
-// the pool. Placing one after them is the original bug: every card the user had
-// already accepted would describe the other pool, and only 检查库存 would
-// re-check — surfacing as a bare 库存不足 on a spec the cards showed as available.
+// the pool. Placed after them, every card the user had already accepted would
+// describe the other pool, and only 检查库存 would re-check — surfacing as a bare
+// 库存不足 on a spec the cards showed as available.
 func TestChargeTypeIsSettledBeforeEveryPoolScopedStep(t *testing.T) {
 	steps := CreateInstanceGuidedDef().Steps
 	// Named, not derived: adding a pool-scoped step means adding it here, and this
@@ -97,8 +93,8 @@ func TestGuidedFinalCardDoesNotOfferChargeTypeEdit(t *testing.T) {
 // natural direction — the charge type is fixed first, so it narrows the zones
 // rather than the other way round — and reading the RIGHT fact while doing it.
 //
-// The rule used to be "a pod zone cannot serve Spot". That is not true and it is
-// not what the create gate enforces: 华北二C is a pod zone that DOES sell Spot
+// "A pod zone cannot serve Spot" is not true and is not what the create gate
+// enforces: 华北二C is a pod zone that DOES sell Spot
 // (its Spot pool is exactly where its 4090 lives), while 华北一C is a pod zone
 // that does not. A card built on pod-ness greys out a zone the gate would have
 // accepted, which is the same class of error as offering one it will refuse.

@@ -10,9 +10,9 @@ import (
 // Error() string MUST stay byte-identical to the historical flat format, because
 // saga step wrappers embed it via %v and that text reaches user-facing narration.
 //
-// It no longer guards zone-image auto-recovery: that now classifies on the typed
-// Code (engine.isImageUnavailableError), so it cannot break if this string drifts.
-// The cases below stay because the format is still a real output contract, not
+// Zone-image auto-recovery classifies on the typed Code
+// (engine.isImageUnavailableError), so it cannot break if this string drifts.
+// The cases below exist because the format is a real output contract, not
 // because a classifier greps it.
 func TestUpstreamAPIError_ErrorStringByteIdentical(t *testing.T) {
 	cases := []struct {

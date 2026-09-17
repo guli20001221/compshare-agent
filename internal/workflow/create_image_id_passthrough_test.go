@@ -9,11 +9,9 @@ import (
 	"github.com/compshare-agent/internal/deployment"
 )
 
-// TestCreateImageCatalogPrefersThisRunsQueryOverAnInjectedSnapshot is the
-// protection that used to be expressed as "create must carry no CompShareImageId
-// field" in actionresolver's TestCodecImageActivatedForImageBearingOps. Create now
-// carries one, so the engine threads a proposal-time ImageCatalog, and the reason
-// that used to be dangerous has to be defended directly.
+// TestCreateImageCatalogPrefersThisRunsQueryOverAnInjectedSnapshot: create
+// carries a CompShareImageId field, so the engine threads a proposal-time
+// ImageCatalog, and that snapshot must not shadow the guided flow's own query.
 //
 // The proposal-time snapshot is taken against the source the PROPOSAL declared.
 // The guided flow then lets the user switch source (选择镜像来源 → 查询镜像 re-query)

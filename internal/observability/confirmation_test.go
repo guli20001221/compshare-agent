@@ -50,10 +50,9 @@ func TestConfirmationOutcomeUsesOnlyTheLatestCard(t *testing.T) {
 		abortCause    string
 	}{
 		{
-			// The turn this PR exists for: the premature completion lock used to
-			// freeze the whole turn on the first card that came back
-			// not-confirmed, so a later confirmed card and its committed write
-			// were still reported as declined.
+			// A first card that comes back not-confirmed must not lock the turn's
+			// completion: a later confirmed card and its committed write are
+			// what the turn reports.
 			name: "earlier decline then final confirmation completes",
 			confirmations: []ConfirmationTrace{
 				{Action: "OtherWorkflow", State: ConfirmationStateNotConfirmed, TerminalReason: ConfirmationReasonUserDeclined},
