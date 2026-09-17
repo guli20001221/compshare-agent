@@ -466,24 +466,15 @@ type RetrievalTrace struct {
 	Activities      []RetrievalActivity  `json:"activities,omitempty"`
 	References      []RetrievalReference `json:"references,omitempty"`
 	CitedRefs       []RetrievalCitedRef  `json:"cited_refs,omitempty"`
-	RefusedReason   string               `json:"refused_reason,omitempty"`
-	// RefusalType classifies a RAG refusal into the three supported categories
-	// (corpus_gap / all_below_floor / synthesis_refused). Derived
-	// at Finish from RefusedReason + FloorDroppedAll (DeriveRefusalType); empty
-	// when the turn did not emit a knowledge-coverage refusal.
-	RefusalType string `json:"refusal_type,omitempty"`
 	// FloorDroppedAll is true when the relevance floor removed EVERY retrieved hit
-	// this turn (the agent-loop drop point) — the signal that distinguishes
-	// all_below_floor from a genuinely empty corpus (corpus_gap). A retrieval fact
-	// independent of whether the turn then refused or answered with general
-	// guidance, so it is queryable on its own even when refusal_type is empty.
+	// this turn (the agent-loop drop point), which distinguishes a below-floor
+	// result from a genuinely empty one. It is a retrieval fact independent of how
+	// the turn then answered.
 	FloorDroppedAll bool `json:"floor_dropped_all,omitempty"`
 	// FloorValue is the weak-evidence relevance floor in effect for this turn's
 	// HybridMode (0.5 semantic / 55 BM25). With HitItems[0].Score it shows how
 	// far the top hit fell from the floor.
-	FloorValue            float64 `json:"floor_value,omitempty"`
-	WeakEvidence          bool    `json:"weak_evidence,omitempty"`
-	RankingErrorCandidate bool    `json:"ranking_error_candidate,omitempty"`
+	FloorValue float64 `json:"floor_value,omitempty"`
 	// AnswerEchoedChunkID records a >=32-rune verbatim match with a customer-safe
 	// chunk. It is a synthesis-quality signal and never gates the answer.
 	AnswerEchoedChunkID string `json:"answer_echoed_chunk_id,omitempty"`
@@ -611,16 +602,14 @@ type OutcomeTrace struct {
 	PromptMessagesRawPeak       int  `json:"prompt_messages_raw_peak,omitempty"`
 	PromptMessagesAssembledPeak int  `json:"prompt_messages_assembled_peak,omitempty"`
 	PromptMessagesCapApplied    bool `json:"prompt_messages_cap_applied,omitempty"`
-	// TerminatedBy / AbortCause / ErrorClass / Resolution are the four
-	// outcome-attribution axes derived at Finish (see outcome.go). They close the
-	// "no attribution on ~25% of turns" dark hole. TerminatedBy is always set for a
-	// finalized turn (at minimum "done"); the other three are empty unless their
-	// condition fires. All omitempty → a record that never ran FinalizeOutcome
-	// (raw fixtures) marshals byte-identically to before.
+	// TerminatedBy / AbortCause / ErrorClass are the outcome-attribution axes
+	// derived at Finish (see outcome.go). TerminatedBy is always set for a
+	// finalized turn (at minimum "done"); the other two are empty unless their
+	// condition fires. All omitempty, so a record that never ran FinalizeOutcome
+	// carries none of them.
 	TerminatedBy string `json:"terminated_by,omitempty"`
 	AbortCause   string `json:"abort_cause,omitempty"`
 	ErrorClass   string `json:"error_class,omitempty"`
-	Resolution   string `json:"resolution,omitempty"`
 	// ReactRounds is the number of ReAct loop rounds entered this turn; BudgetHit
 	// is true when the turn hit the token budget or the round ceiling. Both feed
 	// the D7 (per-turn budget exhaustion) analysis and the budget terminus.
@@ -685,28 +674,6 @@ func (w *FileWriter) Append(record TraceRecord) error {
 	defer f.Close()
 	if _, err := f.Write(append(data, '\n')); err != nil {
 		return fmt.Errorf("write trace line: %w", err)
-	}
-	if record.Retrieval.RankingErrorCandidate {
-		if err := w.appendRankingErrorCandidate(now, data); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (w *FileWriter) appendRankingErrorCandidate(now time.Time, data []byte) error {
-	dir := filepath.Join(w.dir, now.Format("2006-01-02"))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return fmt.Errorf("create ranking-error trace dir: %w", err)
-	}
-	path := filepath.Join(dir, "ranking-error-candidates.jsonl")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, DefaultTraceFilePerm)
-	if err != nil {
-		return fmt.Errorf("open ranking-error trace file: %w", err)
-	}
-	defer f.Close()
-	if _, err := f.Write(append(data, '\n')); err != nil {
-		return fmt.Errorf("write ranking-error trace line: %w", err)
 	}
 	return nil
 }
@@ -814,12 +781,8 @@ func traceRetrievalObserved(trace RetrievalTrace) bool {
 		len(trace.Activities) > 0 ||
 		len(trace.References) > 0 ||
 		len(trace.CitedRefs) > 0 ||
-		trace.RefusedReason != "" ||
-		trace.RefusalType != "" ||
 		trace.FloorDroppedAll ||
 		trace.FloorValue != 0 ||
-		trace.WeakEvidence ||
-		trace.RankingErrorCandidate ||
 		trace.AnswerEchoedChunkID != "" ||
 		trace.HybridMode != "" ||
 		trace.HybridFallbackReason != "" ||
@@ -838,7 +801,6 @@ func traceOutcomeObserved(trace OutcomeTrace) bool {
 		trace.TerminatedBy != "" ||
 		trace.AbortCause != "" ||
 		trace.ErrorClass != "" ||
-		trace.Resolution != "" ||
 		trace.ReactRounds != 0 ||
 		trace.BudgetHit ||
 		len(trace.ContextSources) > 0 ||

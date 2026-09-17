@@ -50,8 +50,8 @@ func TestRowFromTrace_PopulatesAllColumnsFromCanonicalSources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rowFromTrace: %v", err)
 	}
-	if len(row) != 12 {
-		t.Fatalf("expected 12 columns, got %d", len(row))
+	if len(row) != 11 {
+		t.Fatalf("expected 11 columns, got %d", len(row))
 	}
 
 	// Column order documented in mysql_writer.go::insertBatch cols list.
@@ -62,12 +62,11 @@ func TestRowFromTrace_PopulatesAllColumnsFromCanonicalSources(t *testing.T) {
 	assertColEq(t, row, 4, 7, "turn_index")
 	assertColEq(t, row, 5, "2026-05-21T03:00:00Z", "created_at")
 	assertColEq(t, row, 6, "success", "status")
-	assertColEq(t, row, 7, "", "retired intent")
-	assertColEq(t, row, 8, 2, "tool_count")
+	assertColEq(t, row, 7, 2, "tool_count")
 
-	citedJSON, ok := row[9].([]byte)
+	citedJSON, ok := row[8].([]byte)
 	if !ok {
-		t.Fatalf("col 9 (cited_chunk_ids) wrong type %T: %#v", row[9], row[9])
+		t.Fatalf("col 8 (cited_chunk_ids) wrong type %T: %#v", row[8], row[8])
 	}
 	var citedList []string
 	if err := json.Unmarshal(citedJSON, &citedList); err != nil {
@@ -77,11 +76,11 @@ func TestRowFromTrace_PopulatesAllColumnsFromCanonicalSources(t *testing.T) {
 		t.Fatalf("cited_chunk_ids drift: %v", citedList)
 	}
 
-	assertColEq(t, row, 10, int64(1234), "duration_ms")
+	assertColEq(t, row, 9, int64(1234), "duration_ms")
 
-	traceJSON, ok := row[11].([]byte)
+	traceJSON, ok := row[10].([]byte)
 	if !ok {
-		t.Fatalf("col 11 (trace_json) wrong type %T", row[11])
+		t.Fatalf("col 10 (trace_json) wrong type %T", row[10])
 	}
 	if !strings.Contains(string(traceJSON), `"trace_id":"req-uuid-123"`) {
 		t.Fatalf("trace_json does not embed trace_id; payload=%s", string(traceJSON))
@@ -106,9 +105,9 @@ func TestRowFromTrace_EmptyCitedChunkIDsBecomesEmptyJSONArray(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rowFromTrace: %v", err)
 	}
-	cited, ok := row[9].([]byte)
+	cited, ok := row[8].([]byte)
 	if !ok {
-		t.Fatalf("col 9 wrong type %T", row[9])
+		t.Fatalf("col 8 wrong type %T", row[8])
 	}
 	if string(cited) != "[]" {
 		t.Fatalf("expected empty JSON array for no citations, got %q", string(cited))
@@ -116,21 +115,17 @@ func TestRowFromTrace_EmptyCitedChunkIDsBecomesEmptyJSONArray(t *testing.T) {
 }
 
 // TestPromotedColumnValues_ProjectsDerivedAxesInColumnOrder asserts the 0004
-// promoted-column projection: the 7 derived attribution axes, in the exact order
-// promotedInsertCols lists them after trace_json, from their canonical source
-// fields. Encodes WHY: a field-routing drift here writes the wrong axis into the
-// wrong queryable column — silently corrupting every dashboard GROUP BY. refusal_type
-// is the one DERIVED value (DeriveRefusalType over RefusedReason+FloorDroppedAll),
-// not a raw field copy, so it is exercised through a real refusal reason.
+// promoted-column projection: the four attribution axes, in the exact order
+// insertCols lists them after trace_json, from their canonical source fields. A
+// field-routing drift here writes the wrong axis into the wrong queryable column
+// and silently corrupts every dashboard GROUP BY.
 func TestPromotedColumnValues_ProjectsDerivedAxesInColumnOrder(t *testing.T) {
 	rec := TraceRecord{
-		Retrieval: RetrievalTrace{RefusedReason: "no_evidence"}, // → corpus_gap
-		State:     StateTrace{ResolutionSource: "explicit_id"},
+		State: StateTrace{ResolutionSource: "explicit_id"},
 		Outcome: OutcomeTrace{
 			TerminatedBy: TerminatedByError,
 			AbortCause:   "client_disconnect",
 			ErrorClass:   "upstream_5xx",
-			Resolution:   "blocked",
 		},
 	}
 	vals := promotedColumnValues(rec)
@@ -138,9 +133,6 @@ func TestPromotedColumnValues_ProjectsDerivedAxesInColumnOrder(t *testing.T) {
 		TerminatedByError,   // terminated_by
 		"client_disconnect", // abort_cause
 		"upstream_5xx",      // error_class
-		"blocked",           // resolution
-		nil,                 // retired route_status
-		"corpus_gap",        // refusal_type (DERIVED)
 		"explicit_id",       // resolution_source
 	}
 	if len(vals) != len(want) {
@@ -154,14 +146,14 @@ func TestPromotedColumnValues_ProjectsDerivedAxesInColumnOrder(t *testing.T) {
 }
 
 // TestPromotedColumnValues_EmptyAxesBecomeSQLNull guards the NULL contract: a clean
-// answered turn (no refusal, no error, no special terminus) must store NULL — not ""
-// — in every promoted column, so COUNT(refusal_type) / GROUP BY counts only the
-// turns where the axis actually fired. (terminated_by is the one axis always set on
-// a finalized turn; here the record is un-finalized so even it is empty → NULL.)
+// answered turn (no error, no special terminus) must store NULL — not "" — in
+// every promoted column, so COUNT(error_class) / GROUP BY counts only the turns
+// where the axis actually fired. (terminated_by is the one axis always set on a
+// finalized turn; here the record is un-finalized so even it is empty → NULL.)
 func TestPromotedColumnValues_EmptyAxesBecomeSQLNull(t *testing.T) {
 	vals := promotedColumnValues(TraceRecord{})
-	if len(vals) != 7 {
-		t.Fatalf("promotedColumnValues len = %d, want 7", len(vals))
+	if len(vals) != 4 {
+		t.Fatalf("promotedColumnValues len = %d, want 4", len(vals))
 	}
 	for i, v := range vals {
 		if v != nil {
@@ -390,9 +382,9 @@ func TestMySQLWriter_EnqueueRedactsQueryDerivedPIIBeforePersist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("rowFromTrace: %v", err)
 	}
-	traceJSON, ok := row[11].([]byte)
+	traceJSON, ok := row[10].([]byte)
 	if !ok {
-		t.Fatalf("col 11 (trace_json) wrong type %T", row[11])
+		t.Fatalf("col 10 (trace_json) wrong type %T", row[10])
 	}
 	blob := string(traceJSON)
 

@@ -17,11 +17,9 @@ import (
 //
 // The README tells an operator to apply `deploy/migrations/*.sql` in order,
 // without knowing which of them the target database already has. That is only
-// honest if re-applying an applied file is a no-op. It was not: the production
-// deployment (GitLab 127f4e8a) ships migrations 0001-0004, everything from 0005
-// on was bare `CREATE TABLE` / `ADD COLUMN` / `CREATE TRIGGER`, and a blind
-// re-run died on the first file under ON_ERROR_STOP=1 — so the instruction had
-// to be replaced by a paragraph telling the operator to work out the delta.
+// honest if re-applying an applied file is a no-op: a bare `CREATE TABLE` /
+// `ADD COLUMN` / `CREATE TRIGGER` dies on the first re-run under
+// ON_ERROR_STOP=1 and the instruction turns into "work out the delta".
 //
 // Applying repeatedly into a scratch schema is the whole contract. A new
 // migration that forgets IF NOT EXISTS (or a CREATE TRIGGER without its DROP)

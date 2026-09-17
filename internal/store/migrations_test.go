@@ -42,32 +42,33 @@ func TestHTTPMigrationsAddSessionContextVersion(t *testing.T) {
 	// positional clause has no equivalent and was dropped in the migration.
 }
 
-// TestHTTPMigrationsAddAgentTracesOutcomeColumns pins the 0004 promote-to-columns
-// migration to the exact column names the MySQL writer's promoted INSERT references
-// (mysql_writer.go::promotedInsertCols). A drift on either side — a renamed column in
-// the DDL or a reordered value in promotedColumnValues — silently writes the wrong
-// axis into the wrong dashboard column, so this guards the DDL↔writer contract.
-func TestHTTPMigrationsAddAgentTracesOutcomeColumns(t *testing.T) {
-	sqlPath := filepath.Join("..", "..", "deploy", "migrations", "0004_add_agent_traces_outcome_columns.sql")
-	data, err := os.ReadFile(sqlPath)
-	require.NoError(t, err)
+// TestHTTPMigrationsAgentTracesOutcomeColumns pins the columns the trace writer's
+// INSERT names (mysql_writer.go::insertCols) to the DDL that ends up in the
+// database: 0004 adds them and 0015 must not drop them, while the columns 0015
+// does drop are the ones the writer stopped naming. A drift on either side
+// fails every trace INSERT after deploy.
+func TestHTTPMigrationsAgentTracesOutcomeColumns(t *testing.T) {
+	read := func(name string) string {
+		data, err := os.ReadFile(filepath.Join("..", "..", "deploy", "migrations", name))
+		require.NoError(t, err)
+		return string(data)
+	}
+	add := read("0004_add_agent_traces_outcome_columns.sql")
+	drop := read("0015_drop_unused_storage.sql")
 
-	ddl := string(data)
-	assert.Contains(t, ddl, "ALTER TABLE agent_traces")
-	for _, column := range []string{
-		"terminated_by",
-		"abort_cause",
-		"error_class",
-		"resolution",
-		"route_status",
-		"refusal_type",
-		"resolution_source",
-	} {
-		assert.Contains(t, ddl, "ADD COLUMN IF NOT EXISTS "+column, "0004 must add column %s", column)
+	assert.Contains(t, add, "ALTER TABLE agent_traces")
+	for _, column := range []string{"terminated_by", "abort_cause", "error_class", "resolution_source"} {
+		assert.Contains(t, add, "ADD COLUMN IF NOT EXISTS "+column, "0004 must add column %s", column)
+		assert.NotContains(t, drop, "DROP COLUMN IF EXISTS "+column, "0015 must keep column %s", column)
+	}
+	for _, column := range []string{"intent", "route_status", "refusal_type", "resolution"} {
+		dropped := strings.Contains(drop, "DROP COLUMN IF EXISTS "+column+",") ||
+			strings.Contains(drop, "DROP COLUMN IF EXISTS "+column+";")
+		assert.True(t, dropped, "0015 must drop column %s", column)
 	}
 	// Columns must be NULLable so an axis that did not fire stores NULL (clean
 	// GROUP BY / COUNT semantics) — never NOT NULL with a default.
-	assert.NotContains(t, strings.ToUpper(ddl), "NOT NULL")
+	assert.NotContains(t, strings.ToUpper(add), "NOT NULL")
 }
 
 // TestHTTPMigrationsCreateSSHOpsAudit pins the 0011 fail-closed audit table to the exact columns the

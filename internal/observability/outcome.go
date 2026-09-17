@@ -7,15 +7,12 @@ import (
 
 // outcome.go derives the per-turn outcome-attribution axes at Finish, with zero
 // judge calls — the same derive-at-Finish discipline as DeriveActualExecutionTier
-// (trace.go). It closes the "~25% of turns have no attribution" dark hole
-// (clusters #1/#3/#5 in the trace observability spec) by recording WHY a turn
-// terminated and HOW it ended, on four orthogonal axes.
+// (trace.go): WHY a turn terminated and HOW it ended, on orthogonal axes.
 //
 // The derives are methods on TraceRecord so they can read record-internal signals
-// (EngineHardBlock, RateLimit, Retrieval) and combine them with the external
-// FinishSignals the engine/caller knows. Each derive is pure and individually
-// unit-tested for forced precedence (outcome_test.go) so the four axes cannot
-// self-mislabel.
+// (EngineHardBlock, RateLimit) and combine them with the external FinishSignals
+// the engine/caller knows. Each derive is pure and individually unit-tested for
+// forced precedence (outcome_test.go) so the axes cannot self-mislabel.
 
 // TerminatedBy* are the values for OutcomeTrace.TerminatedBy — the single coarse
 // "why did this turn stop" axis. Derived with first-match-wins precedence
@@ -40,14 +37,6 @@ const (
 	AbortCauseUserDeclined        = "user_declined"
 	AbortCauseConfirmationTimeout = "timeout"
 	AbortCauseLLMEmptyStream      = "llm_empty_stream"
-)
-
-// Resolution* are the DETERMINISTIC subset of outcome.resolution the engine fills.
-// The resolved-vs-partial distinction for a delivered answer is LEFT EMPTY for the
-// external eval layer; runtime trace must never guess it as "resolved".
-const (
-	ResolutionBlocked = "blocked"
-	ResolutionRefused = "refused"
 )
 
 // FinishSignals carries the per-turn terminal facts the trace record cannot
@@ -75,7 +64,7 @@ type FinishSignals struct {
 	ActionProposalDisposition string
 }
 
-// FinalizeOutcome stamps the four outcome-attribution axes (plus react_rounds /
+// FinalizeOutcome stamps the outcome-attribution axes (plus react_rounds /
 // budget_hit) onto the record. Call it once at Finish, after every other signal
 // is final and before the record is handed to the sink.
 func (r *TraceRecord) FinalizeOutcome(s FinishSignals) {
@@ -83,7 +72,6 @@ func (r *TraceRecord) FinalizeOutcome(s FinishSignals) {
 	r.Outcome.TerminatedBy = tb
 	r.Outcome.AbortCause = r.DeriveAbortCause(s, tb)
 	r.Outcome.ErrorClass = r.DeriveErrorClass(s)
-	r.Outcome.Resolution = r.DeriveResolution(s, tb)
 	if s.ReactRounds > 0 {
 		r.Outcome.ReactRounds = s.ReactRounds
 	}
@@ -172,19 +160,6 @@ func (r TraceRecord) latestConfirmationTerminalReason() string {
 		last.State == ConfirmationStateConfirmed,
 		last.TerminalReason,
 	)
-}
-
-// DeriveResolution fills only the deterministic subset: a blocked turn resolved to
-// "blocked", a no-evidence RAG refusal to "refused". A delivered answer is left
-// "" — resolved-vs-partial is the online judge's call, never defaulted here.
-func (r TraceRecord) DeriveResolution(s FinishSignals, terminatedBy string) string {
-	if terminatedBy == TerminatedByBlocked {
-		return ResolutionBlocked
-	}
-	if r.Retrieval.RefusedReason != "" {
-		return ResolutionRefused
-	}
-	return ""
 }
 
 // isGenuineBlock reports a real engine hard-block or rate-limit denial. It

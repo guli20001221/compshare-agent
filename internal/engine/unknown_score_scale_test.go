@@ -130,25 +130,6 @@ func TestVerdictAndTraceShareOneProducer(t *testing.T) {
 	}
 }
 
-// TestUnknownRemoteScaleIsNotRankingAmbiguous covers the telemetry twin of the
-// floor. It is metric-only, so guessing would not change an answer — it would
-// mark nearly every remote turn a ranking-error candidate (the BM25 spread is
-// wide relative to a [0,1] scale) and make the metric useless exactly when
-// someone is using it to diagnose the remote.
-func TestUnknownRemoteScaleIsNotRankingAmbiguous(t *testing.T) {
-	hits := remoteHits(0.91, 0.88)
-
-	require.True(t, isRankingAmbiguous(hits, knowledge.RetrievalModeBM25Only),
-		"premise: on the BM25 spread this pair reads as tied — that is the old behavior")
-
-	assert.False(t, isRankingAmbiguous(hits, knowledge.RetrievalModeUnknownRemote),
-		"an unidentifiable scale must not feed the ranking-ambiguity metric")
-	assert.False(t, isRankingAmbiguous(hits, "hybrid_v2"),
-		"an unclassified mode is unidentifiable for the same reason")
-	assert.True(t, isRankingAmbiguous(remoteHits(0.91, 0.905), knowledge.RetrievalModeQwen3Full),
-		"control: a known scale still detects a tie")
-}
-
 // TestTheFloorExemptionDoesNotRideOnTheDisplayValue keeps the mechanisms
 // separate: a threshold of 0 for the unknown scale would disable the floor as a
 // side effect of a display value (`score < 0` is false for any positive score),

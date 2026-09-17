@@ -263,38 +263,6 @@ func strongKnowledgeBodyEligibleIDs(
 	return ids
 }
 
-// isRankingAmbiguous reports whether the top two hits are close enough on the
-// scoring scale that ranking is essentially a tie. Only feeds telemetry
-// (trace.RankingErrorCandidate); does NOT influence the RAG prompt or refusal
-// path. Mode-aware so the spread threshold matches the score scale in use.
-func isRankingAmbiguous(items []knowledge.RetrievalHit, hybridMode string) bool {
-	if len(items) < 2 {
-		return false
-	}
-	if knowledge.ScoreScaleFor(hybridMode) == knowledge.ScoreScaleUnknown {
-		// A spread is only meaningful against a known scale, for the same reason
-		// the floor is. This one is telemetry-only, so guessing would not change
-		// an answer — it would mark nearly every remote turn a ranking-error
-		// candidate (the BM25 spread is wide relative to a [0,1] scale) and make
-		// the metric useless exactly when someone is using it to diagnose the
-		// remote.
-		return false
-	}
-	return items[0].Score-items[1].Score < rankingAmbiguousSpreadFor(hybridMode)
-}
-
-// rankingAmbiguousSpreadFor maps a score scale to the spread under which the top
-// two hits are considered tied. Keyed by scale for the same reason the floor is:
-// a spread is a distance on a scale, not a property of a pipeline.
-func rankingAmbiguousSpreadFor(hybridMode string) float64 {
-	switch knowledge.ScoreScaleFor(hybridMode) {
-	case knowledge.ScoreScaleSemantic:
-		return rankingAmbiguousSemanticSpread
-	default:
-		return rankingAmbiguousBM25Spread
-	}
-}
-
 func (e *Engine) emitRetrievalTrace(trace observability.RetrievalTrace) {
 	if e.retrievalTraceObserver == nil {
 		return
@@ -515,24 +483,9 @@ func (e *Engine) emitSearchKnowledgeRetrievalTrace(answerQuestion, query string,
 	if trace.QueryNormalized == "" {
 		trace.QueryNormalized = knowledge.NormalizeQuery(query)
 	}
-	evidences, evidenceErr := evidencesFromRetrievalHits(hitItems, trace.QueryNormalized)
+	evidences, _ := evidencesFromRetrievalHits(hitItems, trace.QueryNormalized)
 	trace.HitItems = projectEvidenceTraceHits(evidences, hitItems)
 	trace.References = retrievalReferencesFromHits(hitItems, activityID)
-	if retrieved.Unavailable {
-		// Service health is explicitly separate from corpus coverage. Do not
-		// stamp no_evidence here: that would send operators to edit corpus data
-		// for an MCP network/auth/readiness failure.
-	} else if retrieved.Empty || len(retrieved.Hits) == 0 || len(evidences) == 0 || evidenceErr != nil {
-		trace.RefusedReason = "no_evidence"
-		trace.RankingErrorCandidate = true
-	} else {
-		if isWeakEvidence(hitItems, retrieved.HybridMode, retrieved.RerankerMode != "") {
-			trace.WeakEvidence = true
-		}
-		if isRankingAmbiguous(hitItems, retrieved.HybridMode) {
-			trace.RankingErrorCandidate = true
-		}
-	}
 	e.emitRetrievalTrace(trace)
 }
 

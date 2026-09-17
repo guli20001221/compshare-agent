@@ -150,29 +150,8 @@ func TestDeriveErrorClass(t *testing.T) {
 	}
 }
 
-func TestDeriveResolution(t *testing.T) {
-	cases := []struct {
-		name         string
-		rec          TraceRecord
-		terminatedBy string
-		want         string
-	}{
-		{"blocked → blocked", TraceRecord{}, TerminatedByBlocked, ResolutionBlocked},
-		{"refusal → refused", TraceRecord{Retrieval: RetrievalTrace{RefusedReason: "no_evidence"}}, TerminatedByDone, ResolutionRefused},
-		{"done, no refusal → empty (judge decides)", TraceRecord{}, TerminatedByDone, ""},
-		{"error → empty (judge decides)", TraceRecord{}, TerminatedByError, ""},
-	}
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
-			if got := c.rec.DeriveResolution(FinishSignals{}, c.terminatedBy); got != c.want {
-				t.Fatalf("DeriveResolution = %q, want %q", got, c.want)
-			}
-		})
-	}
-}
-
 // TestFinalizeOutcome_StampsAllAxes is the integration check: one call stamps the
-// four axes plus react_rounds / budget_hit consistently.
+// axes plus react_rounds / budget_hit consistently.
 func TestFinalizeOutcome_StampsAllAxes(t *testing.T) {
 	rec := TraceRecord{}
 	rec.FinalizeOutcome(FinishSignals{ReplyEmpty: true, ReactRounds: 4})
