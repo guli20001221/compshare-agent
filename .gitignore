@@ -11,7 +11,8 @@ start-server.ps1
 start-ws-liantiao.ps1
 *.smoke_env.ps1
 
-# Local build, test, and agent scratch state.
+# Local build, test, IDE and agent scratch state.
+.idea/
 .worktrees/
 .runs/
 .claude/
