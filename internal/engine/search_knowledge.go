@@ -65,13 +65,6 @@ func projectEvidenceTraceHits(evidences []envelope.Evidence, items []knowledge.R
 			SourceArea: item.Chunk.ProductArea,
 			Score:      view.RetrievalScore,
 			Kept:       kept,
-			// RRF trace fields. Zero values omitted via json omitempty
-			// for non-qwen3_rrf modes; populated when knowledge.Retriever
-			// ran the qwen3_rrf branch.
-			BM25Rank:    item.BM25Rank,
-			DenseRank:   item.DenseRank,
-			FusionRank:  item.FusionRank,
-			FusionScore: item.FusionScore,
 		})
 	}
 	return hits

@@ -11,8 +11,9 @@
 
 - GitLab 项目设置受保护变量 `UHUB_USER` 和 `UHUB_PASS`，并由 `uaek-c5` runner 执行；
 - `prj-ucompshare-prod` 已存在可拉取 UHub 镜像的 `regcred`；
-- 先通过受控运维流程执行 [`../migrations/`](../migrations/) 的全部 PostgreSQL 迁移。镜像不带
-  `psql`，因此不把数据库凭据或迁移权限复制进 CI job；
+- 带迁移的提交先点手动 job `migrate-database`：它用本次构建的镜像起一个一次性 Pod
+  （[`migration-pod.yaml`](migration-pod.yaml)），在集群内用镜像自带的 `psql` 执行
+  [`../migrations/`](../migrations/) 的全部文件，数据库凭据不进入 CI job；
 - 配置中的 `agent.retrieval.mcp_url` 指向已经就绪的 `compshare-kb` 服务。
 
 ## 运行拓扑

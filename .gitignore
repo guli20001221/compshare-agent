@@ -21,8 +21,6 @@ agent
 agent.exe~
 compshare-agent
 dist/
-deploy/kb/v2/.cache/
-eval/.cache/
 
 # Raw production exports can contain customer identifiers and credentials.
 # Publish only deliberately sanitized fixtures with `git add -f`.

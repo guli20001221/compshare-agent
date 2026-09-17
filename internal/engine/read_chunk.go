@@ -79,8 +79,7 @@ type autoReadChunkResult struct {
 // while this helper only enforces the body-read capability and context budget.
 //
 // Remote reads remain bound to the search_id recorded for each model-visible
-// chunk. Local tests/offline evaluation use the in-process Chunk capability.
-// Any failed or missing body leaves the original ledger snippet untouched.
+// chunk. Any failed or missing body leaves the original ledger snippet untouched.
 // Each SearchKnowledge call invokes this once, using the explicit read's size
 // limits; the turn-level attempt set prevents repeated automatic body fetches.
 func (e *Engine) autoMaterializeKnowledgeChunks(
@@ -239,10 +238,9 @@ func (e *Engine) autoMaterializeKnowledgeChunks(
 	return result
 }
 
-// executeReadChunk runs the ReadChunk tool. It is read-only by construction:
-// local development reads the in-process corpus, while production reads only a
-// capability-authorized body from MCP. It never touches SafeToolExecutor or a
-// mutating endpoint.
+// executeReadChunk runs the ReadChunk tool. It is read-only by construction: it
+// reads only a capability-authorized body from MCP and never touches
+// SafeToolExecutor or a mutating endpoint.
 func (e *Engine) executeReadChunk(args map[string]any, onStep func(StepEvent)) string {
 	ids := readChunkIDArgs(args)
 	onStep(StepEvent{

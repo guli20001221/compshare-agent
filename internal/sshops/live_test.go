@@ -17,8 +17,6 @@
 //	SSHH_CONTEXT_CURRENT_REPORT optionally supplies the raw user wording for the enabled arm.
 //	SSHH_KB_MCP_URL optionally supplies the real read-only knowledge MCP endpoint.
 //	SSHH_KB_MCP_BEARER_TOKEN supplies its optional read token.
-//	SSHH_KB_CORPUS is the offline fallback: an immutable local JSONL corpus snapshot served through
-//	the same broker. Exactly one source may be configured.
 //
 // What these tests do NOT cover, so nobody reads a green live run as broader than it is:
 //   - The ordinary TestLiveFullFlow and TestLiveKeystone deny every proposed write. The opt-in
@@ -68,13 +66,6 @@ func envOr(k, d string) string {
 	return d
 }
 
-type liveKnowledgeProbe struct {
-	retriever *knowledge.Retriever
-	corpus    knowledge.Corpus
-	searches  atomic.Int32
-	reads     atomic.Int32
-}
-
 type liveRemoteKnowledgeProbe struct {
 	retriever *knowledge.MCPRetriever
 	searches  atomic.Int32
@@ -82,33 +73,12 @@ type liveRemoteKnowledgeProbe struct {
 }
 
 var (
-	_ KnowledgeRetriever         = (*liveKnowledgeProbe)(nil)
-	_ knowledgeLocalChunkReader  = (*liveKnowledgeProbe)(nil)
 	_ KnowledgeRetriever         = (*liveRemoteKnowledgeProbe)(nil)
 	_ knowledgeRemoteChunkReader = (*liveRemoteKnowledgeProbe)(nil)
 )
 
 type liveKnowledgeUsage interface {
 	knowledgeUsage() (searches, reads int32)
-}
-
-func (p *liveKnowledgeProbe) RetrieveContext(_ context.Context, question, hint string) knowledge.RetrievalResult {
-	p.searches.Add(1)
-	return p.retriever.Retrieve(question, hint)
-}
-
-func (p *liveKnowledgeProbe) Chunk(chunkID string) (knowledge.KBChunk, bool) {
-	p.reads.Add(1)
-	for _, chunk := range p.corpus.Chunks {
-		if chunk.ChunkID == chunkID {
-			return chunk, true
-		}
-	}
-	return knowledge.KBChunk{}, false
-}
-
-func (p *liveKnowledgeProbe) knowledgeUsage() (int32, int32) {
-	return p.searches.Load(), p.reads.Load()
 }
 
 func (p *liveRemoteKnowledgeProbe) RetrieveContext(ctx context.Context, question, hint string) knowledge.RetrievalResult {
@@ -217,12 +187,7 @@ func liveSupervisor(t *testing.T) Supervisor {
 		Model:       envOr("SSHH_MODEL", "gpt-5.6-terra"),
 		Timeout:     12 * time.Minute, // sized for the whole command sequence, see Supervisor.Run
 	}
-	corpusPath := strings.TrimSpace(os.Getenv("SSHH_KB_CORPUS"))
-	mcpURL := strings.TrimSpace(os.Getenv("SSHH_KB_MCP_URL"))
-	if corpusPath != "" && mcpURL != "" {
-		t.Fatal("configure only one of SSHH_KB_CORPUS or SSHH_KB_MCP_URL")
-	}
-	if mcpURL != "" {
+	if mcpURL := strings.TrimSpace(os.Getenv("SSHH_KB_MCP_URL")); mcpURL != "" {
 		retriever, err := knowledge.NewMCPRetriever(knowledge.MCPRetrieverOptions{
 			Endpoint:    mcpURL,
 			BearerToken: strings.TrimSpace(os.Getenv("SSHH_KB_MCP_BEARER_TOKEN")),
@@ -232,15 +197,6 @@ func liveSupervisor(t *testing.T) Supervisor {
 			t.Fatalf("configure SSHH_KB_MCP_URL: %v", err)
 		}
 		sup.KnowledgeRetriever = &liveRemoteKnowledgeProbe{retriever: retriever}
-	} else if corpusPath != "" {
-		corpus, err := knowledge.LoadCorpus(corpusPath)
-		if err != nil {
-			t.Fatalf("load SSHH_KB_CORPUS: %v", err)
-		}
-		sup.KnowledgeRetriever = &liveKnowledgeProbe{
-			retriever: knowledge.NewRetriever(corpus, knowledge.RetrieverOptions{}),
-			corpus:    corpus,
-		}
 	}
 	return sup
 }

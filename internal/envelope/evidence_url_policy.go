@@ -27,8 +27,9 @@ type SurfaceURLDecision struct {
 	Reason  string
 }
 
-// Keep this policy in sync with scripts/rag_w0/common.py. Python remains the
-// offline validator for W0 chunks; this Go copy protects runtime projections.
+// IsAllowedSurfaceURL decides whether a chunk's public URL may be projected:
+// https on the console or public docs host only, never an internal host or
+// path, a signed link or a temporary download.
 func IsAllowedSurfaceURL(rawURL string) SurfaceURLDecision {
 	if strings.TrimSpace(rawURL) == "" {
 		return rejectSurfaceURL("surface_url_empty")

@@ -37,9 +37,8 @@ keeps chat serving. After applying a missing migration, restart or redeploy the
 same image because the probe is boot-only. `0012` is required before enabling
 Feishu external-image OAuth.
 
-In GitLab, run the `migrate-feishu-oauth` manual job before `deploy`. Its name is
-retained for pipeline compatibility; the migration pod applies every `*.sql`
-file from the current image.
+In GitLab, run the `migrate-database` manual job before `deploy`; its pod
+applies every `*.sql` file from the current image.
 
 `TestMigrationsApplyTwiceCleanly` applies the complete sequence twice against a
 real PostgreSQL when `COMPSHARE_TEST_MYSQL_DSN` is set. New migrations must keep

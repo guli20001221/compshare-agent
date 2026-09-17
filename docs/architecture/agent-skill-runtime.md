@@ -85,9 +85,8 @@ not a terminal answer form. The Agent chooses when to search and supplies the
 user-facing retrieval intent. On the turn's first knowledge search,
 `planKnowledgeQuery` produces 1–3 contextualized retrieval queries and resolves
 references when history exists; planning failure or an empty plan falls back to
-the Agent-supplied query unchanged. Production retrieval goes to
-the configured CompShare KB MCP endpoint; local retrieval code is retained for
-tests and offline evaluation. The result contains cited chunks the Agent grounds
+the Agent-supplied query unchanged. Retrieval goes to the configured CompShare
+KB MCP endpoint. The result contains cited chunks the Agent grounds
 its answer in. Citation discipline is **fail-open**:
 if the Agent cannot cite, the original answer ships with citation markers stripped
 — citation formatting never regenerates user-facing prose. The only hard stop is
