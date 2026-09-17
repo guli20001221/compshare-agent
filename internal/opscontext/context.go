@@ -10,8 +10,8 @@ import "strconv"
 const (
 	// SchemaVersion is the SSH context wire contract this producer emits: a
 	// conversation whose ordered stream carries user and assistant endpoints and
-	// completed outer tool observations. Which older versions a harness still
-	// accepts during a mixed deployment is the harness's own table, not a Go fact.
+	// completed outer tool observations. The harness ships in the same image and
+	// accepts exactly this version; any other payload runs task-only.
 	SchemaVersion = 6
 
 	// AgentSessionContract is the prompt/tool/context contract bound to an opaque
