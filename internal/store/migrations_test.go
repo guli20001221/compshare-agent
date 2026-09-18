@@ -46,7 +46,9 @@ func TestHTTPMigrationsAddSessionContextVersion(t *testing.T) {
 // INSERT names (mysql_writer.go::insertCols) to the DDL that ends up in the
 // database: 0004 adds them and 0015 must not drop them, while the columns 0015
 // does drop are the ones the writer stopped naming. A drift on either side
-// fails every trace INSERT after deploy.
+// fails every trace INSERT after deploy. 0016 restores intent alone, for the
+// console that reads it, and must leave it NULLable because the writer never
+// supplies a value.
 func TestHTTPMigrationsAgentTracesOutcomeColumns(t *testing.T) {
 	read := func(name string) string {
 		data, err := os.ReadFile(filepath.Join("..", "..", "deploy", "migrations", name))
@@ -55,6 +57,7 @@ func TestHTTPMigrationsAgentTracesOutcomeColumns(t *testing.T) {
 	}
 	add := read("0004_add_agent_traces_outcome_columns.sql")
 	drop := read("0015_drop_unused_storage.sql")
+	restore := read("0016_restore_agent_traces_intent.sql")
 
 	assert.Contains(t, add, "ALTER TABLE agent_traces")
 	for _, column := range []string{"terminated_by", "abort_cause", "error_class", "resolution_source"} {
@@ -66,9 +69,12 @@ func TestHTTPMigrationsAgentTracesOutcomeColumns(t *testing.T) {
 			strings.Contains(drop, "DROP COLUMN IF EXISTS "+column+";")
 		assert.True(t, dropped, "0015 must drop column %s", column)
 	}
+	assert.Contains(t, restore, "ALTER TABLE agent_traces ADD COLUMN IF NOT EXISTS intent VARCHAR(32);")
+	assert.Equal(t, 1, strings.Count(restore, "ADD COLUMN"), "0016 restores intent and nothing else")
 	// Columns must be NULLable so an axis that did not fire stores NULL (clean
 	// GROUP BY / COUNT semantics) — never NOT NULL with a default.
 	assert.NotContains(t, strings.ToUpper(add), "NOT NULL")
+	assert.NotContains(t, strings.ToUpper(restore), "NOT NULL")
 }
 
 // TestHTTPMigrationsCreateSSHOpsAudit pins the 0011 fail-closed audit table to the exact columns the
