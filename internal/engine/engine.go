@@ -2,6 +2,7 @@ package engine
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,8 +25,10 @@ import (
 	"github.com/compshare-agent/internal/prompt"
 	"github.com/compshare-agent/internal/refusal"
 	"github.com/compshare-agent/internal/tools"
+	"github.com/compshare-agent/internal/websearch"
 	"github.com/compshare-agent/internal/workflow"
 	"github.com/compshare-agent/internal/zones"
+	"github.com/google/uuid"
 
 	openai "github.com/sashabaranov/go-openai"
 )
@@ -38,6 +41,7 @@ const (
 	// Each SearchKnowledge call makes one retrieval. At the call cap the
 	// tool is withdrawn so a corpus gap cannot become an unbounded re-query loop.
 	maxSearchKnowledgeCallsPerTurn = 4
+	maxWebSearchCallsPerTurn       = 4
 )
 
 const mutatingToolsDisabledMessage = "当前阶段不直接执行开机、关机、重启、重置密码、创建实例等变更操作。我可以告诉你在控制台怎么操作，具体执行请到控制台完成。"
@@ -178,8 +182,10 @@ type ChatOptions struct {
 
 // Engine runs the ReAct loop: User → LLM → Tool → LLM → ... → Reply.
 type Engine struct {
-	llmClient    LLMClient
-	safeExecutor *tools.SafeToolExecutor
+	webSearch          capability.WebSearcher
+	webSearchSessionID string
+	llmClient          LLMClient
+	safeExecutor       *tools.SafeToolExecutor
 	// externalExecutor is the RAW (unfiltered) shared executor. Used only for
 	// read-only L0 catalog calls that must pass gateway-identity args the
 	// SafeToolExecutor would strip (e.g. DescribeCompShareSupportZone needs
@@ -266,6 +272,7 @@ type Engine struct {
 // KnowledgeRetriever is exported so server bootstrap
 // can assign it on immutable process-wide dependencies before sessions start.
 type SharedDeps struct {
+	WebSearch          capability.WebSearcher
 	LLMClient          LLMClient
 	KnowledgeRetriever KnowledgeRetriever
 	RateLimiter        governance.RateLimiter
@@ -282,6 +289,9 @@ type SharedDeps struct {
 
 // SessionOptions configures one server-side session Engine.
 type SessionOptions struct {
+	// ConversationKey is server-owned owner/session identity. Only its opaque
+	// namespaced digest is sent to the public search service across cold rebuilds.
+	ConversationKey      string
 	Subject              string
 	ConfirmFn            ConfirmFunc
 	MutatingToolsEnabled bool
@@ -298,7 +308,12 @@ func NewSharedDeps(cfg *config.Config) (*SharedDeps, error) {
 	if strings.TrimSpace(cfg.Agent.LLM.Model) == "" {
 		return nil, errors.New("engine.NewSharedDeps: agent.llm.model is required")
 	}
+	var search capability.WebSearcher
+	if !cfg.Agent.WebSearch.Disabled {
+		search = websearch.NewClient(nil, time.Duration(cfg.Agent.WebSearch.TimeoutMS)*time.Millisecond)
+	}
 	return &SharedDeps{
+		WebSearch: search,
 		LLMClient: llm.NewClient(cfg.Agent.LLM),
 		// InMemoryRateLimiter is process-local and suitable for local demo or
 		// single-instance deployment only. Multi-replica production needs a
@@ -322,7 +337,14 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 	if deps == nil {
 		panic("engine.NewSession: deps is nil")
 	}
+	searchSessionID := uuid.NewString()
+	if opts.ConversationKey != "" {
+		digest := sha256.Sum256([]byte("compshare-agent:parallel:" + opts.ConversationKey))
+		searchSessionID = fmt.Sprintf("%x", digest)
+	}
 	eng := &Engine{
+		webSearch:          deps.WebSearch,
+		webSearchSessionID: searchSessionID,
 		// ── shared (pointer-equal across sessions) ──
 		llmClient:          deps.LLMClient,
 		knowledgeRetriever: deps.KnowledgeRetriever,
@@ -346,6 +368,7 @@ func NewSession(deps *SharedDeps, opts SessionOptions) *Engine {
 // NewWithDeps creates an Engine with injected dependencies (for testing).
 func NewWithDeps(client LLMClient, executor tools.ToolExecutor, confirmFn ConfirmFunc) *Engine {
 	eng := &Engine{
+		webSearchSessionID:   uuid.NewString(),
 		llmClient:            client,
 		confirmFn:            confirmFn,
 		registry:             entity.NewRegistry(),
